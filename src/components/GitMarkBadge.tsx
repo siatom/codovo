@@ -1,0 +1,29 @@
+import type { GitMark, GitMarkKind } from "../lib/git";
+
+const COLOR: Record<GitMarkKind, string> = {
+  modified: "text-warn",
+  added: "text-ok",
+  untracked: "text-ok",
+  deleted: "text-danger",
+  conflict: "text-danger",
+};
+
+const TITLE: Record<GitMarkKind, string> = {
+  modified: "有未提交的改动",
+  added: "新增（已暂存）",
+  untracked: "未跟踪的新文件",
+  deleted: "已删除",
+  conflict: "有合并冲突",
+};
+
+/** 文件树和编辑器标签页共用的 git 标记：一个字母 + 语义色 */
+export function GitMarkBadge({ mark, className = "" }: { mark: GitMark; className?: string }) {
+  return (
+    <span
+      title={TITLE[mark.kind]}
+      className={`shrink-0 font-medium ${COLOR[mark.kind]} ${className}`}
+    >
+      {mark.label}
+    </span>
+  );
+}

@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+/* 界面配色统一走这组变量：深色是默认值，浅色整组覆盖。
+   组件里只用语义名（bg-surface / text-fg-dim / border-line …），不再写死十六进制，
+   否则加一套主题就得把每个色值再抄一遍。 */
+:root {
+  color-scheme: dark;
+
+  --c-app: #0b0d11;
+  --c-panel: #0d1014;
+  --c-surface: #0f1115;
+  --c-raised: #161a21;
+  --c-hover: #171b22;
+  --c-active: #1c212b;
+  --c-selected: #1d2735;
+  --c-line: #1c212b;
+  --c-line-strong: #242a35;
+  --c-line-hover: #3d4655;
+  --c-fg: #d7dce5;
+  --c-fg-muted: #a8b0bd;
+  --c-fg-dim: #8b93a3;
+  --c-fg-faint: #5c6370;
+  --c-fg-icon: #6b7383;
+  --c-accent: #6ea8fe;
+  --c-accent-soft: #8fc0ff;
+  --c-accent-strong: #4c8dff;
+  --c-accent-line: #2a334a;
+  --c-danger: #ff8b92;
+  --c-danger-bg: #2a1618;
+  --c-danger-line: #5a2b2b;
+  --c-warn: #e6c07b;
+  --c-warn-bg: #241f14;
+  --c-warn-line: #3a3220;
+  --c-warn-line-strong: #5a4a28;
+  --c-ok: #7ed08c;
+  --c-scroll: #2a313d;
+  --c-scroll-hover: #39414f;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --c-app: #eef0f3;
+  --c-panel: #f6f7f9;
+  --c-surface: #ffffff;
+  --c-raised: #f1f3f6;
+  --c-hover: #e9ecf0;
+  --c-active: #e1e5ea;
+  --c-selected: #d7e4fa;
+  --c-line: #e0e4e9;
+  --c-line-strong: #ccd3db;
+  --c-line-hover: #a9b3c0;
+  --c-fg: #1f2430;
+  --c-fg-muted: #4a5261;
+  --c-fg-dim: #667085;
+  --c-fg-faint: #8b93a3;
+  --c-fg-icon: #7b8394;
+  --c-accent: #2563eb;
+  --c-accent-soft: #1d4ed8;
+  --c-accent-strong: #2563eb;
+  --c-accent-line: #bcd0f7;
+  --c-danger: #c0392f;
+  --c-danger-bg: #fdecea;
+  --c-danger-line: #f2c3bd;
+  --c-warn: #8a6100;
+  --c-warn-bg: #fdf6e5;
+  --c-warn-line: #eddfb8;
+  --c-warn-line-strong: #dcc68c;
+  --c-ok: #1f7a3d;
+  --c-scroll: #c9cfd8;
+  --c-scroll-hover: #aeb6c2;
+}
+
+/* 把语义色注册给 Tailwind，组件里就能写 bg-surface / text-fg-dim 这样的类。
+   值本身是 var()，所以主题一换整片跟着变。 */
+@theme {
+  --color-app: var(--c-app);
+  --color-panel: var(--c-panel);
+  --color-surface: var(--c-surface);
+  --color-raised: var(--c-raised);
+  --color-hover: var(--c-hover);
+  --color-active: var(--c-active);
+  --color-selected: var(--c-selected);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+  --color-line-hover: var(--c-line-hover);
+  --color-fg: var(--c-fg);
+  --color-fg-muted: var(--c-fg-muted);
+  --color-fg-dim: var(--c-fg-dim);
+  --color-fg-faint: var(--c-fg-faint);
+  --color-fg-icon: var(--c-fg-icon);
+  --color-accent: var(--c-accent);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-accent-strong: var(--c-accent-strong);
+  --color-accent-line: var(--c-accent-line);
+  --color-danger: var(--c-danger);
+  --color-danger-bg: var(--c-danger-bg);
+  --color-danger-line: var(--c-danger-line);
+  --color-warn: var(--c-warn);
+  --color-warn-bg: var(--c-warn-bg);
+  --color-warn-line: var(--c-warn-line);
+  --color-warn-line-strong: var(--c-warn-line-strong);
+  --color-ok: var(--c-ok);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--c-app);
+  color: var(--c-fg);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+body.codedock-dragging,
+body.codedock-dragging * {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/* xterm 自己算尺寸，容器不能给它留内边距 */
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* 终端标签栏：标签多了要能横向滚，但不该占一条滚动条的高度 */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--c-scroll);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-scroll-hover);
+}
