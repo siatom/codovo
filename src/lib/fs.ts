@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { FileContent, FileEntry, GitStatusPayload } from "./types";
+import type { FileContent, FileDiff, FileEntry, GitStatusPayload } from "./types";
 
 const WORKSPACE_KEY = "codedock.workspace";
 const WORKSPACES_KEY = "codedock.workspaces";
@@ -70,6 +70,14 @@ export function listDir(path: string): Promise<FileEntry[]> {
   return invoke<FileEntry[]>("fs_list_dir", { path });
 }
 
+/**
+ * 按文件名递归搜工作区（大小写不敏感的子串匹配），返回命中的绝对路径。
+ * 后端会跳过 node_modules / .git / target 这类目录，并且有结果条数上限。
+ */
+export function searchFiles(query: string): Promise<string[]> {
+  return invoke<string[]>("fs_search_files", { query });
+}
+
 export function readFile(path: string): Promise<FileContent> {
   return invoke<FileContent>("fs_read_file", { path });
 }
@@ -81,6 +89,28 @@ export function writeFile(path: string, text: string): Promise<void> {
 /** 当前工作区的 git 状态；目录不是仓库时 isRepo 为 false */
 export function gitStatus(): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_status");
+}
+
+/** 暂存；不传 paths 表示全部暂存。返回写完之后的新状态。 */
+export function gitStage(paths?: string[]): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_stage", { paths: paths ?? null });
+}
+
+/** 取消暂存；不传 paths 表示全部取消。 */
+export function gitUnstage(paths?: string[]): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_unstage", { paths: paths ?? null });
+}
+
+export function gitCommit(message: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_commit", { message });
+}
+
+/**
+ * 一个改动文件的两侧内容。
+ * `staged` 决定基线：true 比 HEAD（内容来自 index），false 比 index（内容来自工作区）。
+ */
+export function gitFileDiff(path: string, staged: boolean): Promise<FileDiff> {
+  return invoke<FileDiff>("git_file_diff", { path, staged });
 }
 
 /** 后端一律用原生分隔符；界面按 VS Code 习惯显示 `/`。 */

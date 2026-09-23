@@ -5,12 +5,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
-import { useTheme, type ResolvedTheme } from "../lib/theme";
+import { resolveTerminalTheme } from "../lib/terminal-themes";
+import { useTheme } from "../lib/theme";
 
 export interface TerminalSessionHandle {
   /** 往这个会话的 shell 里写命令 */
@@ -25,57 +26,6 @@ interface TerminalSessionProps {
   /** 是否是当前显示的那个会话：从后台切回来要重新量尺寸并聚焦 */
   active: boolean;
 }
-
-const DARK_THEME: ITheme = {
-  background: "#0f1115",
-  foreground: "#d7dce5",
-  cursor: "#6ea8fe",
-  cursorAccent: "#0f1115",
-  selectionBackground: "#2c3445",
-  black: "#1b1f27",
-  red: "#f07178",
-  green: "#7fd88f",
-  yellow: "#e6c07b",
-  blue: "#6ea8fe",
-  magenta: "#c792ea",
-  cyan: "#89ddff",
-  white: "#d7dce5",
-  brightBlack: "#5c6370",
-  brightRed: "#ff8b92",
-  brightGreen: "#a5e8b0",
-  brightYellow: "#f2d191",
-  brightBlue: "#8fc0ff",
-  brightMagenta: "#dbb8f0",
-  brightCyan: "#a5e8ff",
-  brightWhite: "#ffffff",
-};
-
-// ANSI 调色板沿用 VS Code 浅色主题那一套，跟编辑器的 Monaco 观感一致
-const LIGHT_THEME: ITheme = {
-  background: "#ffffff",
-  foreground: "#1f2430",
-  cursor: "#2563eb",
-  cursorAccent: "#ffffff",
-  selectionBackground: "#cfdffb",
-  black: "#000000",
-  red: "#cd3131",
-  green: "#00bc00",
-  yellow: "#949800",
-  blue: "#0451a5",
-  magenta: "#bc05bc",
-  cyan: "#0598bc",
-  white: "#555555",
-  brightBlack: "#666666",
-  brightRed: "#cd3131",
-  brightGreen: "#14ce14",
-  brightYellow: "#b5ba00",
-  brightBlue: "#0451a5",
-  brightMagenta: "#bc05bc",
-  brightCyan: "#0598bc",
-  brightWhite: "#a5a5a5",
-};
-
-const THEMES: Record<ResolvedTheme, ITheme> = { dark: DARK_THEME, light: LIGHT_THEME };
 
 /**
  * 一个终端会话 = 一个 xterm 实例 + 一个 PTY。
@@ -102,6 +52,10 @@ export const TerminalSession = forwardRef<
   fontSizeRef.current = settings.terminalFontSize;
   const fontFamilyRef = useRef(settings.terminalFontFamily);
   fontFamilyRef.current = settings.terminalFontFamily;
+  const fontBoldRef = useRef(settings.terminalFontBold);
+  fontBoldRef.current = settings.terminalFontBold;
+  const terminalThemeRef = useRef(settings.terminalTheme);
+  terminalThemeRef.current = settings.terminalTheme;
 
   useImperativeHandle(
     ref,
@@ -129,9 +83,10 @@ export const TerminalSession = forwardRef<
       cursorBlink: true,
       fontFamily: resolveFont(fontFamilyRef.current),
       fontSize: fontSizeRef.current,
+      fontWeight: fontBoldRef.current ? "bold" : "normal",
       lineHeight: 1.25,
       scrollback: 5000,
-      theme: THEMES[themeRef.current],
+      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current),
     });
 
     const fit = new FitAddon();
@@ -217,19 +172,24 @@ export const TerminalSession = forwardRef<
     // （跨盘符、各种 shell 的转义规则都不一样）
   }, [sessionKey, cwd]);
 
-  // 切主题不重建会话，只换调色板：滚动历史和正在跑的命令都不受影响
+  // 切界面主题、或换终端配色，都不重建会话，只换调色板：滚动历史和正在跑的命令不受影响
   useEffect(() => {
     const term = termRef.current;
-    if (term) term.options.theme = THEMES[theme];
-  }, [theme]);
+    if (!term) return;
+    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme);
+    // 只改 options 时 WebGL 渲染器不保证重画整屏，显式刷一遍底色才跟着换
+    term.refresh(0, Math.max(0, term.rows - 1));
+  }, [theme, settings.terminalTheme]);
 
-  // 字体/字号同理，改完补一次 fit，把新的行列数告诉 PTY
+  // 字体/字号/字重同理，改完补一次 fit，把新的行列数告诉 PTY
   useEffect(() => {
     const term = termRef.current;
     const fit = fitRef.current;
     if (!term || !fit) return;
     term.options.fontFamily = resolveFont(settings.terminalFontFamily);
     term.options.fontSize = settings.terminalFontSize;
+    // 加粗会改变字宽，列数跟着变，所以和字号一样得重新量一次
+    term.options.fontWeight = settings.terminalFontBold ? "bold" : "normal";
     // 藏起来的会话量不到尺寸，切回来的那个 effect 会补上
     if (!containerRef.current?.clientWidth) return;
     try {
@@ -238,7 +198,11 @@ export const TerminalSession = forwardRef<
       return;
     }
     ptyRef.current?.resize(term.cols, term.rows);
-  }, [settings.terminalFontFamily, settings.terminalFontSize]);
+  }, [
+    settings.terminalFontFamily,
+    settings.terminalFontSize,
+    settings.terminalFontBold,
+  ]);
 
   // 藏起来的会话在 display:none 里量不到尺寸，切回来的这一帧要补一次 fit 和聚焦
   useEffect(() => {

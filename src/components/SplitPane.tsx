@@ -7,9 +7,27 @@ interface SplitPaneProps {
   initial?: number;
   min?: number;
   max?: number;
+  /**
+   * 收起第二块：宽度归零、分隔条也不画。
+   * 内容仍然挂载，只是被裁掉——这样收起再展开不会把 Monaco 实例重建一遍。
+   */
+  secondCollapsed?: boolean;
+  /**
+   * 收起第一块，把整块地方让给第二块。全屏展示走的是这条路：
+   * 终端得留着（PTY 在跑），所以同样是宽度归零而不是卸载。
+   */
+  firstCollapsed?: boolean;
 }
 
-export function SplitPane({ first, second, initial = 50, min = 15, max = 85 }: SplitPaneProps) {
+export function SplitPane({
+  first,
+  second,
+  initial = 50,
+  min = 15,
+  max = 85,
+  secondCollapsed = false,
+  firstCollapsed = false,
+}: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(initial);
   const [dragging, setDragging] = useState(false);
@@ -44,27 +62,41 @@ export function SplitPane({ first, second, initial = 50, min = 15, max = 85 }: S
     <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1">
       <div
         className="flex min-h-0 min-w-0 flex-col overflow-hidden"
-        style={{ flexBasis: `${ratio}%`, flexGrow: 0, flexShrink: 0 }}
+        style={
+          // 第二块收起时没有别的兄弟去占位，第一块得自己撑满，否则右边留一片空白
+          firstCollapsed
+            ? { flexBasis: 0, flexGrow: 0, flexShrink: 0 }
+            : secondCollapsed
+              ? { flexBasis: 0, flexGrow: 1, flexShrink: 1 }
+              : { flexBasis: `${ratio}%`, flexGrow: 0, flexShrink: 0 }
+        }
       >
         {first}
       </div>
 
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={stop}
-        onPointerCancel={stop}
-        className={`relative w-px shrink-0 cursor-col-resize bg-line-strong transition-colors ${
-          dragging ? "bg-accent-strong" : "hover:bg-line-hover"
-        }`}
-      >
-        {/* 加宽命中区，视觉上仍是一条细线 */}
-        <span className="absolute inset-y-0 -left-1 -right-1" />
-      </div>
+      {!secondCollapsed && !firstCollapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={stop}
+          onPointerCancel={stop}
+          className={`relative w-px shrink-0 cursor-col-resize bg-line-strong transition-colors ${
+            dragging ? "bg-accent-strong" : "hover:bg-line-hover"
+          }`}
+        >
+          {/* 加宽命中区，视觉上仍是一条细线 */}
+          <span className="absolute inset-y-0 -left-1 -right-1" />
+        </div>
+      )}
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{second}</div>
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+        style={secondCollapsed ? { flexBasis: 0, flexGrow: 0, flexShrink: 0 } : undefined}
+      >
+        {second}
+      </div>
     </div>
   );
 }

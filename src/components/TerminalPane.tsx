@@ -5,17 +5,22 @@ import {
 } from "./TerminalSession";
 import { toDisplayPath } from "../lib/fs";
 import { useSettings } from "../lib/settings";
+import { IconPanelRight, IconPanelRightOpen } from "./icons";
 
 interface TerminalPaneProps {
   /** 当前工作目录；null 表示用户还没选工作区，shell 落在用户主目录 */
   cwd: string | null;
+  /** 右边栏（文件/变更 + 编辑器）是否展开 */
+  rightOpen: boolean;
+  /** 不传就不显示切换按钮——还没选工作区时右边栏是「选择文件夹」提示，收不起来 */
+  onToggleRight?: () => void;
 }
 
 /**
  * 终端区：管一组会话，标签栏负责新增/关闭/切换。
  * 每个会话各自持有一个 PTY，切走只是隐藏，shell 不会被打断。
  */
-export function TerminalPane({ cwd }: TerminalPaneProps) {
+export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
@@ -173,6 +178,22 @@ export function TerminalPane({ cwd }: TerminalPaneProps) {
         >
           清屏
         </button>
+        {onToggleRight && (
+          <button
+            type="button"
+            onClick={onToggleRight}
+            title={rightOpen ? "收起右边栏" : "展开右边栏"}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-active hover:text-fg ${
+              rightOpen ? "text-fg" : "text-fg-dim"
+            }`}
+          >
+            {rightOpen ? (
+              <IconPanelRightOpen className="h-3.5 w-3.5" />
+            ) : (
+              <IconPanelRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+        )}
       </header>
 
       <div className="relative min-h-0 flex-1">

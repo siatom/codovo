@@ -151,3 +151,181 @@ body.codedock-dragging * {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--c-scroll-hover);
 }
+
+/* markdown 预览的排版。项目没装 typography 插件，这里手写一套，
+   配色全部走主题变量，深浅色都不用另写。 */
+.markdown-body {
+  background: var(--c-surface);
+  color: var(--c-fg);
+  font-size: 13px;
+  line-height: 1.7;
+  padding: 16px 20px 40px;
+  word-wrap: break-word;
+}
+
+/* 宽屏下行太长不好读，正文内容限宽居中。
+   不能直接给 .markdown-body 设 max-width——它是 absolute inset-0 的滚动容器 */
+.markdown-body > * {
+  max-width: 860px;
+  margin-inline: auto;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2 {
+  margin: 1.4em 0 0.7em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--c-line);
+  font-size: 1.45em;
+  font-weight: 600;
+}
+
+.markdown-body h2 {
+  font-size: 1.25em;
+}
+
+.markdown-body h3 {
+  margin: 1.3em 0 0.6em;
+  font-size: 1.1em;
+  font-weight: 600;
+}
+
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 1.2em 0 0.5em;
+  color: var(--c-fg-muted);
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.markdown-body p {
+  margin: 0.9em 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.9em 0;
+  padding-left: 1.6em;
+  /* Tailwind 的 preflight 把列表符号清掉了，预览里得补回来 */
+  list-style: disc;
+}
+
+.markdown-body ol {
+  list-style: decimal;
+}
+
+.markdown-body ul ul {
+  list-style: circle;
+}
+
+.markdown-body ul ul ul {
+  list-style: square;
+}
+
+.markdown-body li + li {
+  margin-top: 0.25em;
+}
+
+.markdown-body li::marker {
+  color: var(--c-fg-dim);
+}
+
+/* GFM 任务列表：勾选框本身就是标记，再去掉项目符号、把缩进让出来 */
+.markdown-body li:has(> input[type="checkbox"]) {
+  margin-left: -1.2em;
+  list-style: none;
+}
+
+.markdown-body input[type="checkbox"] {
+  margin-right: 0.4em;
+  vertical-align: middle;
+  accent-color: var(--c-accent);
+}
+
+.markdown-body blockquote {
+  margin: 0.9em 0;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid var(--c-line-strong);
+  color: var(--c-fg-muted);
+}
+
+.markdown-body a {
+  color: var(--c-accent);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body strong {
+  font-weight: 600;
+}
+
+/* 等宽栈跟 settings.tsx 里的 DEFAULT_MONO_FONT 保持一致 */
+.markdown-body code {
+  padding: 0.15em 0.35em;
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  background: var(--c-raised);
+  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", Menlo, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-body pre {
+  margin: 0.9em 0;
+  padding: 10px 12px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-raised);
+  overflow-x: auto;
+}
+
+/* 代码块里的 code 不再套一层底色和边框，否则两层框很脏 */
+.markdown-body pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--c-fg-muted);
+  font-size: 1em;
+}
+
+/* display:block 是为了让宽表格能横向滚；fit-content 让窄表格按内容收住 */
+.markdown-body table {
+  display: block;
+  width: fit-content;
+  overflow-x: auto;
+  margin: 0.9em 0;
+  border-collapse: collapse;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 5px 10px;
+  border: 1px solid var(--c-line);
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--c-raised);
+  font-weight: 600;
+}
+
+.markdown-body hr {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--c-line);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 4px;
+}

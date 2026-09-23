@@ -1,10 +1,18 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
 
-const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
+/// 文本类操作（读文件、看差异）的大小上限，两个模块共用
+pub(crate) const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
+
+/// 二进制判定：只看前 8192 字节里有没有 NUL。
+/// 完整读一遍大文件再判断不值得，这个启发式对源码仓库够准。
+pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
+    bytes[..bytes.len().min(8192)].contains(&0)
+}
 
 /// 工作区根目录。启动时为空——由用户显式选目录（或前端恢复上次的选择），
 /// 没选之前所有文件操作都拒绝执行。
@@ -26,6 +34,15 @@ impl FsState {
             .map_err(|e| e.to_string())?
             .clone()
             .ok_or_else(|| "尚未选择工作目录".to_string())
+    }
+
+    /// 设置工作区根，并统一 canonical 化。
+    /// 存进去的路径带不带 `\\?\` 前缀、大小写对不对，会直接决定 `resolve`
+    /// 的前缀校验过不过，所以不能在调用处各写各的。
+    pub(crate) fn set_root(&self, path: PathBuf) -> Result<PathBuf, String> {
+        let target = canonical(path);
+        *self.root.lock().map_err(|e| e.to_string())? = Some(target.clone());
+        Ok(target)
     }
 }
 
@@ -66,9 +83,12 @@ fn canonical(path: PathBuf) -> PathBuf {
 /// 前端传来的路径一律视为不可信：解析后必须落在工作区根内。
 ///
 /// 已存在的路径直接 canonicalize（会跟随软链接，能挡住"工作区里放一个指向
-/// 外部的软链接"这种逃逸）；尚不存在的路径 canonicalize 它的父目录再拼文件名，
-/// 否则 `工作区/软链接目录/新文件` 会绕过前缀检查。
-fn resolve(state: &FsState, raw: &str) -> Result<PathBuf, String> {
+/// 外部的软链接"这种逃逸）。路径（或它的若干层父目录）还不存在时，向上找到
+/// 最近存在的祖先 canonicalize 它，再把缺的那几段词法拼回去：`git status`
+/// 会报出整个目录被删后的 `dir/a.txt`，那时 `dir` 已经不存在了，坚持"父目录
+/// 必须存在"会让删除类改动完全没法提交。安全性不变——存在的那一段照样
+/// canonicalize，软链接逃逸还是被挡在外面。
+pub(crate) fn resolve(state: &FsState, raw: &str) -> Result<PathBuf, String> {
     let root = state.root()?;
     let candidate = if Path::new(raw).is_absolute() {
         PathBuf::from(raw)
@@ -77,22 +97,28 @@ fn resolve(state: &FsState, raw: &str) -> Result<PathBuf, String> {
     };
     let candidate = normalize(&candidate);
 
-    let target = match candidate.canonicalize() {
-        Ok(real) => simplify(real),
-        Err(_) => {
-            let parent = candidate
-                .parent()
-                .ok_or_else(|| format!("非法路径: {raw}"))?;
-            let real_parent = parent
-                .canonicalize()
-                .map(simplify)
-                .map_err(|_| format!("目录不存在: {}", display(parent)))?;
-            match candidate.file_name() {
-                Some(name) => real_parent.join(name),
-                None => real_parent,
+    let mut missing: Vec<OsString> = Vec::new();
+    let mut probe = candidate.as_path();
+    let base = loop {
+        match probe.canonicalize() {
+            Ok(real) => break simplify(real),
+            Err(_) => {
+                let name = probe
+                    .file_name()
+                    .ok_or_else(|| format!("非法路径: {raw}"))?
+                    .to_os_string();
+                missing.push(name);
+                probe = probe
+                    .parent()
+                    .ok_or_else(|| format!("非法路径: {raw}"))?;
             }
         }
     };
+
+    let mut target = base;
+    for name in missing.iter().rev() {
+        target.push(name);
+    }
 
     if target != root && !target.starts_with(&root) {
         return Err(format!("路径越界（不在工作区内）: {raw}"));
@@ -128,13 +154,11 @@ pub fn fs_root(state: tauri::State<'_, FsState>) -> Result<Option<String>, Strin
 
 #[tauri::command]
 pub fn fs_set_root(state: tauri::State<'_, FsState>, path: String) -> Result<String, String> {
-    let target = canonical(PathBuf::from(&path));
+    let target = PathBuf::from(&path);
     if !target.is_dir() {
         return Err(format!("不是有效的目录: {path}"));
     }
-    let mut root = state.root.lock().map_err(|e| e.to_string())?;
-    *root = Some(target.clone());
-    Ok(display(&target))
+    Ok(display(&state.set_root(target)?))
 }
 
 /// 列目录。抽出来是为了能在单元测试里直接验证过滤/排序规则。
@@ -169,6 +193,95 @@ pub fn fs_list_dir(state: tauri::State<'_, FsState>, path: String) -> Result<Vec
     list_entries(&dir)
 }
 
+/// 搜索时整个跳过的目录名（小写比较）。这些目录动辄几万个文件，
+/// 不跳过一次搜索就能把界面卡住。
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".git",
+    "target",
+    "dist",
+    "build",
+    "out",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".cache",
+    ".idea",
+    "vendor",
+];
+
+/// 一次最多返回多少条。再多前端也画不动，而且用户不会往下翻。
+const MAX_HITS: usize = 300;
+
+/// 最多看多少个目录项就收手：极端情况下（巨大的仓库、命中极少）
+/// 不能让这个线程一直跑下去。
+const MAX_VISITS: usize = 100_000;
+
+/// 按文件名递归搜工作区，大小写不敏感的子串匹配。只返回文件，不返回目录。
+#[tauri::command(async)]
+pub fn fs_search_files(
+    state: tauri::State<'_, FsState>,
+    query: String,
+) -> Result<Vec<String>, String> {
+    let root = state.root()?;
+    Ok(search_files(&root, &query))
+}
+
+/// 抽出来是为了能在单元测试里直接跑，不用起 tauri 的 State。
+fn search_files(root: &Path, query: &str) -> Vec<String> {
+    let needle = query.trim().to_lowercase();
+    // 空查询会命中所有文件，没有意义
+    if needle.is_empty() {
+        return Vec::new();
+    }
+
+    let mut hits: Vec<String> = Vec::new();
+    // 显式栈而不是递归：目录嵌套很深时不会把调用栈压爆
+    let mut stack = vec![root.to_path_buf()];
+    let mut visits = 0usize;
+
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in read.flatten() {
+            visits += 1;
+            if visits > MAX_VISITS || hits.len() >= MAX_HITS {
+                hits.sort();
+                return hits;
+            }
+
+            // file_type() 是 lstat 语义，不跟随软链接：指向外面的软链接目录
+            // 不会被当成目录走下去，顺带挡掉循环链接
+            let Ok(kind) = item.file_type() else {
+                continue;
+            };
+            let name = item.file_name().to_string_lossy().to_string();
+
+            if kind.is_dir() {
+                if !SKIP_DIRS.contains(&name.to_lowercase().as_str()) {
+                    stack.push(item.path());
+                }
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            if name.to_lowercase().contains(&needle) {
+                hits.push(display(&item.path()));
+            }
+        }
+    }
+
+    // 遍历顺序取决于目录项的返回顺序，排一下让同样的查询给出同样的结果
+    hits.sort();
+    hits
+}
+
 #[tauri::command]
 pub fn fs_read_file(state: tauri::State<'_, FsState>, path: String) -> Result<FileContent, String> {
     let file = resolve(&state, &path)?;
@@ -183,8 +296,7 @@ pub fn fs_read_file(state: tauri::State<'_, FsState>, path: String) -> Result<Fi
     }
 
     let bytes = fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
-    let probe = &bytes[..bytes.len().min(8192)];
-    if probe.contains(&0) {
+    if looks_binary(&bytes) {
         return Ok(FileContent {
             text: String::new(),
             is_binary: true,
@@ -223,7 +335,7 @@ mod tests {
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let state = FsState::new();
-        *state.root.lock().unwrap() = Some(canonical(workspace));
+        state.set_root(workspace).unwrap();
         (state, root)
     }
 
@@ -245,9 +357,12 @@ mod tests {
     #[test]
     fn allows_new_file_inside_root() {
         let (state, root) = temp_state();
-        let target = state.root().unwrap().join("nested").join("new.txt");
-        // nested 不存在时应该直接报错，而不是放行
-        assert!(resolve(&state, target.to_str().unwrap()).is_err());
+
+        // 父目录还不存在也放行：git 报出的"整个目录被删"就是这个形状
+        // （`D src/old/a.txt`，而 src/old 已经没了），拦在这里会让删除类改动
+        // 没法暂存。真正的失败留给 OS——写文件时父目录不存在会报错。
+        let nested = state.root().unwrap().join("nested").join("new.txt");
+        assert_eq!(resolve(&state, nested.to_str().unwrap()).unwrap(), nested);
 
         let flat = state.root().unwrap().join("new.txt");
         assert_eq!(resolve(&state, flat.to_str().unwrap()).unwrap(), flat);
@@ -271,6 +386,35 @@ mod tests {
     }
 
     #[test]
+    fn searches_file_names_and_skips_heavy_dirs() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        fs::write(workspace.join("src").join("Main.rs"), "").unwrap();
+        fs::write(workspace.join("README.md"), "").unwrap();
+        fs::create_dir_all(workspace.join("node_modules").join("pkg")).unwrap();
+        fs::write(workspace.join("node_modules").join("pkg").join("main.js"), "").unwrap();
+
+        let hits = search_files(&workspace, "main");
+        assert_eq!(hits.len(), 1, "只该命中 src/Main.rs: {hits:?}");
+        assert!(hits[0].ends_with("Main.rs"), "命中的路径不对: {hits:?}");
+
+        assert_eq!(search_files(&workspace, "readme").len(), 1, "应该大小写不敏感");
+        assert!(search_files(&workspace, "src").is_empty(), "目录不该算命中");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn search_ignores_an_empty_needle() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        fs::write(workspace.join("a.txt"), "").unwrap();
+
+        assert!(search_files(&workspace, "").is_empty());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn follows_symlinked_parent_for_new_files() {
         let (state, root) = temp_state();
         let outside = root.join("outside");
@@ -285,6 +429,11 @@ mod tests {
         if linked {
             let escaping = state.root().unwrap().join("link").join("pwned.txt");
             assert!(resolve(&state, escaping.to_str().unwrap()).is_err());
+
+            // 向上找祖先不能变成绕过前缀校验的后门：软链接下面的目录不存在时，
+            // 拼回去的路径落在工作区外，照样要拒绝
+            let deeper = state.root().unwrap().join("link").join("missing").join("pwned.txt");
+            assert!(resolve(&state, deeper.to_str().unwrap()).is_err());
         }
         fs::remove_dir_all(&root).ok();
     }

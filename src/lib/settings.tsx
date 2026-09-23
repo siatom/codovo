@@ -7,6 +7,9 @@ import {
   type ReactNode,
 } from "react";
 
+/** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
+export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
+
 export interface Settings {
   /** 终端工具条上 AI CLI 按钮可选的命令；多于一个时点按钮给下拉选择 */
   aiCommands: string[];
@@ -14,16 +17,35 @@ export interface Settings {
   terminalFontFamily: string;
   /** 终端字号（px） */
   terminalFontSize: number;
+  /** 终端字体是否加粗 */
+  terminalFontBold: boolean;
+  /** 终端配色主题，取 xterm-theme 的导出名；空串表示跟随界面深/浅色 */
+  terminalTheme: string;
   /** 编辑器字体（CSS font-family），留空用默认 */
   editorFontFamily: string;
   /** 编辑器字号（px） */
   editorFontSize: number;
+  /** 编辑器字体是否加粗 */
+  editorFontBold: boolean;
+  /** 编辑器自动保存时机 */
+  editorAutoSave: AutoSaveMode;
+  /** afterDelay 模式下停手多久才落盘（毫秒） */
+  editorAutoSaveDelay: number;
 }
 
 const SETTINGS_KEY = "codedock.settings";
 
 export const FONT_SIZE_MIN = 11;
 export const FONT_SIZE_MAX = 20;
+export const AUTOSAVE_DELAY_MIN = 300;
+export const AUTOSAVE_DELAY_MAX = 10000;
+
+const AUTO_SAVE_MODES: AutoSaveMode[] = [
+  "off",
+  "afterDelay",
+  "onFocusChange",
+  "onWindowChange",
+];
 
 /** 默认等宽字体栈：终端和编辑器共用，两处都留空时看到的还是同一个字体 */
 export const DEFAULT_MONO_FONT =
@@ -38,8 +60,13 @@ const DEFAULTS: Settings = {
   aiCommands: ["claude", "codebuddy"],
   terminalFontFamily: "",
   terminalFontSize: 13,
+  terminalFontBold: false,
+  terminalTheme: "",
   editorFontFamily: "",
   editorFontSize: 13,
+  editorFontBold: false,
+  editorAutoSave: "off",
+  editorAutoSaveDelay: 1000,
 };
 
 function clampSize(value: unknown, fallback: number): number {
@@ -47,8 +74,24 @@ function clampSize(value: unknown, fallback: number): number {
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(value)));
 }
 
+function clampDelay(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(AUTOSAVE_DELAY_MAX, Math.max(AUTOSAVE_DELAY_MIN, Math.round(value)));
+}
+
+/** 存的是字符串，但值域是固定的四个；读坏了回落默认 */
+function asAutoSave(value: unknown): AutoSaveMode {
+  return AUTO_SAVE_MODES.includes(value as AutoSaveMode)
+    ? (value as AutoSaveMode)
+    : DEFAULTS.editorAutoSave;
+}
+
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function asBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 /** 数组字段只留字符串项；整个字段缺失才回落默认，用户清空列表是允许的 */
@@ -73,8 +116,16 @@ function readSaved(): Settings {
     aiCommands,
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
+    terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),
+    terminalTheme: asString(raw.terminalTheme, DEFAULTS.terminalTheme),
     editorFontFamily: asString(raw.editorFontFamily, DEFAULTS.editorFontFamily),
     editorFontSize: clampSize(raw.editorFontSize, DEFAULTS.editorFontSize),
+    editorFontBold: asBoolean(raw.editorFontBold, DEFAULTS.editorFontBold),
+    editorAutoSave: asAutoSave(raw.editorAutoSave),
+    editorAutoSaveDelay: clampDelay(
+      raw.editorAutoSaveDelay,
+      DEFAULTS.editorAutoSaveDelay,
+    ),
   };
 }
 

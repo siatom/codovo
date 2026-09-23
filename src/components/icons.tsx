@@ -74,6 +74,23 @@ export const IconPanelExpand = icon(
   </>,
 );
 
+/** 右边栏收起态：只画出右侧那一栏的轮廓 */
+export const IconPanelRight = icon(
+  <>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <path d="M15 3v18" />
+  </>,
+);
+
+/** 右边栏展开态：右侧那一栏填实 */
+export const IconPanelRightOpen = icon(
+  <>
+    <rect width="18" height="18" x="3" y="3" rx="2" />
+    <rect width="6" height="18" x="15" y="3" fill="currentColor" />
+    <path d="M15 3v18" />
+  </>,
+);
+
 export const IconRefresh = icon(
   <>
     <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
@@ -90,9 +107,56 @@ export const IconSettings = icon(
   </>,
 );
 
+/** 右栏的「浏览器」模块 */
+export const IconGlobe = icon(
+  <>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3.5 9h17M3.5 15h17" />
+    <path d="M12 3a13.5 13.5 0 0 0 0 18 13.5 13.5 0 0 0 0-18Z" />
+  </>,
+);
+
+/** 用系统默认程序打开 */
+export const IconExternalLink = icon(
+  <>
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+  </>,
+);
+
+/** 进入全屏：四角朝外 */
+export const IconFullscreen = icon(
+  <>
+    <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+    <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+    <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+    <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+  </>,
+);
+
+/** 退出全屏：四角朝内 */
+export const IconFullscreenExit = icon(
+  <>
+    <path d="M3 8h3a2 2 0 0 0 2-2V3" />
+    <path d="M21 8h-3a2 2 0 0 1-2-2V3" />
+    <path d="M3 16h3a2 2 0 0 1 2 2v3" />
+    <path d="M21 16h-3a2 2 0 0 0-2 2v3" />
+  </>,
+);
+
 export const IconClose = icon(<path d="M18 6 6 18M6 6l12 12" />);
 
+export const IconSearch = icon(
+  <>
+    <circle cx="11" cy="11" r="7" />
+    <path d="m20.5 20.5-4.4-4.4" />
+  </>,
+);
+
 export const IconPlus = icon(<path d="M12 5v14M5 12h14" />);
+
+export const IconMinus = icon(<path d="M5 12h14" />);
 
 export const IconBranch = icon(
   <>
@@ -100,5 +164,21 @@ export const IconBranch = icon(
     <circle cx="18" cy="6" r="3" />
     <circle cx="6" cy="18" r="3" />
     <path d="M18 9a9 9 0 0 1-9 9" />
+  </>,
+);
+
+/** 编辑态显示，点了进预览 */
+export const IconEye = icon(
+  <>
+    <path d="M2.06 12.35a1 1 0 0 1 0-.7 10.75 10.75 0 0 1 19.88 0 1 1 0 0 1 0 .7 10.75 10.75 0 0 1-19.88 0" />
+    <circle cx="12" cy="12" r="3" />
+  </>,
+);
+
+/** 预览态显示，点了回编辑 */
+export const IconPencil = icon(
+  <>
+    <path d="M21.17 6.81a1 1 0 0 0-3.98-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.63l4.35-1.32a2 2 0 0 0 .83-.5Z" />
+    <path d="m15 5 4 4" />
   </>,
 );
