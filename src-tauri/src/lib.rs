@@ -20,6 +20,9 @@ pub fn run() {
             fs_api::fs_set_root,
             fs_api::fs_list_dir,
             fs_api::fs_search_files,
+            fs_api::fs_search_content,
+            fs_api::fs_replace_one,
+            fs_api::fs_replace_all,
             fs_api::fs_read_file,
             fs_api::fs_write_file,
             git::git_status,
@@ -27,6 +30,8 @@ pub fn run() {
             git::git_unstage,
             git::git_commit,
             git::git_file_diff,
+            git::git_log,
+            git::git_commit_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

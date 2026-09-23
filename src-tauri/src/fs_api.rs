@@ -3,7 +3,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::Serialize;
+use regex::{Regex, RegexBuilder};
+use serde::{Deserialize, Serialize};
 
 /// 文本类操作（读文件、看差异）的大小上限，两个模块共用
 pub(crate) const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
@@ -221,6 +222,48 @@ const MAX_HITS: usize = 300;
 /// 不能让这个线程一直跑下去。
 const MAX_VISITS: usize = 100_000;
 
+/// 递归遍历工作区里的文件：跳过 SKIP_DIRS，用显式栈避免深目录压爆调用栈。
+/// `on_file` 返回 false 表示不必再往下走了（比如结果已经收满）。
+/// 返回值是「是否走完了」—— false 说明是提前收手，不是真的没有更多。
+fn walk_files(root: &Path, on_file: &mut dyn FnMut(&Path) -> bool) -> bool {
+    // 显式栈而不是递归：目录嵌套很深时不会把调用栈压爆
+    let mut stack = vec![root.to_path_buf()];
+    let mut visits = 0usize;
+
+    while let Some(dir) = stack.pop() {
+        let Ok(read) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in read.flatten() {
+            visits += 1;
+            if visits > MAX_VISITS {
+                return false;
+            }
+
+            // file_type() 是 lstat 语义，不跟随软链接：指向外面的软链接目录
+            // 不会被当成目录走下去，顺带挡掉循环链接
+            let Ok(kind) = item.file_type() else {
+                continue;
+            };
+
+            if kind.is_dir() {
+                let name = item.file_name().to_string_lossy().to_string();
+                if !SKIP_DIRS.contains(&name.to_lowercase().as_str()) {
+                    stack.push(item.path());
+                }
+                continue;
+            }
+            if !kind.is_file() {
+                continue;
+            }
+            if !on_file(&item.path()) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// 按文件名递归搜工作区，大小写不敏感的子串匹配。只返回文件，不返回目录。
 #[tauri::command(async)]
 pub fn fs_search_files(
@@ -240,42 +283,16 @@ fn search_files(root: &Path, query: &str) -> Vec<String> {
     }
 
     let mut hits: Vec<String> = Vec::new();
-    // 显式栈而不是递归：目录嵌套很深时不会把调用栈压爆
-    let mut stack = vec![root.to_path_buf()];
-    let mut visits = 0usize;
-
-    while let Some(dir) = stack.pop() {
-        let Ok(read) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for item in read.flatten() {
-            visits += 1;
-            if visits > MAX_VISITS || hits.len() >= MAX_HITS {
-                hits.sort();
-                return hits;
-            }
-
-            // file_type() 是 lstat 语义，不跟随软链接：指向外面的软链接目录
-            // 不会被当成目录走下去，顺带挡掉循环链接
-            let Ok(kind) = item.file_type() else {
-                continue;
-            };
-            let name = item.file_name().to_string_lossy().to_string();
-
-            if kind.is_dir() {
-                if !SKIP_DIRS.contains(&name.to_lowercase().as_str()) {
-                    stack.push(item.path());
-                }
-                continue;
-            }
-            if !kind.is_file() {
-                continue;
-            }
-            if name.to_lowercase().contains(&needle) {
-                hits.push(display(&item.path()));
-            }
+    walk_files(root, &mut |path| {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name.to_lowercase().contains(&needle) {
+            hits.push(display(path));
         }
-    }
+        hits.len() < MAX_HITS
+    });
 
     // 遍历顺序取决于目录项的返回顺序，排一下让同样的查询给出同样的结果
     hits.sort();
@@ -319,6 +336,403 @@ pub fn fs_write_file(
 ) -> Result<(), String> {
     let file = resolve(&state, &path)?;
     fs::write(&file, text).map_err(|e| format!("写入文件失败 {}: {e}", display(&file)))
+}
+
+// ==================== 全工作区的内容搜索与替换 ====================
+
+/// 一次搜索最多返回多少条匹配。再多前端也画不动，用户不会往下翻。
+const MAX_MATCHES: usize = 1000;
+
+/// 一次搜索最多涉及多少个文件（按相对路径排序后取前面的那些）。
+const MAX_FILES: usize = 200;
+
+/// 三个开关，和 VS Code 搜索框右边那排一致
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchOptions {
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchMatch {
+    /// 1 起算
+    line: u32,
+    /// 1 起算，按 **UTF-16 单位**算 —— Monaco 的列就是这套，前端能直接喂给 Range
+    column: u32,
+    /// 匹配长度，同样是 UTF-16 单位
+    length: u32,
+    /// 整行原文，面板直接拿去渲染
+    text: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFile {
+    path: String,
+    /// 工作区内的相对路径（正斜杠），面板显示用
+    relative: String,
+    matches: Vec<SearchMatch>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    files: Vec<SearchFile>,
+    /// 撞到上限被截断了
+    truncated: bool,
+    /// 有多少个文件因为超过 2MB 被跳过
+    skipped_large: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacedFile {
+    path: String,
+    replaced: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceFailure {
+    path: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceResult {
+    files: Vec<ReplacedFile>,
+    total_replaced: usize,
+    /// 单个文件失败不影响其它文件，失败的都记在这里
+    errors: Vec<ReplaceFailure>,
+}
+
+/// 把查询串编译成模式。非正则态先转义，用户敲的 `.` `*` 都当字面量。
+fn build_pattern(query: &str, options: &SearchOptions) -> Result<Regex, String> {
+    let source = if options.regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    RegexBuilder::new(&source)
+        .case_insensitive(!options.case_sensitive)
+        .build()
+        .map_err(|e| format!("正则表达式有误：{e}"))
+}
+
+/// 匹配两侧是不是词边界。不用 `\b`：查询首尾本身是非词字符时它会误判，
+/// 而且 regex crate 没有 lookaround。中文算 alphanumeric，所以中文串内部
+/// 不会出现边界，紧挨着中文也不会被误判成词首/词尾。
+fn is_whole_word(line: &str, start: usize, end: usize) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let before = line[..start].chars().next_back();
+    let after = line[end..].chars().next();
+    !before.is_some_and(word) && !after.is_some_and(word)
+}
+
+/// 按行切开，回调拿到行号（1 起算）、行首在全文里的字节偏移、去掉行尾符的行内容。
+/// 行尾怎么算（LF / CRLF / 最后一行没有换行）只在这里处理一次。
+fn for_each_line<'a, F: FnMut(u32, usize, &'a str) -> bool>(text: &'a str, mut on_line: F) {
+    let mut offset = 0usize;
+    let mut number = 1u32;
+    for chunk in text.split_inclusive('\n') {
+        let line = chunk.strip_suffix('\n').unwrap_or(chunk);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if !on_line(number, offset, line) {
+            return;
+        }
+        offset += chunk.len();
+        number += 1;
+    }
+}
+
+/// 行内字节偏移 -> 1 起算的 UTF-16 列号
+fn utf16_column(line: &str, byte_offset: usize) -> u32 {
+    line[..byte_offset].encode_utf16().count() as u32 + 1
+}
+
+/// 找第 line 行（1 起算）的行首偏移和去掉行尾符的内容
+fn line_at(text: &str, line: u32) -> Option<(usize, &str)> {
+    let mut found = None;
+    for_each_line(text, |number, offset, body| {
+        if number == line {
+            found = Some((offset, body));
+            return false;
+        }
+        true
+    });
+    found
+}
+
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|rest| rest.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| display(path))
+}
+
+/// 收集一个文件里所有命中的位置，最多要 limit 条
+fn matches_in_text(
+    text: &str,
+    pattern: &Regex,
+    options: &SearchOptions,
+    limit: usize,
+) -> Vec<SearchMatch> {
+    let mut found = Vec::new();
+    for_each_line(text, |number, _offset, line| {
+        for hit in pattern.find_iter(line) {
+            if options.whole_word && !is_whole_word(line, hit.start(), hit.end()) {
+                continue;
+            }
+            found.push(SearchMatch {
+                line: number,
+                column: utf16_column(line, hit.start()),
+                length: hit.as_str().encode_utf16().count() as u32,
+                text: line.to_string(),
+            });
+            if found.len() >= limit {
+                return false;
+            }
+        }
+        true
+    });
+    found
+}
+
+#[tauri::command(async)]
+pub fn fs_search_content(
+    state: tauri::State<'_, FsState>,
+    query: String,
+    options: SearchOptions,
+) -> Result<SearchResult, String> {
+    let root = state.root()?;
+    search_content(&root, &query, &options)
+}
+
+/// 抽出来是为了能在单元测试里直接跑，不用起 tauri 的 State
+fn search_content(
+    root: &Path,
+    query: &str,
+    options: &SearchOptions,
+) -> Result<SearchResult, String> {
+    // 空查询会命中每一行的行首位置，没有意义
+    if query.is_empty() {
+        return Ok(SearchResult {
+            files: Vec::new(),
+            truncated: false,
+            skipped_large: 0,
+        });
+    }
+    let pattern = build_pattern(query, options)?;
+
+    let mut files: Vec<SearchFile> = Vec::new();
+    let mut total = 0usize;
+    let mut truncated = false;
+    let mut skipped_large = 0usize;
+
+    walk_files(root, &mut |path| {
+        if files.len() >= MAX_FILES || total >= MAX_MATCHES {
+            truncated = true;
+            return false;
+        }
+
+        let Ok(meta) = fs::metadata(path) else {
+            return true;
+        };
+        if meta.len() > MAX_TEXT_SIZE {
+            skipped_large += 1;
+            return true;
+        }
+        let Ok(bytes) = fs::read(path) else {
+            return true;
+        };
+        if looks_binary(&bytes) {
+            return true;
+        }
+
+        // 和编辑器读文件一致：宽容处理非法字节，这样列号才和 Monaco 里的 model 对得上
+        let text = String::from_utf8_lossy(&bytes);
+        let matches = matches_in_text(&text, &pattern, options, MAX_MATCHES - total);
+        if matches.is_empty() {
+            return true;
+        }
+
+        total += matches.len();
+        files.push(SearchFile {
+            path: display(path),
+            relative: relative_path(root, path),
+            matches,
+        });
+        true
+    });
+
+    // 遍历顺序取决于目录项的返回顺序，排一下让同样的查询给出同样的结果
+    files.sort_by(|a, b| a.relative.cmp(&b.relative));
+
+    Ok(SearchResult {
+        files,
+        truncated,
+        skipped_large,
+    })
+}
+
+/// 替换只动合法 UTF-8 的文件：非法字节经 `from_utf8_lossy` 会变成替换字符，
+/// 一写回就把原文件的其余部分也改了。
+fn read_utf8(file: &Path) -> Result<String, String> {
+    let bytes = fs::read(file).map_err(|e| format!("读取文件失败 {}: {e}", display(file)))?;
+    String::from_utf8(bytes).map_err(|_| format!("{} 不是 UTF-8 文本，已跳过", display(file)))
+}
+
+#[tauri::command]
+pub fn fs_replace_one(
+    state: tauri::State<'_, FsState>,
+    path: String,
+    line: u32,
+    column: u32,
+    length: u32,
+    query: String,
+    options: SearchOptions,
+    replacement: String,
+) -> Result<(), String> {
+    let file = resolve(&state, &path)?;
+    replace_one(&file, line, column, length, &query, &options, &replacement)
+}
+
+/// 单条替换只动这一处。位置会漂移，所以三级降级：
+/// ① 前端给的行列还在、长度也对得上 → 换它；
+/// ② 这一行只剩一个匹配 → 换它（文件被人加了几行这种）；
+/// ③ 都对不上 → 报错让用户重搜。**不直接信任前端传来的行列**，否则会写错地方。
+fn replace_one(
+    file: &Path,
+    line: u32,
+    column: u32,
+    length: u32,
+    query: &str,
+    options: &SearchOptions,
+    replacement: &str,
+) -> Result<(), String> {
+    if query.is_empty() {
+        return Err("搜索内容不能为空".to_string());
+    }
+    let pattern = build_pattern(query, options)?;
+    let text = read_utf8(file)?;
+
+    let (start, content) = line_at(&text, line).ok_or_else(|| {
+        format!(
+            "{} 的第 {line} 行已经不在了，请重新搜索",
+            display(file)
+        )
+    })?;
+
+    let hits: Vec<(usize, usize)> = pattern
+        .find_iter(content)
+        .filter(|hit| !options.whole_word || is_whole_word(content, hit.start(), hit.end()))
+        .map(|hit| (hit.start(), hit.end()))
+        .collect();
+
+    let target = hits
+        .iter()
+        .find(|(from, to)| {
+            utf16_column(content, *from) == column
+                && content[*from..*to].encode_utf16().count() as u32 == length
+        })
+        .or_else(|| if hits.len() == 1 { hits.first() } else { None })
+        .ok_or_else(|| format!("{} 的内容已经变了，请重新搜索", display(file)))?;
+
+    let mut next = String::with_capacity(text.len() + replacement.len());
+    next.push_str(&text[..start + target.0]);
+    next.push_str(replacement);
+    next.push_str(&text[start + target.1..]);
+
+    fs::write(file, next).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))
+}
+
+fn replace_all_in_file(
+    file: &Path,
+    pattern: &Regex,
+    options: &SearchOptions,
+    replacement: &str,
+) -> Result<usize, String> {
+    let text = read_utf8(file)?;
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for_each_line(&text, |_, offset, body| {
+        for hit in pattern.find_iter(body) {
+            if options.whole_word && !is_whole_word(body, hit.start(), hit.end()) {
+                continue;
+            }
+            ranges.push((offset + hit.start(), offset + hit.end()));
+        }
+        true
+    });
+
+    if ranges.is_empty() {
+        return Ok(0);
+    }
+
+    // 从后往前替换：前面的偏移就不会被替换结果的长度影响。
+    // 这样也天然保住了原文件的行尾风格（CRLF 不会被改成 LF）
+    let mut next = text;
+    for (from, to) in ranges.iter().rev() {
+        next.replace_range(*from..*to, replacement);
+    }
+
+    fs::write(file, next).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))?;
+    Ok(ranges.len())
+}
+
+#[tauri::command]
+pub fn fs_replace_all(
+    state: tauri::State<'_, FsState>,
+    paths: Vec<String>,
+    query: String,
+    options: SearchOptions,
+    replacement: String,
+) -> Result<ReplaceResult, String> {
+    if query.is_empty() {
+        return Err("搜索内容不能为空".to_string());
+    }
+    let pattern = build_pattern(&query, &options)?;
+
+    let mut files = Vec::new();
+    let mut errors = Vec::new();
+    let mut total = 0usize;
+
+    for raw in paths {
+        // 搜索是从工作区根遍历的、路径天然安全；替换的路径来自前端，必须过一遍沙箱
+        let file = match resolve(&state, &raw) {
+            Ok(path) => path,
+            Err(message) => {
+                errors.push(ReplaceFailure {
+                    path: raw,
+                    message,
+                });
+                continue;
+            }
+        };
+        match replace_all_in_file(&file, &pattern, &options, &replacement) {
+            Ok(0) => {}
+            Ok(count) => {
+                total += count;
+                files.push(ReplacedFile {
+                    path: display(&file),
+                    replaced: count,
+                });
+            }
+            Err(message) => errors.push(ReplaceFailure {
+                path: display(&file),
+                message,
+            }),
+        }
+    }
+
+    Ok(ReplaceResult {
+        files,
+        total_replaced: total,
+        errors,
+    })
 }
 
 #[cfg(test)]
@@ -435,6 +849,180 @@ mod tests {
             let deeper = state.root().unwrap().join("link").join("missing").join("pwned.txt");
             assert!(resolve(&state, deeper.to_str().unwrap()).is_err());
         }
+        fs::remove_dir_all(&root).ok();
+    }
+
+    fn opts(case_sensitive: bool, whole_word: bool, regex: bool) -> SearchOptions {
+        SearchOptions {
+            case_sensitive,
+            whole_word,
+            regex,
+        }
+    }
+
+    #[test]
+    fn content_search_honours_the_three_switches() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        fs::write(workspace.join("a.txt"), "Hello world\nhello there\n").unwrap();
+
+        let plain = search_content(&workspace, "hello", &opts(false, false, false)).unwrap();
+        assert_eq!(plain.files.len(), 1);
+        assert_eq!(plain.files[0].matches.len(), 2, "默认该大小写不敏感");
+        assert_eq!(plain.files[0].matches[0].line, 1);
+        assert_eq!(plain.files[0].matches[0].column, 1);
+        assert_eq!(plain.files[0].matches[0].length, 5);
+        assert_eq!(plain.files[0].matches[0].text, "Hello world");
+        assert_eq!(plain.files[0].relative, "a.txt", "路径要相对工作区");
+
+        let sensitive = search_content(&workspace, "hello", &opts(true, false, false)).unwrap();
+        assert_eq!(sensitive.files[0].matches.len(), 1);
+        assert_eq!(sensitive.files[0].matches[0].line, 2);
+
+        // 全字：`hell` 命中 `hello` 中间，应该被挡掉
+        assert_eq!(
+            search_content(&workspace, "hell", &opts(false, false, false))
+                .unwrap()
+                .files[0]
+                .matches
+                .len(),
+            2
+        );
+        assert!(
+            search_content(&workspace, "hell", &opts(false, true, false))
+                .unwrap()
+                .files
+                .is_empty(),
+            "全字匹配不该命中 hello 里的 hell"
+        );
+
+        let regex = search_content(&workspace, "h.llo", &opts(false, false, true)).unwrap();
+        assert_eq!(regex.files[0].matches.len(), 2, "正则态不该把 . 当字面量");
+        let literal = search_content(&workspace, "h.llo", &opts(false, false, false)).unwrap();
+        assert!(literal.files.is_empty(), "非正则态 . 是字面量");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn whole_word_treats_chinese_as_word_characters() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        fs::write(workspace.join("cn.txt"), "中文测试\n中文\n").unwrap();
+
+        let found = search_content(&workspace, "中文", &opts(false, true, false)).unwrap();
+        assert_eq!(found.files[0].matches.len(), 1, "只该命中单独成行的那个");
+        assert_eq!(found.files[0].matches[0].line, 2, "紧挨中文不算词边界");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn content_search_reports_a_broken_regex() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let error = match search_content(&workspace, "a(", &opts(false, false, true)) {
+            Ok(_) => panic!("非法正则不该返回结果"),
+            Err(message) => message,
+        };
+        assert!(error.contains("正则表达式有误"), "{error}");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn content_search_skips_large_and_binary_files() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        fs::write(
+            workspace.join("big.txt"),
+            "x".repeat(MAX_TEXT_SIZE as usize + 1),
+        )
+        .unwrap();
+        fs::write(workspace.join("bin.dat"), [0u8, 1, 2, b'x']).unwrap();
+        fs::write(workspace.join("small.txt"), "xx\n").unwrap();
+
+        let result = search_content(&workspace, "x", &opts(false, false, false)).unwrap();
+        assert_eq!(result.skipped_large, 1, "大文件要被记一笔");
+        assert_eq!(result.files.len(), 1, "二进制和超限的都不该有结果");
+        assert!(result.files[0].relative.ends_with("small.txt"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn replaces_one_match_and_keeps_line_endings() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "one two\r\none\r\n").unwrap();
+
+        replace_one(&file, 1, 1, 3, "one", &opts(false, false, false), "1").unwrap();
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "1 two\r\none\r\n",
+            "只换第一处，且 CRLF 不能被改成 LF"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn falls_back_to_the_only_match_on_that_line() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "one\n").unwrap();
+
+        // 前端给的位置已经过期（列号长度都对不上），但这一行只有一个匹配，照样能换
+        replace_one(&file, 1, 99, 99, "one", &opts(false, false, false), "1").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "1\n");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_when_it_cannot_tell_which_match_to_replace() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "one one\n").unwrap();
+
+        // 两个匹配 + 位置对不上 = 猜不出来该换哪个，必须报错而不是乱写
+        let error = replace_one(&file, 1, 99, 99, "one", &opts(false, false, false), "1").unwrap_err();
+        assert!(error.contains("已经变了"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "one one\n",
+            "报错的路径上一个字节都不该动"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn replaces_every_occurrence() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "one two one\n").unwrap();
+        let pattern = build_pattern("one", &opts(false, false, false)).unwrap();
+
+        let count =
+            replace_all_in_file(&file, &pattern, &opts(false, false, false), "1").unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "1 two 1\n");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_to_touch_a_non_utf8_file() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("gbk.txt");
+        // GBK 的「你好」：不是合法 UTF-8，也没有 NUL
+        let original = vec![0xC4u8, 0xE3, 0xBA, 0xC3];
+        fs::write(&file, &original).unwrap();
+
+        let error = replace_one(&file, 1, 1, 1, "a", &opts(false, false, false), "b").unwrap_err();
+        assert!(error.contains("UTF-8"), "{error}");
+        assert_eq!(fs::read(&file).unwrap(), original, "原文件一个字节都不该动");
         fs::remove_dir_all(&root).ok();
     }
 }

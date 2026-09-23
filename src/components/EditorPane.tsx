@@ -1,13 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { monaco, DARK_THEME, LIGHT_THEME } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { renderMarkdown } from "../lib/markdown";
 import { gitFileDiff, pathKey, readFile, toDisplayPath, writeFile } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { useSettings, resolveFont } from "../lib/settings";
-import { tabKey, tabSuffix, type Tab } from "../lib/tabs";
+import { tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
 import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
+import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { IconEye, IconPencil } from "./icons";
 
@@ -20,6 +29,11 @@ interface EditorPaneProps {
   gitMarks: ReadonlyMap<string, GitMark>;
   onActivate: (tab: Tab) => void;
   onClose: (tab: Tab) => void;
+  /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
+  ref?: Ref<EditorPaneHandle>;
 }
 
 interface CachedModel {
@@ -31,8 +45,31 @@ interface CachedModel {
 
 /** 一个差异标签的一对 model，销毁时必须一起走 */
 interface CachedDiff {
+  /** 落盘用不到，但搜索替换后要按路径找到它、把过期的基线丢掉 */
+  path: string;
   original: monaco.editor.ITextModel;
   modified: monaco.editor.ITextModel;
+}
+
+/** 要定位到的位置。nonce 递增，好让「重复点同一条结果」也能重新定位 */
+export interface RevealTarget {
+  path: string;
+  /** 1 起算 */
+  line: number;
+  /** 1 起算，UTF-16 单位 */
+  column: number;
+  /** 匹配长度，UTF-16 单位 */
+  length: number;
+  nonce: number;
+}
+
+export interface EditorPaneHandle {
+  /** 把编辑器里所有未保存的改动落盘；返回 false 表示有文件没存成功 */
+  saveAll: () => Promise<boolean>;
+  /** 替换之后重新从磁盘加载这些文件，扔掉编辑器里的旧内容 */
+  reload: (paths: string[]) => Promise<void>;
+  /** 打开文件并定位到指定位置 */
+  revealAt: (target: RevealTarget) => void;
 }
 
 type Status =
@@ -50,16 +87,28 @@ function baseName(path: string): string {
 
 /**
  * 差异标签的 model URI 必须和普通文件的 `file://` 分开，否则同一个路径两个
- * model 会撞在一起（同一个文件既可能被当文件打开、又被当差异打开）。
+ * model 会撞在一起（同一个文件既可能被当文件打开、又被当差异打开，差异本身
+ * 还分未暂存/暂存/某个提交三种）。
  */
-function diffUri(tab: Tab, side: "original" | "modified"): monaco.Uri {
-  const staged = tab.kind === "diff" && tab.staged ? "staged" : "unstaged";
+function diffUri(tab: Extract<Tab, { kind: "diff" }>, side: "original" | "modified"): monaco.Uri {
+  const { source } = tab;
+  const key =
+    source.mode === "commit" ? `commit-${source.rev.slice(0, 12)}` : source.mode;
   return monaco.Uri.parse(
-    `codedock-diff:/${staged}/${encodeURIComponent(pathKey(tab.path))}/${side}`,
+    `codedock-diff:/${key}/${encodeURIComponent(pathKey(tab.path))}/${side}`,
   );
 }
 
-export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: EditorPaneProps) {
+export function EditorPane({
+  tabs,
+  active,
+  gitMarks,
+  onActivate,
+  onClose,
+  fullscreen,
+  onToggleFullscreen,
+  ref,
+}: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelsRef = useRef(new Map<string, CachedModel>());
@@ -115,16 +164,17 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
    * 自动保存走"存全部"——别的标签切走后也可能留着没保存的 model。
    * 差异标签的 model 在另一个 Map 里，这里永远碰不到。
    */
-  const persist = useCallback(async (only?: string) => {
+  const persist = useCallback(async (only?: string): Promise<boolean> => {
     const targets = [...modelsRef.current.entries()].filter(
       ([key, cached]) =>
         (!only || key === only) &&
         cached.model.getAlternativeVersionId() !== cached.savedVersionId,
     );
-    if (targets.length === 0) return;
+    if (targets.length === 0) return true;
 
     setSaving(true);
     const saved = new Set<string>();
+    let ok = true;
     try {
       for (const [key, cached] of targets) {
         await writeFile(cached.path, cached.model.getValue());
@@ -132,6 +182,7 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
         saved.add(key);
       }
     } catch (reason) {
+      ok = false;
       setStatus({ kind: "error", message: `保存失败：${reason}` });
     } finally {
       setSaving(false);
@@ -144,6 +195,7 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
         });
       }
     }
+    return ok;
   }, []);
 
   // 快捷键和保存按钮只管当前文件；差异标签是只读的，按了没反应
@@ -157,6 +209,67 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
   // 自动保存要存全部，单独留一个给下面的 effect
   const persistRef = useRef(persist);
   persistRef.current = persist;
+
+  /** 预览层的内容是渲染期从 model 现算的，替换改了内容后得让它重算 */
+  const [previewNonce, setPreviewNonce] = useState(0);
+  /** 待执行的定位请求；等标签切过去、model 就绪之后再应用 */
+  const [reveal, setReveal] = useState<RevealTarget | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      saveAll: () => persistRef.current(),
+
+      reload: async (paths) => {
+        const wanted = new Set(paths.map(pathKey));
+        const done: string[] = [];
+        let touched = false;
+
+        for (const [key, cached] of modelsRef.current) {
+          if (!wanted.has(pathKey(cached.path))) continue;
+          // 编辑器里还留着没保存的改动就不覆盖，用户的编辑优先
+          if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
+          try {
+            const content = await readFile(cached.path);
+            if (content.isBinary || content.tooLarge) continue;
+            cached.model.setValue(content.text);
+            cached.savedVersionId = cached.model.getAlternativeVersionId();
+            done.push(key);
+            touched = true;
+          } catch {
+            // 读不回来的保持原样，界面上还有旧内容可用
+          }
+        }
+
+        // 差异视图的基线是替换之前的，留着会显示出过期的对比，整对丢掉、下次切过去重拉
+        for (const [key, pair] of diffModelsRef.current) {
+          if (!wanted.has(pathKey(pair.path))) continue;
+          diffModelsRef.current.delete(key);
+          const showing = diffRef.current?.getModel();
+          if (
+            showing &&
+            (showing.original === pair.original || showing.modified === pair.modified)
+          ) {
+            diffRef.current?.setModel(null);
+          }
+          pair.original.dispose();
+          pair.modified.dispose();
+        }
+
+        if (done.length > 0) {
+          setDirtyPaths((prev) => {
+            const next = new Set(prev);
+            for (const key of done) next.delete(key);
+            return next;
+          });
+        }
+        if (touched) setPreviewNonce((count) => count + 1);
+      },
+
+      revealAt: (target) => setReveal(target),
+    }),
+    [],
+  );
 
   // 差异编辑器只在第一次真的要看差异时才建：省一份初始化，
   // 也避免在 hidden（0 尺寸）的容器上建实例
@@ -198,7 +311,7 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
 
       let payload;
       try {
-        payload = await gitFileDiff(tab.path, tab.staged);
+        payload = await gitFileDiff(tab.path, tab.source);
       } catch (reason) {
         if (activeRef.current && tabKey(activeRef.current) === key) {
           setDiffStatus({ kind: "error", message: String(reason) });
@@ -225,6 +338,7 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
       const originalUri = diffUri(tab, "original");
       const modifiedUri = diffUri(tab, "modified");
       const pair: CachedDiff = {
+        path: tab.path,
         original:
           monaco.editor.getModel(originalUri) ??
           monaco.editor.createModel(payload.original, language, originalUri),
@@ -423,6 +537,36 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
     };
   }, [active, syncDirty, showDiff]);
 
+  // 搜索结果的定位：等标签切过去、model 挂上之后再选中并滚过去
+  useEffect(() => {
+    if (!reveal || !active || active.kind !== "file") return;
+    if (status.kind !== "ready") return;
+    if (pathKey(active.path) !== pathKey(reveal.path)) return;
+
+    const editor = editorRef.current;
+    if (!editor || !editor.getModel()) return;
+
+    // 预览模式下先退回编辑，否则高亮落在 hidden 的编辑器里，用户什么都看不到
+    const key = tabKey(active);
+    setPreviewPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+
+    editor.setSelection(
+      new monaco.Range(
+        reveal.line,
+        reveal.column,
+        reveal.line,
+        reveal.column + reveal.length,
+      ),
+    );
+    editor.revealLineInCenter(reveal.line);
+    editor.focus();
+  }, [reveal, active, status.kind]);
+
   // 切换当前 markdown 文件的编辑/预览模式。用 ref 读当前标签，省得 active 一变就重建这个回调
   const togglePreview = useCallback(() => {
     const current = activeRef.current;
@@ -505,7 +649,7 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
     if (!isPreview) return "";
     const model = editorRef.current?.getModel();
     return model ? renderMarkdown(model.getValue()) : "";
-  }, [isPreview, active]);
+  }, [isPreview, active, previewNonce]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
   // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的
@@ -543,11 +687,7 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
                 <button
                   type="button"
                   onClick={() => onActivate(tab)}
-                  title={
-                    tab.kind === "file"
-                      ? toDisplayPath(tab.path)
-                      : `${toDisplayPath(tab.path)}（差异：与 ${tab.staged ? "HEAD" : "index"} 比较）`
-                  }
+                  title={tabTitle(tab)}
                   className="flex max-w-[200px] items-center py-0.5 pl-2 text-[11px]"
                 >
                   <span className="truncate">{baseName(tab.path)}</span>
@@ -599,6 +739,8 @@ export function EditorPane({ tabs, active, gitMarks, onActivate, onClose }: Edit
             {saving ? "保存中…" : "保存 Ctrl+S"}
           </button>
         )}
+        {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}
+        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
 
       <div className="relative min-h-0 flex-1">

@@ -3,7 +3,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::fs_api::{self, FsState};
 
@@ -67,6 +67,45 @@ pub struct FileDiff {
     is_binary: bool,
     /// 任一侧超过 MAX_TEXT_SIZE
     too_large: bool,
+}
+
+/// 差异跟谁比。前端传的就是这个结构（serde 标签联合）。
+///
+/// 用枚举而不是"一个 staged 布尔 + 一个可选 rev"：后者到了调用处还得再判断
+/// 一次“到底看哪个”，容易写漏；枚举让每种组合在编译期就是穷尽的。
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum DiffSource {
+    /// index ↔ 工作区
+    Unstaged,
+    /// HEAD ↔ index
+    Staged,
+    /// `<rev>^` ↔ `<rev>`
+    Commit { rev: String },
+}
+
+/// 提交历史里的一条。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    hash: String,
+    short: String,
+    author: String,
+    /// Unix 秒，界面自己折算成"多久前"
+    time: i64,
+    subject: String,
+}
+
+/// 某个提交里改动的一个文件。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFile {
+    /// 绝对路径，点开差异用
+    path: String,
+    /// 工作区相对路径（正斜杠），显示用
+    relative: String,
+    /// A / M / D / R / C
+    status: char,
 }
 
 /// 一侧的内容。不存在和"读不出来"是两回事，后面的合成要看这个区分。
@@ -477,8 +516,9 @@ fn worktree_side(path: &Path) -> Result<Side, String> {
 
 /// 一个文件的两侧内容。
 ///
-/// 基线照 VS Code：暂存的改动比 `HEAD ↔ index`，未暂存的改动比 `index ↔ 工作区`。
-fn file_diff(state: &FsState, path: &str, staged: bool) -> Result<FileDiff, String> {
+/// 基线照 VS Code：未暂存的改动比 `index ↔ 工作区`，暂存的改动比 `HEAD ↔ index`，
+/// 看某个提交则比 `<rev>^ ↔ <rev>`。
+fn file_diff(state: &FsState, path: &str, source: &DiffSource) -> Result<FileDiff, String> {
     let root = state.root()?;
     // --show-prefix 一次调用同时回答"是不是仓库"和"工作区在仓库里的哪一层"。
     // 工作区可能只是仓库的子目录，而 `cat-file` 的 `<path>` 是相对仓库根的，
@@ -487,19 +527,130 @@ fn file_diff(state: &FsState, path: &str, staged: bool) -> Result<FileDiff, Stri
     let (target, relative) = workspace_relative(state, &root, path)?;
     let repo_path = format!("{prefix}{relative}");
 
-    let (original, modified) = if staged {
-        (
+    let (original, modified) = match source {
+        DiffSource::Staged => (
             blob_side(&root, &format!("HEAD:{repo_path}"))?,
             blob_side(&root, &format!(":{repo_path}"))?,
-        )
-    } else {
-        (
+        ),
+        DiffSource::Unstaged => (
             blob_side(&root, &format!(":{repo_path}"))?,
             worktree_side(&target)?,
-        )
+        ),
+        DiffSource::Commit { rev } => {
+            let rev = checked_rev(rev)?;
+            // 根提交没有父提交，`<rev>^` 解析不了 —— 正好落成空基线，
+            // 语义上也对：根提交里的文件本来就都是新增的
+            (
+                blob_side(&root, &format!("{rev}^:{repo_path}"))?,
+                blob_side(&root, &format!("{rev}:{repo_path}"))?,
+            )
+        }
     };
 
     Ok(to_diff(original, modified))
+}
+
+/// 只接受十六进制提交号。
+///
+/// rev 会被拼进 `cat-file` 的 revision spec，放任任意字符串等于把 revspec 语法
+/// （`..`、`^`、`@{...}`、`:/正则`）暴露给调用方。历史列表给的本来就是完整 hash，
+/// 按十六进制校验完全够用。
+fn checked_rev(raw: &str) -> Result<String, String> {
+    let text = raw.trim();
+    if text.len() < 4 || text.len() > 40 || !text.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("不是合法的提交号: {raw}"));
+    }
+    Ok(text.to_string())
+}
+
+// ---- 提交历史 ----
+
+/// `%x1f` 分隔字段、`%x00` 结尾。字段里可能带空格（作者名、提交信息），
+/// 所以不能用空格或换行当分隔符。
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x00";
+
+/// 一次拉多少条。界面上还有「加载更多」，所以给个够用的默认值就行。
+const LOG_PAGE: u32 = 50;
+const LOG_MAX: u32 = 500;
+
+fn parse_log(raw: &[u8]) -> Vec<Commit> {
+    raw.split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .filter_map(|record| {
+            let text = String::from_utf8_lossy(record);
+            let mut fields = text.split('\u{1f}');
+            let hash = fields.next()?.to_string();
+            let short = fields.next()?.to_string();
+            let author = fields.next()?.to_string();
+            let time = fields.next()?.parse().unwrap_or(0);
+            Some(Commit {
+                hash,
+                short,
+                author,
+                time,
+                subject: fields.next().unwrap_or_default().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn log_of(state: &FsState, limit: u32) -> Result<Vec<Commit>, String> {
+    let root = state.root()?;
+    if repo_prefix(&root)?.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let count = limit.clamp(1, LOG_MAX).to_string();
+    let arg = format!("--max-count={count}");
+    // 空仓库（还没有任何提交）时 git log 非 0 退出，那不是错误，给空列表
+    let raw = run_git(&root, &["log", &arg, LOG_FORMAT])?.unwrap_or_default();
+    Ok(parse_log(&raw))
+}
+
+/// 解析 `--name-status -z` 的输出：`<状态>\0<路径>\0` 交替出现。
+/// 重命名/复制多一个 token，是 `<R100>\0<原路径>\0<新路径>\0`。
+fn parse_name_status(raw: &[u8], prefix: &str, root: &Path) -> Vec<CommitFile> {
+    let mut files = Vec::new();
+    let mut tokens = raw.split(|byte| *byte == 0).filter(|token| !token.is_empty());
+
+    while let Some(status_token) = tokens.next() {
+        let status = String::from_utf8_lossy(status_token)
+            .chars()
+            .next()
+            .unwrap_or('M');
+        let renamed = status == 'R' || status == 'C';
+        // 重命名/复制时第一个路径是原路径，界面上要点的是新路径
+        let first = tokens.next();
+        let path = if renamed { tokens.next() } else { first };
+        let Some(path) = path else { break };
+
+        let repo_path = String::from_utf8_lossy(path).replace('\\', "/");
+        let Some(relative) = repo_path.strip_prefix(prefix) else {
+            continue;
+        };
+        if relative.is_empty() {
+            continue;
+        }
+        files.push(CommitFile {
+            path: root
+                .join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
+                .to_string_lossy()
+                .to_string(),
+            relative: relative.to_string(),
+            status,
+        });
+    }
+
+    files
+}
+
+fn files_of(state: &FsState, rev: &str) -> Result<Vec<CommitFile>, String> {
+    let root = state.root()?;
+    let prefix = repo_prefix(&root)?.ok_or("这个目录不是 git 仓库")?;
+    let rev = checked_rev(rev)?;
+    let raw = run_git(&root, &["show", "--name-status", "-z", "--format=", &rev])?
+        .ok_or("git show 执行失败")?;
+    Ok(parse_name_status(&raw, &prefix, &root))
 }
 
 #[tauri::command(async)]
@@ -535,14 +686,31 @@ pub fn git_commit(
 }
 
 /// 一个改动文件的两侧内容，给编辑器的差异视图用。
-/// `staged` 决定基线取 HEAD 还是 index。
 #[tauri::command(async)]
 pub fn git_file_diff(
     state: tauri::State<'_, FsState>,
     path: String,
-    staged: bool,
+    source: DiffSource,
 ) -> Result<FileDiff, String> {
-    file_diff(&state, &path, staged)
+    file_diff(&state, &path, &source)
+}
+
+/// 提交历史，最新的在最前。`limit` 不传就取一页。
+#[tauri::command(async)]
+pub fn git_log(
+    state: tauri::State<'_, FsState>,
+    limit: Option<u32>,
+) -> Result<Vec<Commit>, String> {
+    log_of(&state, limit.unwrap_or(LOG_PAGE))
+}
+
+/// 某个提交改了哪些文件。
+#[tauri::command(async)]
+pub fn git_commit_files(
+    state: tauri::State<'_, FsState>,
+    rev: String,
+) -> Result<Vec<CommitFile>, String> {
+    files_of(&state, &rev)
 }
 
 #[cfg(test)]
@@ -950,14 +1118,14 @@ mod tests {
         fs::write(&path, "a\n").unwrap();
 
         // 还没暂存：index 里没有这条，基线是空
-        let diff = file_diff(&state, &path, false).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "");
         assert_eq!(diff.modified, "a\n");
         assert!(!diff.is_binary && !diff.too_large);
 
         // 没有 HEAD 的仓库里暂存进来，基线依然是空
         stage_paths(&state, &None).unwrap();
-        let diff = file_diff(&state, &path, true).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Staged).unwrap();
         assert_eq!(diff.original, "");
         assert_eq!(diff.modified, "a\n");
 
@@ -978,7 +1146,7 @@ mod tests {
 
         fs::write(&path, "a\nb\n").unwrap();
         // 未暂存：基线是 index（还是提交时的 "a\n"）
-        let diff = file_diff(&state, &path, false).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n");
 
@@ -1001,11 +1169,11 @@ mod tests {
         stage_paths(&state, &None).unwrap();
 
         // 暂存后基线从 index 换成 HEAD
-        let diff = file_diff(&state, &path, true).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Staged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n");
         // 同一个文件此时未暂存侧没有改动，两边内容一致
-        let unstaged = file_diff(&state, &path, false).unwrap();
+        let unstaged = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(unstaged.original, unstaged.modified);
 
         cleanup(&top);
@@ -1029,7 +1197,7 @@ mod tests {
         fs::write(&path, "a\nb\n").unwrap();
 
         // `cat-file` 的路径是相对仓库根的，工作区只是子目录时必须拼上 prefix
-        let diff = file_diff(&state, &path, false).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n");
 
@@ -1049,7 +1217,7 @@ mod tests {
         commit_staged(&state, "init").unwrap();
 
         fs::remove_file(&path).unwrap();
-        let diff = file_diff(&state, &path, false).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "");
 
@@ -1070,7 +1238,7 @@ mod tests {
         commit_staged(&state, "init").unwrap();
 
         fs::write(&path, "a\r\nb\r\n").unwrap();
-        let diff = file_diff(&state, &path, false).unwrap();
+        let diff = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, diff.modified, "只改行尾不该报成差异");
 
         cleanup(&top);
@@ -1083,8 +1251,151 @@ mod tests {
         fs::write(&path, "a\n").unwrap();
 
         // 目录存在但没 init 过，repo_prefix 返回 None
-        let error = file_diff(&state, &path, false).unwrap_err();
+        let error = file_diff(&state, &path, &DiffSource::Unstaged).unwrap_err();
         assert!(error.contains("不是 git 仓库"), "{error:?}");
+
+        cleanup(&top);
+    }
+
+    // ---- 提交历史与提交内的差异 ----
+
+    #[test]
+    fn rejects_a_rev_that_is_not_a_hash() {
+        // rev 会被拼进 revision spec，只放十六进制过去
+        assert!(checked_rev("HEAD").is_err());
+        assert!(checked_rev("main~2").is_err());
+        assert!(checked_rev("abc^").is_err());
+        assert!(checked_rev(":/fix").is_err());
+        assert!(checked_rev("abc").is_err(), "太短");
+        assert!(checked_rev(&"a".repeat(41)).is_err(), "太长");
+        assert_eq!(checked_rev(" 6f0f354 ").unwrap(), "6f0f354");
+    }
+
+    #[test]
+    fn log_is_empty_before_the_first_commit() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        // 空仓库里 git log 非 0 退出，这不是错误
+        assert!(log_of(&state, LOG_PAGE).unwrap().is_empty());
+        cleanup(&top);
+    }
+
+    #[test]
+    fn log_lists_newest_first_and_parses_fields() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo.join("app.ts");
+        fs::write(&file, "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "第一条").unwrap();
+
+        fs::write(&file, "a\nb\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "第二条 带 空格").unwrap();
+
+        let commits = log_of(&state, LOG_PAGE).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "第二条 带 空格", "最新的排最前");
+        assert_eq!(commits[1].subject, "第一条");
+        assert_eq!(commits[0].hash.len(), 40);
+        assert_eq!(commits[0].short.len(), 7);
+        assert!(!commits[0].author.is_empty());
+        assert!(commits[0].time > 0);
+
+        // limit 要生效
+        assert_eq!(log_of(&state, 1).unwrap().len(), 1);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn commit_files_use_repo_relative_paths_in_a_nested_workspace() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::create_dir_all(repo.join("sub").join("nested")).unwrap();
+        fs::write(repo.join("outside.txt"), "o\n").unwrap();
+        fs::write(repo.join("sub").join("inside.txt"), "i\n").unwrap();
+        fs::write(repo.join("sub").join("nested").join("deep.txt"), "d\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        let head = commit_staged(&state, "init").unwrap();
+        let _ = head;
+        let rev = log_of(&state, 1).unwrap()[0].hash.clone();
+
+        // 工作区切到 sub/：仓库根那个 outside.txt 不该出现在列表里
+        let sub = state.set_root(repo.join("sub")).unwrap();
+        let files = files_of(&state, &rev).unwrap();
+        let mut relatives: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
+        relatives.sort_unstable();
+        assert_eq!(relatives, vec!["inside.txt", "nested/deep.txt"]);
+        assert_eq!(files[0].status, 'A');
+        // path 得是工作区里的绝对路径，点开差异要用
+        assert!(files.iter().all(|f| f.path.starts_with(&sub.to_string_lossy().to_string())));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn commit_diff_uses_the_parent_as_the_baseline() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let path = path_of_file(&repo, "app.ts");
+        fs::write(&path, "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        // 第二次提交之后工作区再改一通，确保看的确实是提交本身而不是工作区
+        fs::write(&path, "a\nb\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "改一行").unwrap();
+        fs::write(&path, "a\nb\nc\n").unwrap();
+
+        let rev = log_of(&state, 1).unwrap()[0].hash.clone();
+        let diff = file_diff(&state, &path, &DiffSource::Commit { rev }).unwrap();
+        assert_eq!(diff.original, "a\n");
+        assert_eq!(diff.modified, "a\nb\n", "看的是提交里的版本，不是工作区");
+
+        // 根提交没有父，基线该落到空
+        let root_rev = log_of(&state, 2).unwrap()[1].hash.clone();
+        let first = file_diff(&state, &path, &DiffSource::Commit { rev: root_rev }).unwrap();
+        assert_eq!(first.original, "");
+        assert_eq!(first.modified, "a\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn commit_files_reports_deletions() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("keep.txt"), "k\n").unwrap();
+        fs::write(repo.join("gone.txt"), "g\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        fs::remove_file(repo.join("gone.txt")).unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "删掉一个").unwrap();
+
+        let rev = log_of(&state, 1).unwrap()[0].hash.clone();
+        let files = files_of(&state, &rev).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative, "gone.txt");
+        assert_eq!(files[0].status, 'D');
 
         cleanup(&top);
     }

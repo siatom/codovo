@@ -20,8 +20,8 @@
 - **主题**：深色 / 浅色 / 跟随系统，选择记在 localStorage。终端和 Monaco 各有两套配色跟着一起换。
 - **设置**：左下角齿轮打开，存在 `codedock.settings` 一块 JSON 里。目前有主题、终端字体/字号、编辑器字体/字号、AI CLI 命令列表；字体和字号改完立刻生效（终端会重新 fit 并同步行列数给 PTY），字体留空回落到默认等宽栈。
 - **AI**：不内置 AI 面板，直接用终端里的 AI CLI。终端工具条上的 `AI CLI` 按钮向当前会话注入命令，默认配了 `claude` 和 `codebuddy` 两个；配了多个时点按钮出下拉选择，只有一个时直接执行。列表在设置里增删。
-- **git**：当前工作区的分支、与上游的 ahead/behind、改动条目数显示在侧边栏项目行下方；文件树每行右侧和编辑器标签页上有状态字母——`M` 黄（改动）、`A`/`U` 绿（新增 / 未跟踪）、`D` 红（删除）、`C` 红（冲突）。打开时只有侧边栏 + 终端两栏：**右边栏（文件/变更 + 编辑器）默认收起**，点终端右上角那个按钮才展开。展开后是 [图标条 | 模块内容 | 编辑器]，图标条切换「文件」/「变更」，点「变更」就是改动管理：提交信息框（`Ctrl+Enter` 提交）+「暂存的改动」/「改动」两个列表，每行悬停出现 `+`/`−` 暂存或取消暂存，两个分组标题右侧各有「全部暂存」/「全部取消」。点改动项在编辑器里打开的是**差异视图**（内联、只读，标签上带 `↔ index` / `↔ HEAD` 后缀），基线照 VS Code——「改动」组比 index，「暂存的改动」组比 HEAD；未跟踪文件基线为空、被删文件当前侧为空。目录不是 git 仓库时图标条里的「变更」置灰不可点，界面停在「文件」。收起只是把右边栏裁掉、并不卸载，所以文件树的展开态、提交草稿、Monaco 的撤销历史都留得住。只读查询带 `--no-optional-locks`，不会和用户在终端里敲的 git 抢 index 锁。不是仓库、或系统里没有 git 时，这些标记整体消失，其余功能不受影响。
-- **git 不做的事**：丢弃改动、reset、push/pull/fetch、提交历史、分支切换。工作区里嵌套的子仓库也不会被单独识别。
+- **git**：当前工作区的分支、与上游的 ahead/behind、改动条目数显示在侧边栏项目行下方；文件树每行右侧和编辑器标签页上有状态字母——`M` 黄（改动）、`A`/`U` 绿（新增 / 未跟踪）、`D` 红（删除）、`C` 红（冲突）。打开时只有侧边栏 + 终端两栏：**右边栏（文件/变更 + 编辑器）默认收起**，点终端右上角那个按钮才展开。展开后是 [图标条 | 模块内容 | 编辑器]，图标条切换「文件」/「变更」，点「变更」就是改动管理：提交信息框（`Ctrl+Enter` 提交）+「暂存的改动」/「改动」两个列表，每行悬停出现 `+`/`−` 暂存或取消暂存，两个分组标题右侧各有「全部暂存」/「全部取消」。点改动项在编辑器里打开的是**差异视图**（内联、只读，标签上带 `↔ index` / `↔ HEAD` 后缀），基线照 VS Code——「改动」组比 index，「暂存的改动」组比 HEAD；未跟踪文件基线为空、被删文件当前侧为空。面板底部还有一个可折叠的**提交历史**（短 hash + 提交信息，悬停看作者和时间），点一条就展开它改过的文件、点文件打开「该提交 vs 它的父提交」的差异（标签上是 `↔ <短 hash>^`）；展开时**拖它的上边缘能改高度**（拖动条在收起状态下不画——没有东西可调）。目录不是 git 仓库时图标条里的「变更」置灰不可点，界面停在「文件」。收起只是把右边栏裁掉、并不卸载，所以文件树的展开态、提交草稿、Monaco 的撤销历史都留得住。只读查询带 `--no-optional-locks`，不会和用户在终端里敲的 git 抢 index 锁。不是仓库、或系统里没有 git 时，这些标记整体消失，其余功能不受影响。
+- **git 不做的事**：丢弃改动、reset、push/pull/fetch、分支切换、在两个提交之间任意对比（只能看「提交 vs 父提交」）。工作区里嵌套的子仓库也不会被单独识别。
 
 ## 开发
 
@@ -48,6 +48,10 @@ WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" ./src-tauri
 node scripts/cdp-check.cjs '{"click":[1200,78],"eval":"document.querySelector(".view-lines").innerText","shot":"a.png"}'
 ```
 
+能做的动作：`keys`（逐字符敲）、`insertText`（走真实输入管线，Monaco 用这个）、`click`（单次点击）、`drag: [x1,y1,x2,y2]`（拖拽，会派发一串真实的 mousePressed/mouseMoved/mouseReleased）、`ctrlKey`、`cdp`（直通任意 CDP 命令）。
+
+拖动一定要走 `drag` 而不是在 `eval` 里合成 PointerEvent：应用里的拖动都用 `setPointerCapture`，合成事件没有对应的活动指针，捕获那一步会直接抛 `NotFoundError`。
+
 ### 已知 dev 行为
 
 `pnpm tauri dev` 下改动**工作区内任意文件**都会让 Vite 触发一次 HMR 并重载页面（Vite 会把改动误报成 `/src/styles.css`），表现是终端会话被重置、编辑器回到未打开状态。
@@ -62,27 +66,35 @@ src/                      React 前端
     icons.tsx             统一线条图标（侧边栏、文件树共用）
     SplitPane.tsx         自研可拖动分栏（pointer 事件 + setPointerCapture，支持收起第二块）
     Sidebar.tsx           侧边栏：项目历史 / 打开文件夹 / 主题切换（可收起成图标条）
+    WorkspaceEmpty.tsx    还没选工作区时的空态（选文件夹，或显示上次那个目录为什么打不开）
     TerminalPane.tsx      终端区：标签栏 + 会话增删切换
     TerminalSession.tsx   单个会话：一个 xterm 实例独占一个 PTY
     ExplorerPane.tsx      文件树状态机（展开 / 懒加载 / 选中）
     FileTreeNode.tsx      递归节点
-    EditorPane.tsx        Monaco 包装：复用单个 editor + 多 model 标签，另有一个只读的内联 DiffEditor
+    EditorPane.tsx        Monaco 包装：复用单个 editor + 多 model 标签，另有只读的内联 DiffEditor 和 markdown 预览层
+    MarkdownPreview.tsx   markdown 预览层：只读 HTML + 拦掉链接跳转，排版样式在 styles.css 的 .markdown-body
     GitMarkBadge.tsx      文件树与标签页共用的 git 状态字母
-    ToolRail.tsx          右边栏最左侧的图标条（44px）：切换文件 / 变更
-    ToolPane.tsx          右边栏两个模块的内容容器（文件树 / 变更），常挂载只切显隐
+    ToolRail.tsx          右边栏最左侧的图标条（44px）：切换文件 / 变更 / 浏览器
+    ToolPane.tsx          右边栏各模块的内容容器（文件树 / 变更 / 浏览器），常挂载只切显隐
     GitChangesPane.tsx    「变更」模块：改动列表 + 提交框 + 暂存/取消暂存
-    SettingsDialog.tsx    设置面板（主题 / 字号 / AI 命令）
+    BrowserPane.tsx       「浏览器」模块：iframe 内嵌本地服务，地址栏补全片段 + 刷新即重挂
+    FullscreenButton.tsx  三个模块标题栏右端共用的全屏开关（铺满窗口，侧边栏和终端让位）
+    SettingsDialog.tsx    设置面板：左侧竖排 tab（外观 / 终端 / 编辑器），固定尺寸、滚到两端翻页
   lib/
     monaco-setup.ts       MonacoEnvironment worker 注册 + 深浅两套主题
+    languages.ts          按扩展名 / 文件名映射 Monaco 的语言 id
+    markdown.ts           marked + DOMPurify 渲染（预览用；不做代码高亮）
     theme.tsx             主题 Context：深/浅/跟随系统，读写 localStorage
     settings.tsx          设置 Context：一块 JSON 存 localStorage，读坏回落默认
+    terminal-themes.ts    终端配色：内置深浅两套 + xterm-theme 常用主题清单 + 解析函数
     git.ts                useGitStatus：轮询 git 状态 + 写操作后的状态落地
     tabs.ts               编辑器标签的身份：普通文件 / 差异视图，以及 tabKey / sameTab
+    types.ts              前后端共享的类型（FileEntry / GitFileStatus / PtyEvent）
     pty.ts / fs.ts        invoke 薄封装（含 fs_search_files）；工作区与历史目录存在 localStorage
 src-tauri/src/
   pty.rs                  PTY 会话管理
   fs_api.rs               文件读写 + 路径沙箱（未选工作区时全部拒绝）+ 按文件名递归搜索
-  git.rs                  git 状态查询与暂存/提交（调用系统 git CLI）
+  git.rs                  git 状态查询、暂存/提交、提交历史与差异内容（调用系统 git CLI）
   lib.rs                  state / command 注册 / 退出回收
 ```
 
@@ -119,6 +131,12 @@ src-tauri/src/
 - **差异编辑器懒创建**：第一次真的要看差异时才 `createDiffEditor`，避免在 hidden（0 尺寸）的容器上建实例；`hidden → 可见` 切换后补一次 `layout()`（和 markdown 预览同一套路）。
 - **差异视图是只读的**：`readOnly` + `originalEditable: false`，且差异标签不参与脏标记、不显示保存按钮、不显示 markdown 预览按钮，`Ctrl+S` 对它无反应。
 - **差异视图已知局限**：不随 git 轮询自动刷新（暂存/还原后基线会过期，切回该标签会重拉）；重命名只报新路径，基线退化成"整文件新增"。
+- **提交历史用 `git log --format=...%x00` 取**：字段之间用 `%x1f`、每条记录以 `%x00` 结尾。作者名和提交信息都可能带空格，拿空格或换行当分隔符都要额外转义；NUL 不可能出现在 git 的文本字段里，切起来最稳。提交时间取 `%at`（Unix 秒），界面自己折算成"多久前"。
+- **提交里改了哪些文件用 `show --name-status -z`**：`-z` 下是 `<状态>\0<路径>\0` 交替出现，重命名/复制多一个 token（`<R100>\0<原路径>\0<新路径>\0`），解析时要一并吞掉原路径、只留新路径。实测确认过这个格式，没有靠猜。
+- **看差异的基线参数做成 serde 标签枚举 `DiffSource`**（`{"mode":"staged"}` / `{"mode":"commit","rev":...}`），而不是"一个 staged 布尔 + 一个可选 rev"：后者到了调用处还得再判断一次到底看哪个，容易写漏；枚举让三种组合在编译期就是穷尽的。配套的 `checked_rev` 只放十六进制提交号过去——rev 会被拼进 `cat-file` 的 revision spec，放任任意字符串等于把 revspec 语法（`..`、`^`、`@{...}`、`:/正则`）暴露给前端。
+- **提交历史只在展开时拉**：面板默认收起、改动列表才是主角，收起状态下一次 git 都不跑。提交成功后 / 点刷新 / 换工作区才重拉，不跟着 2 秒的状态轮询走（那是白烧进程）。
+- **同一个文件的三种差异靠 model URI 的 scheme 段区分**（`codedock-diff:/<unstaged|staged|commit-<短hash>>/<路径>/<侧>`）：否则普通文件 model 和三种差异 model 会撞在同一个 URI 上。
+- **提交历史的高度是"固定高度块 + 可拖上边缘"**，不是塞进 `SplitPane`：`SplitPane` 算的是百分比、还带收起语义，而这里需要的是"上边缘可拖、展开时高度固定、收起时只剩标题栏"。拖动上限还得看面板自身多高（留出上面的提交框和几行改动列表），否则能把上面挤没。拖动期间 `body` 挂 `codedock-dragging-row`（`styles.css` 里和横向的 `codedock-dragging` 分开，光标分别是 `row-resize` / `col-resize`）。
 
 ## 快捷键
 

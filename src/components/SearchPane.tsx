@@ -1,0 +1,353 @@
+import { useEffect, useRef, useState } from "react";
+import { replaceAll, replaceOne, searchContents } from "../lib/fs";
+import type { SearchFile, SearchMatch, SearchOptions, SearchResult } from "../lib/types";
+import { IconChevronDown, IconChevronRight, IconClose } from "./icons";
+
+/** 打字停下来多久才真正发请求 */
+const SEARCH_DEBOUNCE_MS = 200;
+
+const SWITCHES: { key: keyof SearchOptions; label: string; title: string }[] = [
+  { key: "caseSensitive", label: "Aa", title: "区分大小写" },
+  { key: "wholeWord", label: "全字", title: "全字匹配" },
+  { key: "regex", label: ".*", title: "使用正则表达式" },
+];
+
+const INPUT =
+  "min-w-0 flex-1 rounded border border-line-strong bg-surface px-1.5 py-1 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent disabled:opacity-50";
+
+const SWITCH_ON = "bg-selected text-fg";
+
+interface SearchPaneProps {
+  /** 点一条结果：打开文件并跳到那一行那一列 */
+  onOpenMatch: (path: string, line: number, column: number, length: number) => void;
+  /**
+   * 替换前的落盘。返回 false 表示有文件没存成功——这时必须中止替换，
+   * 否则磁盘上和编辑器里的内容会分叉。
+   */
+  onBeforeReplace: () => Promise<boolean>;
+  /** 替换完让编辑器重新从磁盘加载这些文件 */
+  onAfterReplace: (paths: string[]) => void;
+}
+
+export function SearchPane({
+  onOpenMatch,
+  onBeforeReplace,
+  onAfterReplace,
+}: SearchPaneProps) {
+  const [query, setQuery] = useState("");
+  const [replacement, setReplacement] = useState("");
+  const [showReplace, setShowReplace] = useState(false);
+  const [options, setOptions] = useState<SearchOptions>({
+    caseSensitive: false,
+    wholeWord: false,
+    regex: false,
+  });
+  const [result, setResult] = useState<SearchResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ kind: "error" | "note"; text: string } | null>(null);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  /** 替换完 +1，用来触发一次重搜（行列会变，结果得跟着刷新） */
+  const [reloadKey, setReloadKey] = useState(0);
+  /** 每次搜索递增；回来的结果对不上号就丢掉，连续打字时不会被先发的慢请求盖掉 */
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    if (!query) {
+      requestRef.current += 1;
+      setResult(null);
+      setLoading(false);
+      setMessage(null);
+      return;
+    }
+
+    const id = (requestRef.current += 1);
+    setLoading(true);
+    const timer = window.setTimeout(() => {
+      void searchContents(query, options)
+        .then((found) => {
+          if (requestRef.current !== id) return;
+          setResult(found);
+          setMessage(null);
+        })
+        .catch((reason) => {
+          if (requestRef.current !== id) return;
+          setResult(null);
+          setMessage({ kind: "error", text: String(reason) });
+        })
+        .finally(() => {
+          if (requestRef.current !== id) return;
+          setLoading(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [query, options, reloadKey]);
+
+  const totalMatches = result
+    ? result.files.reduce((sum, file) => sum + file.matches.length, 0)
+    : 0;
+
+  const toggleCollapse = (path: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  /** 替换前的公共部分：先落盘、再放行 */
+  const prepare = async () => {
+    if (!(await onBeforeReplace())) {
+      setMessage({ kind: "error", text: "有文件没保存成功，已取消替换" });
+      return false;
+    }
+    return true;
+  };
+
+  const runReplaceAll = async () => {
+    if (busy || !result || result.files.length === 0) return;
+    const paths = result.files.map((file) => file.path);
+    if (!window.confirm(`将在 ${paths.length} 个文件里替换 ${totalMatches} 处，确定吗？`)) {
+      return;
+    }
+
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (!(await prepare())) return;
+      const outcome = await replaceAll({ paths, query, options, replacement });
+      onAfterReplace(outcome.files.map((file) => file.path));
+      // 行列都变了，重搜一次让结果跟上
+      setReloadKey((key) => key + 1);
+
+      const changed = outcome.files.length;
+      if (outcome.errors.length > 0) {
+        setMessage({
+          kind: "error",
+          text: `改了 ${changed} 个文件，${outcome.errors.length} 个失败：${outcome.errors[0].message}`,
+        });
+      } else if (changed > 0) {
+        setMessage({ kind: "note", text: `已在 ${changed} 个文件里替换 ${outcome.totalReplaced} 处` });
+      } else {
+        setMessage({ kind: "note", text: "没有需要替换的内容" });
+      }
+    } catch (reason) {
+      setMessage({ kind: "error", text: String(reason) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runReplaceOne = async (file: SearchFile, match: SearchMatch) => {
+    if (busy) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (!(await prepare())) return;
+      await replaceOne({
+        path: file.path,
+        line: match.line,
+        column: match.column,
+        length: match.length,
+        query,
+        options,
+        replacement,
+      });
+      onAfterReplace([file.path]);
+      setReloadKey((key) => key + 1);
+    } catch (reason) {
+      setMessage({ kind: "error", text: String(reason) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="flex h-full min-h-0 flex-col bg-panel">
+      <header className="flex shrink-0 flex-col gap-1 border-b border-line px-2 py-2">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setShowReplace((open) => !open)}
+            title={showReplace ? "收起替换" : "展开替换"}
+            className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+          >
+            {showReplace ? (
+              <IconChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <IconChevronRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+          <input
+            type="text"
+            value={query}
+            spellCheck={false}
+            disabled={busy}
+            placeholder="搜索"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              // 不 stopPropagation 的话，Esc 会继续往上冒，被别处的关闭逻辑接走
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                setQuery("");
+              }
+            }}
+            className={INPUT}
+          />
+          {query && !busy && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              title="清空"
+              className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg"
+            >
+              <IconClose className="h-3 w-3" />
+            </button>
+          )}
+          {SWITCHES.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() =>
+                setOptions((current) => ({ ...current, [item.key]: !current[item.key] }))
+              }
+              title={item.title}
+              className={`h-6 shrink-0 rounded px-1.5 text-[11px] leading-none ${
+                options[item.key] ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        {showReplace && (
+          <div className="flex items-center gap-1">
+            <span className="w-5 shrink-0" />
+            <input
+              type="text"
+              value={replacement}
+              spellCheck={false}
+              disabled={busy}
+              placeholder="替换为"
+              onChange={(event) => setReplacement(event.target.value)}
+              className={INPUT}
+            />
+            <button
+              type="button"
+              onClick={() => void runReplaceAll()}
+              disabled={busy || totalMatches === 0}
+              title="全部替换"
+              className="flex h-6 shrink-0 items-center rounded border border-accent-line px-1.5 text-[11px] text-accent-soft hover:bg-active disabled:opacity-40"
+            >
+              全部替换
+            </button>
+          </div>
+        )}
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        {message && (
+          <p
+            className={`mx-2 my-1 rounded border px-2 py-1 text-[11px] ${
+              message.kind === "error"
+                ? "border-danger-line bg-danger-bg text-danger"
+                : "border-line bg-raised text-fg-muted"
+            }`}
+          >
+            {message.text}
+          </p>
+        )}
+
+        {!query && <p className="px-3 py-2 text-[11px] text-fg-faint">输入关键词开始搜索</p>}
+        {query && loading && !result && (
+          <p className="px-3 py-2 text-[11px] text-fg-faint">搜索中…</p>
+        )}
+        {query && result && result.files.length === 0 && (
+          <p className="px-3 py-2 text-[11px] text-fg-faint">没有匹配</p>
+        )}
+
+        {result && result.files.length > 0 && (
+          <>
+            <p className="px-3 py-1 text-[11px] text-fg-faint">
+              {result.files.length} 个文件 · {totalMatches} 处
+              {result.truncated && "（结果已截断）"}
+              {result.skippedLarge > 0 && `（跳过 ${result.skippedLarge} 个超过 2MB 的文件）`}
+            </p>
+            <ul>
+              {result.files.map((file) => {
+                const isCollapsed = collapsed.has(file.path);
+                return (
+                  <li key={file.path}>
+                    <button
+                      type="button"
+                      onClick={() => toggleCollapse(file.path)}
+                      title={file.path}
+                      className="flex w-full items-center gap-1 px-2 py-1 text-left hover:bg-hover"
+                    >
+                      {isCollapsed ? (
+                        <IconChevronRight className="h-3 w-3 shrink-0 text-fg-faint" />
+                      ) : (
+                        <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
+                        {file.relative}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-fg-faint tabular-nums">
+                        {file.matches.length}
+                      </span>
+                    </button>
+
+                    {!isCollapsed && (
+                      <ul>
+                        {file.matches.map((match, index) => (
+                          <li key={index} className="group flex items-center">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenMatch(file.path, match.line, match.column, match.length)
+                              }
+                              title={match.text}
+                              className="flex min-w-0 flex-1 items-center gap-2 py-0.5 pr-1 pl-6 text-left hover:bg-hover"
+                            >
+                              <span className="w-8 shrink-0 text-right text-[11px] text-fg-faint tabular-nums">
+                                {match.line}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-[12px] text-fg-muted">
+                                {match.text.slice(0, match.column - 1)}
+                                <span className="codedock-find-hit">
+                                  {match.text.slice(
+                                    match.column - 1,
+                                    match.column - 1 + match.length,
+                                  )}
+                                </span>
+                                {match.text.slice(match.column - 1 + match.length)}
+                              </span>
+                            </button>
+                            {showReplace && (
+                              <button
+                                type="button"
+                                onClick={() => void runReplaceOne(file, match)}
+                                disabled={busy}
+                                title="只替换这一处"
+                                className="mr-2 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100 disabled:opacity-30"
+                              >
+                                替换
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}

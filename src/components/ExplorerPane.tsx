@@ -3,7 +3,6 @@ import { listDir, pathKey, searchFiles, toDisplayPath } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import type { FileEntry } from "../lib/types";
 import { FileTreeNode, type TreeController } from "./FileTreeNode";
-import { FullscreenButton } from "./FullscreenButton";
 import { IconClose, IconRefresh, IconSearch } from "./icons";
 
 interface ExplorerPaneProps {
@@ -12,8 +11,6 @@ interface ExplorerPaneProps {
   /** 归一化路径 -> git 标记，行尾那个字母 */
   gitMarks: ReadonlyMap<string, GitMark>;
   onSelect: (path: string) => void;
-  fullscreen: boolean;
-  onToggleFullscreen: () => void;
 }
 
 /** 输入停下来多久才去搜，省得每敲一个字都跑一趟目录遍历 */
@@ -78,14 +75,7 @@ function buildFilter(root: string, hits: string[]): FilterTree {
   return { rootEntries, children, dirs };
 }
 
-export function ExplorerPane({
-  root,
-  selected,
-  gitMarks,
-  onSelect,
-  fullscreen,
-  onToggleFullscreen,
-}: ExplorerPaneProps) {
+export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPaneProps) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, FileEntry[]>>(new Map());
@@ -330,8 +320,6 @@ export function ExplorerPane({
             </button>
           </>
         )}
-        {/* 搜索模式下也在，不然切个模式图标就没了 */}
-        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto px-1 py-1">

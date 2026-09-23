@@ -19,6 +19,8 @@ import {
   resolveTerminalTheme,
 } from "../lib/terminal-themes";
 import { useTheme, type ResolvedTheme, type Theme } from "../lib/theme";
+import { RIGHT_TOOLS } from "./ToolRail";
+import type { ToolId } from "./ToolPane";
 import { IconClose, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
@@ -43,6 +45,11 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
 const WEIGHT_OPTIONS: { value: boolean; label: string }[] = [
   { value: false, label: "正常" },
   { value: true, label: "加粗" },
+];
+
+const VISIBLE_OPTIONS: { value: boolean; label: string }[] = [
+  { value: true, label: "展示" },
+  { value: false, label: "隐藏" },
 ];
 
 /** 时机名字跟 VS Code 的 files.autoSave 对齐 */
@@ -113,30 +120,39 @@ function SizeSlider({
   );
 }
 
-/** 字重开关：分段按钮，和主题选择共用一套视觉，省得再给 checkbox 写样式 */
-function WeightToggle({
-  bold,
+/** 二选一的分段开关（字重、右栏模块的显隐），和主题选择共用一套视觉，省得再给 checkbox 写样式 */
+function BoolToggle({
+  value,
+  options,
+  disabledValue,
   onChange,
 }: {
-  bold: boolean;
+  value: boolean;
+  options: { value: boolean; label: string }[];
+  /** 这一侧点不了，例如右栏只剩最后一个模块时不能再藏 */
+  disabledValue?: boolean;
   onChange: (next: boolean) => void;
 }) {
   return (
     <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
-      {WEIGHT_OPTIONS.map((option) => (
-        <button
-          key={option.label}
-          type="button"
-          onClick={() => onChange(option.value)}
-          className={`rounded-md px-2.5 py-1 text-[12px] ${
-            bold === option.value
-              ? "bg-selected text-fg"
-              : "text-fg-dim hover:bg-hover hover:text-fg"
-          }`}
-        >
-          {option.label}
-        </button>
-      ))}
+      {options.map((option) => {
+        const disabled = option.value === disabledValue;
+        return (
+          <button
+            key={option.label}
+            type="button"
+            onClick={() => onChange(option.value)}
+            disabled={disabled}
+            className={`rounded-md px-2.5 py-1 text-[12px] ${
+              value === option.value
+                ? "bg-selected text-fg"
+                : "text-fg-dim hover:bg-hover hover:text-fg"
+            } ${disabled ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""}`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -273,6 +289,17 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
   const lastFlipRef = useRef(0);
 
+  // 右边栏只剩一个模块开着时，它的「隐藏」不能再点，否则右边栏就空了。
+  // 顺序照 ToolRail 的注册表来，加模块时这里跟着补一行
+  const rightVisible: Record<ToolId, boolean> = {
+    files: settings.rightFilesVisible,
+    changes: settings.rightChangesVisible,
+    search: settings.rightSearchVisible,
+    browser: settings.rightBrowserVisible,
+  };
+  const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
+  const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -352,24 +379,61 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
           >
             <div className="flex flex-col gap-3.5 p-4">
               {tab === "appearance" && (
-                <Field label="主题">
-                  <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
-                    {THEME_OPTIONS.map((item) => (
-                      <button
-                        key={item.value}
-                        type="button"
-                        onClick={() => setPreference(item.value)}
-                        className={`rounded-md px-2.5 py-1 text-[12px] ${
-                          preference === item.value
-                            ? "bg-selected text-fg"
-                            : "text-fg-dim hover:bg-hover hover:text-fg"
-                        }`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                </Field>
+                <>
+                  <Field label="主题">
+                    <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
+                      {THEME_OPTIONS.map((item) => (
+                        <button
+                          key={item.value}
+                          type="button"
+                          onClick={() => setPreference(item.value)}
+                          className={`rounded-md px-2.5 py-1 text-[12px] ${
+                            preference === item.value
+                              ? "bg-selected text-fg"
+                              : "text-fg-dim hover:bg-hover hover:text-fg"
+                          }`}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </Field>
+                  <p className="text-[11px] leading-relaxed text-fg-faint">
+                    右边栏：关掉的模块不再出现在图标条上，至少留一个。
+                  </p>
+                  <Field label="文件">
+                    <BoolToggle
+                      value={settings.rightFilesVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "files" ? false : undefined}
+                      onChange={(rightFilesVisible) => update({ rightFilesVisible })}
+                    />
+                  </Field>
+                  <Field label="变更">
+                    <BoolToggle
+                      value={settings.rightChangesVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "changes" ? false : undefined}
+                      onChange={(rightChangesVisible) => update({ rightChangesVisible })}
+                    />
+                  </Field>
+                  <Field label="搜索">
+                    <BoolToggle
+                      value={settings.rightSearchVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "search" ? false : undefined}
+                      onChange={(rightSearchVisible) => update({ rightSearchVisible })}
+                    />
+                  </Field>
+                  <Field label="浏览器">
+                    <BoolToggle
+                      value={settings.rightBrowserVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "browser" ? false : undefined}
+                      onChange={(rightBrowserVisible) => update({ rightBrowserVisible })}
+                    />
+                  </Field>
+                </>
               )}
 
               {tab === "terminal" && (
@@ -406,8 +470,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     />
                   </Field>
                   <Field label="字重">
-                    <WeightToggle
-                      bold={settings.terminalFontBold}
+                    <BoolToggle
+                      value={settings.terminalFontBold}
+                      options={WEIGHT_OPTIONS}
                       onChange={(terminalFontBold) => update({ terminalFontBold })}
                     />
                   </Field>
@@ -489,8 +554,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     />
                   </Field>
                   <Field label="字重">
-                    <WeightToggle
-                      bold={settings.editorFontBold}
+                    <BoolToggle
+                      value={settings.editorFontBold}
+                      options={WEIGHT_OPTIONS}
                       onChange={(editorFontBold) => update({ editorFontBold })}
                     />
                   </Field>

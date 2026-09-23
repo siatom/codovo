@@ -1,5 +1,5 @@
 import type { ToolId } from "./ToolPane";
-import { IconBranch, IconFile, IconGlobe } from "./icons";
+import { IconBranch, IconFile, IconGlobe, IconSearch } from "./icons";
 
 /** 和左侧栏收起时同宽，两条竖栏看起来才是一套 */
 const RAIL = "flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2";
@@ -11,45 +11,49 @@ const BUTTON_ON = "bg-selected text-fg";
 
 const BUTTON_OFF = "cursor-not-allowed text-fg-faint";
 
+/**
+ * 右边栏的模块注册表：顺序就是图标条上从上到下的顺序。
+ * 设置里「右栏」那一页的显隐开关也照这份表来，加模块时两处不会走散。
+ */
+export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[] = [
+  { id: "files", label: "文件", Icon: IconFile },
+  { id: "changes", label: "变更", Icon: IconBranch },
+  { id: "search", label: "搜索", Icon: IconSearch },
+  { id: "browser", label: "浏览器", Icon: IconGlobe },
+];
+
 interface ToolRailProps {
   active: ToolId;
   /** 目录不是仓库时「变更」没有内容可看 */
   gitReady: boolean;
+  /** 设置里关掉的模块不上图标条 */
+  visible: Record<ToolId, boolean>;
   onPick: (id: ToolId) => void;
 }
 
 /**
- * 右边栏最左侧的图标条：切换「文件」/「变更」/「浏览器」。
+ * 右边栏最左侧的图标条：切换各个模块。
  * 整个右边栏的收放由终端右上角那个按钮负责，这里只管切模块。
  */
-export function ToolRail({ active, gitReady, onPick }: ToolRailProps) {
+export function ToolRail({ active, gitReady, visible, onPick }: ToolRailProps) {
   return (
     <div className={RAIL}>
-      <button
-        type="button"
-        onClick={() => onPick("files")}
-        title="文件"
-        className={`${BUTTON} ${active === "files" ? BUTTON_ON : ""}`}
-      >
-        <IconFile />
-      </button>
-      <button
-        type="button"
-        onClick={() => onPick("changes")}
-        disabled={!gitReady}
-        title={gitReady ? "变更" : "当前目录不是 git 仓库"}
-        className={`${BUTTON} ${active === "changes" ? BUTTON_ON : gitReady ? "" : BUTTON_OFF}`}
-      >
-        <IconBranch />
-      </button>
-      <button
-        type="button"
-        onClick={() => onPick("browser")}
-        title="浏览器"
-        className={`${BUTTON} ${active === "browser" ? BUTTON_ON : ""}`}
-      >
-        <IconGlobe />
-      </button>
+      {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
+        // 不是仓库时「变更」点了也没内容可看，置灰而不是藏起来，免得用户以为模块没了
+        const blocked = id === "changes" && !gitReady;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onPick(id)}
+            disabled={blocked}
+            title={blocked ? "当前目录不是 git 仓库" : label}
+            className={`${BUTTON} ${active === id ? BUTTON_ON : blocked ? BUTTON_OFF : ""}`}
+          >
+            <Icon />
+          </button>
+        );
+      })}
     </div>
   );
 }

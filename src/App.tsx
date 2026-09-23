@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SplitPane } from "./components/SplitPane";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPane } from "./components/TerminalPane";
 import { ToolPane, readTool, saveTool, type ToolId } from "./components/ToolPane";
-import { ToolRail } from "./components/ToolRail";
-import { EditorPane } from "./components/EditorPane";
+import { RIGHT_TOOLS, ToolRail } from "./components/ToolRail";
+import { EditorPane, type EditorPaneHandle } from "./components/EditorPane";
 import { BrowserPane } from "./components/BrowserPane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { useGitStatus } from "./lib/git";
-import { sameTab, type Tab } from "./lib/tabs";
+import { useSettings } from "./lib/settings";
+import { sameTab, type DiffSource, type Tab } from "./lib/tabs";
 import {
   clearSavedWorkspace,
   pickWorkspaceFolder,
@@ -49,11 +50,24 @@ export default function App() {
 
   // 当前工作区的 git 状态，只读轮询；不是仓库或没选目录时全是空标记
   const git = useGitStatus(root);
+  const { settings } = useSettings();
 
   const gitReady = git.snapshot.isRepo;
-  // 不是仓库时只能看「文件」。派生值兜底而不是改 state：用户选的「变更」不会被抹掉。
-  // 浏览器要本地服务地址，和 git 无关，不参与这个兜底
-  const activeTool: ToolId = !gitReady && tool === "changes" ? "files" : tool;
+  // 设置里关掉的模块不上图标条。顺序以图标条的注册表为准，加模块只要往那边加一条
+  const toolVisible: Record<ToolId, boolean> = {
+    files: settings.rightFilesVisible,
+    changes: settings.rightChangesVisible,
+    search: settings.rightSearchVisible,
+    browser: settings.rightBrowserVisible,
+  };
+  // 当前模块被关掉、或者不是仓库看不了「变更」时，落到第一个还开着的模块。
+  // 派生值兜底而不是改 state：用户选的模块不会被抹掉，重新打开设置里的开关就回到原样
+  const firstVisible: ToolId =
+    RIGHT_TOOLS.map((item) => item.id).find(
+      (id) => toolVisible[id] && (id !== "changes" || gitReady),
+    ) ?? "files";
+  const activeTool: ToolId =
+    toolVisible[tool] && (tool !== "changes" || gitReady) ? tool : firstVisible;
   // 还没选工作区时右边栏里是「选择文件夹」提示，收起来用户就没法选目录了
   const rightShown = rightOpen || root === null;
 
@@ -166,13 +180,43 @@ export default function App() {
     openTab({ kind: "file", path });
   }, [openTab]);
 
-  /** 从「变更」列表面板点进来的：开的是差异视图，不是文件内容 */
+  /** 从「变更」列表或提交历史点进来的：开的是差异视图，不是文件内容 */
   const openDiff = useCallback(
-    (path: string, staged: boolean) => {
-      openTab({ kind: "diff", path, staged });
+    (path: string, source: DiffSource) => {
+      openTab({ kind: "diff", path, source });
     },
     [openTab],
   );
+
+  /** 搜索替换要指挥编辑器保存 / 重载 / 定位，这几件事只有它自己知道怎么做 */
+  const editorRef = useRef<EditorPaneHandle>(null);
+  /** 点同一条结果也要能重新定位一次，靠它每次造一个新对象 */
+  const revealNonceRef = useRef(0);
+
+  /** 搜索结果里点一条：打开文件并把光标送到那一处 */
+  const openMatch = useCallback(
+    (path: string, line: number, column: number, length: number) => {
+      openTab({ kind: "file", path });
+      editorRef.current?.revealAt({
+        path,
+        line,
+        column,
+        length,
+        nonce: (revealNonceRef.current += 1),
+      });
+    },
+    [openTab],
+  );
+
+  /** 替换前先把编辑器里没保存的改动落盘；存不成功就不替换 */
+  const saveAllEdits = useCallback(async () => {
+    return (await editorRef.current?.saveAll()) ?? true;
+  }, []);
+
+  /** 替换之后让编辑器丢掉旧内容、重新读磁盘 */
+  const reloadAfterReplace = useCallback((paths: string[]) => {
+    void editorRef.current?.reload(paths);
+  }, []);
 
   const closeTab = useCallback(
     (tab: Tab) => {
@@ -236,7 +280,12 @@ export default function App() {
         second={
           root ? (
             <div className="flex min-h-0 min-w-0 flex-1">
-              <ToolRail active={activeTool} gitReady={gitReady} onPick={pickTool} />
+              <ToolRail
+                active={activeTool}
+                gitReady={gitReady}
+                visible={toolVisible}
+                onPick={pickTool}
+              />
               {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
                   Monaco 的撤销历史和文件树的展开态都留得住。
                   全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
@@ -257,17 +306,21 @@ export default function App() {
                       git={git}
                       onSelectFile={openFile}
                       onOpenDiff={openDiff}
-                      fullscreen={fullscreen}
-                      onToggleFullscreen={toggleFullscreen}
+                      onOpenMatch={openMatch}
+                      onBeforeReplace={saveAllEdits}
+                      onAfterReplace={reloadAfterReplace}
                     />
                   }
                   second={
                     <EditorPane
+                      ref={editorRef}
                       tabs={openTabs}
                       active={activeTab}
                       gitMarks={git.snapshot.marks}
                       onActivate={setActiveTab}
                       onClose={closeTab}
+                      fullscreen={fullscreen}
+                      onToggleFullscreen={toggleFullscreen}
                     />
                   }
                 />

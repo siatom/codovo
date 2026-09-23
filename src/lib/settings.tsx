@@ -31,6 +31,11 @@ export interface Settings {
   editorAutoSave: AutoSaveMode;
   /** afterDelay 模式下停手多久才落盘（毫秒） */
   editorAutoSaveDelay: number;
+  /** 右边栏的各个模块：关掉哪个，图标条上就不出哪个入口 */
+  rightFilesVisible: boolean;
+  rightChangesVisible: boolean;
+  rightSearchVisible: boolean;
+  rightBrowserVisible: boolean;
 }
 
 const SETTINGS_KEY = "codedock.settings";
@@ -67,6 +72,10 @@ const DEFAULTS: Settings = {
   editorFontBold: false,
   editorAutoSave: "off",
   editorAutoSaveDelay: 1000,
+  rightFilesVisible: true,
+  rightChangesVisible: true,
+  rightSearchVisible: true,
+  rightBrowserVisible: true,
 };
 
 function clampSize(value: unknown, fallback: number): number {
@@ -125,6 +134,20 @@ function readSaved(): Settings {
     editorAutoSaveDelay: clampDelay(
       raw.editorAutoSaveDelay,
       DEFAULTS.editorAutoSaveDelay,
+    ),
+    // 老版本的设置里没有这几个字段，asBoolean 会回落到 true，也就是默认全展示
+    rightFilesVisible: asBoolean(raw.rightFilesVisible, DEFAULTS.rightFilesVisible),
+    rightChangesVisible: asBoolean(
+      raw.rightChangesVisible,
+      DEFAULTS.rightChangesVisible,
+    ),
+    rightSearchVisible: asBoolean(
+      raw.rightSearchVisible,
+      DEFAULTS.rightSearchVisible,
+    ),
+    rightBrowserVisible: asBoolean(
+      raw.rightBrowserVisible,
+      DEFAULTS.rightBrowserVisible,
     ),
   };
 }

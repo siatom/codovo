@@ -113,6 +113,40 @@ async function main() {
     await sleep(options.afterClick ?? 400);
   }
 
+  // 拖拽：必须走 CDP 派发真实指针事件。应用里的拖动都用 setPointerCapture，
+  // 合成的 PointerEvent 没有对应的活动指针，捕获那一步会直接抛 NotFoundError
+  if (options.drag) {
+    const [x1, y1, x2, y2] = options.drag;
+    const steps = options.dragSteps ?? 10;
+    await send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: x1,
+      y: y1,
+      button: "left",
+      clickCount: 1,
+      buttons: 1,
+    });
+    for (let step = 1; step <= steps; step += 1) {
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: Math.round(x1 + ((x2 - x1) * step) / steps),
+        y: Math.round(y1 + ((y2 - y1) * step) / steps),
+        button: "left",
+        buttons: 1,
+      });
+      await sleep(16);
+    }
+    await send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: x2,
+      y: y2,
+      button: "left",
+      clickCount: 1,
+      buttons: 0,
+    });
+    await sleep(options.afterDrag ?? 400);
+  }
+
   if (options.insertText) {
     // Monaco 的 textarea 会忽略合成的 keydown，用 insertText 走真实输入管线
     await send("Input.insertText", { text: options.insertText });

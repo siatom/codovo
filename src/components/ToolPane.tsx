@@ -1,13 +1,15 @@
 import type { GitController } from "../lib/git";
+import type { DiffSource } from "../lib/tabs";
 import { ExplorerPane } from "./ExplorerPane";
 import { GitChangesPane } from "./GitChangesPane";
+import { SearchPane } from "./SearchPane";
 
 /** 右栏的工具模块。浏览器不在这里渲染内容（它独占编辑器那一列），但入口在同一个图标条上 */
-export type ToolId = "files" | "changes" | "browser";
+export type ToolId = "files" | "changes" | "search" | "browser";
 
 const TOOL_KEY = "codedock.rightTool";
 
-const TOOLS: ToolId[] = ["files", "changes", "browser"];
+const TOOLS: ToolId[] = ["files", "changes", "search", "browser"];
 
 /**
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
@@ -38,17 +40,19 @@ interface ToolPaneProps {
   git: GitController;
   /** 文件树里点一个文件：打开文件内容 */
   onSelectFile: (path: string) => void;
-  /** 改动列表里点一个改动项：打开差异视图 */
-  onOpenDiff: (path: string, staged: boolean) => void;
-  /** 全屏展示状态，透给两个模块标题栏右端那个按钮 */
-  fullscreen: boolean;
-  onToggleFullscreen: () => void;
+  /** 改动列表 / 提交历史里点一个文件：打开差异视图 */
+  onOpenDiff: (path: string, source: DiffSource) => void;
+  /** 搜索结果里点一条：打开文件并定位到那一行那一列 */
+  onOpenMatch: (path: string, line: number, column: number, length: number) => void;
+  /** 替换前的落盘；返回 false 表示有文件没存成功，替换要中止 */
+  onBeforeReplace: () => Promise<boolean>;
+  /** 替换后让编辑器重新从磁盘加载这些文件 */
+  onAfterReplace: (paths: string[]) => void;
 }
 
 /**
- * 「文件」和「变更」两个模块的内容。两个都常挂载、只切可见性，
- * 这样文件树的展开态和提交草稿在来回切换、以及面板收起时都留得住。
- * 浏览器选中时这里整块是收起的，文件列表保持挂载、不影响展开态。
+ * 各模块的内容。全都常挂载、只切可见性，这样文件树的展开态、提交草稿、
+ * 上次的搜索结果在来回切换以及面板收起时都留得住。
  */
 export function ToolPane({
   tool,
@@ -57,29 +61,33 @@ export function ToolPane({
   git,
   onSelectFile,
   onOpenDiff,
-  fullscreen,
-  onToggleFullscreen,
+  onOpenMatch,
+  onBeforeReplace,
+  onAfterReplace,
 }: ToolPaneProps) {
+  const filesHidden = tool === "changes" || tool === "search";
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-panel">
-      <div className={tool === "changes" ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
+      <div className={filesHidden ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <ExplorerPane
           root={root}
           selected={selected}
           gitMarks={git.snapshot.marks}
           onSelect={onSelectFile}
-          fullscreen={fullscreen}
-          onToggleFullscreen={onToggleFullscreen}
         />
       </div>
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
         {/* 换工作区丢掉上一个仓库残留的提交草稿和报错 */}
-        <GitChangesPane
+        <GitChangesPane key={root} git={git} onOpen={onOpenDiff} />
+      </div>
+      <div className={tool === "search" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        {/* 换工作区时结果和折叠状态一起作废 */}
+        <SearchPane
           key={root}
-          git={git}
-          onOpen={onOpenDiff}
-          fullscreen={fullscreen}
-          onToggleFullscreen={onToggleFullscreen}
+          onOpenMatch={onOpenMatch}
+          onBeforeReplace={onBeforeReplace}
+          onAfterReplace={onAfterReplace}
         />
       </div>
     </section>

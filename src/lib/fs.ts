@@ -1,6 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { FileContent, FileDiff, FileEntry, GitStatusPayload } from "./types";
+import type { DiffSource } from "./tabs";
+import type {
+  FileContent,
+  FileDiff,
+  FileEntry,
+  GitCommit,
+  GitCommitFile,
+  GitStatusPayload,
+  ReplaceResult,
+  SearchOptions,
+  SearchResult,
+} from "./types";
 
 const WORKSPACE_KEY = "codedock.workspace";
 const WORKSPACES_KEY = "codedock.workspaces";
@@ -78,6 +89,40 @@ export function searchFiles(query: string): Promise<string[]> {
   return invoke<string[]>("fs_search_files", { query });
 }
 
+/**
+ * 按内容递归搜工作区，带大小写 / 全字 / 正则三个开关。结果按文件分组，
+ * 行列都用 UTF-16 单位，能直接喂给 Monaco 的 Range。
+ */
+export function searchContents(
+  query: string,
+  options: SearchOptions,
+): Promise<SearchResult> {
+  return invoke<SearchResult>("fs_search_content", { query, options });
+}
+
+/** 替换单条匹配；行列对不上时后端会报「内容已经变了」，让用户重新搜索 */
+export function replaceOne(request: {
+  path: string;
+  line: number;
+  column: number;
+  length: number;
+  query: string;
+  options: SearchOptions;
+  replacement: string;
+}): Promise<void> {
+  return invoke("fs_replace_one", request);
+}
+
+/** 替换一批文件里的所有匹配；只动传进来的这些路径 */
+export function replaceAll(request: {
+  paths: string[];
+  query: string;
+  options: SearchOptions;
+  replacement: string;
+}): Promise<ReplaceResult> {
+  return invoke<ReplaceResult>("fs_replace_all", request);
+}
+
 export function readFile(path: string): Promise<FileContent> {
   return invoke<FileContent>("fs_read_file", { path });
 }
@@ -106,11 +151,21 @@ export function gitCommit(message: string): Promise<GitStatusPayload> {
 }
 
 /**
- * 一个改动文件的两侧内容。
- * `staged` 决定基线：true 比 HEAD（内容来自 index），false 比 index（内容来自工作区）。
+ * 一个改动文件的两侧内容。`source` 决定跟谁比：
+ * 未暂存比 index、暂存比 HEAD、看某个提交比它的父提交。
  */
-export function gitFileDiff(path: string, staged: boolean): Promise<FileDiff> {
-  return invoke<FileDiff>("git_file_diff", { path, staged });
+export function gitFileDiff(path: string, source: DiffSource): Promise<FileDiff> {
+  return invoke<FileDiff>("git_file_diff", { path, source });
+}
+
+/** 提交历史，最新的在最前；不传 limit 就取一页 */
+export function gitLog(limit?: number): Promise<GitCommit[]> {
+  return invoke<GitCommit[]>("git_log", { limit: limit ?? null });
+}
+
+/** 某个提交改了哪些文件 */
+export function gitCommitFiles(rev: string): Promise<GitCommitFile[]> {
+  return invoke<GitCommitFile[]>("git_commit_files", { rev });
 }
 
 /** 后端一律用原生分隔符；界面按 VS Code 习惯显示 `/`。 */

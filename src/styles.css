@@ -118,10 +118,22 @@ body {
   overflow: hidden;
 }
 
+/* 拖动分栏期间禁掉选中和文字光标；横向和纵向各一套光标 */
+body.codedock-dragging,
+body.codedock-dragging *,
+body.codedock-dragging-row,
+body.codedock-dragging-row * {
+  user-select: none;
+}
+
 body.codedock-dragging,
 body.codedock-dragging * {
-  user-select: none;
   cursor: col-resize;
+}
+
+body.codedock-dragging-row,
+body.codedock-dragging-row * {
+  cursor: row-resize;
 }
 
 /* xterm 自己算尺寸，容器不能给它留内边距 */
@@ -328,4 +340,11 @@ body.codedock-dragging * {
 .markdown-body img {
   max-width: 100%;
   border-radius: 4px;
+}
+
+/* 搜索结果里高亮命中的那一段，色系跟编辑器里的选中态保持一致 */
+.codedock-find-hit {
+  border-radius: 2px;
+  background: var(--c-selected);
+  color: var(--c-fg);
 }
