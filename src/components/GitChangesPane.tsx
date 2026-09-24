@@ -54,6 +54,9 @@ interface GitChangesPaneProps {
 /** 提交历史一次拉多少条，「加载更多」再叠加 */
 const LOG_PAGE = 50;
 
+/** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
+const MESSAGE_MAX_ROWS = 5;
+
 const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed";
 const LOG_HEIGHT_KEY = "codedock.commitLogHeight";
 
@@ -277,6 +280,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const messageRef = useRef<HTMLTextAreaElement>(null);
 
   // 提交历史
   const [logCollapsed, setLogCollapsed] = useState(readLogCollapsed);
@@ -471,6 +475,42 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     }
   };
 
+  /**
+   * 提交框跟着内容长高，长到 MESSAGE_MAX_ROWS 行封顶，再多就滚动。
+   *
+   * 用 scrollHeight 量而不是数换行符：一行文字放不下时会自动折行，
+   * 数 \n 得不出真实行数。`leading-4` 是量高度的前提——行高不定死的话
+   * getComputedStyle 会返回 "normal"，算不出"几行"是多少像素。
+   */
+  const resizeMessage = useCallback(() => {
+    const el = messageRef.current;
+    if (!el) return;
+    const styles = window.getComputedStyle(el);
+    const line = Number.parseFloat(styles.lineHeight);
+    const border =
+      Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth);
+    const max =
+      line * MESSAGE_MAX_ROWS +
+      Number.parseFloat(styles.paddingTop) +
+      Number.parseFloat(styles.paddingBottom) +
+      border;
+    // box-sizing 是 border-box，指定高度含边框；scrollHeight 只量到 padding 为止
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight + border, max)}px`;
+  }, []);
+
+  useEffect(resizeMessage, [message, resizeMessage]);
+
+  // 面板被拖宽/拖窄时折行位置会变，得重新量一次。监听面板而不是 textarea 自己：
+  // 我们改的正是 textarea 的高度，监听它会自己触发自己
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const observer = new ResizeObserver(resizeMessage);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [resizeMessage]);
+
   if (!snapshot.isRepo) return null;
 
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
@@ -552,7 +592,8 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
       <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 py-2">
         <textarea
-          rows={2}
+          ref={messageRef}
+          rows={1}
           value={message}
           onChange={(event) => {
             setMessage(event.target.value);
@@ -560,7 +601,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           }}
           onKeyDown={onMessageKeyDown}
           placeholder="提交信息（Ctrl+Enter 提交）"
-          className={`${TEXT_INPUT} resize-none`}
+          className={`${TEXT_INPUT} shrink-0 resize-none leading-4`}
         />
 
         <div className="flex shrink-0 items-center gap-2">
