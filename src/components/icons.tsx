@@ -373,6 +373,33 @@ export const IconBranch = icon(
   </>,
 );
 
+/** 从远程取回引用：云 + 下箭头。刻意不用 IconRefresh 那个回转箭头，免得和"刷新"混淆 */
+export const IconCloudDownload = icon(
+  <>
+    <path d="M12 13v8l-4-4" />
+    <path d="m12 21 4-4" />
+    <path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284" />
+  </>,
+);
+
+/** 拉取：箭头落进底线 */
+export const IconArrowDownToLine = icon(
+  <>
+    <path d="M12 17V3" />
+    <path d="m6 11 6 6 6-6" />
+    <path d="M19 21H5" />
+  </>,
+);
+
+/** 推送：箭头从底线升起 */
+export const IconArrowUpFromLine = icon(
+  <>
+    <path d="m18 9-6-6-6 6" />
+    <path d="M12 3v14" />
+    <path d="M5 21h14" />
+  </>,
+);
+
 /** 编辑态显示，点了进预览 */
 export const IconEye = icon(
   <>

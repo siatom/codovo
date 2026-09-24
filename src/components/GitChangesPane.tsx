@@ -10,7 +10,10 @@ import {
 import {
   gitCommit,
   gitCommitFiles,
+  gitFetch,
   gitLog,
+  gitPull,
+  gitPush,
   gitStage,
   gitUnstage,
   pathKey,
@@ -30,9 +33,12 @@ import type { DiffSource } from "../lib/tabs";
 import type { GitCommit, GitCommitFile, GitStatusPayload } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
 import {
+  IconArrowDownToLine,
+  IconArrowUpFromLine,
   IconBranch,
   IconChevronDown,
   IconChevronRight,
+  IconCloudDownload,
   IconMinus,
   IconPlus,
   IconRefresh,
@@ -133,8 +139,20 @@ const ROW_ACTION =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 disabled:opacity-0";
 
 /** 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
- *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。 */
-type Busy = null | "stage" | "unstage" | "commit" | "generate";
+ *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。
+ *  fetch/pull/push 是网络操作，跑起来可能要几分钟，更不能叠着发。 */
+type Busy = null | "stage" | "unstage" | "commit" | "generate" | "fetch" | "pull" | "push";
+
+/** 标题栏那几个图标按钮的样式，和刷新按钮同一套 */
+const HEADER_ACTION =
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
+
+/** 网络操作可能要跑几分钟，光靠按钮变灰看不出在干什么，下面补一行字 */
+const SYNC_NOTICE = {
+  fetch: "正在获取远程更新…",
+  pull: "正在拉取…",
+  push: "正在推送…",
+} as const;
 
 function ChangeRow({
   change,
@@ -337,6 +355,24 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     setLogRevision((revision) => revision + 1);
   }, [refresh]);
 
+  /** 只取回引用，不动工作区，所以提交历史不用重拉 */
+  const fetch = useCallback(() => {
+    void run("fetch", gitFetch);
+  }, [run]);
+
+  const pull = useCallback(() => {
+    void run("pull", async () => {
+      const payload = await gitPull();
+      setLogRevision((revision) => revision + 1); // 快进之后历史多了一段
+      return payload;
+    });
+  }, [run]);
+
+  /** 推送不动本地历史，只变了 ahead/behind，状态由 run() 落地 */
+  const push = useCallback(() => {
+    void run("push", gitPush);
+  }, [run]);
+
   const setLogCollapsedPersisted = (next: boolean) => {
     setLogCollapsed(next);
     try {
@@ -439,6 +475,8 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
   const canGenerate = staged.length > 0 && busy === null;
+  const notice =
+    busy === "fetch" || busy === "pull" || busy === "push" ? SYNC_NOTICE[busy] : null;
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
@@ -450,6 +488,54 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
         >
           {snapshot.branch ?? "游离 HEAD"}
         </span>
+
+        {/* 领先/落后上游的提交数：只在非零时出现（没有上游时天然是 0），
+            紧挨着拉取/推送按钮，一眼能看出该点哪个 */}
+        {snapshot.ahead > 0 && (
+          <span className="shrink-0 text-[11px] text-fg-faint" title="领先上游的提交数">
+            ↑{snapshot.ahead}
+          </span>
+        )}
+        {snapshot.behind > 0 && (
+          <span className="shrink-0 text-[11px] text-fg-faint" title="落后上游的提交数">
+            ↓{snapshot.behind}
+          </span>
+        )}
+
+        <button
+          type="button"
+          onClick={fetch}
+          disabled={busy !== null}
+          title="获取远程更新"
+          className={HEADER_ACTION}
+        >
+          <IconCloudDownload
+            className={`h-3.5 w-3.5 ${busy === "fetch" ? "animate-pulse" : ""}`}
+          />
+        </button>
+        <button
+          type="button"
+          onClick={pull}
+          disabled={busy !== null}
+          title="拉取（只允许快进）"
+          className={HEADER_ACTION}
+        >
+          <IconArrowDownToLine
+            className={`h-3.5 w-3.5 ${busy === "pull" ? "animate-pulse" : ""}`}
+          />
+        </button>
+        <button
+          type="button"
+          onClick={push}
+          disabled={busy !== null}
+          title="推送"
+          className={HEADER_ACTION}
+        >
+          <IconArrowUpFromLine
+            className={`h-3.5 w-3.5 ${busy === "push" ? "animate-pulse" : ""}`}
+          />
+        </button>
+
         <button
           type="button"
           onClick={reloadAll}
@@ -493,6 +579,10 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
             </span>
           )}
         </div>
+
+        {notice && (
+          <p className="shrink-0 px-1 text-[11px] text-fg-faint">{notice}</p>
+        )}
 
         {error && (
           <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] whitespace-pre-wrap text-danger">

@@ -164,11 +164,14 @@ fn to_diff(original: Side, modified: Side) -> FileDiff {
 ///
 /// `Err` 表示 git 根本没跑起来（没装、超时）；退出码是不是 0 由调用方
 /// 自己看返回的 `Output`——只读和写操作对它的解释正好相反。
+///
+/// `env` 是给子进程额外设的环境变量。目前只有网络操作要用（关掉交互式提问）。
 fn run_git_raw(
     dir: &Path,
     global: &[&str],
     args: &[&str],
     timeout: Duration,
+    env: &[(&str, &str)],
 ) -> Result<Output, String> {
     let mut command = Command::new("git");
     command
@@ -179,6 +182,9 @@ fn run_git_raw(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (key, value) in env {
+        command.env(key, value);
+    }
     hide_console(&mut command);
 
     // 起线程 + recv_timeout：Command 自己没有超时，卡在文件系统上的 git
@@ -205,7 +211,7 @@ fn run_git_raw(
 /// 终端里敲的 git 命令挡在门外。非 0 退出属于正常结果（比如目录不是仓库），
 /// 返回 `Ok(None)`，调用方据此停掉轮询。
 fn run_git(dir: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
-    let output = run_git_raw(dir, &["--no-optional-locks"], args, TIMEOUT)?;
+    let output = run_git_raw(dir, &["--no-optional-locks"], args, TIMEOUT, &[])?;
     Ok(output.status.success().then_some(output.stdout))
 }
 
@@ -218,7 +224,33 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
 /// 当成一个 pathspec。它关掉 pathspec 的通配符和 `:(...)` 魔法——文件名里
 /// 带 `*` `?` `[` 时才不会被当成模式匹配到别的文件。
 fn run_git_checked(dir: &Path, args: &[&str]) -> Result<(), String> {
-    let output = run_git_raw(dir, &["--literal-pathspecs"], args, WRITE_TIMEOUT)?;
+    let output = run_git_raw(dir, &["--literal-pathspecs"], args, WRITE_TIMEOUT, &[])?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(git_error(&output))
+}
+
+/// 网络操作超时。本地 git 几十毫秒就回来了，clone/fetch 一个大仓库却可能要几分钟，
+/// 拿写操作的 30 秒去卡它必然误报。超时只作废这一次操作，报错文案里已注明"结果未知"。
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// fetch / pull / push 统一走这里。
+///
+/// `GIT_TERMINAL_PROMPT=0` 是必须的：我们没有 TTY，不关掉交互式提问的话 git 会
+/// 一直等着输入用户名密码，直到把整个超时耗光才报"超时"，用户完全看不出是缺凭据。
+/// 凭据交给系统上已配好的 credential helper / ssh-agent，没有就报错让人去终端处理一次。
+///
+/// 不带 `--no-optional-locks`：这些操作本来就要更新 refs 和 index.lock，
+/// 该抢锁就抢，抢不到时把 git 的报错透传出来比静默乱写正确。
+fn run_git_network(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let output = run_git_raw(
+        dir,
+        &[],
+        args,
+        NETWORK_TIMEOUT,
+        &[("GIT_TERMINAL_PROMPT", "0")],
+    )?;
     if output.status.success() {
         return Ok(());
     }
@@ -473,6 +505,13 @@ fn repo_prefix(root: &Path) -> Result<Option<String>, String> {
         .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string()))
 }
 
+/// 当前分支名；游离 HEAD（输出字面量 "HEAD"）和空仓库（非 0 退出）都是 None。
+fn current_branch(root: &Path) -> Result<Option<String>, String> {
+    Ok(run_git(root, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|name| !name.is_empty() && name != "HEAD"))
+}
+
 /// 两侧内容统一按 LF 比较。
 ///
 /// 本机 `core.autocrlf=true`：index 里存的是 LF、工作区常是 CRLF。不归一就会
@@ -680,9 +719,7 @@ pub(crate) fn commit_context(state: &FsState) -> Result<CommitContext, String> {
     let root = state.root()?;
 
     // 游离 HEAD 时 `--abbrev-ref` 输出字面量 "HEAD"，等于没有分支名
-    let branch = run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?
-        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
-        .filter(|name| !name.is_empty() && name != "HEAD");
+    let branch = current_branch(&root)?;
 
     // 空仓库里没有提交，git log 非 0 退出 → None → 空列表
     let recent_subjects = run_git(&root, &["log", "-5", "--format=%s"])?
@@ -705,6 +742,69 @@ pub(crate) fn commit_context(state: &FsState) -> Result<CommitContext, String> {
         branch,
         recent_subjects,
     })
+}
+
+// ---- 远程操作 ----
+
+/// 从远程取回引用，不动工作区，也不动当前分支。fetch 完 ahead/behind 就准了，
+/// 用户可以据此决定要不要拉。不带 remote 参数：按当前分支的上游走，
+/// 没有远程仓库时 git 自己会报错，原样透传比我们自己编一句更有用。
+fn fetch_remote(state: &FsState) -> Result<GitStatus, String> {
+    let root = state.root()?;
+    run_git_network(&root, &["fetch"])?;
+    status_of(state)
+}
+
+/// 拉取。
+///
+/// `--ff-only`：本地和远程分叉时直接失败，不悄悄产生一个合并提交、也不把仓库
+/// 带进冲突状态——冲突要靠终端解决，界面里给不出像样的处理方式。
+/// `--no-rebase`：把用户全局配置里的 `pull.rebase=true` 压掉，行为在哪儿都一样。
+/// ff-only 不会生成合并提交，所以不需要 `--no-edit`。
+fn pull_remote(state: &FsState) -> Result<GitStatus, String> {
+    let root = state.root()?;
+    if current_branch(&root)?.is_none() {
+        return Err("当前不在任何分支上（游离 HEAD），无法拉取".to_string());
+    }
+    run_git_network(&root, &["pull", "--ff-only", "--no-rebase"])?;
+    status_of(state)
+}
+
+/// 推送。
+///
+/// 新分支第一次推要顺手 `-u`：不建立跟踪关系的话推完 ahead/behind 还是空的，
+/// 用户看不出到底推成功没有，下次还得再推一次。
+/// 落后于远程时 git 自己会拒绝（non-fast-forward），这里不做 force push。
+fn push_remote(state: &FsState) -> Result<GitStatus, String> {
+    let root = state.root()?;
+    let branch = current_branch(&root)?
+        .ok_or("当前不在任何分支上（游离 HEAD），无法推送")?;
+
+    // 上游存在时 `@{u}` 能解析出 origin/main 这样的名字；非 0 退出即没有上游
+    let has_upstream = run_git(
+        &root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )?
+    .is_some();
+
+    if has_upstream {
+        run_git_network(&root, &["push"])?;
+    } else {
+        // 没配上游就推到第一个远程。`git remote` 按字母序输出，常见仓库里
+        // origin 天然排在最前；一个远程都没有时给一句能看懂的提示
+        let remote = run_git(&root, &["remote"])?
+            .and_then(|bytes| {
+                String::from_utf8_lossy(&bytes)
+                    .lines()
+                    .next()
+                    .map(str::to_string)
+            })
+            .filter(|name| !name.is_empty())
+            .ok_or("没有配置远程仓库，先在终端里 git remote add")?;
+        run_git_network(&root, &["push", "-u", &remote, &branch])?;
+    }
+
+    status_of(state)
 }
 
 #[tauri::command(async)]
@@ -765,6 +865,24 @@ pub fn git_commit_files(
     rev: String,
 ) -> Result<Vec<CommitFile>, String> {
     files_of(&state, &rev)
+}
+
+/// 从远程取回引用，不动工作区。
+#[tauri::command(async)]
+pub fn git_fetch(state: tauri::State<'_, FsState>) -> Result<GitStatus, String> {
+    fetch_remote(&state)
+}
+
+/// 拉取当前分支的上游，只允许快进。
+#[tauri::command(async)]
+pub fn git_pull(state: tauri::State<'_, FsState>) -> Result<GitStatus, String> {
+    pull_remote(&state)
+}
+
+/// 推送当前分支；没有上游时顺手建立跟踪关系。
+#[tauri::command(async)]
+pub fn git_push(state: tauri::State<'_, FsState>) -> Result<GitStatus, String> {
+    push_remote(&state)
 }
 
 #[cfg(test)]
@@ -1462,6 +1580,110 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative, "gone.txt");
         assert_eq!(files[0].status, 'D');
+
+        cleanup(&top);
+    }
+
+    // ---- 远程操作：本地裸仓库当远程，不联网 ----
+
+    /// 分支名显式定成 main。`init.defaultBranch` 在不同机器上可能是 master，
+    /// 裸仓库的 HEAD 指向不存在的 ref 时克隆下来是个空仓库，测试会莫名其妙地挂。
+    fn init_repo_on_main(repo: &Path) {
+        assert!(git(repo, &["init", "-q", "-b", "main", "."]), "git init 失败");
+        assert!(git(repo, &["config", "user.email", "codedock@test"]));
+        assert!(git(repo, &["config", "user.name", "codedock"]));
+    }
+
+    fn bare_remote(top: &Path) -> PathBuf {
+        assert!(
+            git(top, &["init", "--bare", "-q", "-b", "main", "remote.git"]),
+            "建裸仓库失败"
+        );
+        top.join("remote.git")
+    }
+
+    /// 在别的克隆里造一个提交并推上去，用来模拟"远程那边有更新"
+    fn push_from_another_clone(top: &Path, remote_url: &str, name: &str) {
+        assert!(git(top, &["clone", "-q", remote_url, "other"]));
+        let other = top.join("other");
+        assert!(git(&other, &["config", "user.email", "codedock@test"]));
+        assert!(git(&other, &["config", "user.name", "codedock"]));
+        fs::write(other.join(name), "r\n").unwrap();
+        assert!(git(&other, &["add", "-A"]));
+        assert!(git(&other, &["commit", "-q", "-m", "remote side"]));
+        assert!(git(&other, &["push", "-q"]));
+    }
+
+    #[test]
+    fn push_then_fetch_then_pull_round_trips() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        // 第一次推没有上游，必须顺手建立跟踪关系，推完 ahead/behind 才是 0/0
+        let after = push_remote(&state).unwrap();
+        assert_eq!(after.branch.as_deref(), Some("main"));
+        assert_eq!((after.ahead, after.behind), (0, 0));
+
+        push_from_another_clone(&top, &remote_url, "from-other.txt");
+
+        // fetch 只动引用：behind 变成 1，但工作区里还没这个文件
+        let after = fetch_remote(&state).unwrap();
+        assert_eq!((after.ahead, after.behind), (0, 1));
+        assert!(!repo.join("from-other.txt").exists());
+
+        // pull 快进：文件回来了，behind 归零
+        let after = pull_remote(&state).unwrap();
+        assert_eq!((after.ahead, after.behind), (0, 0));
+        // 比 trim 后的内容：本机 core.autocrlf 会把检出时的 LF 变成 CRLF
+        assert_eq!(
+            fs::read_to_string(repo.join("from-other.txt"))
+                .unwrap()
+                .trim(),
+            "r"
+        );
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn pull_refuses_to_merge_when_the_branch_has_diverged() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+        push_remote(&state).unwrap();
+
+        push_from_another_clone(&top, &remote_url, "remote-side.txt");
+
+        // 本地也提交一个，两条线就此分叉
+        fs::write(repo.join("local-side.txt"), "l\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "local side").unwrap();
+        let head_before = status_of(&state).unwrap().head;
+
+        // --ff-only 必须拒绝。只断言"失败了"和"HEAD 没动"：报错文案是 git 自己的，
+        // 会随版本和语言环境变，照着某句英文去断言会在别人的机器上挂掉
+        let error = pull_remote(&state).unwrap_err();
+        assert!(!error.trim().is_empty());
+        assert_eq!(status_of(&state).unwrap().head, head_before);
+        // 没有被带进合并状态：仍然是干净的单线历史，随时可以在终端里处理
+        assert_eq!(log_of(&state, 5).unwrap().len(), 2);
 
         cleanup(&top);
     }

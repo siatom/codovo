@@ -183,6 +183,24 @@ export function gitCommitFiles(rev: string): Promise<GitCommitFile[]> {
   return invoke<GitCommitFile[]>("git_commit_files", { rev });
 }
 
+/**
+ * 从远程取回引用，不动工作区。成功后 ahead/behind 才是最新的。
+ * 耗时按网络算，后端给了 3 分钟超时。
+ */
+export function gitFetch(): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_fetch");
+}
+
+/** 拉取当前分支的上游，后端只允许快进（分叉时直接报错） */
+export function gitPull(): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_pull");
+}
+
+/** 推送当前分支；还没有上游时后端会顺手建立跟踪关系 */
+export function gitPush(): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_push");
+}
+
 /** 后端一律用原生分隔符；界面按 VS Code 习惯显示 `/`。 */
 export function toDisplayPath(path: string): string {
   return path.replace(/\\/g, "/");
