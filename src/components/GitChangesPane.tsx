@@ -502,48 +502,52 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           </span>
         )}
 
-        <button
-          type="button"
-          onClick={fetch}
-          disabled={busy !== null}
-          title="获取远程更新"
-          className={HEADER_ACTION}
-        >
-          <IconCloudDownload
-            className={`h-3.5 w-3.5 ${busy === "fetch" ? "animate-pulse" : ""}`}
-          />
-        </button>
-        <button
-          type="button"
-          onClick={pull}
-          disabled={busy !== null}
-          title="拉取（只允许快进）"
-          className={HEADER_ACTION}
-        >
-          <IconArrowDownToLine
-            className={`h-3.5 w-3.5 ${busy === "pull" ? "animate-pulse" : ""}`}
-          />
-        </button>
-        <button
-          type="button"
-          onClick={push}
-          disabled={busy !== null}
-          title="推送"
-          className={HEADER_ACTION}
-        >
-          <IconArrowUpFromLine
-            className={`h-3.5 w-3.5 ${busy === "push" ? "animate-pulse" : ""}`}
-          />
-        </button>
+        {/* 四个图标按钮单独成组：header 的 gap-1.5 对它们太松，
+            组内压到 gap-0.5 更像一组操作；命中区仍是 24px，不为了紧凑牺牲点击 */}
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={fetch}
+            disabled={busy !== null}
+            title="获取远程更新"
+            className={HEADER_ACTION}
+          >
+            <IconCloudDownload
+              className={`h-3.5 w-3.5 ${busy === "fetch" ? "animate-pulse" : ""}`}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={pull}
+            disabled={busy !== null}
+            title="拉取（只允许快进）"
+            className={HEADER_ACTION}
+          >
+            <IconArrowDownToLine
+              className={`h-3.5 w-3.5 ${busy === "pull" ? "animate-pulse" : ""}`}
+            />
+          </button>
+          <button
+            type="button"
+            onClick={push}
+            disabled={busy !== null}
+            title="推送"
+            className={HEADER_ACTION}
+          >
+            <IconArrowUpFromLine
+              className={`h-3.5 w-3.5 ${busy === "push" ? "animate-pulse" : ""}`}
+            />
+          </button>
 
-        <button
-          type="button"
-          onClick={reloadAll}
-          title="刷新"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-        >
-          <IconRefresh className="h-3.5 w-3.5" />
-        </button>
+          <button
+            type="button"
+            onClick={reloadAll}
+            title="刷新"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+          >
+            <IconRefresh className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 py-2">
