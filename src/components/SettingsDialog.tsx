@@ -477,15 +477,20 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     />
                   </Field>
                   <Field
-                    label="AI CLI 命令"
-                    hint="终端工具条上 AI CLI 按钮可选的命令；多于一个时点按钮会出下拉"
+                    label="AI CLI"
+                    hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中"
                     action={
                       <button
                         type="button"
                         onClick={() =>
-                          update({ aiCommands: [...settings.aiCommands, ""] })
+                          update({
+                            aiCommands: [
+                              ...settings.aiCommands,
+                              { name: "", command: "" },
+                            ],
+                          })
                         }
-                        title="添加一条命令"
+                        title="添加一个 AI CLI"
                         className={HEAD_ACTION}
                       >
                         <IconPlus className="h-3 w-3" />
@@ -493,21 +498,39 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     }
                   >
                     <div className="flex w-full flex-col gap-1.5">
-                      {settings.aiCommands.map((command, index) => (
+                      {settings.aiCommands.map((item, index) => (
                         <div key={index} className="flex items-center gap-1.5">
                           <input
                             type="text"
-                            value={command}
+                            value={item.name}
                             spellCheck={false}
-                            placeholder="例如 claude"
+                            placeholder="名称"
                             onChange={(event) =>
                               update({
-                                aiCommands: settings.aiCommands.map((item, i) =>
-                                  i === index ? event.target.value : item,
+                                aiCommands: settings.aiCommands.map((entry, i) =>
+                                  i === index
+                                    ? { ...entry, name: event.target.value }
+                                    : entry,
                                 ),
                               })
                             }
-                            className={TEXT_INPUT}
+                            className={`${TEXT_INPUT} min-w-0 flex-1`}
+                          />
+                          <input
+                            type="text"
+                            value={item.command}
+                            spellCheck={false}
+                            placeholder="命令，例如 claude"
+                            onChange={(event) =>
+                              update({
+                                aiCommands: settings.aiCommands.map((entry, i) =>
+                                  i === index
+                                    ? { ...entry, command: event.target.value }
+                                    : entry,
+                                ),
+                              })
+                            }
+                            className={`${TEXT_INPUT} min-w-0 flex-[1.5]`}
                           />
                           <button
                             type="button"
@@ -518,7 +541,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                                 ),
                               })
                             }
-                            title="删除这条命令"
+                            title="删除这个 AI CLI"
                             className={LIST_ACTION}
                           >
                             <IconClose className="h-3 w-3" />

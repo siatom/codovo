@@ -10,9 +10,14 @@ import {
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
 
+export interface AiCommand {
+  name: string;
+  command: string;
+}
+
 export interface Settings {
-  /** 终端工具条上 AI CLI 按钮可选的命令；多于一个时点按钮给下拉选择 */
-  aiCommands: string[];
+  /** 终端工具条上 AI CLI 按钮可选的配置；多于一个时点按钮给下拉选择 */
+  aiCommands: AiCommand[];
   /** 终端字体（CSS font-family），留空用默认 */
   terminalFontFamily: string;
   /** 终端字号（px） */
@@ -62,7 +67,10 @@ export function resolveFont(value: string): string {
 }
 
 const DEFAULTS: Settings = {
-  aiCommands: ["claude", "codebuddy"],
+  aiCommands: [
+    { name: "claude", command: "claude" },
+    { name: "codebuddy", command: "codebuddy" },
+  ],
   terminalFontFamily: "",
   terminalFontSize: 13,
   terminalFontBold: false,
@@ -103,10 +111,15 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-/** 数组字段只留字符串项；整个字段缺失才回落默认，用户清空列表是允许的 */
-function asCommandList(value: unknown): string[] {
+function asCommandList(value: unknown): AiCommand[] {
   if (!Array.isArray(value)) return [...DEFAULTS.aiCommands];
-  return value.filter((item): item is string => typeof item === "string");
+  return value.flatMap((item): AiCommand[] => {
+    if (typeof item === "string") return [{ name: item, command: item }];
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.command !== "string") return [];
+    return [{ name: record.name, command: record.command }];
+  });
 }
 
 /** 存的是一整块 JSON：读坏了就当没存过，回落默认值，不让界面起不来 */

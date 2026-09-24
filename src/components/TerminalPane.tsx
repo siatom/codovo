@@ -3,7 +3,6 @@ import {
   TerminalSession,
   type TerminalSessionHandle,
 } from "./TerminalSession";
-import { toDisplayPath } from "../lib/fs";
 import { useSettings } from "../lib/settings";
 import { IconPanelRight, IconPanelRightOpen } from "./icons";
 
@@ -68,8 +67,14 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
     handle?.focus();
   };
 
-  // 空行是用户在设置里加了还没填的，不进下拉
-  const aiCommands = settings.aiCommands.map((item) => item.trim()).filter(Boolean);
+  // 空命令是用户在设置里加了还没填的，不进下拉
+  const aiCommands = settings.aiCommands
+    .map((item) => ({
+      ...item,
+      name: item.name.trim(),
+      command: item.command.trim(),
+    }))
+    .filter((item) => item.command);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -89,7 +94,6 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
                 <button
                   type="button"
                   onClick={() => setActiveId(id)}
-                  title={cwd ? toDisplayPath(cwd) : ""}
                   className="max-w-[140px] truncate py-0.5 pl-2 text-[11px]"
                 >
                   终端 {index + 1}
@@ -114,12 +118,6 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
             +
           </button>
         </div>
-        <span
-          className="hidden max-w-[200px] min-w-0 truncate text-[11px] text-fg-faint lg:block"
-          title={cwd ? toDisplayPath(cwd) : ""}
-        >
-          {cwd ? toDisplayPath(cwd) : "未选择工作目录"}
-        </span>
         {aiCommands.length > 1 ? (
           <div className="relative shrink-0">
             <button
@@ -138,18 +136,18 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
                 {/* 铺一层透明遮罩接住外部点击 */}
                 <div className="fixed inset-0 z-30" onClick={() => setAiMenuOpen(false)} />
                 <div className="absolute right-0 top-full z-40 mt-1 flex w-44 flex-col rounded border border-line-strong bg-raised py-1 shadow-lg">
-                  {aiCommands.map((command) => (
+                  {aiCommands.map((item, index) => (
                     <button
-                      key={command}
+                      key={`${item.name}-${item.command}-${index}`}
                       type="button"
                       onClick={() => {
                         setAiMenuOpen(false);
-                        runAiCommand(command);
+                        runAiCommand(item.command);
                       }}
-                      title={command}
+                      title={item.name || "未命名 AI CLI"}
                       className="truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
                     >
-                      {command}
+                      {item.name || "未命名 AI CLI"}
                     </button>
                   ))}
                 </div>
@@ -159,25 +157,18 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
         ) : (
           <button
             type="button"
-            onClick={() => runAiCommand(aiCommands[0] ?? "")}
+            onClick={() => runAiCommand(aiCommands[0]?.command ?? "")}
             disabled={aiCommands.length === 0}
             title={
               aiCommands.length === 0
                 ? "还没配置 AI CLI 命令，去设置里加一个"
-                : `在当前终端中启动 AI CLI（${aiCommands[0]}）`
+                : `在当前终端中启动 ${aiCommands[0].name || "未命名 AI CLI"}`
             }
             className="shrink-0 rounded px-2 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
             AI CLI
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => handlesRef.current.get(activeId)?.clear()}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg"
-        >
-          清屏
-        </button>
         {onToggleRight && (
           <button
             type="button"

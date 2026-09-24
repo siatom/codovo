@@ -16,7 +16,6 @@ import { useTheme } from "../lib/theme";
 export interface TerminalSessionHandle {
   /** 往这个会话的 shell 里写命令 */
   write(data: string): void;
-  clear(): void;
   focus(): void;
 }
 
@@ -62,9 +61,6 @@ export const TerminalSession = forwardRef<
     () => ({
       write(data) {
         ptyRef.current?.write(data);
-      },
-      clear() {
-        termRef.current?.clear();
       },
       focus() {
         termRef.current?.focus();
