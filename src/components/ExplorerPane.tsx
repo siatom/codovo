@@ -454,7 +454,9 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-panel">
-      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-3">
+      {/* 右上角并排 4 个图标按钮，间距压到 2px：24px 的按钮本身已经留了 5px 内边距，
+          gap 再给 4px 就散开了 */}
+      <header className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
         {searching ? (
           <>
             <IconSearch className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
@@ -522,7 +524,15 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
         )}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto px-1 py-1">
+      <div
+        className="min-h-0 flex-1 overflow-auto px-1 py-1"
+        onClick={(event) => {
+          // 点空白处把锚点收回工作区根：焦点行没了高亮，之后新建也落在根目录下。
+          // 点到行按钮或新建输入框的点击会冒泡到这，不算空白
+          if ((event.target as HTMLElement).closest("button, input")) return;
+          setActiveRow(root);
+        }}
+      >
         {filtering && (
           <p className="px-2 py-1 text-[11px] text-fg-faint">
             {hits === null
@@ -543,25 +553,29 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
         <ul>
           {!filtering && creating?.parent === root && (
             <li>
-              <input
-                autoFocus
-                value={creating.value}
-                onChange={(event) => {
-                  setCreating((current) => (current ? { ...current, value: event.target.value } : current));
-                  setCreateError(null);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void submitCreate();
-                  if (event.key === "Escape") {
-                    event.stopPropagation();
-                    setCreating(null);
+              {/* 缩进和行高都照普通树行来（行高 24px 含边框，左缩进 4px），
+                  否则新建时会冒出一个跟树对不齐的浮框 */}
+              <div style={{ paddingLeft: 4 }}>
+                <input
+                  autoFocus
+                  value={creating.value}
+                  onChange={(event) => {
+                    setCreating((current) => (current ? { ...current, value: event.target.value } : current));
                     setCreateError(null);
-                  }
-                }}
-                placeholder={creating.kind === "file" ? "文件名" : "文件夹名"}
-                aria-label={creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
-                className="mx-1 my-0.5 w-[calc(100%-8px)] rounded border border-accent bg-surface px-1.5 py-0.5 text-[12px] text-fg outline-none"
-              />
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") void submitCreate();
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      setCreating(null);
+                      setCreateError(null);
+                    }
+                  }}
+                  placeholder={creating.kind === "file" ? "文件名" : "文件夹名"}
+                  aria-label={creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                  className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
+                />
+              </div>
               {createError && <p className="px-2 py-[2px] text-[11px] text-danger">{createError}</p>}
             </li>
           )}

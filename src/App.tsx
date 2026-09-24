@@ -283,6 +283,7 @@ export default function App() {
               <ToolRail
                 active={activeTool}
                 gitReady={gitReady}
+                changed={git.snapshot.changed}
                 visible={toolVisible}
                 onPick={pickTool}
               />

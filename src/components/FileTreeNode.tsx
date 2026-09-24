@@ -3,9 +3,9 @@ import { pathKey, toDisplayPath } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { GitMarkBadge } from "./GitMarkBadge";
 import {
+  FileTypeIcon,
   IconChevronDown,
   IconChevronRight,
-  IconFile,
   IconFolder,
 } from "./icons";
 
@@ -76,7 +76,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           {entry.isDir ? (
             <IconFolder className="h-3.5 w-3.5" />
           ) : (
-            <IconFile className="h-3.5 w-3.5" />
+            <FileTypeIcon name={entry.name} className="h-3.5 w-3.5" />
           )}
         </span>
         <span className="min-w-0 flex-1 truncate">{entry.name}</span>
@@ -97,22 +97,24 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
         <ul>
           {isCreatingHere && tree.creating && (
             <li>
-              <input
-                autoFocus
-                value={tree.creating.value}
-                onChange={(event) => tree.onCreateChange(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") tree.onCreateSubmit();
-                  if (event.key === "Escape") {
-                    event.stopPropagation();
-                    tree.onCreateCancel();
-                  }
-                }}
-                placeholder={tree.creating.kind === "file" ? "文件名" : "文件夹名"}
-                aria-label={tree.creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
-                className="mx-1 my-0.5 w-[calc(100%-8px)] rounded border border-accent bg-surface px-1.5 py-0.5 text-[12px] text-fg outline-none"
-                style={{ marginLeft: (depth + 1) * INDENT + 4 }}
-              />
+              {/* 和上面的子行同一个缩进、同一个行高，输完直接变成本层的一行 */}
+              <div style={{ paddingLeft: (depth + 1) * INDENT + 4 }}>
+                <input
+                  autoFocus
+                  value={tree.creating.value}
+                  onChange={(event) => tree.onCreateChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") tree.onCreateSubmit();
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      tree.onCreateCancel();
+                    }
+                  }}
+                  placeholder={tree.creating.kind === "file" ? "文件名" : "文件夹名"}
+                  aria-label={tree.creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                  className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
+                />
+              </div>
               {tree.createError && (
                 <p className="py-[2px] text-[11px] text-danger" style={{ paddingLeft: (depth + 1) * INDENT + 20 }}>
                   {tree.createError}

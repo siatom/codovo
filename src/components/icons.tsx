@@ -1,4 +1,45 @@
 import type { ReactNode } from "react";
+import {
+  siC,
+  siCmake,
+  siCplusplus,
+  siCss,
+  siDart,
+  siDocker,
+  siDotenv,
+  siGit,
+  siGnubash,
+  siGo,
+  siHaskell,
+  siHtml5,
+  siJavascript,
+  siJson,
+  siJulia,
+  siJupyter,
+  siKotlin,
+  siLess,
+  siLua,
+  siMarkdown,
+  siNpm,
+  siOpenjdk,
+  siPhp,
+  siPnpm,
+  siPython,
+  siR,
+  siReact,
+  siRuby,
+  siRust,
+  siSass,
+  siScala,
+  siSvelte,
+  siSwift,
+  siToml,
+  siTypescript,
+  siVuedotjs,
+  siXml,
+  siYaml,
+  siYarn,
+} from "simple-icons";
 
 /**
  * 界面图标统一走这里：线条风格（描边 1.7），尺寸由调用处用 className 指定。
@@ -46,6 +87,133 @@ export const IconFile = icon(
     <path d="M14 2v5h5" />
   </>,
 );
+
+/* ---------- 文件类型图标 ---------- */
+
+/** Simple Icons 的一个条目：24×24 的实心路径 + 品牌色（不带 #） */
+interface BrandIcon {
+  hex: string;
+  path: string;
+}
+
+/**
+ * 品牌图标只能填充、不能描边，所以不走上面的线条工厂。
+ * 颜色直接用品牌自己的色——这是界面里唯一不跟主题走的一类颜色，
+ * 换成语义色这些图标就失去辨识度了。
+ */
+function BrandGlyph({ icon, className }: { icon: BrandIcon; className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`${className} shrink-0`}
+      fill={brandFill(icon.hex)}
+      aria-hidden="true"
+    >
+      <path d={icon.path} />
+    </svg>
+  );
+}
+
+/**
+ * markdown / json / rust 这些品牌的官方色是纯黑，在深色主题下等于看不见，
+ * 所以偏暗的一律改用 currentColor 跟着主题走。阈值是感知亮度。
+ */
+const DARK_BRAND_LUMA = 0.25;
+
+function brandFill(hex: string): string {
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luma < DARK_BRAND_LUMA ? "currentColor" : `#${hex}`;
+}
+
+/** 扩展名 -> 图标。没列的落到默认的文件图标 */
+const FILE_BY_EXT: Record<string, BrandIcon> = {
+  py: siPython,
+  pyi: siPython,
+  pyw: siPython,
+  ipynb: siJupyter,
+  js: siJavascript,
+  mjs: siJavascript,
+  cjs: siJavascript,
+  jsx: siReact,
+  tsx: siReact,
+  ts: siTypescript,
+  mts: siTypescript,
+  cts: siTypescript,
+  rs: siRust,
+  go: siGo,
+  java: siOpenjdk,
+  c: siC,
+  h: siCplusplus,
+  hpp: siCplusplus,
+  cc: siCplusplus,
+  cpp: siCplusplus,
+  cxx: siCplusplus,
+  php: siPhp,
+  rb: siRuby,
+  kt: siKotlin,
+  kts: siKotlin,
+  swift: siSwift,
+  lua: siLua,
+  r: siR,
+  jl: siJulia,
+  hs: siHaskell,
+  dart: siDart,
+  scala: siScala,
+  sh: siGnubash,
+  bash: siGnubash,
+  zsh: siGnubash,
+  md: siMarkdown,
+  markdown: siMarkdown,
+  mdx: siMarkdown,
+  json: siJson,
+  jsonc: siJson,
+  html: siHtml5,
+  htm: siHtml5,
+  css: siCss,
+  scss: siSass,
+  sass: siSass,
+  less: siLess,
+  vue: siVuedotjs,
+  svelte: siSvelte,
+  yml: siYaml,
+  yaml: siYaml,
+  toml: siToml,
+  xml: siXml,
+};
+
+/**
+ * 按整个文件名认的那些：要么没有扩展名（Dockerfile / Makefile），
+ * 要么扩展名说明不了问题（lock 文件、package.json）。键一律小写。
+ */
+const FILE_BY_NAME: Record<string, BrandIcon> = {
+  dockerfile: siDocker,
+  makefile: siGnubash,
+  "cmakelists.txt": siCmake,
+  ".gitignore": siGit,
+  ".gitattributes": siGit,
+  ".gitmodules": siGit,
+  "package.json": siNpm,
+  "pnpm-lock.yaml": siPnpm,
+  "yarn.lock": siYarn,
+  "cargo.lock": siRust,
+};
+
+/**
+ * 文件树按文件名挑图标。先认整个文件名，再认扩展名，都不中就回落到默认文件图标。
+ */
+export function FileTypeIcon({ name, className = "h-4 w-4" }: { name: string; className?: string }) {
+  const lower = name.toLowerCase();
+  // `.gitignore` 这种以点开头的没有扩展名，所以要求点不在第 0 位
+  const dot = lower.lastIndexOf(".");
+  const ext = dot > 0 ? lower.slice(dot + 1) : "";
+  // `.env` / `.env.local` / `.env.production` 都算环境变量文件
+  const icon =
+    FILE_BY_NAME[lower] ??
+    (lower === ".env" || lower.startsWith(".env.") ? siDotenv : FILE_BY_EXT[ext]);
+  if (!icon) return <IconFile className={className} />;
+  return <BrandGlyph icon={icon} className={className} />;
+}
 
 export const IconChevronRight = icon(<path d="m9 18 6-6-6-6" />);
 
