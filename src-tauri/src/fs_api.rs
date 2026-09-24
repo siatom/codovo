@@ -438,6 +438,19 @@ pub struct SearchMatch {
     text: String,
 }
 
+/// 前端从 `SearchMatch` 里挑出这三个字段回传，用来定位要替换的那一处。
+/// 行列同样是 UTF-16 单位，和 Monaco 一致。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchPosition {
+    /// 1 起算
+    line: u32,
+    /// 1 起算，UTF-16 单位
+    column: u32,
+    /// 匹配长度，UTF-16 单位
+    length: u32,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFile {
@@ -507,15 +520,14 @@ fn is_whole_word(line: &str, start: usize, end: usize) -> bool {
 /// 行尾怎么算（LF / CRLF / 最后一行没有换行）只在这里处理一次。
 fn for_each_line<'a, F: FnMut(u32, usize, &'a str) -> bool>(text: &'a str, mut on_line: F) {
     let mut offset = 0usize;
-    let mut number = 1u32;
-    for chunk in text.split_inclusive('\n') {
+    // 行号交给 zip 的递增序列，省掉手动维护的计数器
+    for (number, chunk) in (1u32..).zip(text.split_inclusive('\n')) {
         let line = chunk.strip_suffix('\n').unwrap_or(chunk);
         let line = line.strip_suffix('\r').unwrap_or(line);
         if !on_line(number, offset, line) {
             return;
         }
         offset += chunk.len();
-        number += 1;
     }
 }
 
@@ -659,15 +671,21 @@ fn read_utf8(file: &Path) -> Result<String, String> {
 pub fn fs_replace_one(
     state: tauri::State<'_, FsState>,
     path: String,
-    line: u32,
-    column: u32,
-    length: u32,
+    position: MatchPosition,
     query: String,
     options: SearchOptions,
     replacement: String,
 ) -> Result<(), String> {
     let file = resolve(&state, &path)?;
-    replace_one(&file, line, column, length, &query, &options, &replacement)
+    replace_one(
+        &file,
+        position.line,
+        position.column,
+        position.length,
+        &query,
+        &options,
+        &replacement,
+    )
 }
 
 /// 单条替换只动这一处。位置会漂移，所以三级降级：

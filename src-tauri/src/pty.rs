@@ -78,7 +78,16 @@ fn default_shell() -> (String, Vec<String>) {
 
 #[cfg(unix)]
 fn default_shell() -> (String, Vec<String>) {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    // 从 Finder/Dock 启动的 .app 继承的是 launchd 环境，里面没有 SHELL
+    // （实测 `launchctl getenv SHELL` 为空），所以打包后必然走 fallback，
+    // 只有从终端 `pnpm tauri dev` 起才拿得到。macOS 的默认 shell 是 zsh，
+    // /bin/bash 还停在 2007 年的 3.2，别把用户退到那儿去。
+    let fallback = if cfg!(target_os = "macos") {
+        "/bin/zsh"
+    } else {
+        "/bin/bash"
+    };
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.to_string());
     (shell, Vec::new())
 }
 
@@ -269,15 +278,22 @@ mod tests {
     fn shell_roundtrip_through_pty() {
         let (program, _) = default_shell();
         let mut shell = open_shell(None, 120, 30).expect("打开 PTY 失败");
-        let is_cmd = program.to_lowercase().ends_with("cmd.exe");
+        let lower = program.to_lowercase();
+        let is_cmd = lower.ends_with("cmd.exe");
+        let is_pwsh = lower.ends_with("pwsh")
+            || lower.ends_with("pwsh.exe")
+            || lower.ends_with("powershell.exe");
         let marker = format!("codedock-ok-{}", std::process::id());
 
-        // 命令文本里不能出现 marker 本身，否则 ConPTY 回显输入行就会造成假阳性。
-        // PowerShell 的裸表达式 `'a' + 'b'` 求值后才会拼出 marker。
+        // 命令文本里不能出现 marker 本身，否则终端回显输入行就会造成假阳性，
+        // 所以两种 shell 都得靠「拼两段」求值——但拼法不通用：
+        // PowerShell 的裸表达式 `'a' + 'b'` 会拼，POSIX shell 没这回事，得借 printf。
         let command = if is_cmd {
             "ver".to_string()
-        } else {
+        } else if is_pwsh {
             format!("'codedock' + '-ok-{}'", std::process::id())
+        } else {
+            format!("printf '%s%s\\n' 'codedock' '-ok-{}'", std::process::id())
         };
         // 只发 \r：真实终端的 Enter 就是 \r，多带一个 \n 会让 pwsh 进入续行
         shell

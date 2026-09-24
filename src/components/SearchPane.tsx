@@ -189,9 +189,7 @@ export function SearchPane({
       if (!(await prepare())) return;
       await replaceOne({
         path: file.path,
-        line: match.line,
-        column: match.column,
-        length: match.length,
+        position: { line: match.line, column: match.column, length: match.length },
         query,
         options,
         replacement,

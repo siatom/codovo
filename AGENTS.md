@@ -16,6 +16,7 @@ cd src-tauri && cargo clippy
 
 ## 约定
 
+- 这是一个跨平台应用，代码要兼容 Windows、macOS 和 Linux；涉及系统 API、路径、进程、快捷键或界面行为时，先考虑三端差异。
 - 注释一律中文，写「为什么」。反直觉的写法、绕开的坑、外部库的怪癖都留一句。
 - 颜色只用语义类（`bg-surface` / `text-fg-dim`…），不写十六进制。新增颜色要同时改
   `styles.css` 的 `:root`、`:root[data-theme="light"]` 和 `@theme` 三处。
@@ -46,10 +47,3 @@ cd src-tauri && cargo clippy
   为验证改过的值收尾要还原。
 - 点按钮用 `element.click()` 就够（React 事件委托挂在 root 上）。
 - 应用起没起来看 9222 端口，别看 `pnpm tauri dev` 的退出码——它常报 `exit code: 1` 而应用是好的。
-
-## 本机环境
-
-- cargo 走清华镜像，`cargo search` 不可用；查版本读 `Cargo.lock` 或 crates.io API。
-- 带调试端口重启前先 `taskkill //IM codedock.exe //F`，否则新进程的调试参数会被忽略。
-- vite dev server 有时只听 IPv6（`[::1]:1420`），`curl 127.0.0.1:1420` 失败不代表它死了。
-- Windows 上起外部进程（git 等）要带 `CREATE_NO_WINDOW`，否则闪黑框。

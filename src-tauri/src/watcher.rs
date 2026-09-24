@@ -144,36 +144,55 @@ fn changed_dirs(root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// 路径一律从 root 拼出来，不手写分隔符：`\` 在 Unix 上只是普通字符，
+    /// 写死 `D:\ws` 会让 strip_prefix 直接落空——测试看着绿，其实什么都没验。
     fn root() -> PathBuf {
-        PathBuf::from("D:\\ws")
+        if cfg!(windows) {
+            PathBuf::from("D:\\ws")
+        } else {
+            PathBuf::from("/ws")
+        }
+    }
+
+    /// root 下的路径，如 `under(&["src", "main.rs"])`
+    fn under(parts: &[&str]) -> PathBuf {
+        parts.iter().fold(root(), |acc, part| acc.join(part))
     }
 
     #[test]
     fn maps_a_change_to_its_parent_directory() {
-        let dirs = changed_dirs(&root(), &[PathBuf::from("D:\\ws\\src\\main.rs")]);
-        assert_eq!(dirs, vec![PathBuf::from("D:\\ws\\src")]);
+        let dirs = changed_dirs(&root(), &[under(&["src", "main.rs"])]);
+        assert_eq!(dirs, vec![under(&["src"])]);
     }
 
     #[test]
     fn skips_changes_inside_heavy_directories() {
-        assert!(changed_dirs(&root(), &[PathBuf::from("D:\\ws\\target\\debug\\app.exe")]).is_empty());
-        assert!(changed_dirs(&root(), &[PathBuf::from("D:\\ws\\node_modules\\pkg\\index.js")]).is_empty());
+        assert!(changed_dirs(&root(), &[under(&["target", "debug", "app.exe"])]).is_empty());
+        assert!(changed_dirs(&root(), &[under(&["node_modules", "pkg", "index.js"])]).is_empty());
         // 大小写不敏感
-        assert!(changed_dirs(&root(), &[PathBuf::from("D:\\ws\\TARGET\\a")]).is_empty());
+        assert!(changed_dirs(&root(), &[under(&["TARGET", "a"])]).is_empty());
     }
 
     #[test]
     fn still_reports_a_heavy_directory_being_created() {
-        let dirs = changed_dirs(&root(), &[PathBuf::from("D:\\ws\\dist")]);
+        let dirs = changed_dirs(&root(), &[under(&["dist"])]);
         assert_eq!(dirs, vec![root()], "重目录自己出现时要刷新它所在的目录");
     }
 
     #[test]
     fn ignores_the_root_itself_and_anything_outside() {
-        assert!(changed_dirs(&root(), &[PathBuf::from("D:\\ws")]).is_empty());
-        assert!(changed_dirs(&root(), &[PathBuf::from("D:\\elsewhere\\a.txt")]).is_empty());
+        assert!(changed_dirs(&root(), &[root()]).is_empty());
+        // 工作区外：换根目录而不是换盘符，Unix 上才拼得出来
+        let outside = if cfg!(windows) {
+            PathBuf::from("D:\\elsewhere\\a.txt")
+        } else {
+            PathBuf::from("/elsewhere/a.txt")
+        };
+        assert!(changed_dirs(&root(), &[outside]).is_empty());
     }
 
+    // `\\?\` 前缀是 Windows 独有的形态，Unix 上它只是普通文件名，剥前缀那套逻辑无从触发
+    #[cfg(windows)]
     #[test]
     fn strips_the_windows_verbatim_prefix() {
         // notify 在 Windows 上可能给出 `\\?\` 前缀，不剥掉就拼不上工作区根

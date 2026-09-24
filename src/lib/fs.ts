@@ -104,9 +104,7 @@ export function searchContents(
 /** 替换单条匹配；行列对不上时后端会报「内容已经变了」，让用户重新搜索 */
 export function replaceOne(request: {
   path: string;
-  line: number;
-  column: number;
-  length: number;
+  position: { line: number; column: number; length: number };
   query: string;
   options: SearchOptions;
   replacement: string;
