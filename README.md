@@ -35,6 +35,16 @@ cd src-tauri && cargo test --lib   # 后端测试（路径沙箱 + PTY 往返 + 
 
 环境：Rust 1.98+、Node 24+、pnpm 11+、WebView2（Windows 10/11 自带）。
 
+### 打包与发布
+
+`pnpm tauri build` 产出两个安装包，都在 `src-tauri/target/release/bundle/` 下：`msi/CodeDock_<版本>_x64_zh-CN.msi`（WiX 打的 MSI）和 `nsis/CodeDock_<版本>_x64-setup.exe`（NSIS 打的 exe），两个都是中文安装界面。
+
+发行者「硅原子」写在两处：`src-tauri/tauri.conf.json` 的 `bundle.publisher`，以及 `Cargo.toml` 的 `authors`。`publisher` 不写的话默认取 identifier 的第二段（也就是 `codedock`），而且它只在 Windows 安装包和 deb 的 Maintainer 上生效，所以两处都写才一致。
+
+**中文发行者必须同时把安装包语言配成中文**：MSI 的数据库代码页跟着 WiX 语言走（`en-US` → 1252），装不下中文字符，`light.exe` 会报 `LGHT0311: A string was provided with characters that are not available in the specified database code page '1252'`——而 Tauri 只把它显示成一句 `failed to run light.exe`，看不出原因，得手动到 `target/release/wix/x64/` 下重跑一遍 `light.exe -ext WixUIExtension -ext WixUtilExtension -cultures:en-US -loc locale.wxl main.wixobj -o test.msi` 才能看到真正的报错。所以 `bundle.windows.wix.language` 是 `zh-CN`（代码页 936），`bundle.windows.nsis.languages` 是 `["SimpChinese"]`。
+
+**发布者 ≠ 代码签名**：`publisher` 只是写进安装包元数据（MSI 的 Manufacturer 属性、NSIS 写进注册表 `Uninstall\...\Publisher`，也就是"程序和功能"里显示的那个），用户双击安装包时 SmartScreen 仍会提示"未知发布者"。要消除得买代码签名证书，再配 `bundle.windows.certificateThumbprint`。
+
 ### 验证界面（无头）
 
 `scripts/cdp-check.cjs` 通过 WebView2 的 CDP 端口做截图 / 求值 / 模拟输入，用来在不开图形界面的情况下验证界面：
