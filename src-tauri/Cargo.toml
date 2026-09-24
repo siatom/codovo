@@ -27,6 +27,9 @@ base64 = "0.22"
 tauri-plugin-opener = "2.5.5"
 regex = "1.13.1"
 notify = "8.2"
+# AI 生成提交信息用。自带 rustls 而不是 native-tls：不带 OpenSSL 依赖，
+# 三端统一。注意 reqwest 0.13 起该特性叫 `rustls`（不再是 rustls-tls）。
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

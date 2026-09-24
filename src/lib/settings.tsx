@@ -18,6 +18,12 @@ export interface AiCommand {
 export interface Settings {
   /** 终端工具条上 AI CLI 按钮可选的配置；多于一个时点按钮给下拉选择 */
   aiCommands: AiCommand[];
+  /** AI 生成提交信息：OpenAI 兼容接口的基地址，如 https://api.deepseek.com/v1 */
+  aiBaseUrl: string;
+  /** AI 生成提交信息用的模型名，如 deepseek-chat */
+  aiModel: string;
+  /** AI 接口密钥；明文存 localStorage，与其余设置一致 */
+  aiApiKey: string;
   /** 终端字体（CSS font-family），留空用默认 */
   terminalFontFamily: string;
   /** 终端字号（px） */
@@ -71,6 +77,10 @@ const DEFAULTS: Settings = {
     { name: "claude", command: "claude" },
     { name: "codebuddy", command: "codebuddy" },
   ],
+  // 接口地址和模型留空：不预置某一家厂商，让用户自己填
+  aiBaseUrl: "",
+  aiModel: "",
+  aiApiKey: "",
   terminalFontFamily: "",
   terminalFontSize: 13,
   terminalFontBold: false,
@@ -136,6 +146,9 @@ function readSaved(): Settings {
 
   return {
     aiCommands,
+    aiBaseUrl: asString(raw.aiBaseUrl, DEFAULTS.aiBaseUrl),
+    aiModel: asString(raw.aiModel, DEFAULTS.aiModel),
+    aiApiKey: asString(raw.aiApiKey, DEFAULTS.aiApiKey),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
     terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),

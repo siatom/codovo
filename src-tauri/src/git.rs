@@ -663,6 +663,50 @@ fn files_of(state: &FsState, rev: &str) -> Result<Vec<CommitFile>, String> {
     Ok(parse_name_status(&raw, &prefix, &root))
 }
 
+/// 生成提交信息要喂给大模型的原料。放在 git 模块里取，是因为 `GitStatus`
+/// 的字段是模块私有的，别的模块读不到；一次取全也省得跨模块拼几条零散命令。
+pub struct CommitContext {
+    /// `diff --cached` 的原文
+    pub diff: String,
+    /// 当前分支；游离 HEAD 或空仓库时为 None
+    pub branch: Option<String>,
+    /// 最近几条提交的主题，给模型当措辞参考
+    pub recent_subjects: Vec<String>,
+}
+
+/// 取暂存区 diff + 分支 + 近期提交主题。全走只读的 `run_git`，
+/// 非 0 退出（空仓库的 log、游离 HEAD 的 rev-parse）当"没有"处理，不算错误。
+pub(crate) fn commit_context(state: &FsState) -> Result<CommitContext, String> {
+    let root = state.root()?;
+
+    // 游离 HEAD 时 `--abbrev-ref` 输出字面量 "HEAD"，等于没有分支名
+    let branch = run_git(&root, &["rev-parse", "--abbrev-ref", "HEAD"])?
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|name| !name.is_empty() && name != "HEAD");
+
+    // 空仓库里没有提交，git log 非 0 退出 → None → 空列表
+    let recent_subjects = run_git(&root, &["log", "-5", "--format=%s"])?
+        .map(|bytes| {
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // --no-color 保证没有 ANSI 序列；二进制文件默认只出 "Binary files ... differ"。
+    // 空仓库（还没有 HEAD）时 --cached 按空树比，照样能列出已暂存的新增。
+    let diff = run_git(&root, &["diff", "--cached", "--no-color"])?
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .unwrap_or_default();
+
+    Ok(CommitContext {
+        diff,
+        branch,
+        recent_subjects,
+    })
+}
+
 #[tauri::command(async)]
 pub fn git_status(state: tauri::State<'_, FsState>) -> Result<GitStatus, String> {
     status_of(&state)

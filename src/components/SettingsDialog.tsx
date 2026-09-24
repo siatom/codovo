@@ -32,6 +32,7 @@ const TABS = [
   { id: "appearance", label: "外观" },
   { id: "terminal", label: "终端" },
   { id: "editor", label: "编辑器" },
+  { id: "ai", label: "AI" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -611,6 +612,48 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       <span className="shrink-0 text-[12px] text-fg-dim">毫秒</span>
                     </Field>
                   )}
+                </>
+              )}
+
+              {tab === "ai" && (
+                <>
+                  <p className="text-[11px] leading-relaxed text-fg-faint">
+                    「变更」面板里的「生成」按钮用它按暂存区改动写提交信息。任何
+                    OpenAI 兼容的接口都能用，填基地址即可，密钥只存在本机。
+                  </p>
+                  <Field
+                    label="接口地址"
+                    hint="例如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）"
+                  >
+                    <input
+                      type="text"
+                      value={settings.aiBaseUrl}
+                      spellCheck={false}
+                      placeholder="https://api.openai.com/v1"
+                      onChange={(event) => update({ aiBaseUrl: event.target.value })}
+                      className={TEXT_INPUT}
+                    />
+                  </Field>
+                  <Field label="模型" hint="按接口文档填，例如 gpt-4o-mini、deepseek-chat">
+                    <input
+                      type="text"
+                      value={settings.aiModel}
+                      spellCheck={false}
+                      placeholder="gpt-4o-mini"
+                      onChange={(event) => update({ aiModel: event.target.value })}
+                      className={TEXT_INPUT}
+                    />
+                  </Field>
+                  <Field label="API 密钥">
+                    <input
+                      type="password"
+                      value={settings.aiApiKey}
+                      spellCheck={false}
+                      placeholder="sk-…"
+                      onChange={(event) => update({ aiApiKey: event.target.value })}
+                      className={TEXT_INPUT}
+                    />
+                  </Field>
                 </>
               )}
             </div>

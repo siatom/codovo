@@ -24,6 +24,8 @@ import {
   type GitController,
   type GitMark,
 } from "../lib/git";
+import { generateCommitMessage } from "../lib/ai";
+import { useSettings } from "../lib/settings";
 import type { DiffSource } from "../lib/tabs";
 import type { GitCommit, GitCommitFile, GitStatusPayload } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
@@ -34,6 +36,7 @@ import {
   IconMinus,
   IconPlus,
   IconRefresh,
+  IconSparkle,
 } from "./icons";
 
 interface GitChangesPaneProps {
@@ -118,6 +121,10 @@ const TEXT_INPUT =
 const COMMIT_BUTTON =
   "shrink-0 rounded border border-accent-line px-2 py-0.5 text-[11px] text-accent-soft hover:bg-active disabled:opacity-50";
 
+/** AI 生成：比提交弱一档的次要按钮，别抢了主操作的颜色 */
+const GENERATE_BUTTON =
+  "flex shrink-0 items-center gap-1 rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+
 const GROUP_ACTION =
   "shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent";
 
@@ -125,8 +132,9 @@ const GROUP_ACTION =
 const ROW_ACTION =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 disabled:opacity-0";
 
-/** 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上 */
-type Busy = null | "stage" | "unstage" | "commit";
+/** 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
+ *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。 */
+type Busy = null | "stage" | "unstage" | "commit" | "generate";
 
 function ChangeRow({
   change,
@@ -270,6 +278,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const [logRevision, setLogRevision] = useState(0);
 
   const { snapshot, refresh, applyStatus } = git;
+  const { settings } = useSettings();
   const { changes } = snapshot;
 
   const staged = useMemo(() => changes.filter(isStaged), [changes]);
@@ -277,12 +286,14 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
   /** 写操作统一走这里：全程禁用其它写按钮，失败就把 git 的报错摆出来 */
   const run = useCallback(
-    async (kind: Exclude<Busy, null>, task: () => Promise<GitStatusPayload>) => {
+    async (kind: Exclude<Busy, null>, task: () => Promise<GitStatusPayload | void>) => {
       setBusy(kind);
       setError(null);
       try {
-        // 写命令已经把新状态带回来了，直接落地，不用等下一个轮询周期
-        applyStatus(await task());
+        // 写命令已经把新状态带回来了，直接落地，不用等下一个轮询周期；
+        // 生成只填提交框、不动 git，返回空值时就跳过状态更新
+        const payload = await task();
+        if (payload) applyStatus(payload);
       } catch (reason) {
         setError(String(reason));
       } finally {
@@ -301,6 +312,24 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
       return payload;
     });
   }, [message, run]);
+
+  /** 让 AI 按暂存区改动生成提交信息，填进框里由用户自己确认，不自动提交 */
+  const generate = useCallback(() => {
+    const { aiBaseUrl, aiModel, aiApiKey } = settings;
+    if (!aiBaseUrl.trim() || !aiModel.trim() || !aiApiKey.trim()) {
+      setError("请先在「设置 → AI」里填写接口地址、模型和密钥");
+      return;
+    }
+    void run("generate", async () => {
+      setMessage(
+        await generateCommitMessage({
+          baseUrl: aiBaseUrl.trim(),
+          apiKey: aiApiKey.trim(),
+          model: aiModel.trim(),
+        }),
+      );
+    });
+  }, [settings, run]);
 
   /** 手动刷新：状态和历史一起重拉，省得再放一个按钮 */
   const reloadAll = useCallback(() => {
@@ -409,6 +438,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   if (!snapshot.isRepo) return null;
 
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
+  const canGenerate = staged.length > 0 && busy === null;
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
@@ -446,6 +476,16 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" onClick={commit} disabled={!canCommit} className={COMMIT_BUTTON}>
             {busy === "commit" ? "提交中…" : "提交"}
+          </button>
+          <button
+            type="button"
+            onClick={generate}
+            disabled={!canGenerate}
+            title="用 AI 根据暂存区的改动生成提交信息"
+            className={GENERATE_BUTTON}
+          >
+            <IconSparkle className="h-3 w-3" />
+            {busy === "generate" ? "生成中…" : "生成"}
           </button>
           {staged.length === 0 && (
             <span className="min-w-0 truncate text-[11px] text-fg-faint">

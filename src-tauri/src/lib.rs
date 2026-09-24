@@ -1,3 +1,4 @@
+mod ai;
 mod fs_api;
 mod git;
 mod pty;
@@ -36,6 +37,7 @@ pub fn run() {
             git::git_file_diff,
             git::git_log,
             git::git_commit_files,
+            ai::ai_generate_commit_message,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
