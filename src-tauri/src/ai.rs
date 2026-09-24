@@ -16,14 +16,27 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_ERROR_CHARS: usize = 500;
 
 /// 系统提示写死在这里：产物只有一条提交信息，让模型自由发挥没有好处。
+/// 模板是固定的 Conventional Commits 格式，`<body>` / `<footer>` 没内容时
+/// 连同前面的空行一起省略——留空的段落比没有更糟。
 const SYSTEM_PROMPT: &str = "\
 你是 Git 提交信息助手，根据用户提供的暂存区改动写一条提交信息。
-硬性要求：
+必须严格使用下面的模板，不要增删结构：
+
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+
+规则：
 1. 只输出提交信息本身，不要任何解释、前言、代码块围栏或引号。
-2. 首行是一句话概括，不超过 72 个字符，用祈使句。
-3. 改动较多时，首行后空一行，再用「- 」列出简要要点。
-4. 语言跟「最近提交」保持一致；没有历史提交时用中文。
-5. 不要编造改动里没有的内容。";
+2. <type> 从这些里选一个：feat（新功能）、fix（修 bug）、docs（文档）、style（格式）、refactor（重构）、perf（性能）、test（测试）、build（构建/依赖）、ci（CI）、chore（杂项）、revert（回滚）。
+3. <scope> 是受影响的模块或目录名；实在无法归类时连同括号一起省略，写成 `type: subject`。
+4. <subject> 一句话概括，不超过 50 个字符，用祈使句，结尾不加句号。
+5. <body> 说明改了什么、为什么改，每行不超过 72 个字符；改动很小时整段连同它前面的空行一起省略。
+6. <footer> 放 BREAKING CHANGE 等不兼容变更说明；没有就整段连同它前面的空行一起省略。
+7. 语言跟「最近提交」保持一致；没有历史提交时用中文。
+8. 不要编造改动里没有的内容。";
 
 /// 前端传来的接口配置。三个字段都由用户填，空的话直接拒绝，不去打扰接口。
 #[derive(Debug, Deserialize)]
@@ -236,6 +249,18 @@ mod tests {
         assert!(user.contains("当前分支：main"));
         assert!(user.contains("- feat: 上一件事"));
         assert!(user.contains("+ 一行改动"));
+    }
+
+    #[test]
+    fn prompt_asks_for_the_conventional_template() {
+        let (system, _) = build_prompt(&context("+ 一行改动"));
+        assert!(system.contains("<type>(<scope>): <subject>"));
+        assert!(system.contains("<body>"));
+        assert!(system.contains("<footer>"));
+        // type 的候选得列全，否则模型会自己编
+        for kind in ["feat", "fix", "docs", "refactor", "chore"] {
+            assert!(system.contains(kind), "缺少 type: {kind}");
+        }
     }
 
     #[test]
