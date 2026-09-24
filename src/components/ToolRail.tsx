@@ -18,8 +18,8 @@ const BUTTON_OFF = "cursor-not-allowed text-fg-faint";
  */
 export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[] = [
   { id: "files", label: "文件", Icon: IconFile },
-  { id: "changes", label: "变更", Icon: IconBranch },
   { id: "search", label: "搜索", Icon: IconSearch },
+  { id: "changes", label: "变更", Icon: IconBranch },
   { id: "browser", label: "浏览器", Icon: IconGlobe },
 ];
 

@@ -216,7 +216,8 @@ export function Sidebar({
         })}
       </ul>
 
-      <footer className="flex shrink-0 flex-col gap-1 border-t border-line px-2 py-2">
+      {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面项目列表的空间 */}
+      <footer className="flex shrink-0 items-center gap-1 border-t border-line px-2 py-2">
         <button
           type="button"
           onClick={toggle}
