@@ -4,7 +4,7 @@ import {
   type TerminalSessionHandle,
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
-import { IconPanelRight, IconPanelRightOpen } from "./icons";
+import { IconPanelRight, IconPanelRightOpen, IconSparkle } from "./icons";
 
 interface TerminalPaneProps {
   /** 当前工作目录；null 表示用户还没选工作区，shell 落在用户主目录 */
@@ -124,11 +124,11 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
               type="button"
               onClick={() => setAiMenuOpen((open) => !open)}
               title="在当前终端中启动 AI CLI（可下拉选择命令）"
-              className={`flex items-center gap-1 rounded px-2 py-0.5 text-[11px] hover:bg-active hover:text-fg ${
+              className={`flex h-6 shrink-0 items-center gap-0.5 rounded px-1 hover:bg-active hover:text-fg ${
                 aiMenuOpen ? "bg-active text-fg" : "text-fg-dim"
               }`}
             >
-              AI CLI
+              <IconSparkle className="h-3.5 w-3.5" />
               <span className="text-[8px] leading-none">▼</span>
             </button>
             {aiMenuOpen && (
@@ -164,9 +164,9 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
                 ? "还没配置 AI CLI 命令，去设置里加一个"
                 : `在当前终端中启动 ${aiCommands[0].name || "未命名 AI CLI"}`
             }
-            className="shrink-0 rounded px-2 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            AI CLI
+            <IconSparkle className="h-3.5 w-3.5" />
           </button>
         )}
         {onToggleRight && (

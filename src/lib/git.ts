@@ -28,6 +28,8 @@ export interface GitChange {
 export interface GitSnapshot {
   isRepo: boolean;
   branch: string | null;
+  /** HEAD 的提交号；空仓库时是 null。变化即代表历史变了（提交/amend/reset/切换分支） */
+  head: string | null;
   ahead: number;
   behind: number;
   /** 改动条目总数；条目过多时可能大于 marks.size */
@@ -49,6 +51,7 @@ export interface GitController {
 const EMPTY: GitSnapshot = {
   isRepo: false,
   branch: null,
+  head: null,
   ahead: 0,
   behind: 0,
   changed: 0,
@@ -120,6 +123,7 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
   return {
     isRepo: payload.isRepo,
     branch: payload.branch,
+    head: payload.head,
     ahead: payload.ahead,
     behind: payload.behind,
     changed: payload.changed,

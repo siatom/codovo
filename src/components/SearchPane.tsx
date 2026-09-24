@@ -1,21 +1,50 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { replaceAll, replaceOne, searchContents } from "../lib/fs";
 import type { SearchFile, SearchMatch, SearchOptions, SearchResult } from "../lib/types";
-import { IconChevronDown, IconChevronRight, IconClose } from "./icons";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconClearResults,
+  IconClose,
+  IconRefresh,
+  IconReplaceAll,
+  IconWholeWord,
+} from "./icons";
 
 /** 打字停下来多久才真正发请求 */
 const SEARCH_DEBOUNCE_MS = 200;
 
-const SWITCHES: { key: keyof SearchOptions; label: string; title: string }[] = [
+const SWITCHES: { key: keyof SearchOptions; label: ReactNode; title: string }[] = [
   { key: "caseSensitive", label: "Aa", title: "区分大小写" },
-  { key: "wholeWord", label: "全字", title: "全字匹配" },
+  { key: "wholeWord", label: <IconWholeWord className="h-3.5 w-3.5" />, title: "全字匹配" },
   { key: "regex", label: ".*", title: "使用正则表达式" },
 ];
 
-const INPUT =
-  "min-w-0 flex-1 rounded border border-line-strong bg-surface px-1.5 py-1 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent disabled:opacity-50";
+/**
+ * 输入框做成"填充背景 + 无边框"的一块，开关直接塞在框里右端——
+ * 单独给每个开关画边框会把这一行切得七零八落。
+ * 底色用 active：深色下比面板亮一档、浅色下比面板暗一档，两套主题都看得出是个输入框
+ * （raised 太贴近面板底色，浅色主题里等于没填）。
+ * ring 不占布局，聚焦时变色不会让内容跳一下。
+ */
+const FIELD =
+  "flex min-w-0 items-center gap-0.5 rounded bg-active px-1.5 py-1 ring-1 ring-transparent focus-within:ring-accent-line";
 
-const SWITCH_ON = "bg-selected text-fg";
+const FIELD_INPUT =
+  "min-w-0 flex-1 bg-transparent text-[12px] text-fg outline-none placeholder:text-fg-faint disabled:opacity-50";
+
+const FIELD_BUTTON =
+  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg";
+
+/**
+ * 选中态用 accent 系的浅底 + 亮字：原来的 bg-selected 和输入框底色（active）
+ * 在深色主题下几乎一个色，压不住。
+ */
+const SWITCH_ON = "bg-accent-line text-accent-soft";
+
+/** 标题栏右侧那两个图标按钮，跟「文件」「变更」模块的头是同一套写法 */
+const HEADER_BUTTON =
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
 interface SearchPaneProps {
   /** 点一条结果：打开文件并跳到那一行那一列 */
@@ -97,6 +126,18 @@ export function SearchPane({
     });
   };
 
+  /**
+   * 清空这次搜索：关键词、替换内容、结果一起清掉，回到"还没搜过"的样子。
+   * 关键词也清，所以下面那两个输入框会一起空。
+   */
+  const clearSearch = () => {
+    setQuery("");
+    setReplacement("");
+    setResult(null);
+    setCollapsed(new Set());
+    setMessage(null);
+  };
+
   /** 替换前的公共部分：先落盘、再放行 */
   const prepare = async () => {
     if (!(await onBeforeReplace())) {
@@ -166,86 +207,117 @@ export function SearchPane({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-panel">
-      <header className="flex shrink-0 flex-col gap-1 border-b border-line px-2 py-2">
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setShowReplace((open) => !open)}
-            title={showReplace ? "收起替换" : "展开替换"}
-            className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
-          >
-            {showReplace ? (
-              <IconChevronDown className="h-3.5 w-3.5" />
-            ) : (
-              <IconChevronRight className="h-3.5 w-3.5" />
-            )}
-          </button>
-          <input
-            type="text"
-            value={query}
-            spellCheck={false}
-            disabled={busy}
-            placeholder="搜索"
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              // 不 stopPropagation 的话，Esc 会继续往上冒，被别处的关闭逻辑接走
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                setQuery("");
-              }
-            }}
-            className={INPUT}
-          />
-          {query && !busy && (
-            <button
-              type="button"
-              onClick={() => setQuery("")}
-              title="清空"
-              className="flex h-6 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg"
-            >
-              <IconClose className="h-3 w-3" />
-            </button>
-          )}
-          {SWITCHES.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() =>
-                setOptions((current) => ({ ...current, [item.key]: !current[item.key] }))
-              }
-              title={item.title}
-              className={`h-6 shrink-0 rounded px-1.5 text-[11px] leading-none ${
-                options[item.key] ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+      {/* 标题栏：重新搜索 / 清除结果。跟「文件」「变更」两个模块的头对齐 */}
+      <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
+        <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
+          搜索
+        </span>
+        <button
+          type="button"
+          onClick={() => setReloadKey((key) => key + 1)}
+          disabled={!query || busy}
+          title="重新搜索"
+          className={HEADER_BUTTON}
+        >
+          <IconRefresh className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={clearSearch}
+          disabled={!query && !replacement}
+          title="清除搜索"
+          className={HEADER_BUTTON}
+        >
+          <IconClearResults className="h-3.5 w-3.5" />
+        </button>
+      </div>
 
-        {showReplace && (
-          <div className="flex items-center gap-1">
-            <span className="w-5 shrink-0" />
+      {/* 展开/收起替换的箭头单独占左侧一列并纵向撑满：展开时它正好落在
+          搜索和替换两行中间，收起时就是搜索那一行居中 */}
+      <header className="flex shrink-0 items-stretch gap-1 border-b border-line px-2 py-2">
+        <button
+          type="button"
+          onClick={() => setShowReplace((open) => !open)}
+          title={showReplace ? "收起替换" : "展开替换"}
+          className="flex w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+        >
+          {showReplace ? (
+            <IconChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <IconChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className={FIELD}>
             <input
               type="text"
-              value={replacement}
+              value={query}
               spellCheck={false}
               disabled={busy}
-              placeholder="替换为"
-              onChange={(event) => setReplacement(event.target.value)}
-              className={INPUT}
+              placeholder="搜索"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                // 不 stopPropagation 的话，Esc 会继续往上冒，被别处的关闭逻辑接走
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  setQuery("");
+                }
+              }}
+              className={FIELD_INPUT}
             />
-            <button
-              type="button"
-              onClick={() => void runReplaceAll()}
-              disabled={busy || totalMatches === 0}
-              title="全部替换"
-              className="flex h-6 shrink-0 items-center rounded border border-accent-line px-1.5 text-[11px] text-accent-soft hover:bg-active disabled:opacity-40"
-            >
-              全部替换
-            </button>
+            {query && !busy && (
+              <button
+                type="button"
+                onClick={() => setQuery("")}
+                title="清空"
+                className={FIELD_BUTTON}
+              >
+                <IconClose className="h-3 w-3" />
+              </button>
+            )}
+            {SWITCHES.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() =>
+                  setOptions((current) => ({ ...current, [item.key]: !current[item.key] }))
+                }
+                title={item.title}
+                className={`flex h-5 shrink-0 items-center justify-center rounded px-1 text-[11px] leading-none ${
+                  options[item.key] ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
-        )}
+
+          {showReplace && (
+            <div className="flex items-center gap-1">
+              <div className={`${FIELD} flex-1`}>
+                <input
+                  type="text"
+                  value={replacement}
+                  spellCheck={false}
+                  disabled={busy}
+                  placeholder="替换为"
+                  onChange={(event) => setReplacement(event.target.value)}
+                  className={FIELD_INPUT}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void runReplaceAll()}
+                disabled={busy || totalMatches === 0}
+                title="全部替换"
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-accent-line text-accent-soft hover:bg-active disabled:opacity-40"
+              >
+                <IconReplaceAll className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto">

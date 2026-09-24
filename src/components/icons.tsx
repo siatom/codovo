@@ -324,6 +324,44 @@ export const IconSearch = icon(
 
 export const IconPlus = icon(<path d="M12 5v14M5 12h14" />);
 
+/** 搜索面板的「全部替换」：上下两条反向箭头，表示整体换掉 */
+export const IconReplaceAll = icon(
+  <>
+    <path d="M6 8.5h12" />
+    <path d="m15.5 6 2.5 2.5-2.5 2.5" />
+    <path d="M18 15.5H6" />
+    <path d="m8.5 13-2.5 2.5 2.5 2.5" />
+  </>,
+);
+
+/** 清除搜索结果：左边是结果列表，右边一个叉。用它而不是普通 IconClose，
+ *  免得被当成"关闭面板" */
+export const IconClearResults = icon(
+  <>
+    <path d="M4 7h8M4 12h8M4 17h8" />
+    <path d="m14 9 6 6M20 9l-6 6" />
+  </>,
+);
+
+/** 终端工具条上的「启动 AI CLI」：四角星，AI 的通用符号 */
+export const IconSparkle = icon(
+  <path d="M12 3.6 14 10l6.4 2-6.4 2-2 6.4-2-6.4L3.6 12 10 10Z" />,
+);
+
+/**
+ * 全字匹配：带下划线的 ab（编辑器里约定俗成的写法）。
+ * 和旁边"Aa"".*"两个开关一样是个字形，不是示意图标。
+ */
+export const IconWholeWord = icon(
+  <>
+    <path d="M4.6 17.6h14.8" />
+    <circle cx="8.2" cy="11.6" r="2.4" />
+    <path d="M10.6 9.2v4.8" />
+    <path d="M15 6.4V14" />
+    <path d="M15 9.2a2.4 2.4 0 1 1 0 4.8" />
+  </>,
+);
+
 export const IconMinus = icon(<path d="M5 12h14" />);
 
 export const IconBranch = icon(

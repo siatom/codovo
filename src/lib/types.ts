@@ -27,6 +27,8 @@ export interface GitFileStatus {
 export interface GitStatusPayload {
   isRepo: boolean;
   branch: string | null;
+  /** HEAD 的提交号；空仓库（还没提交过）时是 null */
+  head: string | null;
   ahead: number;
   behind: number;
   /** 改动条目总数；条目过多时可能大于 files.length */

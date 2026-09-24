@@ -355,9 +355,11 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     }
   };
 
-  // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git
+  // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git。
+  // 还要盯住 HEAD：在终端里 commit / amend / reset 之后，改动列表靠 2 秒轮询
+  // 能自己变好，历史不会，只有 HEAD 动了才说明提交列表该重拉。
   useEffect(() => {
-    if (logCollapsed) return;
+    if (logCollapsed || !snapshot.isRepo) return;
     let cancelled = false;
     void gitLog(logLimit)
       .then((list) => {
@@ -373,7 +375,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     return () => {
       cancelled = true;
     };
-  }, [logCollapsed, logLimit, logRevision]);
+  }, [logCollapsed, logLimit, logRevision, snapshot.isRepo, snapshot.head]);
 
   // 展开某条提交时才去拉它的文件列表，拉过就留着
   useEffect(() => {

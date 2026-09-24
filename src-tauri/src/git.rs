@@ -35,6 +35,10 @@ pub struct FileStatus {
 pub struct GitStatus {
     is_repo: bool,
     branch: Option<String>,
+    /// HEAD 指向的提交号；还没提交过（`(initial)`）时为 None。
+    /// 前端拿它的变化当"历史该重拉了"的信号——在终端里 commit/amend/reset
+    /// 之后，改动列表靠轮询能自己好，提交历史不会。
+    head: Option<String>,
     ahead: u32,
     behind: u32,
     /// 改动条目总数，可能大于 files.len()（见 MAX_ENTRIES）
@@ -47,6 +51,7 @@ impl GitStatus {
         Self {
             is_repo: false,
             branch: None,
+            head: None,
             ahead: 0,
             behind: 0,
             changed: 0,
@@ -284,6 +289,11 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
         if let Some(head) = text.strip_prefix("# branch.head ") {
             // detached HEAD 时这里是字面量 "(detached)"，没有分支名可显示
             status.branch = Some(head.to_string()).filter(|name| name != "(detached)");
+            continue;
+        }
+        if let Some(oid) = text.strip_prefix("# branch.oid ") {
+            // 空仓库（还没有任何提交）时这里是字面量 "(initial)"
+            status.head = Some(oid.to_string()).filter(|oid| oid != "(initial)");
             continue;
         }
         if let Some(ab) = text.strip_prefix("# branch.ab ") {
@@ -753,8 +763,20 @@ mod tests {
 
         assert!(status.is_repo);
         assert_eq!(status.branch.as_deref(), Some("main"));
+        assert_eq!(status.head.as_deref(), Some("1234567890abcdef"));
         assert_eq!((status.ahead, status.behind), (2, 3));
         assert_eq!(status.changed, 0);
+    }
+
+    #[test]
+    fn a_repo_without_commits_has_no_head() {
+        let status = parse_status(
+            &output(&["# branch.oid (initial)", "# branch.head main"]),
+            "",
+            &workspace(),
+        );
+        assert_eq!(status.head, None);
+        assert_eq!(status.branch.as_deref(), Some("main"));
     }
 
     #[test]
