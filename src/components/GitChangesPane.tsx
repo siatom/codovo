@@ -10,6 +10,7 @@ import {
 import {
   gitCommit,
   gitCommitFiles,
+  gitDiscard,
   gitFetch,
   gitLog,
   gitPull,
@@ -30,8 +31,9 @@ import {
 import { generateCommitMessage } from "../lib/ai";
 import { useSettings } from "../lib/settings";
 import type { DiffSource } from "../lib/tabs";
-import type { GitCommit, GitCommitFile, GitStatusPayload } from "../lib/types";
+import type { GitCommit, GitCommitFile, GitStatusPayload, DiscardSource } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
+import { ConfirmDialog } from "./ConfirmDialog";
 import {
   IconArrowDownToLine,
   IconArrowUpFromLine,
@@ -43,6 +45,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSparkle,
+  IconUndo,
 } from "./icons";
 
 interface GitChangesPaneProps {
@@ -51,11 +54,50 @@ interface GitChangesPaneProps {
   onOpen: (path: string, source: DiffSource) => void;
 }
 
+/** 待确认的放弃修改。确认框弹出前先把要放弃的东西记在这里 */
+interface PendingDiscard {
+  paths: string[];
+  source: DiscardSource;
+  /** 展示用：文件名，或者"N 个文件" */
+  what: string;
+}
+
 /** 提交历史一次拉多少条，「加载更多」再叠加 */
 const LOG_PAGE = 50;
 
 /** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
 const MESSAGE_MAX_ROWS = 5;
+
+const MESSAGE_HEIGHT_KEY = "codedock.commitMessageHeight";
+
+/** 手动拖高时，下面至少要留出来的空间：按钮行 + 报错位 + 两三行改动列表 */
+const MESSAGE_RESERVED_BELOW = 160;
+
+/** 拖出来的高度记在 localStorage；没拖过（或存的值不合法）返回 null，表示随内容长高 */
+function readMessageHeight(): number | null {
+  try {
+    const saved = Number(window.localStorage.getItem(MESSAGE_HEIGHT_KEY));
+    if (Number.isFinite(saved) && saved > 0) return saved;
+  } catch {
+    // 读不到就按自动长高算
+  }
+  return null;
+}
+
+/**
+ * 提交框的行高 / 内边距 / 边框。把"几行"和像素互相换算要用它。
+ * 行高必须先定死（textarea 上有 `leading-4`）：不写死的话 getComputedStyle
+ * 会返回 "normal"，算不出"几行"是多少像素。
+ */
+function messageMetrics(el: HTMLTextAreaElement) {
+  const styles = window.getComputedStyle(el);
+  const line = Number.parseFloat(styles.lineHeight);
+  const border =
+    Number.parseFloat(styles.borderTopWidth) + Number.parseFloat(styles.borderBottomWidth);
+  const padding =
+    Number.parseFloat(styles.paddingTop) + Number.parseFloat(styles.paddingBottom);
+  return { line, border, padding, oneRow: line + padding + border };
+}
 
 const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed";
 const LOG_HEIGHT_KEY = "codedock.commitLogHeight";
@@ -137,14 +179,43 @@ const GENERATE_BUTTON =
 const GROUP_ACTION =
   "shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent";
 
+/** 破坏性操作（放弃修改）：平时和 GROUP_ACTION 一样，悬停时才转成危险色 */
+const GROUP_DANGER =
+  "shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-danger disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-faint";
+
 /** 行内操作按钮：平时藏起来，悬停或键盘聚焦时才出现并接受点击 */
 const ROW_ACTION =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 disabled:opacity-0";
 
+/** 行内的放弃修改：同样是悬停才出现，悬停转危险色 */
+const ROW_DANGER =
+  "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-danger focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 disabled:opacity-0";
+
 /** 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
  *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。
  *  fetch/pull/push 是网络操作，跑起来可能要几分钟，更不能叠着发。 */
-type Busy = null | "stage" | "unstage" | "commit" | "generate" | "fetch" | "pull" | "push";
+type Busy =
+  | null
+  | "stage"
+  | "unstage"
+  | "discard"
+  | "commit"
+  | "generate"
+  | "fetch"
+  | "pull"
+  | "push";
+
+/**
+ * 能不能「放弃修改」。
+ *
+ * 新文件放弃等于把文件删掉（HEAD 里没有这个路径，还原过去就是删），
+ * 和"未跟踪文件不给按钮"是同一条理由：不做会删文件的破坏性操作。
+ * 未跟踪的 `?`、暂存区里新增的 `A` 都排除掉。空仓库里所有暂存文件都是 `A`，
+ * 所以空仓库天然不支持放弃暂存改动。
+ */
+function canDiscard(change: GitChange, staged: boolean): boolean {
+  return staged ? change.index !== "A" : change.worktree !== "?";
+}
 
 /** 标题栏那几个图标按钮的样式，和刷新按钮同一套 */
 const HEADER_ACTION =
@@ -163,6 +234,7 @@ function ChangeRow({
   busy,
   onOpen,
   onToggle,
+  onDiscard,
 }: {
   change: GitChange;
   /** true = 在"暂存的改动"组里，行内按钮是取消暂存 */
@@ -170,6 +242,7 @@ function ChangeRow({
   busy: boolean;
   onOpen: (path: string, source: DiffSource) => void;
   onToggle: (path: string) => void;
+  onDiscard: (path: string) => void;
 }) {
   const slash = change.relative.lastIndexOf("/");
   const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
@@ -190,16 +263,32 @@ function ChangeRow({
         <span className="min-w-0 truncate text-fg-muted">{name}</span>
         {dir && <span className="min-w-0 truncate text-[11px] text-fg-faint">{dir}</span>}
       </button>
-      <GitMarkBadge mark={mark} className="text-[10px]" />
-      <button
-        type="button"
-        onClick={() => onToggle(change.path)}
-        disabled={busy}
-        title={staged ? "取消暂存" : "暂存"}
-        className={ROW_ACTION}
-      >
-        {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
-      </button>
+      {/* 右侧这一串（状态徽标 + 操作图标）单独成组：行上的 gap-1.5 对它们太松，
+          组内压到 gap-0.5 更紧凑；命中区仍是 20px，不为了紧凑牺牲点击 */}
+      <div className="flex shrink-0 items-center gap-0.5">
+        <GitMarkBadge mark={mark} className="text-[10px]" />
+        {/* 放弃修改排在暂存按钮左边（和 VS Code 一致）。它带确认，误点还能取消 */}
+        {canDiscard(change, staged) && (
+          <button
+            type="button"
+            onClick={() => onDiscard(change.path)}
+            disabled={busy}
+            title={staged ? "放弃修改（还原到 HEAD）" : "放弃修改（还原到暂存区）"}
+            className={ROW_DANGER}
+          >
+            <IconUndo className="h-3 w-3" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onToggle(change.path)}
+          disabled={busy}
+          title={staged ? "取消暂存" : "暂存"}
+          className={ROW_ACTION}
+        >
+          {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
+        </button>
+      </div>
     </div>
   );
 }
@@ -280,7 +369,13 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  /** null = 随内容长高；拖过之后是固定高度（px），内容多了自己滚动 */
+  const [messageHeight, setMessageHeight] = useState<number | null>(readMessageHeight);
+  const [draggingMessage, setDraggingMessage] = useState(false);
   const messageRef = useRef<HTMLTextAreaElement>(null);
+  /** 提交框拖动的起点，null 表示没在拖 */
+  const messageDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   // 提交历史
   const [logCollapsed, setLogCollapsed] = useState(readLogCollapsed);
@@ -305,6 +400,15 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
   const staged = useMemo(() => changes.filter(isStaged), [changes]);
   const unstaged = useMemo(() => changes.filter(isUnstaged), [changes]);
+  // 「全部放弃」只覆盖能放弃的那些，新文件不在内（见 canDiscard）
+  const stagedDiscardable = useMemo(
+    () => staged.filter((change) => canDiscard(change, true)),
+    [staged],
+  );
+  const unstagedDiscardable = useMemo(
+    () => unstaged.filter((change) => canDiscard(change, false)),
+    [unstaged],
+  );
 
   /** 写操作统一走这里：全程禁用其它写按钮，失败就把 git 的报错摆出来 */
   const run = useCallback(
@@ -377,6 +481,38 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     void run("push", gitPush);
   }, [run]);
 
+  /**
+   * 放弃修改不可撤销，落手前先记下来弹确认框，用户点了才真跑。
+   * `what` 是"哪个文件"或者"N 个文件"。
+   * 新文件不会走到这里——它们根本没有按钮（见 canDiscard）。
+   */
+  const discard = useCallback((paths: string[], source: DiscardSource, what: string) => {
+    setPendingDiscard({ paths, source, what });
+  }, []);
+
+  const confirmDiscard = useCallback(() => {
+    const pending = pendingDiscard;
+    if (!pending) return;
+    setPendingDiscard(null);
+    void run("discard", () => gitDiscard(pending.paths, pending.source));
+  }, [pendingDiscard, run]);
+
+  const discardAllStaged = useCallback(() => {
+    discard(
+      stagedDiscardable.map((change) => change.path),
+      { mode: "staged" },
+      `${stagedDiscardable.length} 个文件`,
+    );
+  }, [discard, stagedDiscardable]);
+
+  const discardAllUnstaged = useCallback(() => {
+    discard(
+      unstagedDiscardable.map((change) => change.path),
+      { mode: "unstaged" },
+      `${unstagedDiscardable.length} 个文件`,
+    );
+  }, [discard, unstagedDiscardable]);
+
   const setLogCollapsedPersisted = (next: boolean) => {
     setLogCollapsed(next);
     try {
@@ -421,6 +557,49 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
       window.localStorage.setItem(LOG_HEIGHT_KEY, String(logHeight));
     } catch {
       // 记不住就下次还是默认高度
+    }
+  };
+
+  /**
+   * 拖动提交框的下边缘改高度，和上面拖历史那条是同一套写法。
+   *
+   * 从当前实际高度起拖：没拖过时框是随内容长高的，高度不是 state，
+   * 得从 DOM 现量，否则一按下去就会跳成上次存的像素值。
+   */
+  const onMessageHandleDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const height = messageRef.current?.getBoundingClientRect().height ?? 0;
+    messageDragRef.current = { startY: event.clientY, startHeight: height };
+    setDraggingMessage(true);
+    document.body.classList.add("codedock-dragging-row");
+  };
+
+  const onMessageHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = messageDragRef.current;
+    const el = messageRef.current;
+    if (!drag || !el) return;
+    // 下限一行，上限看面板本身有多高——不然能把下面的改动列表挤没
+    const { oneRow } = messageMetrics(el);
+    const room = (panelRef.current?.clientHeight ?? 0) - MESSAGE_RESERVED_BELOW;
+    const limit = Math.max(oneRow, room);
+    const next = drag.startHeight + (event.clientY - drag.startY);
+    setMessageHeight(Math.min(limit, Math.max(oneRow, next)));
+  };
+
+  const onMessageHandleUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!messageDragRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    messageDragRef.current = null;
+    setDraggingMessage(false);
+    document.body.classList.remove("codedock-dragging-row");
+    try {
+      // 用 state 里最新的值：拖动过程中它一直在变
+      window.localStorage.setItem(MESSAGE_HEIGHT_KEY, String(messageHeight));
+    } catch {
+      // 记不住就下次还是随内容长高
     }
   };
 
@@ -483,6 +662,8 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
    * getComputedStyle 会返回 "normal"，算不出"几行"是多少像素。
    */
   const resizeMessage = useCallback(() => {
+    // 手动拖过高度之后就不再随内容长高了：否则一打字就把用户调好的高度顶回去
+    if (messageHeight !== null) return;
     const el = messageRef.current;
     if (!el) return;
     const styles = window.getComputedStyle(el);
@@ -497,7 +678,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     // box-sizing 是 border-box，指定高度含边框；scrollHeight 只量到 padding 为止
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight + border, max)}px`;
-  }, []);
+  }, [messageHeight]);
 
   useEffect(resizeMessage, [message, resizeMessage]);
 
@@ -601,7 +782,24 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           }}
           onKeyDown={onMessageKeyDown}
           placeholder="提交信息（Ctrl+Enter 提交）"
+          style={messageHeight === null ? undefined : { height: messageHeight }}
           className={`${TEXT_INPUT} shrink-0 resize-none leading-4`}
+        />
+
+        {/* 拖动条改提交框高度：拖过之后高度定死，内容多了框内自己滚动。
+            手柄做成本身就有 6px 高、再用负边距把上下 gap-1.5 抵消掉，
+            这样命中区够大又不多占地方；不额外铺透明层——那会盖住文本框底边收不到点击 */}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          onPointerDown={onMessageHandleDown}
+          onPointerMove={onMessageHandleMove}
+          onPointerUp={onMessageHandleUp}
+          onPointerCancel={onMessageHandleUp}
+          title="拖动调整提交框的高度"
+          className={`-my-1.5 h-1.5 shrink-0 cursor-row-resize rounded-full transition-colors ${
+            draggingMessage ? "bg-accent-strong" : "hover:bg-line-hover"
+          }`}
         />
 
         <div className="flex shrink-0 items-center gap-2">
@@ -646,6 +844,17 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
                   暂存的改动 ({staged.length})
                 </span>
+                {stagedDiscardable.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={discardAllStaged}
+                    disabled={busy !== null}
+                    title="放弃这个分组里所有文件的改动"
+                    className={GROUP_DANGER}
+                  >
+                    全部放弃
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void run("unstage", () => gitUnstage())}
@@ -664,6 +873,9 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   busy={busy !== null}
                   onOpen={onOpen}
                   onToggle={(path) => void run("unstage", () => gitUnstage([path]))}
+                  onDiscard={(path) =>
+                    discard([path], { mode: "staged" }, change.relative)
+                  }
                 />
               ))}
             </>
@@ -675,6 +887,17 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
                   改动 ({unstaged.length})
                 </span>
+                {unstagedDiscardable.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={discardAllUnstaged}
+                    disabled={busy !== null}
+                    title="放弃这个分组里所有文件的改动"
+                    className={GROUP_DANGER}
+                  >
+                    全部放弃
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void run("stage", () => gitStage())}
@@ -694,6 +917,9 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   busy={busy !== null}
                   onOpen={onOpen}
                   onToggle={(path) => void run("stage", () => gitStage([path]))}
+                  onDiscard={(path) =>
+                    discard([path], { mode: "unstaged" }, change.relative)
+                  }
                 />
               ))}
             </>
@@ -776,6 +1002,18 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           </div>
         )}
       </div>
+
+      {/* 弹框用 fixed 定位，挂在这儿不会挤到面板布局（祖先里没有 transform） */}
+      {pendingDiscard && (
+        <ConfirmDialog
+          message={`放弃 ${pendingDiscard.what} 的改动？将还原到${
+            pendingDiscard.source.mode === "staged" ? "上次提交（HEAD）" : "暂存区"
+          }的版本，无法撤销。`}
+          confirmLabel="放弃"
+          onConfirm={confirmDiscard}
+          onCancel={() => setPendingDiscard(null)}
+        />
+      )}
     </div>
   );
 }

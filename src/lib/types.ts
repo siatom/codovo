@@ -65,6 +65,12 @@ export interface GitCommitFile {
   status: string;
 }
 
+/**
+ * 「放弃修改」还原到哪一侧，和 DiffSource 同一个思路用标签枚举：
+ * 调用处一眼能看出语义，不用去翻 bool 的含义。
+ */
+export type DiscardSource = { mode: "unstaged" } | { mode: "staged" };
+
 /** 搜索的三个开关，和 VS Code 搜索框右边那排一致 */
 export interface SearchOptions {
   caseSensitive: boolean;

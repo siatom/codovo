@@ -33,7 +33,7 @@ const SYSTEM_PROMPT: &str = "\
 2. <type> 从这些里选一个：feat（新功能）、fix（修 bug）、docs（文档）、style（格式）、refactor（重构）、perf（性能）、test（测试）、build（构建/依赖）、ci（CI）、chore（杂项）、revert（回滚）。
 3. <scope> 是受影响的模块或目录名；实在无法归类时连同括号一起省略，写成 `type: subject`。
 4. <subject> 一句话概括，不超过 50 个字符，用祈使句，结尾不加句号。
-5. <body> 说明改了什么、为什么改，每行不超过 72 个字符；改动很小时整段连同它前面的空行一起省略。
+5. <body> 务必精简，只写改了什么、为什么改，不写「本次提交」「我们」这类废话。改动涉及多个点时按改动点归类、每个点单独一行并以 `- ` 开头分条列出，一条一句话、不展开细节；只有一个改动点就写成一句话。不要按文件逐个罗列。每行不超过 72 个字符。改动很小时整段连同它前面的空行一起省略。
 6. <footer> 放 BREAKING CHANGE 等不兼容变更说明；没有就整段连同它前面的空行一起省略。
 7. 语言跟「最近提交」保持一致；没有历史提交时用中文。
 8. 不要编造改动里没有的内容。";
@@ -261,6 +261,9 @@ mod tests {
         for kind in ["feat", "fix", "docs", "refactor", "chore"] {
             assert!(system.contains(kind), "缺少 type: {kind}");
         }
+        // body 要精简、多个改动点分条列出，别退化成逐文件流水账
+        assert!(system.contains("精简"));
+        assert!(system.contains("分条"));
     }
 
     #[test]

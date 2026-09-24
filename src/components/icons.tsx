@@ -400,6 +400,14 @@ export const IconArrowUpFromLine = icon(
   </>,
 );
 
+/** 放弃修改：回退箭头。和 IconRefresh 的双向回转箭头区分开，免得被当成"刷新" */
+export const IconUndo = icon(
+  <>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11" />
+  </>,
+);
+
 /** 编辑态显示，点了进预览 */
 export const IconEye = icon(
   <>

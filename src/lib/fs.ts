@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { DiffSource } from "./tabs";
 import type {
+  DiscardSource,
   FileContent,
   FileDiff,
   FileEntry,
@@ -159,6 +160,17 @@ export function gitStage(paths?: string[]): Promise<GitStatusPayload> {
 /** 取消暂存；不传 paths 表示全部取消。 */
 export function gitUnstage(paths?: string[]): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_unstage", { paths: paths ?? null });
+}
+
+/**
+ * 放弃某些文件的改动，还原到 index（unstaged）或 HEAD（staged）。**不可撤销**，
+ * 调用前必须先跟用户确认。paths 不能为空：丢弃按分组来，没有"全部"这个说法。
+ */
+export function gitDiscard(
+  paths: string[],
+  source: DiscardSource,
+): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_discard", { paths, source });
 }
 
 export function gitCommit(message: string): Promise<GitStatusPayload> {

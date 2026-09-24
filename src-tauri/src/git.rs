@@ -89,6 +89,18 @@ pub enum DiffSource {
     Commit { rev: String },
 }
 
+/// 放弃修改要还原到哪一侧。同样用标签枚举而不是一个 `staged: bool`：
+/// 调用处一眼能看出语义，也免得"true 到底是丢弃暂存还是丢弃工作区"这种
+/// 要翻签名才明白的代码。
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum DiscardSource {
+    /// 工作区 → index。暂存区里的改动留着（「改动」组）
+    Unstaged,
+    /// 工作区 + index → HEAD，暂存的和未暂存的改动一起丢（「暂存的改动」组）
+    Staged,
+}
+
 /// 提交历史里的一条。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -487,6 +499,38 @@ fn unstage_paths(state: &FsState, paths: &Option<Vec<String>>) -> Result<GitStat
     status_of(state)
 }
 
+/// 放弃某些文件的改动。
+///
+/// 两种还原目标对应界面上的两个分组，语义不同，不能合成一条命令：
+/// - `Unstaged` 只动工作区（`restore --worktree`，源是 index），暂存区里
+///   已经放好的改动留着——这样 `MM` 这种文件在两个组里各放弃一次是两件事。
+/// - `Staged` 把 index 和工作区一起还原到 HEAD，也就是"这个文件回到上次提交的样子"。
+///
+/// 不接受空路径，也不提供"全部"：丢弃是按分组来的，两个分组的还原目标不一样，
+/// 用 pathspec `.` 一把梭会把另一组的改动也带上。
+///
+/// 新增的文件（HEAD 里没有、index 里是 `A`）不在支持范围内：还原到 HEAD 等于
+/// 把文件删掉。前端据此不给按钮，要删就去终端或文件管理器。
+fn discard_paths(
+    state: &FsState,
+    paths: &[String],
+    source: &DiscardSource,
+) -> Result<GitStatus, String> {
+    if paths.is_empty() {
+        return Err("没有指定要放弃的文件".to_string());
+    }
+    let root = state.root()?;
+    let specs = pathspecs(state, &root, paths)?;
+
+    let mut args: Vec<&str> = match source {
+        DiscardSource::Unstaged => vec!["restore", "--worktree", "--"],
+        DiscardSource::Staged => vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"],
+    };
+    args.extend(specs.iter().map(String::as_str));
+    run_git_checked(&root, &args)?;
+    status_of(state)
+}
+
 fn commit_staged(state: &FsState, message: &str) -> Result<GitStatus, String> {
     if message.trim().is_empty() {
         return Err("提交信息不能为空".to_string());
@@ -830,6 +874,16 @@ pub fn git_unstage(
     unstage_paths(&state, &paths)
 }
 
+/// 放弃某些文件的改动，还原到 index（unstaged）或 HEAD（staged）。不可撤销。
+#[tauri::command(async)]
+pub fn git_discard(
+    state: tauri::State<'_, FsState>,
+    paths: Vec<String>,
+    source: DiscardSource,
+) -> Result<GitStatus, String> {
+    discard_paths(&state, &paths, &source)
+}
+
 /// 提交暂存区。
 #[tauri::command(async)]
 pub fn git_commit(
@@ -1089,6 +1143,12 @@ mod tests {
 
     fn path_of_file(repo: &Path, name: &str) -> String {
         repo.join(name).to_string_lossy().to_string()
+    }
+
+    /// 读文本并抹平行尾：本机 core.autocrlf 会把检出时的 LF 变成 CRLF，
+    /// 直接比字符串会挂在行尾上
+    fn read_text(path: &Path) -> String {
+        fs::read_to_string(path).unwrap().replace("\r\n", "\n")
     }
 
     fn cleanup(top: &Path) {
@@ -1580,6 +1640,104 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative, "gone.txt");
         assert_eq!(files[0].status, 'D');
+
+        cleanup(&top);
+    }
+
+    // ---- 放弃修改：同样是跑真 git 的用例 ----
+
+    #[test]
+    fn discard_needs_an_explicit_path() {
+        // 不做"全部"：两个分组的还原目标不一样，pathspec `.` 会把另一组也带上
+        let (state, _repo, top) = temp_repo();
+        let error = discard_paths(&state, &[], &DiscardSource::Unstaged).unwrap_err();
+        assert!(error.contains("没有指定"), "{error}");
+        cleanup(&top);
+    }
+
+    #[test]
+    fn discarding_the_worktree_restores_it_from_the_index() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo.join("app.ts");
+        fs::write(&file, "one\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        fs::write(&file, "two\n").unwrap();
+        assert_eq!(status_of(&state).unwrap().files.len(), 1);
+
+        let after = discard_paths(
+            &state,
+            &[path_of_file(&repo, "app.ts")],
+            &DiscardSource::Unstaged,
+        )
+        .unwrap();
+        assert_eq!(read_text(&file), "one\n");
+        assert!(after.files.is_empty(), "工作区回到 index 后就该是干净的");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn discarding_a_staged_change_reverts_index_and_worktree_to_head() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo.join("app.ts");
+        fs::write(&file, "one\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        fs::write(&file, "two\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+
+        let after = discard_paths(
+            &state,
+            &[path_of_file(&repo, "app.ts")],
+            &DiscardSource::Staged,
+        )
+        .unwrap();
+        assert_eq!(read_text(&file), "one\n");
+        assert!(after.files.is_empty(), "index 和工作区都该回到 HEAD");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn discarding_the_worktree_keeps_what_is_staged() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo.join("app.ts");
+        fs::write(&file, "one\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        // 先暂存一版、再在工作区改一版，状态就是 MM
+        fs::write(&file, "two\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        fs::write(&file, "three\n").unwrap();
+        let status = status_of(&state).unwrap();
+        assert_eq!((status.files[0].index, status.files[0].worktree), ('M', 'M'));
+
+        // 「改动」组的放弃只动工作区：回到 index 里的 "two"，暂存的那版留着
+        let after = discard_paths(
+            &state,
+            &[path_of_file(&repo, "app.ts")],
+            &DiscardSource::Unstaged,
+        )
+        .unwrap();
+        assert_eq!(read_text(&file), "two\n");
+        assert_eq!(after.files.len(), 1);
+        assert_eq!((after.files[0].index, after.files[0].worktree), ('M', '.'));
 
         cleanup(&top);
     }
