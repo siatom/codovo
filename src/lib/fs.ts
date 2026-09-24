@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { DiffSource } from "./tabs";
 import type {
@@ -129,6 +130,22 @@ export function readFile(path: string): Promise<FileContent> {
 
 export function writeFile(path: string, text: string): Promise<void> {
   return invoke("fs_write_file", { path, text });
+}
+
+export function createFile(path: string): Promise<void> {
+  return invoke("fs_create_file", { path });
+}
+
+export function createDirectory(path: string): Promise<void> {
+  return invoke("fs_create_directory", { path });
+}
+
+/**
+ * 工作区里的目录结构变了（后端监听 + 防抖后才发）。载荷是需要重新列一遍的
+ * 目录绝对路径，调用方自己决定哪些还没展开、不用管。
+ */
+export function onDirsChanged(handler: (dirs: string[]) => void): Promise<UnlistenFn> {
+  return listen<string[]>("fs-changed", (event) => handler(event.payload));
 }
 
 /** 当前工作区的 git 状态；目录不是仓库时 isRepo 为 false */

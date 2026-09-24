@@ -9,6 +9,14 @@ import {
   IconFolder,
 } from "./icons";
 
+export type CreateKind = "file" | "directory";
+
+export interface CreatingState {
+  kind: CreateKind;
+  parent: string;
+  value: string;
+}
+
 export interface TreeController {
   expanded: ReadonlySet<string>;
   loading: ReadonlySet<string>;
@@ -19,6 +27,11 @@ export interface TreeController {
   gitMarks: ReadonlyMap<string, GitMark>;
   toggle: (entry: FileEntry) => void;
   select: (entry: FileEntry) => void;
+  creating: CreatingState | null;
+  createError: string | null;
+  onCreateChange: (value: string) => void;
+  onCreateSubmit: () => void;
+  onCreateCancel: () => void;
 }
 
 interface FileTreeNodeProps {
@@ -36,6 +49,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const error = tree.errors.get(entry.path);
   const childEntries = tree.children.get(entry.path) ?? [];
   const mark = tree.gitMarks.get(pathKey(entry.path));
+  const isCreatingHere = isOpen && tree.creating?.parent === entry.path;
 
   return (
     <li>
@@ -79,8 +93,33 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
         </p>
       )}
 
-      {isOpen && childEntries.length > 0 && (
+      {isOpen && (isCreatingHere || childEntries.length > 0) && (
         <ul>
+          {isCreatingHere && tree.creating && (
+            <li>
+              <input
+                autoFocus
+                value={tree.creating.value}
+                onChange={(event) => tree.onCreateChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") tree.onCreateSubmit();
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    tree.onCreateCancel();
+                  }
+                }}
+                placeholder={tree.creating.kind === "file" ? "文件名" : "文件夹名"}
+                aria-label={tree.creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                className="mx-1 my-0.5 w-[calc(100%-8px)] rounded border border-accent bg-surface px-1.5 py-0.5 text-[12px] text-fg outline-none"
+                style={{ marginLeft: (depth + 1) * INDENT + 4 }}
+              />
+              {tree.createError && (
+                <p className="py-[2px] text-[11px] text-danger" style={{ paddingLeft: (depth + 1) * INDENT + 20 }}>
+                  {tree.createError}
+                </p>
+              )}
+            </li>
+          )}
           {childEntries.map((child) => (
             <FileTreeNode key={child.path} entry={child} depth={depth + 1} tree={tree} />
           ))}

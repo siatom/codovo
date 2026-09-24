@@ -64,7 +64,8 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// Windows 的 canonicalize 会带上 `\\?\` 前缀，直接和前端传来的路径比较会不相等。
-fn simplify(path: PathBuf) -> PathBuf {
+/// 目录监听拿到的路径也可能带这个前缀，所以对 watcher 也开放。
+pub(crate) fn simplify(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy().to_string();
     if let Some(rest) = text.strip_prefix(r"\\?\") {
         if rest.as_bytes().get(1) == Some(&b':') {
@@ -154,12 +155,21 @@ pub fn fs_root(state: tauri::State<'_, FsState>) -> Result<Option<String>, Strin
 }
 
 #[tauri::command]
-pub fn fs_set_root(state: tauri::State<'_, FsState>, path: String) -> Result<String, String> {
+pub fn fs_set_root(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, FsState>,
+    watch: tauri::State<'_, crate::watcher::WatchState>,
+    path: String,
+) -> Result<String, String> {
     let target = PathBuf::from(&path);
     if !target.is_dir() {
         return Err(format!("不是有效的目录: {path}"));
     }
-    Ok(display(&state.set_root(target)?))
+    let root = state.set_root(target)?;
+    // 换工作区顺带换监听。监听失败不影响用——文件树还有刷新按钮，
+    // 所以这里只吞掉错误，不把整个切换工作区搞失败
+    let _ = watch.watch(app, &root);
+    Ok(display(&root))
 }
 
 /// 列目录。抽出来是为了能在单元测试里直接验证过滤/排序规则。
@@ -195,7 +205,7 @@ pub fn fs_list_dir(state: tauri::State<'_, FsState>, path: String) -> Result<Vec
 }
 
 /// 搜索时整个跳过的目录名（小写比较）。这些目录动辄几万个文件，
-/// 不跳过一次搜索就能把界面卡住。
+/// 不跳过一次搜索就能把界面卡住。目录监听也用这份名单。
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     ".git",
@@ -214,6 +224,11 @@ const SKIP_DIRS: &[&str] = &[
     ".idea",
     "vendor",
 ];
+
+/// 这个名字的目录要不要在遍历/监听里跳过。大小写不敏感。
+pub(crate) fn is_skipped_dir(name: &str) -> bool {
+    SKIP_DIRS.contains(&name.to_lowercase().as_str())
+}
 
 /// 一次最多返回多少条。再多前端也画不动，而且用户不会往下翻。
 const MAX_HITS: usize = 300;
@@ -248,7 +263,7 @@ fn walk_files(root: &Path, on_file: &mut dyn FnMut(&Path) -> bool) -> bool {
 
             if kind.is_dir() {
                 let name = item.file_name().to_string_lossy().to_string();
-                if !SKIP_DIRS.contains(&name.to_lowercase().as_str()) {
+                if !is_skipped_dir(&name) {
                     stack.push(item.path());
                 }
                 continue;
@@ -336,6 +351,61 @@ pub fn fs_write_file(
 ) -> Result<(), String> {
     let file = resolve(&state, &path)?;
     fs::write(&file, text).map_err(|e| format!("写入文件失败 {}: {e}", display(&file)))
+}
+
+fn validate_create_target(state: &FsState, path: &str) -> Result<PathBuf, String> {
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "文件名无效".to_string())?;
+    if name.trim().is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+    {
+        return Err("文件名无效".to_string());
+    }
+
+    let target = resolve(state, path)?;
+    if target.exists() {
+        return Err(format!("目标已存在: {}", display(&target)));
+    }
+    let parent = target.parent().ok_or_else(|| "父目录无效".to_string())?;
+    let metadata =
+        fs::metadata(parent).map_err(|e| format!("父目录不存在 {}: {e}", display(parent)))?;
+    if !metadata.is_dir() {
+        return Err(format!("父路径不是目录: {}", display(parent)));
+    }
+    Ok(target)
+}
+
+/// 真正的创建逻辑抽出来，单测才能直接跑（`tauri::State` 在测试里造不出来）
+fn create_file_at(state: &FsState, path: &str) -> Result<(), String> {
+    let file = validate_create_target(state, path)?;
+    // 用 create_new 而不是 fs::write：写命令会静默覆盖同名文件，新建不该有这种副作用
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+        .map(|_| ())
+        .map_err(|e| format!("创建文件失败 {}: {e}", display(&file)))
+}
+
+fn create_directory_at(state: &FsState, path: &str) -> Result<(), String> {
+    let directory = validate_create_target(state, path)?;
+    // 只建一层：名称里带分隔符的中间目录不该被隐式创建出来
+    fs::create_dir(&directory).map_err(|e| format!("创建文件夹失败 {}: {e}", display(&directory)))
+}
+
+#[tauri::command]
+pub fn fs_create_file(state: tauri::State<'_, FsState>, path: String) -> Result<(), String> {
+    create_file_at(&state, &path)
+}
+
+#[tauri::command]
+pub fn fs_create_directory(state: tauri::State<'_, FsState>, path: String) -> Result<(), String> {
+    create_directory_at(&state, &path)
 }
 
 // ==================== 全工作区的内容搜索与替换 ====================
@@ -796,6 +866,87 @@ mod tests {
         assert!(names.contains(&".env"), "隐藏文件应该被列出: {names:?}");
         assert!(names.contains(&".github"), "隐藏目录应该被列出: {names:?}");
         assert_eq!(entries[0].name, ".github", "目录要排在文件前面: {names:?}");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn creates_a_file_and_a_directory() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+
+        let file = workspace.join("new.txt");
+        create_file_at(&state, file.to_str().unwrap()).unwrap();
+        assert!(file.is_file());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "", "新文件应该是空的");
+
+        let dir = workspace.join("src");
+        create_directory_at(&state, dir.to_str().unwrap()).unwrap();
+        assert!(dir.is_dir());
+        // 已有目录里再建一层文件
+        let nested = dir.join("main.rs");
+        create_file_at(&state, nested.to_str().unwrap()).unwrap();
+        assert!(nested.is_file());
+
+        // 中文和空格也要能建
+        let spaced = workspace.join("我的 笔记.md");
+        create_file_at(&state, spaced.to_str().unwrap()).unwrap();
+        assert!(spaced.is_file());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_to_overwrite_an_existing_target() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "original").unwrap();
+
+        assert!(create_file_at(&state, file.to_str().unwrap()).is_err(), "不能覆盖已有文件");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "original", "失败时不能动原文件");
+
+        let dir = workspace.join("src");
+        fs::create_dir(&dir).unwrap();
+        assert!(create_directory_at(&state, dir.to_str().unwrap()).is_err(), "不能覆盖已有目录");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rejects_a_missing_or_non_directory_parent() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+
+        // 父目录不存在：创建类操作用的是词法归一化，resolve 放行，由这一层拦住
+        let orphan = workspace.join("nope").join("a.txt");
+        assert!(create_file_at(&state, orphan.to_str().unwrap()).is_err());
+
+        // 父路径是个文件
+        let file = workspace.join("a.txt");
+        fs::write(&file, "").unwrap();
+        let below_file = file.join("a.txt");
+        assert!(create_file_at(&state, below_file.to_str().unwrap()).is_err());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn create_rejects_traversal_and_invalid_names() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+
+        let outside = root.join("outside.txt");
+        assert!(create_file_at(&state, outside.to_str().unwrap()).is_err(), "越界要拒绝");
+        assert!(!outside.exists());
+
+        for bad in ["", ".", ".."] {
+            let target = format!("{}/{}", workspace.to_string_lossy(), bad);
+            assert!(create_file_at(&state, &target).is_err(), "{bad:?} 不该被当成名称");
+        }
+
+        let dir = workspace.join("src");
+        fs::create_dir(&dir).unwrap();
+        assert!(
+            create_directory_at(&state, dir.join("a").join("b").to_str().unwrap()).is_err(),
+            "中间目录不存在时不该用 create_dir_all 造出来"
+        );
         fs::remove_dir_all(&root).ok();
     }
 

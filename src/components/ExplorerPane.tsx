@@ -1,9 +1,23 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { listDir, pathKey, searchFiles, toDisplayPath } from "../lib/fs";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import {
+  createDirectory,
+  createFile,
+  listDir,
+  onDirsChanged,
+  pathKey,
+  searchFiles,
+  toDisplayPath,
+} from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import type { FileEntry } from "../lib/types";
-import { FileTreeNode, type TreeController } from "./FileTreeNode";
-import { IconClose, IconRefresh, IconSearch } from "./icons";
+import {
+  FileTreeNode,
+  type CreateKind,
+  type CreatingState,
+  type TreeController,
+} from "./FileTreeNode";
+import { IconClose, IconFolderPlus, IconPlus, IconRefresh, IconSearch } from "./icons";
 
 interface ExplorerPaneProps {
   root: string;
@@ -83,6 +97,14 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
   const [rootError, setRootError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [creating, setCreating] = useState<CreatingState | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [creatingBusy, setCreatingBusy] = useState(false);
+  /**
+   * 树里当前"选中的那一行"。编辑器切标签时跟着走（外面传进来的 `selected`），
+   * 点目录则落在目录上——新建就建在选中的那一行里，目录也不例外。
+   */
+  const [activeRow, setActiveRow] = useState<string | null>(null);
 
   // 搜索：输入框开着 + 有关键词才进入过滤模式
   const [searching, setSearching] = useState(false);
@@ -94,6 +116,14 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
 
   const activeQuery = query.trim();
   const filtering = searching && activeQuery.length > 0;
+
+  // 打开/切换文件时把焦点带回那一行。只在 selected 变化时同步，
+  // 所以点目录选中的那一行不会被这条 effect 反复抢走
+  useEffect(() => {
+    setActiveRow(selected);
+  }, [selected]);
+
+  const focusRow = activeRow ?? selected;
 
   // 工作区一变，整棵树的展开状态就作废了
   useEffect(() => {
@@ -168,6 +198,9 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
       // 展开状态一律读渲染时的快照，不能靠 setState 的 updater 里赋值：
       // React 只在更新队列干净时才顺手跑一次 updater，否则要等到渲染阶段，
       // 那时这里的判断早就执行完了——结果就是图标变成了展开态却从没发起加载。
+      // 点目录也算选中它：新建会落在这个目录里
+      setActiveRow(path);
+
       if (expanded.has(path)) {
         setExpanded((current) => {
           const next = new Set(current);
@@ -203,9 +236,67 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
     [expanded, children],
   );
 
+  /**
+   * 重新列一个目录。只认已经在树里的目录：没展开过的目录没人看，
+   * 展开时自然会去读最新的。
+   */
+  const refreshDir = useCallback(
+    async (dir: string) => {
+      try {
+        const listed = await listDir(dir);
+        if (pathKey(dir) === pathKey(root)) {
+          setEntries(listed);
+          return;
+        }
+        setChildren((current) =>
+          // 这一轮里目录可能已经被收起（缓存丢掉）了，那就别把它塞回来
+          current.has(dir) ? new Map(current).set(dir, listed) : current,
+        );
+      } catch {
+        // 目录可能刚好在同一次批量里被删掉，忽略；父目录的刷新会把它从树里摘掉
+      }
+    },
+    [root],
+  );
+
+  /** 当前已经在树里、值得跟着磁盘刷新的目录（含工作区根） */
+  const loadedDirs = useMemo(() => {
+    const keys = new Set<string>([pathKey(root)]);
+    for (const dir of children.keys()) keys.add(pathKey(dir));
+    return keys;
+  }, [root, children]);
+
+  // 磁盘上的目录结构变了就跟着刷新。订阅只建一次：回调通过 ref 拿最新的
+  // 目录快照，否则每展开一个目录都要重新 listen 一遍
+  const loadedDirsRef = useRef(loadedDirs);
+  const refreshDirRef = useRef(refreshDir);
+  // 必须排在下面那个订阅 effect 前面：挂载时它先跑，ref 里才是当前工作区的版本
+  useEffect(() => {
+    loadedDirsRef.current = loadedDirs;
+    refreshDirRef.current = refreshDir;
+  }, [loadedDirs, refreshDir]);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void onDirsChanged((dirs) => {
+      for (const dir of dirs) {
+        if (loadedDirsRef.current.has(pathKey(dir))) void refreshDirRef.current(dir);
+      }
+    }).then((stop) => {
+      if (cancelled) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   /** 过滤模式下点目录只是收起/展开，不用去加载——子项已经在手里了 */
   const toggleFilter = useCallback((entry: FileEntry) => {
     if (!entry.isDir) return;
+    setActiveRow(entry.path);
     setFilterCollapsed((current) => {
       const next = new Set(current);
       if (next.has(entry.path)) next.delete(entry.path);
@@ -213,6 +304,78 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
       return next;
     });
   }, []);
+
+  const loadedEntries = useMemo(() => {
+    const all = [...entries];
+    for (const listed of children.values()) all.push(...listed);
+    return all;
+  }, [entries, children]);
+
+  const beginCreate = useCallback(
+    async (kind: CreateKind) => {
+      if (filtering || creatingBusy) return;
+      // 目标 = 选中的那一行：目录就建在里面，文件就建在它旁边，没选中就建在工作区根
+      const target = focusRow
+        ? loadedEntries.find((entry) => pathKey(entry.path) === pathKey(focusRow))
+        : undefined;
+      let parent = root;
+      if (target?.isDir) parent = target.path;
+      else if (target) {
+        const separator = target.path.includes("\\") ? "\\" : "/";
+        const index = target.path.lastIndexOf(separator);
+        if (index > 0) parent = target.path.slice(0, index);
+      }
+      setCreateError(null);
+      setCreating({ kind, parent, value: "" });
+      if (pathKey(parent) === pathKey(root)) return;
+      // 输入框挂在目标目录的子层里，所以那个目录必须是展开的——哪怕用户刚把它点收起
+      setExpanded((current) => new Set(current).add(parent));
+      if (children.has(parent)) return;
+      setLoading((current) => new Set(current).add(parent));
+      try {
+        const listed = await listDir(parent);
+        setChildren((current) => new Map(current).set(parent, listed));
+      } catch (reason) {
+        setCreateError(String(reason));
+      } finally {
+        setLoading((current) => {
+          const next = new Set(current);
+          next.delete(parent);
+          return next;
+        });
+      }
+    },
+    [children, creatingBusy, filtering, focusRow, loadedEntries, root],
+  );
+
+  const submitCreate = useCallback(async () => {
+    if (!creating || creatingBusy) return;
+    const name = creating.value.trim();
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      setCreateError("名称无效");
+      return;
+    }
+    const separator = creating.parent.includes("\\") ? "\\" : "/";
+    const path = `${creating.parent}${separator}${name}`;
+    setCreatingBusy(true);
+    setCreateError(null);
+    try {
+      if (creating.kind === "file") await createFile(path);
+      else await createDirectory(path);
+      const listed = await listDir(creating.parent);
+      if (pathKey(creating.parent) === pathKey(root)) {
+        setEntries(listed);
+      } else {
+        setChildren((current) => new Map(current).set(creating.parent, listed));
+        setExpanded((current) => new Set(current).add(creating.parent));
+      }
+      setCreating(null);
+    } catch (reason) {
+      setCreateError(String(reason));
+    } finally {
+      setCreatingBusy(false);
+    }
+  }, [creating, creatingBusy, root]);
 
   const filtered = useMemo(
     () => (filtering && hits ? buildFilter(root, hits) : null),
@@ -236,10 +399,15 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
         loading: EMPTY_SET,
         errors: EMPTY_MAP,
         children: filtered.children,
-        selected,
+        selected: focusRow,
         gitMarks,
         toggle: toggleFilter,
         select: (entry: FileEntry) => onSelect(entry.path),
+        creating: null,
+        createError: null,
+        onCreateChange: () => {},
+        onCreateSubmit: () => {},
+        onCreateCancel: () => {},
       };
     }
     return {
@@ -247,10 +415,21 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
       loading,
       errors,
       children,
-      selected,
+      selected: focusRow,
       gitMarks,
       toggle,
       select: (entry: FileEntry) => onSelect(entry.path),
+      creating,
+      createError,
+      onCreateChange: (value: string) => {
+        setCreating((current) => (current ? { ...current, value } : current));
+        setCreateError(null);
+      },
+      onCreateSubmit: submitCreate,
+      onCreateCancel: () => {
+        setCreating(null);
+        setCreateError(null);
+      },
     };
   }, [
     filtered,
@@ -260,9 +439,12 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
     loading,
     errors,
     children,
-    selected,
+    focusRow,
     gitMarks,
     toggle,
+    creating,
+    createError,
+    submitCreate,
     onSelect,
   ]);
 
@@ -304,6 +486,24 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
             </span>
             <button
               type="button"
+              onClick={() => void beginCreate("file")}
+              title="新建文件"
+              disabled={creatingBusy}
+              className={ICON_BUTTON}
+            >
+              <IconPlus className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void beginCreate("directory")}
+              title="新建文件夹"
+              disabled={creatingBusy}
+              className={ICON_BUTTON}
+            >
+              <IconFolderPlus className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
               onClick={() => setSearching(true)}
               title="搜索文件"
               className={ICON_BUTTON}
@@ -341,6 +541,30 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
           <p className="px-2 py-1 text-[11px] text-fg-faint">空目录</p>
         )}
         <ul>
+          {!filtering && creating?.parent === root && (
+            <li>
+              <input
+                autoFocus
+                value={creating.value}
+                onChange={(event) => {
+                  setCreating((current) => (current ? { ...current, value: event.target.value } : current));
+                  setCreateError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void submitCreate();
+                  if (event.key === "Escape") {
+                    event.stopPropagation();
+                    setCreating(null);
+                    setCreateError(null);
+                  }
+                }}
+                placeholder={creating.kind === "file" ? "文件名" : "文件夹名"}
+                aria-label={creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                className="mx-1 my-0.5 w-[calc(100%-8px)] rounded border border-accent bg-surface px-1.5 py-0.5 text-[12px] text-fg outline-none"
+              />
+              {createError && <p className="px-2 py-[2px] text-[11px] text-danger">{createError}</p>}
+            </li>
+          )}
           {visibleEntries.map((entry) => (
             <FileTreeNode key={entry.path} entry={entry} depth={0} tree={tree} />
           ))}

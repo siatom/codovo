@@ -1,6 +1,7 @@
 mod fs_api;
 mod git;
 mod pty;
+mod watcher;
 
 use tauri::Manager;
 
@@ -11,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(pty::PtyState::new())
         .manage(fs_api::FsState::new())
+        .manage(watcher::WatchState::new())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -25,6 +27,8 @@ pub fn run() {
             fs_api::fs_replace_all,
             fs_api::fs_read_file,
             fs_api::fs_write_file,
+            fs_api::fs_create_file,
+            fs_api::fs_create_directory,
             git::git_status,
             git::git_stage,
             git::git_unstage,
