@@ -69,21 +69,8 @@ const LOG_PAGE = 50;
 /** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
 const MESSAGE_MAX_ROWS = 5;
 
-const MESSAGE_HEIGHT_KEY = "codedock.commitMessageHeight";
-
 /** 手动拖高时，下面至少要留出来的空间：按钮行 + 报错位 + 两三行改动列表 */
 const MESSAGE_RESERVED_BELOW = 160;
-
-/** 拖出来的高度记在 localStorage；没拖过（或存的值不合法）返回 null，表示随内容长高 */
-function readMessageHeight(): number | null {
-  try {
-    const saved = Number(window.localStorage.getItem(MESSAGE_HEIGHT_KEY));
-    if (Number.isFinite(saved) && saved > 0) return saved;
-  } catch {
-    // 读不到就按自动长高算
-  }
-  return null;
-}
 
 /**
  * 提交框的行高 / 内边距 / 边框。把"几行"和像素互相换算要用它。
@@ -177,16 +164,20 @@ const TEXT_INPUT =
 const PRIMARY_BUTTON =
   "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
 
-/** AI 生成：塞进提交框内部的纯图标按钮，平时淡、悬停才亮 */
+/** AI 生成：塞进提交框内部的纯图标按钮，居中对齐、平时淡、悬停才亮 */
 const GENERATE_ICON =
-  "absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
+  "absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
 const GROUP_ACTION =
   "shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent";
 
-/** 破坏性操作（放弃修改）：平时和 GROUP_ACTION 一样，悬停时才转成危险色 */
-const GROUP_DANGER =
-  "shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-danger disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-faint";
+/** 分组标题右侧的批量操作：做成纯图标，和行内那组图标按钮同一套观感 */
+const GROUP_ICON =
+  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-faint";
+
+/** 批量放弃是破坏性操作：平时同上，悬停时才转成危险色 */
+const GROUP_ICON_DANGER =
+  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-faint";
 
 /** 行内操作按钮：平时藏起来，悬停或键盘聚焦时才出现并接受点击 */
 const ROW_ACTION =
@@ -337,7 +328,7 @@ function CommitRow({
         <p className="py-[3px] pl-6 text-[11px] text-fg-faint">加载中…</p>
       )}
       {expanded && files?.length === 0 && (
-        <p className="py-[3px] pl-6 text-[11px] text-fg-faint">这个提交没有文件改动</p>
+        <p className="py-[3px] pl-6 text-[11px] text-fg-faint">这个提交没有文件更改</p>
       )}
       {expanded && files && files.length > 0 && (
         <ul>
@@ -375,8 +366,11 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
-  /** null = 随内容长高；拖过之后是固定高度（px），内容多了自己滚动 */
-  const [messageHeight, setMessageHeight] = useState<number | null>(readMessageHeight);
+  /**
+   * null = 随内容长高（也就是默认的一行）；拖过之后是固定高度（px），内容多了自己滚动。
+   * 高度不落盘：每次进应用都从一行起步，省得某次拖高之后再也回不到默认。
+   */
+  const [messageHeight, setMessageHeight] = useState<number | null>(null);
   const [draggingMessage, setDraggingMessage] = useState(false);
   const messageRef = useRef<HTMLTextAreaElement>(null);
   /** 提交框拖动的起点，null 表示没在拖 */
@@ -610,12 +604,6 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     messageDragRef.current = null;
     setDraggingMessage(false);
     document.body.classList.remove("codedock-dragging-row");
-    try {
-      // 用 state 里最新的值：拖动过程中它一直在变
-      window.localStorage.setItem(MESSAGE_HEIGHT_KEY, String(messageHeight));
-    } catch {
-      // 记不住就下次还是随内容长高
-    }
   };
 
   // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git。
@@ -801,7 +789,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
               if (error) setError(null);
             }}
             onKeyDown={onMessageKeyDown}
-            placeholder="提交信息（Ctrl+Enter 提交）"
+            placeholder="消息（Ctrl+Enter）"
             style={messageHeight === null ? undefined : { height: messageHeight }}
             className={`${TEXT_INPUT} block resize-none pr-8 leading-4`}
           />
@@ -834,7 +822,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           }`}
         />
 
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center">
           {staged.length > 0 ? (
             <button type="button" onClick={commit} disabled={!canCommit} className={PRIMARY_BUTTON}>
               {busy === "commit" ? "提交中…" : "提交"}
@@ -855,11 +843,6 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
               提交
             </button>
           )}
-          {staged.length === 0 && !showSync && (
-            <span className="min-w-0 truncate text-[11px] text-fg-faint">
-              先暂存要提交的改动
-            </span>
-          )}
         </div>
 
         {notice && (
@@ -874,24 +857,24 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
         <div className="min-h-0 flex-1 overflow-auto">
           {staged.length === 0 && unstaged.length === 0 && (
-            <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的改动</p>
+            <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的更改</p>
           )}
 
           {staged.length > 0 && (
             <>
               <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  暂存的改动 ({staged.length})
+                  暂存的更改 ({staged.length})
                 </span>
                 {stagedDiscardable.length > 0 && (
                   <button
                     type="button"
                     onClick={discardAllStaged}
                     disabled={busy !== null}
-                    title="放弃这个分组里所有文件的改动"
-                    className={GROUP_DANGER}
+                    title="放弃这个分组里所有文件的更改"
+                    className={GROUP_ICON_DANGER}
                   >
-                    全部放弃
+                    <IconUndo className="h-3 w-3" />
                   </button>
                 )}
                 <button
@@ -899,9 +882,9 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   onClick={() => void run("unstage", () => gitUnstage())}
                   disabled={busy !== null}
                   title="全部取消暂存"
-                  className={GROUP_ACTION}
+                  className={GROUP_ICON}
                 >
-                  全部取消
+                  <IconMinus className="h-3 w-3" />
                 </button>
               </div>
               {staged.map((change) => (
@@ -924,17 +907,17 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
             <>
               <div className="flex items-center gap-1 px-1 pt-1.5 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  改动 ({unstaged.length})
+                  更改 ({unstaged.length})
                 </span>
                 {unstagedDiscardable.length > 0 && (
                   <button
                     type="button"
                     onClick={discardAllUnstaged}
                     disabled={busy !== null}
-                    title="放弃这个分组里所有文件的改动"
-                    className={GROUP_DANGER}
+                    title="放弃这个分组里所有文件的更改"
+                    className={GROUP_ICON_DANGER}
                   >
-                    全部放弃
+                    <IconUndo className="h-3 w-3" />
                   </button>
                 )}
                 <button
@@ -942,9 +925,9 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   onClick={() => void run("stage", () => gitStage())}
                   disabled={busy !== null}
                   title="全部暂存"
-                  className={GROUP_ACTION}
+                  className={GROUP_ICON}
                 >
-                  全部暂存
+                  <IconPlus className="h-3 w-3" />
                 </button>
               </div>
               {unstaged.map((change) => (
@@ -1045,7 +1028,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
       {/* 弹框用 fixed 定位，挂在这儿不会挤到面板布局（祖先里没有 transform） */}
       {pendingDiscard && (
         <ConfirmDialog
-          message={`放弃 ${pendingDiscard.what} 的改动？将还原到${
+          message={`放弃 ${pendingDiscard.what} 的更改？将还原到${
             pendingDiscard.source.mode === "staged" ? "上次提交（HEAD）" : "暂存区"
           }的版本，无法撤销。`}
           confirmLabel="放弃"

@@ -9,7 +9,7 @@ const COLOR: Record<GitMarkKind, string> = {
 };
 
 const TITLE: Record<GitMarkKind, string> = {
-  modified: "有未提交的改动",
+  modified: "有未提交的更改",
   added: "新增（已暂存）",
   untracked: "未跟踪的新文件",
   deleted: "已删除",
