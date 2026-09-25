@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
@@ -28,12 +29,13 @@ import {
   type GitController,
   type GitMark,
 } from "../lib/git";
-import { generateCommitMessage } from "../lib/ai";
+import { explainChange, generateCommitMessage } from "../lib/ai";
 import { useSettings } from "../lib/settings";
 import type { DiffSource } from "../lib/tabs";
 import type { GitCommit, GitCommitFile, GitStatusPayload, DiscardSource } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
   IconArrowDownToLine,
   IconArrowUpFromLine,
@@ -224,13 +226,20 @@ const SYNC_NOTICE = {
   push: "正在推送…",
 } as const;
 
+/** 右键菜单：只有一项，宽高按文案量出来，用来贴着窗口边缘收一收 */
+const MENU_W = 132;
+const MENU_H = 34;
+const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+
 function ChangeRow({
   change,
   staged,
   busy,
+  depth,
   onOpen,
   onToggle,
   onDiscard,
+  onMenu,
 }: {
   change: GitChange;
   /** true = 在"暂存的改动"组里，行内按钮是取消暂存 */
@@ -239,6 +248,7 @@ function ChangeRow({
   onOpen: (path: string, source: DiffSource) => void;
   onToggle: (path: string) => void;
   onDiscard: (path: string) => void;
+  onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
 }) {
   const slash = change.relative.lastIndexOf("/");
   const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
@@ -247,7 +257,10 @@ function ChangeRow({
   const mark = markOfColumn(staged ? change.index : change.worktree);
 
   return (
-    <div className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover">
+    <div
+      className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
+      onContextMenu={(event) => onMenu(change, staged, event)}
+    >
       <button
         type="button"
         onClick={() =>
@@ -393,6 +406,25 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
   const [logRevision, setLogRevision] = useState(0);
 
+  /** 右键的那一行。staged 决定解读时跟谁比（暂存看 HEAD、未暂存看 index） */
+  const [menu, setMenu] = useState<{
+    change: GitChange;
+    staged: boolean;
+    x: number;
+    y: number;
+  } | null>(null);
+  /** AI 解读弹窗；null = 没开着。text 为 null 表示还在等大模型 */
+  const [explain, setExplain] = useState<{
+    title: string;
+    text: string | null;
+    error: string | null;
+  } | null>(null);
+  /**
+   * 解读请求的序号。关掉弹窗、或者又右键了另一个文件之后，先发出去的那次回来
+   * 时已经不算数了——不丢掉的话会把旧文件的解读盖到新弹窗上。
+   */
+  const explainSeq = useRef(0);
+
   const { snapshot, refresh, applyStatus } = git;
   const { settings } = useSettings();
   const { changes } = snapshot;
@@ -465,6 +497,54 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
       return payload;
     });
   }, [settings, run, staged.length, unstaged.length]);
+
+  /** 右键一个改动行：开菜单。菜单由这里统一画（它才知道该贴哪、点完怎么解读） */
+  const openMenu = useCallback((change: GitChange, staged: boolean, event: ReactMouseEvent) => {
+    event.preventDefault();
+    setMenu({ change, staged, x: event.clientX, y: event.clientY });
+  }, []);
+
+  /**
+   * 让大模型解释这一行改了什么，结果摆在弹窗里。只读：不动仓库里的任何东西。
+   *
+   * 配置不全时不发请求，直接把设置页的提示放进弹窗——和生成提交信息那边一个口径。
+   */
+  const startExplain = useCallback(
+    (change: GitChange, stagedRow: boolean) => {
+      setMenu(null);
+      const title = change.relative;
+      const config = {
+        baseUrl: settings.aiBaseUrl.trim(),
+        apiKey: settings.aiApiKey.trim(),
+        model: settings.aiModel.trim(),
+      };
+      if (!config.baseUrl || !config.apiKey || !config.model) {
+        setExplain({
+          title,
+          text: null,
+          error: "请先在「设置 → AI」里填写接口地址、模型和密钥",
+        });
+        return;
+      }
+
+      const seq = (explainSeq.current += 1);
+      setExplain({ title, text: null, error: null });
+      void explainChange(config, change.path, stagedRow ? { mode: "staged" } : { mode: "unstaged" })
+        .then((text) => {
+          if (explainSeq.current === seq) setExplain({ title, text, error: null });
+        })
+        .catch((reason) => {
+          if (explainSeq.current === seq) setExplain({ title, text: null, error: String(reason) });
+        });
+    },
+    [settings],
+  );
+
+  const closeExplain = useCallback(() => {
+    // 序号先推进：请求这时才回来的话，不要再把弹窗弹回来
+    explainSeq.current += 1;
+    setExplain(null);
+  }, []);
 
   /** 手动刷新：状态和历史一起重拉，省得再放一个按钮 */
   const reloadAll = useCallback(() => {
@@ -898,6 +978,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   onDiscard={(path) =>
                     discard([path], { mode: "staged" }, change.relative)
                   }
+                  onMenu={openMenu}
                 />
               ))}
             </>
@@ -942,6 +1023,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   onDiscard={(path) =>
                     discard([path], { mode: "unstaged" }, change.relative)
                   }
+                  onMenu={openMenu}
                 />
               ))}
             </>
@@ -1034,6 +1116,47 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           confirmLabel="放弃"
           onConfirm={confirmDiscard}
           onCancel={() => setPendingDiscard(null)}
+        />
+      )}
+
+      {/* 右键菜单。和文件树那边同一套画法：透明遮罩接住外部点击，fixed 定位
+          免得被面板的滚动容器裁掉 */}
+      {menu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: MENU_W,
+              // 贴到窗口右边/下边时往回收，别把菜单顶出可视区
+              left: Math.min(menu.x, window.innerWidth - MENU_W - 4),
+              top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => startExplain(menu.change, menu.staged)}
+              className={MENU_ITEM}
+            >
+              AI 变更解读
+            </button>
+          </div>
+        </>
+      )}
+
+      {explain && (
+        <ExplainChangeDialog
+          title={explain.title}
+          text={explain.text}
+          error={explain.error}
+          onClose={closeExplain}
         />
       )}
     </div>

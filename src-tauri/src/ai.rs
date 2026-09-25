@@ -1,9 +1,10 @@
+use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
 
 use crate::fs_api::FsState;
-use crate::git;
+use crate::git::{self, DiffSource};
 
 /// 单次喂给模型的 diff 上限（按字符算，不是字节）。常见的输入窗口足够放下
 /// 这个量级，再大只是把 token 烧在无关的大文件上。
@@ -41,43 +42,40 @@ const SYSTEM_PROMPT: &str = "\
 /// 前端传来的接口配置。三个字段都由用户填，空的话直接拒绝，不去打扰接口。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AiCommitConfig {
+pub struct AiConfig {
     /// OpenAI 兼容接口的基地址，例如 https://api.deepseek.com/v1
     base_url: String,
     api_key: String,
     model: String,
 }
 
-/// 让大模型根据当前仓库的暂存区改动生成一条提交信息。
+impl AiConfig {
+    /// 三个字段都填全了才去请求，缺一个就报同一句话——用户知道该去哪儿补。
+    fn ready(&self) -> Result<(String, String, String), String> {
+        let base_url = self.base_url.trim().trim_end_matches('/').to_string();
+        let api_key = self.api_key.trim().to_string();
+        let model = self.model.trim().to_string();
+        if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
+            return Err("请先在「设置 → AI」里填写接口地址、模型和密钥".to_string());
+        }
+        Ok((base_url, api_key, model))
+    }
+}
+
+/// 发一次 chat completions，返回模型输出的原文（不做任何后处理）。
 ///
 /// 只走 Rust 侧的 HTTP：密钥不进 WebView，也不受各厂商的跨域限制。
-#[tauri::command]
-pub async fn ai_generate_commit_message(
-    state: tauri::State<'_, FsState>,
-    config: AiCommitConfig,
-) -> Result<String, String> {
-    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
-    let api_key = config.api_key.trim().to_string();
-    let model = config.model.trim().to_string();
-    if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
-        return Err("请先在「设置 → AI」里填写接口地址、模型和密钥".to_string());
-    }
+/// 两个功能（生成提交信息 / 解读改动）共用，调用方自己拼提示词、自己清理输出。
+async fn chat(config: &AiConfig, system: &str, user: &str, temperature: f32) -> Result<String, String> {
+    let (base_url, api_key, model) = config.ready()?;
 
-    // git 是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await 点
-    let context = git::commit_context(&state)?;
-    if context.diff.trim().is_empty() {
-        return Err("暂存区没有可生成的改动".to_string());
-    }
-
-    let (system, user) = build_prompt(&context);
     let body = serde_json::json!({
         "model": model,
         "messages": [
             { "role": "system", "content": system },
             { "role": "user", "content": user },
         ],
-        // 低温度：提交信息要稳、可复现，不需要发挥
-        "temperature": 0.3,
+        "temperature": temperature,
         "stream": false,
     });
 
@@ -127,11 +125,108 @@ pub async fn ai_generate_commit_message(
             )
         })?;
 
-    let message = clean_message(content);
+    Ok(content.to_string())
+}
+
+/// 让大模型根据当前仓库的暂存区改动生成一条提交信息。
+#[tauri::command]
+pub async fn ai_generate_commit_message(
+    state: tauri::State<'_, FsState>,
+    config: AiConfig,
+) -> Result<String, String> {
+    // 先挡一道：配置不全时不必去读 diff
+    config.ready()?;
+
+    // git 是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await 点
+    let context = git::commit_context(&state)?;
+    if context.diff.trim().is_empty() {
+        return Err("暂存区没有可生成的改动".to_string());
+    }
+
+    let (system, user) = build_prompt(&context);
+    // 低温度：提交信息要稳、可复现，不需要发挥
+    let raw = chat(&config, &system, &user, 0.3).await?;
+
+    let message = clean_message(&raw);
     if message.is_empty() {
         return Err("大模型返回了空的提交信息".to_string());
     }
     Ok(message)
+}
+
+/// 让大模型解释一个改动文件里到底改了什么。产物是 markdown 正文，直接交给
+/// 界面渲染，所以**不做** clean_message 那套去围栏处理——代码块本来就要留着。
+#[tauri::command]
+pub async fn ai_explain_change(
+    state: tauri::State<'_, FsState>,
+    config: AiConfig,
+    path: String,
+    source: git::DiffSource,
+) -> Result<String, String> {
+    config.ready()?;
+
+    // 同 ai_generate_commit_message：git 是同步阻塞的，先跑完再 await
+    let root = state.root()?;
+    let diff = git::file_diff_text(&state, &path, &source)?;
+    if diff.trim().is_empty() {
+        return Err("这个文件没有可解读的改动".to_string());
+    }
+
+    let (system, user) = build_explain_prompt(&root, &path, &source, &diff);
+    // 解释要按事实说，温度低一点免得编出 diff 里没有的行为
+    let raw = chat(&config, &system, &user, 0.2).await?;
+
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Err("大模型返回了空的解读".to_string());
+    }
+    Ok(text)
+}
+
+/// 解读改动的系统提示。产物要直接渲染成 markdown 给用户看，所以按固定结构
+/// 输出，省得模型自由发挥时把结论埋在废话里。
+const EXPLAIN_SYSTEM_PROMPT: &str = "\
+你是代码审查助手，负责解释一次改动的 diff 到底改了什么。
+
+按下面的结构输出 markdown，不要加额外的前言、结尾或代码围栏：
+1. 第一行一句话说清这次改动的目的。
+2. 然后用无序列表分点列出具体改了什么。提到函数名、字段名、配置项时用反引号包起来。
+3. 如果发现了值得注意的地方（破坏性变更、边界情况、可能的 bug），另起一段以「注意：」开头列出；没有就不写这段。
+
+规则：
+1. 用中文，直接讲改动内容和它的影响，不要复述 diff 原文，也不要贴大段代码。
+2. 只依据 diff 里看得到的事实，推断不出来的一律不提。
+3. 整篇控制在 300 字以内，不写「本次改动」「我们」这类空话。";
+
+/// 拼解读用的 system / user 两条消息。单独抽出来是为了能直接跑单测。
+fn build_explain_prompt(
+    root: &Path,
+    path: &str,
+    source: &DiffSource,
+    diff: &str,
+) -> (String, String) {
+    // 显示用工作区相对路径：绝对路径那串前缀在提示里只是噪音
+    let display = Path::new(path)
+        .strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string());
+
+    // 交代清楚跟谁比，否则模型分不清哪些行是新增、哪些是原有代码
+    let origin = match source {
+        DiffSource::Unstaged => "未暂存的改动（暂存区 → 工作区）".to_string(),
+        DiffSource::Staged => "已暂存的改动（HEAD → 暂存区）".to_string(),
+        // rev 已经过 checked_rev 校验，全是十六进制，按字节切安全
+        DiffSource::Commit { rev } => format!("提交 {} 中的改动", &rev[..rev.len().min(7)]),
+    };
+
+    let mut user = format!("文件：{display}\n改动来源：{origin}\n\n改动 diff：\n");
+    user.push_str(&truncate(diff, MAX_DIFF_CHARS));
+    if diff.chars().count() > MAX_DIFF_CHARS {
+        // 告诉模型改动被截过，免得它以为改动就这么多、漏掉后面的部分
+        user.push_str("\n…（改动过大，此处已截断）");
+    }
+
+    (EXPLAIN_SYSTEM_PROMPT.to_string(), user)
 }
 
 /// 拼 system / user 两条消息。单独抽出来是为了能直接跑单测。
@@ -198,6 +293,8 @@ fn clean_message(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn context(diff: &str) -> git::CommitContext {
@@ -276,5 +373,75 @@ mod tests {
         let (_, user) = build_prompt(&empty);
         assert!(user.contains("当前分支：未知"));
         assert!(user.contains("这是仓库的第一次提交"));
+    }
+
+    // ---- 解读改动 ----
+
+    /// 一律从 root 拼路径，不手写分隔符：`\` 在 Unix 上只是普通字符，
+    /// 写死 `D:\ws` 会让 strip_prefix 直接落空——测试看着绿，其实什么都没验。
+    fn root() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from("D:\\ws")
+        } else {
+            PathBuf::from("/ws")
+        }
+    }
+
+    fn under(part: &str) -> PathBuf {
+        root().join(part)
+    }
+
+    #[test]
+    fn explain_prompt_carries_a_relative_path_and_the_diff() {
+        let path = under("src").join("main.rs");
+        let (system, user) = build_explain_prompt(
+            &root(),
+            &path.to_string_lossy(),
+            &DiffSource::Unstaged,
+            "+ 一行改动",
+        );
+        // 显示的是工作区相对路径、正斜杠，不是那串绝对路径
+        assert!(user.contains("文件：src/main.rs"));
+        assert!(!user.contains("ws"), "不该把工作区绝对路径前缀带进去");
+        assert!(user.contains("未暂存的改动"));
+        assert!(user.contains("+ 一行改动"));
+        assert!(system.contains("markdown"));
+    }
+
+    #[test]
+    fn explain_prompt_names_the_commit_and_the_staged_baseline() {
+        let path = under("a.ts");
+        let (_, staged) = build_explain_prompt(
+            &root(),
+            &path.to_string_lossy(),
+            &DiffSource::Staged,
+            "x",
+        );
+        assert!(staged.contains("已暂存的改动"));
+
+        let (_, commit) = build_explain_prompt(
+            &root(),
+            &path.to_string_lossy(),
+            &DiffSource::Commit {
+                rev: "0123456789abcdef".to_string(),
+            },
+            "x",
+        );
+        // 提交号只取前 7 位，整串 hex 塞进提示里没有意义
+        assert!(commit.contains("提交 0123456 中的改动"));
+        assert!(!commit.contains("0123456789abcdef"));
+    }
+
+    #[test]
+    fn explain_prompt_marks_a_truncated_diff() {
+        let path = under("big.ts");
+        let long = "x".repeat(MAX_DIFF_CHARS + 10);
+        let (_, user) = build_explain_prompt(
+            &root(),
+            &path.to_string_lossy(),
+            &DiffSource::Unstaged,
+            &long,
+        );
+        assert!(user.contains("已截断"));
     }
 }

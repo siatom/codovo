@@ -227,6 +227,21 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
     Ok(output.status.success().then_some(output.stdout))
 }
 
+/// 只读查询，且关掉 pathspec 的通配符魔法。
+///
+/// 看单个文件的 diff 要走到 pathspec，文件名里带 `*` `?` `[` 时不加
+/// `--literal-pathspecs` 会匹配到别的文件（见 run_git_checked 的说明）。
+fn run_git_literal(dir: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String> {
+    let output = run_git_raw(
+        dir,
+        &["--no-optional-locks", "--literal-pathspecs"],
+        args,
+        TIMEOUT,
+        &[],
+    )?;
+    Ok(output.status.success().then_some(output.stdout))
+}
+
 /// 写操作。
 ///
 /// 不带 `--no-optional-locks`：写操作该抢 index.lock 就抢，抢不到时把 git
@@ -641,6 +656,58 @@ fn file_diff(state: &FsState, path: &str, source: &DiffSource) -> Result<FileDif
     };
 
     Ok(to_diff(original, modified))
+}
+
+/// 一个改动文件的统一 diff 文本，喂给大模型解读用。
+///
+/// 取 `git diff` 的原文而不是 `file_diff` 的两侧全文：diff 只带改动的上下文，
+/// 同样长度下信息密度高得多，大文件也不会一上来就被截掉后面一大半。
+///
+/// 未跟踪的文件没有基线，`git diff` 一行都不出，这时把工作区文件整个当成新增
+/// 内容——右键一个刚建的文件，总得有东西可讲。
+pub(crate) fn file_diff_text(
+    state: &FsState,
+    path: &str,
+    source: &DiffSource,
+) -> Result<String, String> {
+    let root = state.root()?;
+    let (target, spec) = workspace_relative(state, &root, path)?;
+    // 提交号要活得比 args 久（args 里存的是借用），先在 match 外面拿到手
+    let rev = match source {
+        DiffSource::Commit { rev } => Some(checked_rev(rev)?),
+        _ => None,
+    };
+    let args: Vec<&str> = if let Some(rev) = rev.as_deref() {
+        // 只看这个文件本身，`--format=` 把提交头也去掉，剩下的全是 diff
+        vec!["show", "--no-color", "--format=", rev, "--", &spec]
+    } else if matches!(source, DiffSource::Staged) {
+        vec!["diff", "--cached", "--no-color", "--", &spec]
+    } else {
+        vec!["diff", "--no-color", "--", &spec]
+    };
+
+    if let Some(raw) = run_git_literal(&root, &args)? {
+        let text = String::from_utf8_lossy(&raw).trim_end().to_string();
+        if !text.is_empty() {
+            return Ok(text);
+        }
+    }
+
+    // 走到这儿只可能是未跟踪的新文件（已删除、已暂存新增的 diff 都不是空的）
+    match worktree_side(&target)? {
+        Side::Text(body) => {
+            let mut text = String::from("(新增文件，下面是全部内容)\n");
+            for line in body.lines() {
+                text.push('+');
+                text.push_str(line);
+                text.push('\n');
+            }
+            Ok(text)
+        }
+        Side::Binary => Err("这是二进制文件，看不出改了哪些内容".to_string()),
+        Side::TooLarge => Err("文件太大，读不出内容来解读".to_string()),
+        Side::Missing => Err("这个文件没有可解读的改动".to_string()),
+    }
 }
 
 /// 只接受十六进制提交号。
@@ -1574,6 +1641,75 @@ mod tests {
         // 同一个文件此时未暂存侧没有改动，两边内容一致
         let unstaged = file_diff(&state, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(unstaged.original, unstaged.modified);
+
+        cleanup(&top);
+    }
+
+    // ---- 解读用的 diff 文本 ----
+
+    #[test]
+    fn diff_text_shows_the_change_for_each_source() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let path = path_of_file(&repo, "app.ts");
+        fs::write(&path, "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+
+        fs::write(&path, "a\nb\n").unwrap();
+        let unstaged = file_diff_text(&state, &path, &DiffSource::Unstaged).unwrap();
+        assert!(unstaged.contains("+b"), "应当带上新增那一行：{unstaged}");
+        assert!(unstaged.contains("app.ts"));
+
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "more").unwrap();
+        // 提交之后看这个提交：基线是它的父提交，照样能看出加了 b
+        let rev = run_git(&repo, &["rev-parse", "HEAD"]).unwrap().unwrap();
+        let rev = String::from_utf8_lossy(&rev).trim().to_string();
+        let commit = file_diff_text(&state, &path, &DiffSource::Commit { rev }).unwrap();
+        assert!(commit.contains("+b"), "提交里的改动应当能取到：{commit}");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn diff_text_falls_back_to_the_whole_file_when_untracked() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        // 未跟踪的文件 `git diff` 什么都不出，得把内容当成整个新增
+        let path = path_of_file(&repo, "fresh.txt");
+        fs::write(&path, "hello\nworld\n").unwrap();
+
+        let text = file_diff_text(&state, &path, &DiffSource::Unstaged).unwrap();
+        assert!(text.contains("新增文件"));
+        assert!(text.contains("+hello"));
+        assert!(text.contains("+world"));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn diff_text_keeps_wildcard_filenames_literal() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        // `[1]` 在 git 的 pathspec 里是字符类，会匹配到 a1.txt；
+        // Windows 文件名不允许 * 和 ?，所以用中括号当代表
+        let target = path_of_file(&repo, "a[1].txt");
+        fs::write(&target, "one\n").unwrap();
+        fs::write(path_of_file(&repo, "a1.txt"), "two\n").unwrap();
+
+        let text = file_diff_text(&state, &target, &DiffSource::Unstaged).unwrap();
+        assert!(text.contains("+one"), "应当只有 a[1].txt 的内容：{text}");
+        assert!(!text.contains("+two"), "不该把 a1.txt 也带上：{text}");
 
         cleanup(&top);
     }
