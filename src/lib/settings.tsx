@@ -15,6 +15,33 @@ export interface AiCommand {
   command: string;
 }
 
+/** 一条可复用的技能：物化成一份 SKILL.md，Agent 按需加载 */
+export interface AgentSkill {
+  name: string;
+  description: string;
+  content: string;
+  enabled: boolean;
+}
+
+/** 一个自定义 agent；primary 能在对话面板里切换，subagent 由主 agent 调用 */
+export interface AgentProfile {
+  name: string;
+  description: string;
+  mode: "primary" | "subagent" | "all";
+  /** 留空表示用全局默认模型 */
+  model: string;
+  prompt: string;
+  enabled: boolean;
+}
+
+/** 一层智能体配置：规则 + 记忆 + 技能 + Agents。全局一层，每个工作区各一层 */
+export interface AgentLayer {
+  rules: string;
+  memory: string;
+  skills: AgentSkill[];
+  agents: AgentProfile[];
+}
+
 export interface Settings {
   /** 终端工具条上 AI CLI 按钮可选的配置；多于一个时点按钮给下拉选择 */
   aiCommands: AiCommand[];
@@ -30,6 +57,12 @@ export interface Settings {
   agentCommand: string;
   /** 智能体服务监听的端口；0 表示自动挑一个空闲的 */
   agentPort: number;
+  /** 对话面板里选中的 primary agent；空或不存在时由 opencode 回落到 build */
+  agentPrimary: string;
+  /** 全局层的智能体配置（所有项目共享） */
+  agentGlobal: AgentLayer;
+  /** 项目层的智能体配置，按工作区绝对路径索引 */
+  agentProjects: Record<string, AgentLayer>;
   /** 终端启动的 shell 候选 id；空串表示自动（后端按平台挑） */
   terminalShell: string;
   /** 终端字体（CSS font-family），留空用默认 */
@@ -80,6 +113,14 @@ export function resolveFont(value: string): string {
   return value.trim() || DEFAULT_MONO_FONT;
 }
 
+/** 智能体的 mode 取值；和 opencode 的 AgentConfig.mode 对齐 */
+const AGENT_MODES: AgentProfile["mode"][] = ["primary", "subagent", "all"];
+
+/** 新的一层空配置。工厂而不是常量：多处会各自持有、不能被共享引用串改 */
+export function emptyAgentLayer(): AgentLayer {
+  return { rules: "", memory: "", skills: [], agents: [] };
+}
+
 const DEFAULTS: Settings = {
   aiCommands: [
     { name: "claude", command: "claude" },
@@ -93,6 +134,9 @@ const DEFAULTS: Settings = {
   agentEnabled: true,
   agentCommand: "opencode",
   agentPort: 0,
+  agentPrimary: "build",
+  agentGlobal: emptyAgentLayer(),
+  agentProjects: {},
   terminalShell: "",
   terminalFontFamily: "",
   terminalFontSize: 13,
@@ -151,6 +195,70 @@ function asCommandList(value: unknown): AiCommand[] {
   });
 }
 
+function asAgentMode(value: unknown): AgentProfile["mode"] {
+  return AGENT_MODES.includes(value as AgentProfile["mode"])
+    ? (value as AgentProfile["mode"])
+    : "subagent";
+}
+
+/** 逐条校验技能：名字和描述是 opencode 认的必填项，缺了就丢掉这条 */
+function asSkillList(value: unknown): AgentSkill[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): AgentSkill[] => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.description !== "string") return [];
+    return [
+      {
+        name: record.name,
+        description: record.description,
+        content: asString(record.content, ""),
+        enabled: asBoolean(record.enabled, true),
+      },
+    ];
+  });
+}
+
+function asAgentList(value: unknown): AgentProfile[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): AgentProfile[] => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.name !== "string" || typeof record.description !== "string") return [];
+    return [
+      {
+        name: record.name,
+        description: record.description,
+        mode: asAgentMode(record.mode),
+        model: asString(record.model, ""),
+        prompt: asString(record.prompt, ""),
+        enabled: asBoolean(record.enabled, true),
+      },
+    ];
+  });
+}
+
+function asLayer(value: unknown): AgentLayer {
+  if (!value || typeof value !== "object") return emptyAgentLayer();
+  const record = value as Record<string, unknown>;
+  return {
+    rules: asString(record.rules, ""),
+    memory: asString(record.memory, ""),
+    skills: asSkillList(record.skills),
+    agents: asAgentList(record.agents),
+  };
+}
+
+/** 项目层是按工作区路径索引的一张表，逐项校验；读坏的条目直接丢掉 */
+function asProjectLayers(value: unknown): Record<string, AgentLayer> {
+  if (!value || typeof value !== "object") return {};
+  const out: Record<string, AgentLayer> = {};
+  for (const [key, layer] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = asLayer(layer);
+  }
+  return out;
+}
+
 /** 存的是一整块 JSON：读坏了就当没存过，回落默认值，不让界面起不来 */
 function readSaved(): Settings {
   let raw: Record<string, unknown> = {};
@@ -172,6 +280,10 @@ function readSaved(): Settings {
     agentEnabled: asBoolean(raw.agentEnabled, DEFAULTS.agentEnabled),
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
+    agentPrimary: asString(raw.agentPrimary, DEFAULTS.agentPrimary),
+    // 老版本的设置里没有这两项，回落成空层 / 空表
+    agentGlobal: asLayer(raw.agentGlobal),
+    agentProjects: asProjectLayers(raw.agentProjects),
     terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
@@ -232,6 +344,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setSettings({
       ...DEFAULTS,
       aiCommands: DEFAULTS.aiCommands.map((item) => ({ ...item })),
+      // 同 aiCommands：DEFAULTS 是模块级常量，层里带数组，必须换成新对象
+      agentGlobal: emptyAgentLayer(),
+      agentProjects: {},
     });
   }, []);
 

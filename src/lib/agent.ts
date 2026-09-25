@@ -10,6 +10,7 @@ import type {
   AgentStatus,
   AgentToolState,
 } from "./types";
+import type { AgentProfile, AgentSkill } from "./settings";
 
 /** 后端推 SSE 事件用的事件名，和 src-tauri/src/agent.rs 的常量对齐 */
 const EVENT_NAME = "agent-event";
@@ -24,6 +25,13 @@ export interface AgentLaunchConfig {
   baseUrl: string;
   model: string;
   apiKey: string;
+  /** 生效的规则 / 记忆正文（全局 + 项目已合并），见 lib/agent-profiles.ts */
+  rules: string;
+  memory: string;
+  skills: AgentSkill[];
+  agents: AgentProfile[];
+  /** 选中的 primary agent；空则不下发 default_agent */
+  primary: string;
 }
 
 /** 启动智能体服务。幂等：同一工作区已经在跑就直接复用。 */
@@ -66,8 +74,10 @@ export function sendAgentMessage(
   sessionId: string,
   text: string,
   model: string,
+  /** 选中的 primary agent；v2 走切 agent 路由、v1 塞进请求体，都在后端处理 */
+  agent?: string,
 ): Promise<void> {
-  return invoke<void>("agent_send", { sessionId, text, model });
+  return invoke<void>("agent_send", { sessionId, text, model, agent: agent ?? null });
 }
 
 export function abortAgentSession(sessionId: string): Promise<void> {

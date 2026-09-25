@@ -17,9 +17,10 @@ import {
   startAgent,
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
+import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
 import type { AgentConversation, AgentSessionSummary } from "../lib/types";
 import { AgentMessageView } from "./AgentMessageView";
-import { IconBot, IconSend, IconStop } from "./icons";
+import { IconBot, IconChevronDown, IconSend, IconStop } from "./icons";
 
 interface AgentPaneProps {
   cwd: string | null;
@@ -40,12 +41,62 @@ const SEND_BUTTON =
 const STOP_BUTTON =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
 
+/** 状态行右端的 primary agent 选择器：内置 build / plan + 设置里定义的自定义 agent */
+function PrimaryAgentPicker({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((isOpen) => !isOpen)}
+        title="选择智能体"
+        className="flex items-center gap-1 rounded-md border border-line-strong px-1.5 py-0.5 text-[11px] text-fg-muted hover:border-line-hover hover:text-fg"
+      >
+        {value}
+        <IconChevronDown className="h-3 w-3 text-fg-faint" />
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute top-full right-0 z-40 mt-1 flex min-w-32 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
+            {options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  onChange(option.value);
+                }}
+                className={`px-3 py-1.5 text-left text-[12px] hover:bg-hover hover:text-fg ${
+                  option.value === value ? "text-fg" : "text-fg-muted"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /**
  * 智能体对话面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
  * 这里只负责发消息、把 SSE 事件渲染成对话。
  */
 export function AgentPane({ cwd, active }: AgentPaneProps) {
-  const { settings } = useSettings();
+  const { settings, update } = useSettings();
   // 会话列表和当前会话跟侧边栏共用：那边要按项目列出历史、并高亮正在聊的那条
   const {
     setSessions,
@@ -72,6 +123,14 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const { aiBaseUrl, aiModel, aiApiKey, agentCommand, agentPort } = settings;
+
+  // 生效层（全局 + 当前项目已合并）与 primary agent 候选。选择器存的是名字，
+  // 可能已被删掉 / 改名，所以实际用的是「候选里还有没有它」的结果，没有就回落 build。
+  const layer = useMemo(() => resolveAgentLayer(settings, cwd), [settings, cwd]);
+  const agentOptions = useMemo(() => primaryAgentOptions(layer), [layer]);
+  const primary = agentOptions.some((option) => option.value === settings.agentPrimary)
+    ? settings.agentPrimary
+    : "build";
 
   /** 拉一次会话列表。失败不抛，返回空数组让调用方兜底 */
   const refreshSessions = useCallback(async (): Promise<AgentSessionSummary[]> => {
@@ -127,6 +186,11 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
         baseUrl: aiBaseUrl.trim(),
         model: aiModel.trim(),
         apiKey: aiApiKey.trim(),
+        rules: layer.rules,
+        memory: layer.memory,
+        skills: layer.skills,
+        agents: layer.agents,
+        primary,
       });
       // 复用已有实例时后端回的是空版本号，那就保留上一次探到的
       setAgentVersion((current) => info.version || current);
@@ -158,6 +222,8 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
     aiApiKey,
     agentCommand,
     agentPort,
+    layer,
+    primary,
     refreshSessions,
     openSession,
     setCurrentId,
@@ -256,14 +322,14 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
       }
     }
 
-    void sendAgentMessage(sessionId, text, aiModel.trim()).catch((reason) => {
+    void sendAgentMessage(sessionId, text, aiModel.trim(), primary).catch((reason) => {
       setConversation((current) => ({
         ...current,
         streaming: false,
         error: String(reason),
       }));
     });
-  }, [input, conversation.streaming, aiModel, cwd, setCurrentId, refreshSessions]);
+  }, [input, conversation.streaming, aiModel, primary, cwd, setCurrentId, refreshSessions]);
 
   const stop = useCallback(() => {
     const sessionId = currentIdRef.current;
@@ -384,7 +450,12 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
           opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
           {aiModel.trim() || "未配置模型"}
         </span>
-        {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态 */}
+        {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态与 agent 选择 */}
+        <PrimaryAgentPicker
+          value={primary}
+          options={agentOptions}
+          onChange={(next) => update({ agentPrimary: next })}
+        />
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">

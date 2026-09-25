@@ -13,8 +13,16 @@ import {
   AUTOSAVE_DELAY_MIN,
   AUTOSAVE_DELAY_MAX,
   DEFAULT_MONO_FONT,
+  type AgentLayer,
+  type AgentProfile,
+  type AgentSkill,
   type AutoSaveMode,
 } from "../lib/settings";
+import {
+  isValidAgentName,
+  projectLayer,
+  withLayer,
+} from "../lib/agent-profiles";
 import {
   TERMINAL_THEME_OPTIONS,
   resolveTerminalTheme,
@@ -28,6 +36,8 @@ import { IconChevronDown, IconClose, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
   onClose: () => void;
+  /** 当前工作区路径；「智能体」分类的项目层按它分桶，没开工作区时为 null */
+  cwd?: string | null;
 }
 
 /** 分类靠左边的竖排 tab，内容区一次只显示一组 */
@@ -35,7 +45,7 @@ const TABS = [
   { id: "appearance", label: "外观" },
   { id: "terminal", label: "终端" },
   { id: "editor", label: "编辑器" },
-  { id: "ai", label: "AI" },
+  { id: "agent", label: "智能体" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -100,6 +110,33 @@ function Field({
       <div className="flex items-center gap-2">{children}</div>
       {hint && <p className="text-[11px] text-fg-faint">{hint}</p>}
     </div>
+  );
+}
+
+/** 设置页里的一组字段：一道细分隔线 + 标题 +（可选）右侧操作，让长页面能扫读 */
+function Section({
+  title,
+  hint,
+  action,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  /** 放标题行右端，例如作用域切换 */
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3 border-t border-line pt-4 first:border-t-0 first:pt-0">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <h3 className="min-w-0 flex-1 text-[12px] font-semibold text-fg">{title}</h3>
+          {action}
+        </div>
+        {hint && <p className="text-[11px] text-fg-faint">{hint}</p>}
+      </div>
+      <div className="flex flex-col gap-3">{children}</div>
+    </section>
   );
 }
 
@@ -385,10 +422,393 @@ const RESIZE_HANDLES: { edges: ResizeEdges; className: string }[] = [
   { edges: { s: true, e: true }, className: "bottom-0 right-0 h-3 w-3 cursor-nwse-resize" },
 ];
 
-export function SettingsDialog({ onClose }: SettingsDialogProps) {
+const AGENT_MODE_OPTIONS: { value: AgentProfile["mode"]; label: string }[] = [
+  { value: "primary", label: "主智能体" },
+  { value: "subagent", label: "子智能体" },
+  { value: "all", label: "两者皆可" },
+];
+
+/** 一条技能 / 一个 agent 的启用开关。用自绘滑块，省得给 checkbox 单独写样式 */
+function Toggle({
+  checked,
+  onChange,
+  title,
+}: {
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      title={title}
+      onClick={() => onChange(!checked)}
+      className={`flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors ${
+        checked ? "bg-accent" : "bg-active"
+      }`}
+    >
+      <span
+        className={`h-4 w-4 rounded-full bg-app transition-transform ${
+          checked ? "translate-x-4" : ""
+        }`}
+      />
+    </button>
+  );
+}
+
+/** 折叠条：左侧一个会转的箭头 + 标题，和条目行共用一套折叠交互 */
+function CollapseHeader({
+  open,
+  onToggle,
+  placeholder,
+  label,
+  mono,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  /** 值为空时显示的灰字 */
+  placeholder: string;
+  label: string;
+  mono?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+    >
+      <IconChevronDown
+        className={`h-3.5 w-3.5 shrink-0 text-fg-faint transition-transform ${
+          open ? "" : "-rotate-90"
+        }`}
+      />
+      <span
+        className={`min-w-0 flex-1 truncate text-[12px] ${mono ? "font-mono" : ""} ${
+          label ? "text-fg" : "text-fg-faint"
+        }`}
+      >
+        {label || placeholder}
+      </span>
+    </button>
+  );
+}
+
+/** 一条技能：折叠时只占一行（名字 + 开关），展开才编辑描述和正文 */
+function SkillEditor({
+  skill,
+  open,
+  onToggle,
+  onChange,
+  onRemove,
+}: {
+  skill: AgentSkill;
+  open: boolean;
+  onToggle: () => void;
+  onChange: (next: AgentSkill) => void;
+  onRemove: () => void;
+}) {
+  const patch = (part: Partial<AgentSkill>) => onChange({ ...skill, ...part });
+  const invalid = skill.name.trim() !== "" && !isValidAgentName(skill.name);
+  return (
+    <div className="w-full overflow-hidden rounded-md border border-line-strong">
+      <div className="flex items-center gap-1.5 p-2">
+        <CollapseHeader
+          open={open}
+          onToggle={onToggle}
+          mono
+          placeholder="未命名技能"
+          label={skill.name}
+        />
+        {invalid && <span className="shrink-0 text-[11px] text-danger">名称非法</span>}
+        {!skill.enabled && <span className="shrink-0 text-[11px] text-fg-faint">已停用</span>}
+        <Toggle
+          checked={skill.enabled}
+          title={skill.enabled ? "已启用" : "已停用"}
+          onChange={(next) => patch({ enabled: next })}
+        />
+        <button type="button" onClick={onRemove} title="删除技能" className={LIST_ACTION}>
+          <IconClose className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {open && (
+        <div className="flex flex-col gap-2 border-t border-line p-2">
+          <input
+            type="text"
+            value={skill.name}
+            spellCheck={false}
+            placeholder="技能名（小写字母、数字、连字符）"
+            onChange={(event) => patch({ name: event.target.value })}
+            className={`${TEXT_INPUT} font-mono`}
+          />
+          {invalid && (
+            <p className="text-[11px] text-danger">
+              名字只能用小写字母、数字和单个连字符，例如 my-skill
+            </p>
+          )}
+          <input
+            type="text"
+            value={skill.description}
+            placeholder="描述：什么时候该用它（必填）"
+            onChange={(event) => patch({ description: event.target.value })}
+            className={TEXT_INPUT}
+          />
+          <textarea
+            value={skill.content}
+            rows={4}
+            spellCheck={false}
+            placeholder="技能正文（markdown）"
+            onChange={(event) => patch({ content: event.target.value })}
+            className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 模式在折叠行上的短标签 */
+const MODE_SHORT: Record<AgentProfile["mode"], string> = {
+  primary: "主",
+  subagent: "子",
+  all: "通用",
+};
+
+/** 一个自定义 agent：折叠时只占一行（名字 + 模式），展开才编辑其余字段 */
+function AgentEditor({
+  agent,
+  open,
+  onToggle,
+  onChange,
+  onRemove,
+}: {
+  agent: AgentProfile;
+  open: boolean;
+  onToggle: () => void;
+  onChange: (next: AgentProfile) => void;
+  onRemove: () => void;
+}) {
+  const patch = (part: Partial<AgentProfile>) => onChange({ ...agent, ...part });
+  const invalid = agent.name.trim() !== "" && !isValidAgentName(agent.name);
+  return (
+    <div className="w-full overflow-hidden rounded-md border border-line-strong">
+      <div className="flex items-center gap-1.5 p-2">
+        <CollapseHeader
+          open={open}
+          onToggle={onToggle}
+          mono
+          placeholder="未命名 Agent"
+          label={agent.name}
+        />
+        {invalid && <span className="shrink-0 text-[11px] text-danger">名称非法</span>}
+        {!agent.enabled && <span className="shrink-0 text-[11px] text-fg-faint">已停用</span>}
+        <span className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[11px] text-fg-dim">
+          {MODE_SHORT[agent.mode]}
+        </span>
+        <Toggle
+          checked={agent.enabled}
+          title={agent.enabled ? "已启用" : "已停用"}
+          onChange={(next) => patch({ enabled: next })}
+        />
+        <button type="button" onClick={onRemove} title="删除 Agent" className={LIST_ACTION}>
+          <IconClose className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {open && (
+        <div className="flex flex-col gap-2 border-t border-line p-2">
+          <input
+            type="text"
+            value={agent.name}
+            spellCheck={false}
+            placeholder="名称（小写字母、数字、连字符）"
+            onChange={(event) => patch({ name: event.target.value })}
+            className={`${TEXT_INPUT} font-mono`}
+          />
+          {invalid && (
+            <p className="text-[11px] text-danger">
+              名称只能用小写字母、数字和单个连字符，例如 code-reviewer
+            </p>
+          )}
+          <input
+            type="text"
+            value={agent.description}
+            placeholder="描述：它做什么（必填）"
+            onChange={(event) => patch({ description: event.target.value })}
+            className={TEXT_INPUT}
+          />
+          <div className="flex items-center gap-2">
+            <div className="w-36 shrink-0">
+              <Select
+                value={agent.mode}
+                options={AGENT_MODE_OPTIONS}
+                onChange={(next) => patch({ mode: next })}
+              />
+            </div>
+            <input
+              type="text"
+              value={agent.model}
+              spellCheck={false}
+              placeholder="模型（留空用默认）"
+              onChange={(event) => patch({ model: event.target.value })}
+              className={`${TEXT_INPUT} min-w-0 flex-1 font-mono`}
+            />
+          </div>
+          <textarea
+            value={agent.prompt}
+            rows={4}
+            spellCheck={false}
+            placeholder="系统提示词：告诉它该怎么做"
+            onChange={(event) => patch({ prompt: event.target.value })}
+            className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 一层智能体配置的编辑区：规则 / 记忆 / 技能 / Agents。全局层与项目层共用 */
+function LayerEditor({
+  layer,
+  onChange,
+}: {
+  layer: AgentLayer;
+  onChange: (next: AgentLayer) => void;
+}) {
+  const patch = (part: Partial<AgentLayer>) => onChange({ ...layer, ...part });
+
+  // 手风琴：一次只展开一条技能 / 一个 agent，否则列表一长整页都被撑开。
+  // 新加的条目直接展开，让用户能马上填名字
+  const [openSkill, setOpenSkill] = useState<number | null>(null);
+  const [openAgent, setOpenAgent] = useState<number | null>(null);
+
+  const addSkill = () => {
+    setOpenSkill(layer.skills.length);
+    patch({
+      skills: [
+        ...layer.skills,
+        { name: "", description: "", content: "", enabled: true },
+      ],
+    });
+  };
+  const addAgent = () => {
+    setOpenAgent(layer.agents.length);
+    patch({
+      agents: [
+        ...layer.agents,
+        { name: "", description: "", mode: "subagent", model: "", prompt: "", enabled: true },
+      ],
+    });
+  };
+
+  return (
+    <>
+      <Field
+        label="规则"
+        hint="每次对话都会注入，用来约束智能体的行为（相当于 opencode 的 AGENTS.md）"
+      >
+        <textarea
+          value={layer.rules}
+          rows={4}
+          spellCheck={false}
+          placeholder="例如：改动前先读 README；注释一律用中文；不要顺手重构无关代码…"
+          onChange={(event) => patch({ rules: event.target.value })}
+          className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
+        />
+      </Field>
+
+      <Field
+        label="记忆"
+        hint="长期沉淀的事实与偏好，同样每次对话注入；和「规则」分开只是为了好管理"
+      >
+        <textarea
+          value={layer.memory}
+          rows={4}
+          spellCheck={false}
+          placeholder="例如：本机 cargo 走 tuna 镜像；应用打包主体是「硅原子」…"
+          onChange={(event) => patch({ memory: event.target.value })}
+          className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
+        />
+      </Field>
+
+      <Field
+        label="技能"
+        hint="每条物化成一份 SKILL.md，智能体按需加载；停用或名字非法的条目不会下发"
+        action={
+          <button type="button" onClick={addSkill} title="新增技能" className={HEAD_ACTION}>
+            <IconPlus className="h-3.5 w-3.5" />
+          </button>
+        }
+      >
+        <div className="flex w-full flex-col gap-2">
+          {layer.skills.length === 0 ? (
+            <p className="text-[11px] text-fg-faint">还没有技能</p>
+          ) : (
+            layer.skills.map((skill, index) => (
+              <SkillEditor
+                key={index}
+                skill={skill}
+                open={openSkill === index}
+                onToggle={() => setOpenSkill(openSkill === index ? null : index)}
+                onChange={(next) =>
+                  patch({
+                    skills: layer.skills.map((item, i) => (i === index ? next : item)),
+                  })
+                }
+                onRemove={() => {
+                  setOpenSkill(null);
+                  patch({ skills: layer.skills.filter((_, i) => i !== index) });
+                }}
+              />
+            ))
+          )}
+        </div>
+      </Field>
+
+      <Field
+        label="Agents"
+        hint="自定义智能体；主智能体能在这里的对话面板顶部切换，子智能体由主智能体按需调用"
+        action={
+          <button type="button" onClick={addAgent} title="新增 Agent" className={HEAD_ACTION}>
+            <IconPlus className="h-3.5 w-3.5" />
+          </button>
+        }
+      >
+        <div className="flex w-full flex-col gap-2">
+          {layer.agents.length === 0 ? (
+            <p className="text-[11px] text-fg-faint">还没有自定义 Agent</p>
+          ) : (
+            layer.agents.map((agent, index) => (
+              <AgentEditor
+                key={index}
+                agent={agent}
+                open={openAgent === index}
+                onToggle={() => setOpenAgent(openAgent === index ? null : index)}
+                onChange={(next) =>
+                  patch({
+                    agents: layer.agents.map((item, i) => (i === index ? next : item)),
+                  })
+                }
+                onRemove={() => {
+                  setOpenAgent(null);
+                  patch({ agents: layer.agents.filter((_, i) => i !== index) });
+                }}
+              />
+            ))
+          )}
+        </div>
+      </Field>
+    </>
+  );
+}
+
+export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const { settings, update, reset } = useSettings();
   const { theme, preference, setPreference } = useTheme();
   const [tab, setTab] = useState<TabId>("appearance");
+  /** 「智能体」分类的作用域：全局层还是当前项目的层 */
+  const [agentScope, setAgentScope] = useState<"global" | "project">("global");
   /** 等确认的「恢复默认」；非空时弹确认框 */
   const [confirmReset, setConfirmReset] = useState(false);
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
@@ -902,87 +1322,132 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                 </>
               )}
 
-              {tab === "ai" && (
+              {tab === "agent" && (
                 <>
-                  <p className="text-[11px] leading-relaxed text-fg-faint">
-                    「变更」面板里的「生成」按钮用它按暂存区改动写提交信息，终端区的
-                    GUI tab（「智能体」）也复用这一份配置。任何 OpenAI 兼容的接口都能用，
-                    填基地址即可，密钥只存在本机。
-                  </p>
-                  <Field
-                    label="接口地址"
-                    hint="例如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）"
+                  <Section
+                    title="模型接口"
+                    hint="任何 OpenAI 兼容的服务都能用；「变更」的提交信息生成也用它"
                   >
-                    <input
-                      type="text"
-                      value={settings.aiBaseUrl}
-                      spellCheck={false}
-                      placeholder="https://api.openai.com/v1"
-                      onChange={(event) => update({ aiBaseUrl: event.target.value })}
-                      className={TEXT_INPUT}
-                    />
-                  </Field>
-                  <Field label="模型" hint="按接口文档填，例如 gpt-4o-mini、deepseek-chat">
-                    <input
-                      type="text"
-                      value={settings.aiModel}
-                      spellCheck={false}
-                      placeholder="gpt-4o-mini"
-                      onChange={(event) => update({ aiModel: event.target.value })}
-                      className={TEXT_INPUT}
-                    />
-                  </Field>
-                  <Field label="API 密钥">
-                    <input
-                      type="password"
-                      value={settings.aiApiKey}
-                      spellCheck={false}
-                      placeholder="sk-…"
-                      onChange={(event) => update({ aiApiKey: event.target.value })}
-                      className={TEXT_INPUT}
-                    />
-                  </Field>
+                    <Field
+                      label="接口地址"
+                      hint="例如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）"
+                    >
+                      <input
+                        type="text"
+                        value={settings.aiBaseUrl}
+                        spellCheck={false}
+                        placeholder="https://api.openai.com/v1"
+                        onChange={(event) => update({ aiBaseUrl: event.target.value })}
+                        className={TEXT_INPUT}
+                      />
+                    </Field>
+                    <Field label="模型" hint="按接口文档填，例如 gpt-4o-mini、deepseek-chat">
+                      <input
+                        type="text"
+                        value={settings.aiModel}
+                        spellCheck={false}
+                        placeholder="gpt-4o-mini"
+                        onChange={(event) => update({ aiModel: event.target.value })}
+                        className={TEXT_INPUT}
+                      />
+                    </Field>
+                    <Field label="API 密钥" hint="只存在本机，不写进任何配置文件">
+                      <input
+                        type="password"
+                        value={settings.aiApiKey}
+                        spellCheck={false}
+                        placeholder="sk-…"
+                        onChange={(event) => update({ aiApiKey: event.target.value })}
+                        className={TEXT_INPUT}
+                      />
+                    </Field>
+                  </Section>
 
-                  <p className="pt-1 text-[11px] leading-relaxed text-fg-faint">
-                    下面是「智能体」（终端区顶栏那个 GUI tab）。它在工作区里起一个 headless
-                    的 opencode 服务，由它自己读代码、改文件、跑命令，需要单独安装 opencode。
-                  </p>
-                  <Field label="智能体（GUI）">
-                    <BoolToggle
-                      value={settings.agentEnabled}
-                      options={[
-                        { value: true, label: "开启" },
-                        { value: false, label: "关闭" },
-                      ]}
-                      onChange={(next) => update({ agentEnabled: next })}
-                    />
-                  </Field>
-                  <Field
-                    label="opencode 可执行文件"
-                    hint="填裸命令名会去 PATH 里找；找不到时在这里填完整路径。改完下次启动智能体才生效"
+                  <Section
+                    title="运行"
+                    hint="终端区顶栏的 GUI tab 里起一个 headless opencode，需要单独安装"
                   >
-                    <input
-                      type="text"
-                      value={settings.agentCommand}
-                      spellCheck={false}
-                      placeholder="opencode"
-                      onChange={(event) => update({ agentCommand: event.target.value })}
-                      className={TEXT_INPUT}
-                    />
-                  </Field>
-                  <Field
-                    label="智能体服务端口"
-                    hint="0 表示自动挑一个空闲端口；填固定值要保证没被别的程序占用"
+                    <Field label="智能体（GUI）">
+                      <BoolToggle
+                        value={settings.agentEnabled}
+                        options={[
+                          { value: true, label: "开启" },
+                          { value: false, label: "关闭" },
+                        ]}
+                        onChange={(next) => update({ agentEnabled: next })}
+                      />
+                    </Field>
+                    <Field
+                      label="opencode 可执行文件"
+                      hint="填裸命令名会去 PATH 里找；找不到时填完整路径。改完下次启动才生效"
+                    >
+                      <input
+                        type="text"
+                        value={settings.agentCommand}
+                        spellCheck={false}
+                        placeholder="opencode"
+                        onChange={(event) => update({ agentCommand: event.target.value })}
+                        className={TEXT_INPUT}
+                      />
+                    </Field>
+                    <Field
+                      label="服务端口"
+                      hint="0 表示自动挑一个空闲端口；填固定值要保证没被别的程序占用"
+                    >
+                      <input
+                        type="number"
+                        min={0}
+                        max={65535}
+                        value={settings.agentPort}
+                        onChange={(event) => update({ agentPort: Number(event.target.value) })}
+                        className={TEXT_INPUT}
+                      />
+                    </Field>
+                  </Section>
+
+                  <Section
+                    title="指令与扩展"
+                    hint={
+                      agentScope === "project" && !cwd
+                        ? "先打开一个工作区，才能编辑项目层"
+                        : "启动时注入 / 加载；项目层覆盖同名全局项，改动下次启动生效"
+                    }
+                    action={
+                      <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
+                        {(["global", "project"] as const).map((scope) => {
+                          const disabled = scope === "project" && !cwd;
+                          return (
+                            <button
+                              key={scope}
+                              type="button"
+                              disabled={disabled}
+                              onClick={() => setAgentScope(scope)}
+                              className={`rounded-md px-2.5 py-0.5 text-[12px] ${
+                                agentScope === scope
+                                  ? "bg-selected text-fg"
+                                  : "text-fg-dim hover:bg-hover hover:text-fg"
+                              } ${
+                                disabled
+                                  ? "cursor-not-allowed opacity-40 hover:bg-transparent"
+                                  : ""
+                              }`}
+                            >
+                              {scope === "global" ? "全局" : "本项目"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    }
                   >
-                    <input
-                      type="number"
-                      min={0}
-                      max={65535}
-                      value={settings.agentPort}
-                      onChange={(event) => update({ agentPort: Number(event.target.value) })}
-                      className={TEXT_INPUT}
+                    <LayerEditor
+                      layer={
+                        agentScope === "global"
+                          ? settings.agentGlobal
+                          : projectLayer(settings, cwd)
+                      }
+                      onChange={(next) => update(withLayer(settings, agentScope, cwd, next))}
                     />
-                  </Field>
+                  </Section>
                 </>
               )}
             </div>

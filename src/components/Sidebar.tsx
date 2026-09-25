@@ -281,7 +281,9 @@ export function Sidebar({
           </button>
         </div>
 
-        {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+        {settingsOpen && (
+          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={current} />
+        )}
       </div>
     );
   }
@@ -525,7 +527,9 @@ export function Sidebar({
         </button>
       </footer>
 
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={current} />
+        )}
 
       {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (

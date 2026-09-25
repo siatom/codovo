@@ -128,7 +128,33 @@ const PROBES: &[(&str, bool, Protocol)] = &[
 ];
 
 
-/// 前端传进来的配置。三个接口字段复用「设置 → AI」里已有的那份。
+/// 一条技能：写成 `<config_dir>/skills/<name>/SKILL.md`。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSpec {
+    name: String,
+    description: String,
+    #[serde(default)]
+    content: String,
+}
+
+/// 一个自定义 agent：写进 opencode.json 的 `agent` map。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSpec {
+    name: String,
+    description: String,
+    /// `primary` / `subagent` / `all`
+    mode: String,
+    /// 留空表示不下发，让 opencode 用它配置里的默认模型
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    prompt: String,
+}
+
+/// 前端传进来的配置。三个接口字段复用「设置 → AI」里已有的那份；
+/// 规则 / 记忆 / 技能 / Agents 是前端把「全局 + 当前项目」两层合并后的生效值。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
@@ -139,6 +165,19 @@ pub struct AgentConfig {
     base_url: String,
     model: String,
     api_key: String,
+    /// 规则正文，注入每次对话
+    #[serde(default)]
+    rules: String,
+    /// 记忆正文，注入每次对话
+    #[serde(default)]
+    memory: String,
+    #[serde(default)]
+    skills: Vec<SkillSpec>,
+    #[serde(default)]
+    agents: Vec<AgentSpec>,
+    /// 对话面板里选中的 primary agent；空则不下发 default_agent
+    #[serde(default)]
+    primary: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,12 +242,18 @@ fn endpoint(protocol: Protocol, port: u16, path: &str) -> String {
 ///
 /// `model` 必须显式给：不给的话 opencode 会用用户全局配置里的默认模型
 /// （本机实测会落到没跑起来的 ollama，然后一路重试到超时）。
+///
+/// `agent` 只在 v1 侧放进 body。v2 的 prompt 体（`additionalProperties: false`，
+/// 实测 2.0.16）不收 `agent` / `model`——即使塞进去也会被静默忽略，切 agent 得走
+/// `/session/:id/agent` 那条独立路由，见 `agent_send`。
 fn prompt_body(
     protocol: Protocol,
     text: &str,
     model: Option<&str>,
+    agent: Option<&str>,
 ) -> serde_json::Value {
     let model = model.filter(|m| !m.trim().is_empty());
+    let agent = agent.filter(|a| !a.trim().is_empty());
     match protocol {
         Protocol::V1 => {
             let mut body = serde_json::json!({
@@ -216,6 +261,9 @@ fn prompt_body(
             });
             if let Some(model) = model {
                 body["model"] = serde_json::json!({ "providerID": PROVIDER_ID, "modelID": model });
+            }
+            if let Some(agent) = agent {
+                body["agent"] = serde_json::json!(agent);
             }
             body
         }
@@ -227,6 +275,28 @@ fn prompt_body(
             body
         }
     }
+}
+
+/// v2 切 primary agent：`POST /session/:id/agent`，回 204、没有 body。
+/// v1 没有这条路由，靠 `prompt_body` 的 `agent` 字段表达。
+async fn switch_agent(
+    client: &reqwest::Client,
+    port: u16,
+    session_id: &str,
+    agent: &str,
+    protocol: Protocol,
+    password: &str,
+) -> Result<(), String> {
+    request_json(
+        client,
+        reqwest::Method::POST,
+        endpoint(protocol, port, &format!("/session/{session_id}/agent")),
+        Some(serde_json::json!({ "agent": agent })),
+        protocol,
+        password,
+    )
+    .await
+    .map(|_| ())
 }
 
 /// v2 的认证头。用户名固定 `opencode`，密码是我们起进程时注入的那个。
@@ -412,18 +482,101 @@ fn check_port(port: u16) -> Result<u16, String> {
 
 // ---- 配置注入 ----
 
+/// 校验技能名 / agent 名。两类名字都会成为 opencode 侧的 key（技能还是目录名），
+/// 所以只放行小写字母、数字和单个连字符——既能挡住路径穿越，也和 opencode 对技能名
+/// 的要求（`^[a-z0-9]+(-[a-z0-9]+)*$`）一致。前端有同样的校验，这里再挡一道。
+fn validate_name(name: &str) -> Result<&str, String> {
+    let trimmed = name.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.split('-').all(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        });
+    if !valid {
+        return Err(format!(
+            "非法名称「{name}」：只能用 a-z、0-9 和单个连字符（如 my-skill）"
+        ));
+    }
+    Ok(trimmed)
+}
+
+/// 拼一份 SKILL.md。frontmatter 只放 opencode 认的 `name` / `description`。
+///
+/// 值用 JSON 字符串渲染（JSON 字符串是合法的 YAML flow scalar），这样描述里带冒号、
+/// 引号或换行都不会把 frontmatter 撑坏。
+fn render_skill(skill: &SkillSpec) -> String {
+    let name = serde_json::to_string(skill.name.trim()).unwrap_or_default();
+    let description = serde_json::to_string(skill.description.trim()).unwrap_or_default();
+    format!(
+        "---\nname: {name}\ndescription: {description}\n---\n\n{}\n",
+        skill.content.trim()
+    )
+}
+
 /// 生成 CodeDock 专用的 opencode 配置，写在自己的配置目录里。
 ///
 /// 用 `OPENCODE_CONFIG_DIR` 把它指过去，完全不碰用户的 `~/.config/opencode/`；
 /// 也不往工作区写 `opencode.json`——那会污染用户仓库、出现在 git 改动列表里。
-fn write_config(dir: &Path, base_url: &str, model: &str) -> Result<(), String> {
+///
+/// 规则 / 记忆 / 技能 / Agents 都在这里物化成 opencode 认的文件与字段：
+/// - 规则、记忆 → 各写一份 markdown，用 `instructions` 的绝对路径指过去；
+/// - 技能 → `<name>/SKILL.md`，再把技能根目录登记到 `skills.paths`
+///   （不赌 `OPENCODE_CONFIG_DIR` 会自动搜 `skills/`——文档只保证搜 agents/plugins 那些）；
+/// - Agents → opencode.json 的 `agent` map；
+/// - 选中的 primary agent → `default_agent`。
+///
+/// 配置目录整体是「每次启动重新生成」的产物，所以 `kill()` 里删掉它没关系。
+fn write_config(
+    dir: &Path,
+    base_url: &str,
+    model: &str,
+    cfg: &AgentConfig,
+) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+
+    let mut instructions: Vec<String> = Vec::new();
+    for (file, text) in [("rules.md", &cfg.rules), ("memory.md", &cfg.memory)] {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let path = dir.join(file);
+        std::fs::write(&path, text).map_err(|e| format!("写入 {file} 失败: {e}"))?;
+        instructions.push(path.to_string_lossy().into_owned());
+    }
+
+    let skills_dir = dir.join("skills");
+    let mut wrote_skill = false;
+    for skill in &cfg.skills {
+        let name = validate_name(&skill.name)?;
+        let target = skills_dir.join(name);
+        std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
+        std::fs::write(target.join("SKILL.md"), render_skill(skill))
+            .map_err(|e| format!("写入技能失败: {e}"))?;
+        wrote_skill = true;
+    }
+
+    let mut agents = serde_json::Map::new();
+    for agent in &cfg.agents {
+        let name = validate_name(&agent.name)?;
+        let mode = agent.mode.trim();
+        if !matches!(mode, "primary" | "subagent" | "all") {
+            return Err(format!("Agent「{name}」的模式非法：{mode}"));
+        }
+        let mut entry = serde_json::json!({
+            "description": agent.description.trim(),
+            "mode": mode,
+            "prompt": agent.prompt,
+        });
+        if !agent.model.trim().is_empty() {
+            entry["model"] = serde_json::json!(agent.model.trim());
+        }
+        agents.insert(name.to_string(), entry);
+    }
 
     // 模型名是用户填的，得当动态 key 用，所以走 Map 而不是 json! 的字面量语法
     let mut models = serde_json::Map::new();
     models.insert(model.to_string(), serde_json::json!({ "name": model }));
 
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "provider": {
             PROVIDER_ID: {
                 "npm": "@ai-sdk/openai-compatible",
@@ -441,6 +594,21 @@ fn write_config(dir: &Path, base_url: &str, model: &str) -> Result<(), String> {
         // 规则会让会话卡在那儿等人点确认。这是有意的取舍，等审批 UI 做出来再收紧。
         "permission": "allow",
     });
+
+    if !instructions.is_empty() {
+        config["instructions"] = serde_json::json!(instructions);
+    }
+    if wrote_skill {
+        config["skills"] = serde_json::json!({
+            "paths": [skills_dir.to_string_lossy()],
+        });
+    }
+    if !agents.is_empty() {
+        config["agent"] = serde_json::Value::Object(agents);
+    }
+    if !cfg.primary.trim().is_empty() {
+        config["default_agent"] = serde_json::json!(cfg.primary.trim());
+    }
 
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(dir.join("opencode.json"), text).map_err(|e| format!("写入配置失败: {e}"))
@@ -928,7 +1096,7 @@ pub async fn agent_start(
             .app_config_dir()
             .map_err(|e| format!("拿不到配置目录: {e}"))?
             .join("opencode");
-        write_config(&config_dir, &base_url, &model)?;
+        write_config(&config_dir, &base_url, &model, &config)?;
 
         let password = random_password();
         let (child, log) = spawn_opencode(
@@ -1103,6 +1271,7 @@ pub async fn agent_send(
     session_id: String,
     text: String,
     model: Option<String>,
+    agent: Option<String>,
 ) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("消息不能为空".to_string());
@@ -1110,7 +1279,16 @@ pub async fn agent_send(
 
     let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
-    let body = prompt_body(protocol, &text, model.as_deref());
+    let agent = agent.filter(|a| !a.trim().is_empty());
+
+    // v2 的 prompt 体不收 agent，得先切会话的 primary agent 再发消息
+    if protocol == Protocol::V2 {
+        if let Some(agent) = agent.as_deref() {
+            switch_agent(&client, port, &session_id, agent, protocol, &password).await?;
+        }
+    }
+
+    let body = prompt_body(protocol, &text, model.as_deref(), agent.as_deref());
 
     request_json(
         &client,
@@ -1249,23 +1427,152 @@ mod tests {
     #[test]
     fn prompt_body_matches_each_generation() {
         // v1 把文本放进 parts[]，v2 直接放顶层 text
-        let v1 = prompt_body(Protocol::V1, "你好", Some("m"));
+        let v1 = prompt_body(Protocol::V1, "你好", Some("m"), Some("plan"));
         assert_eq!(v1["parts"][0]["type"], "text");
         assert_eq!(v1["parts"][0]["text"], "你好");
         assert!(v1.get("text").is_none());
         assert_eq!(v1["model"]["modelID"], "m");
         assert_eq!(v1["model"]["providerID"], PROVIDER_ID);
+        // v1 靠 body 里的 agent 切 primary agent
+        assert_eq!(v1["agent"], "plan");
 
-        let v2 = prompt_body(Protocol::V2, "你好", Some("m"));
+        let v2 = prompt_body(Protocol::V2, "你好", Some("m"), Some("plan"));
         assert_eq!(v2["text"], "你好");
         assert!(v2.get("parts").is_none());
         assert_eq!(v2["model"]["modelID"], "m");
+        // v2 的 prompt 体不收 agent，硬塞会被静默忽略，切 agent 走 switch_agent
+        assert!(v2.get("agent").is_none());
 
-        // 模型留空时两代都不带 model 字段（交给 opencode 自己的默认）
-        assert!(prompt_body(Protocol::V1, "x", None).get("model").is_none());
-        assert!(prompt_body(Protocol::V2, "x", Some("   "))
+        // 模型 / agent 留空时两代都不带对应字段（交给 opencode 自己的默认）
+        assert!(prompt_body(Protocol::V1, "x", None, None).get("model").is_none());
+        assert!(prompt_body(Protocol::V1, "x", None, Some("  "))
+            .get("agent")
+            .is_none());
+        assert!(prompt_body(Protocol::V2, "x", Some("   "), None)
             .get("model")
             .is_none());
+    }
+
+    /// 单测用的最小 AgentConfig：默认不带任何扩展内容。
+    fn bare_config() -> AgentConfig {
+        AgentConfig {
+            command: "opencode".to_string(),
+            port: 0,
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "some-model".to_string(),
+            api_key: "sk-test".to_string(),
+            rules: String::new(),
+            memory: String::new(),
+            skills: Vec::new(),
+            agents: Vec::new(),
+            primary: String::new(),
+        }
+    }
+
+    #[test]
+    fn config_materializes_rules_memory_skills_and_agents() {
+        let dir = std::env::temp_dir().join(format!(
+            "codedock-agent-layer-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut cfg = bare_config();
+        cfg.rules = "始终用中文回答".to_string();
+        cfg.memory = "用户偏好极简 UI".to_string();
+        cfg.skills = vec![SkillSpec {
+            name: "git-release".to_string(),
+            description: "整理发布说明".to_string(),
+            content: "## 做什么\n- 起草 release notes".to_string(),
+        }];
+        cfg.agents = vec![AgentSpec {
+            name: "reviewer".to_string(),
+            description: "只读代码审查".to_string(),
+            mode: "subagent".to_string(),
+            model: String::new(),
+            prompt: "You are a reviewer.".to_string(),
+        }];
+        cfg.primary = "reviewer".to_string();
+
+        write_config(&dir, &cfg.base_url, &cfg.model, &cfg).unwrap();
+
+        // 规则 / 记忆落成文件，并在 instructions 里用绝对路径引用
+        assert!(dir.join("rules.md").exists());
+        assert!(dir.join("memory.md").exists());
+        let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let instructions = value["instructions"].as_array().unwrap();
+        assert_eq!(instructions.len(), 2);
+        assert!(instructions
+            .iter()
+            .any(|v| v.as_str().unwrap().ends_with("rules.md")));
+
+        // 技能写成 <name>/SKILL.md，并把技能目录登记进 skills.paths
+        let skill_file = dir.join("skills").join("git-release").join("SKILL.md");
+        assert!(skill_file.exists());
+        let skill_text = std::fs::read_to_string(&skill_file).unwrap();
+        assert!(skill_text.contains("name: \"git-release\""));
+        assert!(skill_text.contains("description: \"整理发布说明\""));
+        assert!(skill_text.contains("起草 release notes"));
+        assert!(value["skills"]["paths"][0]
+            .as_str()
+            .unwrap()
+            .ends_with("skills"));
+
+        // agent 进 map；model 留空则不下发；primary 落成 default_agent
+        assert_eq!(value["agent"]["reviewer"]["mode"], "subagent");
+        assert_eq!(value["agent"]["reviewer"]["prompt"], "You are a reviewer.");
+        assert!(value["agent"]["reviewer"].get("model").is_none());
+        assert_eq!(value["default_agent"], "reviewer");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bare_config_writes_no_extension_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "codedock-agent-bare-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cfg = bare_config();
+        write_config(&dir, &cfg.base_url, &cfg.model, &cfg).unwrap();
+
+        let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // 没内容时不该写出这些字段，免得给 opencode 一堆空壳
+        assert!(value.get("instructions").is_none());
+        assert!(value.get("skills").is_none());
+        assert!(value.get("agent").is_none());
+        assert!(value.get("default_agent").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_names_are_rejected() {
+        assert!(validate_name("my-skill").is_ok());
+        // 路径分隔符、穿越、大写、连续连字符都不放行
+        assert!(validate_name("../evil").is_err());
+        assert!(validate_name("a/b").is_err());
+        assert!(validate_name("a\\b").is_err());
+        assert!(validate_name("MySkill").is_err());
+        assert!(validate_name("a--b").is_err());
+        assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn render_skill_quotes_frontmatter_values() {
+        let skill = SkillSpec {
+            name: "probe".to_string(),
+            description: "说明: 带冒号和 \"引号\"".to_string(),
+            content: "正文".to_string(),
+        };
+        let text = render_skill(&skill);
+        // 值被 JSON 字符串包住，冒号 / 引号不会撑坏 YAML
+        assert!(text.starts_with("---\nname: \"probe\"\ndescription: \""));
+        assert!(text.contains("\\\"引号\\\""));
+        assert!(text.trim_end().ends_with("正文"));
     }
 
     #[test]
@@ -1353,7 +1660,8 @@ mod tests {
     fn config_uses_dynamic_model_key() {
         let dir = std::env::temp_dir().join("codedock-agent-test-config");
         let _ = std::fs::remove_dir_all(&dir);
-        write_config(&dir, "https://api.example.com/v1", "some-model").unwrap();
+        let cfg = bare_config();
+        write_config(&dir, "https://api.example.com/v1", "some-model", &cfg).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
