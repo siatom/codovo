@@ -1,3 +1,5 @@
+#![allow(linker_messages)]
+
 mod agent;
 mod ai;
 mod fs_api;
