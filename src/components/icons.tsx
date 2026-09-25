@@ -343,9 +343,22 @@ export const IconClearResults = icon(
   </>,
 );
 
-/** 终端工具条上的「启动 AI CLI」：四角星，AI 的通用符号 */
+/** 四角星，AI 的通用符号。用在 Git 面板的「生成提交信息」上 */
 export const IconSparkle = icon(
   <path d="M12 3.6 14 10l6.4 2-6.4 2-2 6.4-2-6.4L3.6 12 10 10Z" />,
+);
+
+/**
+ * 终端工具条上的「启动 AI CLI」：机器人头像。
+ * 四角星太泛，混在一排工具按钮里认不出是干嘛的，换成带角色的符号。
+ */
+export const IconBot = icon(
+  <>
+    <rect x="4" y="9" width="16" height="11" rx="2.5" />
+    <path d="M12 9V5.5" />
+    <circle cx="12" cy="4.2" r="1.2" />
+    <path d="M9.2 13.5v2M14.8 13.5v2" />
+  </>,
 );
 
 /**

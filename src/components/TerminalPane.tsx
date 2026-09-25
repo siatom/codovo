@@ -4,7 +4,7 @@ import {
   type TerminalSessionHandle,
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
-import { IconPanelRight, IconPanelRightOpen, IconSparkle } from "./icons";
+import { IconBot, IconPanelRight, IconPanelRightOpen } from "./icons";
 
 interface TerminalPaneProps {
   /** 当前工作目录；null 表示用户还没选工作区，shell 落在用户主目录 */
@@ -128,7 +128,7 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
                 aiMenuOpen ? "bg-active text-fg" : "text-fg-dim"
               }`}
             >
-              <IconSparkle className="h-3.5 w-3.5" />
+              <IconBot className="h-3.5 w-3.5" />
               <span className="text-[8px] leading-none">▼</span>
             </button>
             {aiMenuOpen && (
@@ -166,7 +166,7 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
             }
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            <IconSparkle className="h-3.5 w-3.5" />
+            <IconBot className="h-3.5 w-3.5" />
           </button>
         )}
         {onToggleRight && (
