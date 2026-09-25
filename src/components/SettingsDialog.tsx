@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
 } from "react";
@@ -288,6 +289,65 @@ function TerminalThemeSelect({
   );
 }
 
+/** 弹窗拖出来的位置和大小，单位 px，相对遮罩左上角 */
+interface DialogBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** 正在拖哪几条边；角上同时命中横竖两条 */
+interface ResizeEdges {
+  n?: boolean;
+  s?: boolean;
+  e?: boolean;
+  w?: boolean;
+}
+
+/** 一次缩放拖动的起点状态；null 表示没在拖 */
+interface ResizeDrag {
+  edges: ResizeEdges;
+  startX: number;
+  startY: number;
+  start: DialogBox;
+  /** 遮罩内容区的范围（相对遮罩左上角）。弹窗不能拖出这里，否则会跑出屏幕 */
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+/** 一次挪位置的拖动；只记起点，尺寸始终不变 */
+interface MoveDrag {
+  startX: number;
+  startY: number;
+  start: DialogBox;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+/** 能缩到多小，再小导航栏和内容就挤没了 */
+const DIALOG_MIN_WIDTH = 380;
+const DIALOG_MIN_HEIGHT = 320;
+
+function clamp(min: number, value: number, max: number): number {
+  return Math.max(min, Math.min(value, max));
+}
+
+/**
+ * 八个缩放热区，压在弹窗的四条边和四个角上。
+ *
+ * 边只占 4px 窄带、并且从角上让开 12px：内容区的滚动条紧贴着卡片右缘，
+ * 热区铺太宽会把滚动条整个盖住，滚不动也拖不了。
+ */
+const RESIZE_HANDLES: { edges: ResizeEdges; className: string }[] = [
+  { edges: { n: true }, className: "inset-x-3 top-0 h-1 cursor-ns-resize" },
+  { edges: { s: true }, className: "inset-x-3 bottom-0 h-1 cursor-ns-resize" },
+  { edges: { w: true }, className: "inset-y-3 left-0 w-1 cursor-ew-resize" },
+  { edges: { e: true }, className: "inset-y-3 right-0 w-1 cursor-ew-resize" },
+  { edges: { n: true, w: true }, className: "top-0 left-0 h-3 w-3 cursor-nwse-resize" },
+  { edges: { n: true, e: true }, className: "top-0 right-0 h-3 w-3 cursor-nesw-resize" },
+  { edges: { s: true, w: true }, className: "bottom-0 left-0 h-3 w-3 cursor-nesw-resize" },
+  { edges: { s: true, e: true }, className: "bottom-0 right-0 h-3 w-3 cursor-nwse-resize" },
+];
+
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const { settings, update, reset } = useSettings();
   const { theme, preference, setPreference } = useTheme();
@@ -296,6 +356,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
   const lastFlipRef = useRef(0);
+  /** null = 还没拖过，按类名给的默认尺寸居中摆；拖过之后是具体像素 */
+  const [box, setBox] = useState<DialogBox | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const resizeRef = useRef<ResizeDrag | null>(null);
+  const moveRef = useRef<MoveDrag | null>(null);
 
   // 右边栏只剩一个模块开着时，它的「隐藏」不能再点，否则右边栏就空了。
   // 顺序照 ToolRail 的注册表来，加模块时这里跟着补一行
@@ -336,8 +402,139 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     }
   };
 
+  /**
+   * 量出弹窗此刻的位置和大小（相对遮罩左上角），顺便算出它能到达的范围。
+   *
+   * 可拖范围就是遮罩的内容区，内边距从计算样式里读，免得和 p-6 这个类名脱节。
+   * 缩放和挪位置都要先量一次：居中布局交给 flex，得先把那一下的像素位置固化下来，
+   * 否则一拖就跳。
+   */
+  const measureDialog = () => {
+    const overlay = overlayRef.current;
+    const dialog = dialogRef.current;
+    if (!overlay || !dialog) return null;
+    const rect = dialog.getBoundingClientRect();
+    const pane = overlay.getBoundingClientRect();
+    const styles = window.getComputedStyle(overlay);
+    const padX = Number.parseFloat(styles.paddingLeft) || 0;
+    const padY = Number.parseFloat(styles.paddingTop) || 0;
+    return {
+      start: {
+        left: rect.left - pane.left,
+        top: rect.top - pane.top,
+        width: rect.width,
+        height: rect.height,
+      },
+      bounds: { minX: padX, minY: padY, maxX: pane.width - padX, maxY: pane.height - padY },
+    };
+  };
+
+  /** 按住边缘开始缩放 */
+  const onResizeDown =
+    (edges: ResizeEdges) => (event: ReactPointerEvent<HTMLDivElement>) => {
+      const measured = measureDialog();
+      if (!measured) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+
+      setBox(measured.start);
+      resizeRef.current = {
+        edges,
+        startX: event.clientX,
+        startY: event.clientY,
+        start: measured.start,
+        bounds: measured.bounds,
+      };
+    };
+
+  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag) return;
+    const { edges, start, bounds } = drag;
+    const dx = event.clientX - drag.startX;
+    const dy = event.clientY - drag.startY;
+    const next = { ...start };
+
+    // 拖哪条边就钉住对面那条：先夹住被拖的边，另一边和尺寸由它反推
+    if (edges.e) {
+      next.width = clamp(DIALOG_MIN_WIDTH, start.width + dx, bounds.maxX - start.left);
+    } else if (edges.w) {
+      next.left = clamp(
+        bounds.minX,
+        start.left + dx,
+        start.left + start.width - DIALOG_MIN_WIDTH,
+      );
+      next.width = start.left + start.width - next.left;
+    }
+    if (edges.s) {
+      next.height = clamp(DIALOG_MIN_HEIGHT, start.height + dy, bounds.maxY - start.top);
+    } else if (edges.n) {
+      next.top = clamp(
+        bounds.minY,
+        start.top + dy,
+        start.top + start.height - DIALOG_MIN_HEIGHT,
+      );
+      next.height = start.top + start.height - next.top;
+    }
+    setBox(next);
+  };
+
+  const onResizeUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizeRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    resizeRef.current = null;
+  };
+
+  /** 按住标题栏挪位置。整个弹窗都夹在遮罩内容区里，不会被拖出屏幕 */
+  const onMoveDown = (event: ReactPointerEvent<HTMLElement>) => {
+    // 标题栏里的关闭按钮要照常能点，别被拖拽抢走
+    if ((event.target as HTMLElement).closest("button")) return;
+    const measured = measureDialog();
+    if (!measured) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setBox(measured.start);
+    moveRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      start: measured.start,
+      bounds: measured.bounds,
+    };
+  };
+
+  const onMoveMove = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = moveRef.current;
+    if (!drag) return;
+    const { start, bounds } = drag;
+    setBox({
+      ...start,
+      left: clamp(
+        bounds.minX,
+        start.left + event.clientX - drag.startX,
+        bounds.maxX - start.width,
+      ),
+      top: clamp(
+        bounds.minY,
+        start.top + event.clientY - drag.startY,
+        bounds.maxY - start.height,
+      ),
+    });
+  };
+
+  const onMoveUp = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!moveRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    moveRef.current = null;
+  };
+
   return (
     <div
+      ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
       onClick={() => {
         // 确认框开着时，点它的遮罩只算取消那一下，别顺手把设置面板也关了
@@ -345,21 +542,54 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
       }}
     >
       {/* 尺寸写死：内容少的分类不缩、内容多就滚动，来回切 tab 面板不会跳大小。
-          max-h-full 留着，窗口比面板还矮时还能压下来 */}
+          max-h-full 留着，窗口比面板还矮时还能压下来。
+          拖动过之后由 box 接管成绝对定位，类名里的尺寸就成了初值 */}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="设置"
-        className="flex h-[620px] max-h-full w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-lg"
+        style={
+          box
+            ? {
+                position: "absolute",
+                left: box.left,
+                top: box.top,
+                width: box.width,
+                height: box.height,
+              }
+            : undefined
+        }
+        className="relative flex h-[620px] max-h-full w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-lg"
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="flex h-11 shrink-0 items-center border-b border-line px-4">
+        {/* 四边四角都能拖着改大小，热区压在最上层 */}
+        {RESIZE_HANDLES.map((handle) => (
+          <div
+            key={handle.className}
+            role="separator"
+            aria-label="拖动调整窗口大小"
+            onPointerDown={onResizeDown(handle.edges)}
+            onPointerMove={onResizeMove}
+            onPointerUp={onResizeUp}
+            onPointerCancel={onResizeUp}
+            className={`absolute z-10 ${handle.className}`}
+          />
+        ))}
+        {/* 标题栏兼作拖动把手；关闭按钮单独用 pointer 光标，别跟着变成移动光标 */}
+        <header
+          onPointerDown={onMoveDown}
+          onPointerMove={onMoveMove}
+          onPointerUp={onMoveUp}
+          onPointerCancel={onMoveUp}
+          className="flex h-11 shrink-0 cursor-move items-center border-b border-line px-4"
+        >
           <span className="flex-1 text-[13px] font-semibold text-fg">设置</span>
           <button
             type="button"
             onClick={onClose}
             title="关闭"
-            className="flex h-7 w-7 items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg"
           >
             <IconClose className="h-3.5 w-3.5" />
           </button>
