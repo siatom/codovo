@@ -138,7 +138,7 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
               title="终端（TUI）"
               className={`flex h-6 items-center justify-center rounded-full px-4 text-[12px] ${
                 view === "terminal"
-                  ? "bg-surface text-fg shadow-sm"
+                  ? "bg-selected text-fg shadow-sm"
                   : "text-fg-dim hover:text-fg"
               }`}
             >
@@ -150,7 +150,7 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
               title="智能体（GUI）"
               className={`flex h-6 items-center justify-center rounded-full px-4 text-[12px] ${
                 view === "agent"
-                  ? "bg-surface text-fg shadow-sm"
+                  ? "bg-selected text-fg shadow-sm"
                   : "text-fg-dim hover:text-fg"
               }`}
             >
