@@ -818,7 +818,8 @@ fn pull_remote(state: &FsState) -> Result<GitStatus, String> {
 ///
 /// 新分支第一次推要顺手 `-u`：不建立跟踪关系的话推完 ahead/behind 还是空的，
 /// 用户看不出到底推成功没有，下次还得再推一次。
-/// 落后于远程时 git 自己会拒绝（non-fast-forward），这里不做 force push。
+/// 被拒时先快进拉取再重推一次；拉不动（本地已分叉，或网络/凭据有问题）就
+/// 原样报错，这里不做 force push、也不解决冲突。
 fn push_remote(state: &FsState) -> Result<GitStatus, String> {
     let root = state.root()?;
     let branch = current_branch(&root)?
@@ -832,7 +833,19 @@ fn push_remote(state: &FsState) -> Result<GitStatus, String> {
     .is_some();
 
     if has_upstream {
-        run_git_network(&root, &["push"])?;
+        if let Err(rejected) = run_git_network(&root, &["push"]) {
+            // 落后于远程时 git 会拒绝推送。这里不去解析 stderr 认「non-fast-forward」
+            // 那几个词——文案随 git 版本和语言环境变（见下面分叉那条测试的注释）。
+            // 直接补一次快进拉取：能快进说明确实是纯落后，拉完重推一次就成；
+            // ff-only 拉不动说明本地也提交了、已经分叉，把两边的 git 原文一起
+            // 回传，怎么处理交给终端。
+            //
+            // 也不能拿本地 status 的 behind 当闸门：push 被拒时 git 并不更新
+            // refs/remotes/*，那会儿 behind 往往还是 0，重试就永远不会触发。
+            run_git_network(&root, &["pull", "--ff-only", "--no-rebase"])
+                .map_err(|blocked| format!("{rejected}\n{blocked}"))?;
+            run_git_network(&root, &["push"])?;
+        }
     } else {
         // 没配上游就推到第一个远程。`git remote` 按字母序输出，常见仓库里
         // origin 天然排在最前；一个远程都没有时给一句能看懂的提示
@@ -1845,4 +1858,72 @@ mod tests {
 
         cleanup(&top);
     }
+
+    #[test]
+    fn push_fast_forwards_when_the_remote_is_ahead() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+        push_remote(&state).unwrap();
+
+        push_from_another_clone(&top, &remote_url, "remote-side.txt");
+
+        // 本地没提交、只是落后：push 被拒后应当自动快进再重推成功。
+        // 注意本地没 fetch 过，behind 这会儿还是 0，所以这一步只能靠
+        // push 失败去触发拉取，不能拿 behind 当闸门
+        let after = push_remote(&state).unwrap();
+        assert_eq!((after.ahead, after.behind), (0, 0));
+        // 比 trim 后的内容：本机 core.autocrlf 会把检出时的 LF 变成 CRLF
+        assert_eq!(
+            fs::read_to_string(repo.join("remote-side.txt"))
+                .unwrap()
+                .trim(),
+            "r"
+        );
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn push_fails_and_keeps_the_history_when_the_branch_has_diverged() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "init").unwrap();
+        push_remote(&state).unwrap();
+
+        push_from_another_clone(&top, &remote_url, "remote-side.txt");
+
+        // 本地也提交一个，自动重试里的 ff-only pull 必然失败
+        fs::write(repo.join("local-side.txt"), "l\n").unwrap();
+        stage_paths(&state, &None).unwrap();
+        commit_staged(&state, "local side").unwrap();
+        let head_before = status_of(&state).unwrap().head;
+
+        // 断言"失败了"和"HEAD 没动"就够了：报错文案是 git 自己的，会随版本和
+        // 语言环境变，照着某句英文去断言会在别人的机器上挂掉
+        let error = push_remote(&state).unwrap_err();
+        assert!(!error.trim().is_empty());
+        assert_eq!(status_of(&state).unwrap().head, head_before);
+        // 没有被带进合并状态，也没有凭空多出一条提交
+        assert_eq!(log_of(&state, 5).unwrap().len(), 2);
+
+        cleanup(&top);
+    }
+
 }
