@@ -33,5 +33,5 @@ lerna-debug.log*
 Thumbs.db
 desktop.ini
 
-# CodeBuddy 的本地权限记录，换台机器就不适用
-.codebuddy/settings.local.json
+# CodeBuddy
+.codebuddy/
