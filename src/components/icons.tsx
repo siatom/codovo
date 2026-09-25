@@ -23,7 +23,6 @@ import {
   siHaskell,
   siHtml5,
   siJavascript,
-  siJson,
   siJulia,
   siJupyter,
   siKotlin,
@@ -48,11 +47,9 @@ import {
   siScala,
   siSvelte,
   siSwift,
-  siToml,
   siTypescript,
   siVuedotjs,
   siXml,
-  siYaml,
   siYarn,
   siZsh,
 } from "simple-icons";
@@ -113,6 +110,19 @@ interface BrandIcon {
 }
 
 /**
+ * 自绘的线条图形。json / yaml / toml 的 Simple Icons 标是把 "YAML""TOML"
+ * 这些字母拼成的路径，缩到 16px 就糊成一团，这几个格式改用几何图形更认得出。
+ * 颜色照旧固定用各自的品牌色，不跟主题走。
+ */
+interface StrokeIcon {
+  color: string;
+  body: ReactNode;
+}
+
+/** 文件图标的两种画法 */
+type FileIcon = BrandIcon | StrokeIcon;
+
+/**
  * 品牌图标只能填充、不能描边，所以不走上面的线条工厂。
  * 颜色直接用品牌自己的色——这是界面里唯一不跟主题走的一类颜色，
  * 换成语义色这些图标就失去辨识度了。
@@ -142,8 +152,81 @@ function brandFill(hex: string): string {
   return luma < DARK_BRAND_LUMA ? "currentColor" : `#${hex}`;
 }
 
+/** 线条图形的画笔参数和上面 Svg 一模一样，只是描边色由调用处定死 */
+function StrokeGlyph({
+  color,
+  className,
+  children,
+}: {
+  color: string;
+  className: string;
+  children: ReactNode;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`${className} shrink-0`}
+      fill="none"
+      stroke={color}
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {children}
+    </svg>
+  );
+}
+
+/* ---------- 三个自绘的格式图标 ---------- */
+
+/**
+ * JSON 的花括号。官方品牌色是纯黑，在深色主题下看不见，所以另给一个固定的
+ * 金黄色——和 JS 的黄接近但不完全一样，摆在一起仍分得开。
+ * 几何取自 lucide 的 braces，和本文件其它线条图标是同一套手感。
+ */
+const JSON_BRACES: StrokeIcon = {
+  color: "#EAB308",
+  body: (
+    <>
+      <path d="M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5c0 1.1.9 2 2 2h1" />
+      <path d="M16 21h1a2 2 0 0 0 2-2v-5c0-1.1.9-2 2-2a2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1" />
+    </>
+  ),
+};
+
+/**
+ * YAML 的层级：三条逐级缩进的横线，正好是 YAML 靠缩进表结构那件事。
+ * 本来想画成"短横 + 内容"的列表，但在 16px 下六段线会糊成一块，三条更清爽。
+ */
+const YAML_LIST: StrokeIcon = {
+  color: "#CB171E",
+  body: (
+    <>
+      <path d="M4 6h16" />
+      <path d="M7 12h10" />
+      <path d="M10 18h7" />
+    </>
+  ),
+};
+
+/**
+ * TOML 的 [section]：一对中括号 + 里面一条线。
+ * 本来里面画的是等号（key = value），但 16px 下两条线并成一块，留一条更清楚。
+ */
+const TOML_SECTION: StrokeIcon = {
+  color: "#9C4121",
+  body: (
+    <>
+      <path d="M9 4H6v16h3" />
+      <path d="M15 4h3v16h-3" />
+      <path d="M10.5 12h3" />
+    </>
+  ),
+};
+
 /** 扩展名 -> 图标。没列的落到默认的文件图标 */
-const FILE_BY_EXT: Record<string, BrandIcon> = {
+const FILE_BY_EXT: Record<string, FileIcon> = {
   py: siPython,
   pyi: siPython,
   pyw: siPython,
@@ -182,8 +265,8 @@ const FILE_BY_EXT: Record<string, BrandIcon> = {
   md: siMarkdown,
   markdown: siMarkdown,
   mdx: siMarkdown,
-  json: siJson,
-  jsonc: siJson,
+  json: JSON_BRACES,
+  jsonc: JSON_BRACES,
   html: siHtml5,
   htm: siHtml5,
   css: siCss,
@@ -192,9 +275,9 @@ const FILE_BY_EXT: Record<string, BrandIcon> = {
   less: siLess,
   vue: siVuedotjs,
   svelte: siSvelte,
-  yml: siYaml,
-  yaml: siYaml,
-  toml: siToml,
+  yml: YAML_LIST,
+  yaml: YAML_LIST,
+  toml: TOML_SECTION,
   xml: siXml,
 };
 
@@ -202,7 +285,7 @@ const FILE_BY_EXT: Record<string, BrandIcon> = {
  * 按整个文件名认的那些：要么没有扩展名（Dockerfile / Makefile），
  * 要么扩展名说明不了问题（lock 文件、package.json）。键一律小写。
  */
-const FILE_BY_NAME: Record<string, BrandIcon> = {
+const FILE_BY_NAME: Record<string, FileIcon> = {
   dockerfile: siDocker,
   makefile: siGnubash,
   "cmakelists.txt": siCmake,
@@ -228,6 +311,13 @@ export function FileTypeIcon({ name, className = "h-4 w-4" }: { name: string; cl
     FILE_BY_NAME[lower] ??
     (lower === ".env" || lower.startsWith(".env.") ? siDotenv : FILE_BY_EXT[ext]);
   if (!icon) return <IconFile className={className} />;
+  if ("body" in icon) {
+    return (
+      <StrokeGlyph color={icon.color} className={className}>
+        {icon.body}
+      </StrokeGlyph>
+    );
+  }
   return <BrandGlyph icon={icon} className={className} />;
 }
 
