@@ -106,7 +106,7 @@ impl AgentState {
 // ---- 进程解析：跨三端最容易踩空的一块 ----
 
 /// 怎么把 opencode 真正拉起来。
-enum Launch {
+pub(crate) enum Launch {
     /// 直接执行
     Direct(PathBuf),
     /// Windows 上 npm 装出来的是 .cmd 垫片，CreateProcess 不认，得借 cmd 起
@@ -114,7 +114,10 @@ enum Launch {
 }
 
 /// 把配置里的「opencode」解析成一个能 spawn 的目标。
-fn resolve_launch(configured: &str, path: Option<&OsStr>) -> Result<Launch, String> {
+///
+/// 收的是**单个可执行文件名或路径**，不是整条命令行：`npx opencode` 那种
+/// 得先拆开（cli_sessions 的 `split_command` 就是干这个的）。
+pub(crate) fn resolve_launch(configured: &str, path: Option<&OsStr>) -> Result<Launch, String> {
     let trimmed = configured.trim();
     if trimmed.is_empty() {
         return Err("没有配置 opencode 可执行文件".to_string());
@@ -141,7 +144,10 @@ fn resolve_launch(configured: &str, path: Option<&OsStr>) -> Result<Launch, Stri
 
 /// Windows 上找可执行文件得挨个试后缀：npm 全局装出来的只有 `.cmd` 和无扩展名的
 /// shell 脚本，没有 `.exe`，而 `CreateProcess` 只会自动补 `.exe`。
-fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+///
+/// cli_sessions 列 opencode 会话时也要起同一个 CLI，所以放开到 crate 内——
+/// 这套三端差异复制的第二遍必然漂（`hide_console` 已经在 git.rs 有一份了）。
+pub(crate) fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     #[cfg(windows)]
     let names: Vec<String> = if Path::new(name).extension().is_some() {
         vec![name.to_string()]
@@ -161,7 +167,7 @@ fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-fn needs_cmd_wrapper(path: &Path) -> bool {
+pub(crate) fn needs_cmd_wrapper(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|e| e.to_str())
@@ -172,7 +178,7 @@ fn needs_cmd_wrapper(path: &Path) -> bool {
 }
 
 #[cfg(not(windows))]
-fn needs_cmd_wrapper(_path: &Path) -> bool {
+pub(crate) fn needs_cmd_wrapper(_path: &Path) -> bool {
     false
 }
 
@@ -287,9 +293,11 @@ fn spawn_opencode(
 /// 借 cmd 起 `.cmd`/`.bat` 垫片。
 ///
 /// `/S` 让 cmd 只剥掉最外层一对引号、其余原样，这样路径带空格也不会被拆散。
-/// 参数里只有端口这个数字，直接拼是安全的。
+/// 参数是拼成字符串交给 cmd 的，所以**只对不含空格和引号的参数安全**——
+/// 这条路径上的参数要么是端口这种数字，要么是 `session list --format json`
+/// 这种固定词，都不需要转义。
 #[cfg(windows)]
-fn wrap_with_cmd(path: &Path, args: &[&str]) -> Command {
+pub(crate) fn wrap_with_cmd(path: &Path, args: &[&str]) -> Command {
     use std::os::windows::process::CommandExt;
     let mut command = Command::new("cmd");
     command.raw_arg(format!(
@@ -302,7 +310,7 @@ fn wrap_with_cmd(path: &Path, args: &[&str]) -> Command {
 
 /// 非 Windows 上走不到（`needs_cmd_wrapper` 恒为 false），但得有实现才能编译过
 #[cfg(not(windows))]
-fn wrap_with_cmd(path: &Path, args: &[&str]) -> Command {
+pub(crate) fn wrap_with_cmd(path: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(path);
     command.args(args);
     command
@@ -310,14 +318,14 @@ fn wrap_with_cmd(path: &Path, args: &[&str]) -> Command {
 
 /// Windows 上不隐藏的话，每次起服务都会闪一个控制台黑框
 #[cfg(windows)]
-fn hide_console(command: &mut Command) {
+pub(crate) fn hide_console(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
 #[cfg(not(windows))]
-fn hide_console(_command: &mut Command) {}
+pub(crate) fn hide_console(_command: &mut Command) {}
 
 #[cfg(windows)]
 fn kill_child(child: &mut Child) {

@@ -2,19 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CliSessionInfo } from "./types";
 
 /**
- * 能从磁盘读会话历史的 AI CLI。加新的一家要同时改后端
- * `src-tauri/src/cli_sessions.rs` 的 `provider_projects_dir`——那是真正
- * 决定去哪个目录找记录的地方。
+ * 能列会话历史的 AI CLI。加新的一家要同时改后端 `src-tauri/src/cli_sessions.rs`：
+ * jsonl 那两家加进 `provider_projects_dir`，其它形式的另开一支。
  */
 export interface CliProvider {
   key: string;
   label: string;
+  /** resume 时用的 flag。opencode 是 --session，另两家是 --resume */
+  resumeFlag: string;
 }
 
 /** 顺序就是侧边栏选择器里的显示顺序 */
 export const CLI_PROVIDERS: CliProvider[] = [
-  { key: "codebuddy", label: "CodeBuddy" },
-  { key: "claude", label: "Claude Code" },
+  { key: "codebuddy", label: "CodeBuddy", resumeFlag: "--resume" },
+  { key: "claude", label: "Claude Code", resumeFlag: "--resume" },
+  { key: "opencode", label: "opencode", resumeFlag: "--session" },
 ];
 
 const CLI_CHOICE_KEY = "codedock.cliChoice";
@@ -39,8 +41,8 @@ function cliKey(text: string): string {
  * 逐个词过一遍而不是只看第一个：`npx codebuddy` 的首词是 "npx"，只看首词就
  * 认不出来了。名字也算一份——命令可以随便填，名字是用户自己起的。
  *
- * 认不出来（比如 opencode，或者 `npx -y @anthropic-ai/claude-code` 这种包名）
- * 返回 null，界面据此显示"这家读不了会话历史"。
+ * 认不出来（比如 `npx -y @anthropic-ai/claude-code` 这种包名形式）返回 null，
+ * 界面据此显示"这家读不了会话历史"。
  */
 export function cliProvider(command: string, name = ""): CliProvider | null {
   const words = [...command.trim().split(/\s+/), name.trim()].map(cliKey);
@@ -48,21 +50,28 @@ export function cliProvider(command: string, name = ""): CliProvider | null {
 }
 
 /**
- * 拼 resume 命令。两家都是 `--resume <session-id>`。
+ * 拼 resume 命令。flag 由 provider 决定：codebuddy / claude 是 `--resume`，
+ * opencode 是 `--session`（`opencode --help` 确认过，它没有 --resume）。
  *
- * 会话 id 是 UUID，只有十六进制和横线，不含分隔符和空格，所以拼进 zsh / pwsh /
- * cmd 都不需要转义。用户填的命令本身可能是 `npx codebuddy` 这种带空格的，直接
- * 接在后面即可。将来某家换了 flag，只改这一处。
+ * 会话 id 是 UUID 或 `ses_xxx`，都不含分隔符和空格，所以拼进 zsh / pwsh / cmd
+ * 都不需要转义。用户填的命令本身可能是 `npx codebuddy` 这种带空格的，直接接在
+ * 后面即可。
  */
-export function resumeCommand(command: string, sessionId: string): string {
-  return `${command} --resume ${sessionId}`;
+export function resumeCommand(
+  command: string,
+  sessionId: string,
+  provider: CliProvider,
+): string {
+  return `${command} ${provider.resumeFlag} ${sessionId}`;
 }
 
+/** `command` 只有 opencode 用得上：它的记录得靠 opencode 自己来读 */
 export function listCliSessions(
   provider: string,
   cwd: string,
+  command: string,
 ): Promise<CliSessionInfo[]> {
-  return invoke<CliSessionInfo[]>("cli_list_sessions", { provider, cwd });
+  return invoke<CliSessionInfo[]>("cli_list_sessions", { provider, cwd, command });
 }
 
 /** 项目路径 -> 用户上次在这个项目里选的命令行。只认非空字符串，读坏了当没存过 */

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { formatTime } from "../lib/agent";
 import {
+  CLI_PROVIDERS,
   cliProvider,
   listCliSessions,
   resumeCommand,
@@ -61,8 +62,9 @@ export function CliHistory({
   const provider = cliProvider(value, current?.name ?? "");
   const providerKey = provider?.key ?? "";
 
-  // 切项目 / 换 CLI / 展开 / 手动刷新都走这里。不做轮询：一次刷新要翻一百多个
-  // 记录文件，而列表只在真的跑过或 resume 过 CLI 之后才变，那两种动作界面都知道
+  // 切项目 / 换 CLI / 展开 / 手动刷新都走这里。不做轮询：codebuddy / claude 一次
+  // 刷新要翻一百多个记录文件，opencode 还要起个子进程，而列表只在真的跑过或
+  // resume 过 CLI 之后才变，那两种动作界面都知道
   useEffect(() => {
     // 折叠着就别去读盘了
     if (!providerKey || !open) {
@@ -72,7 +74,8 @@ export function CliHistory({
     }
     let cancelled = false;
     setLoading(true);
-    listCliSessions(providerKey, cwd)
+    // value 传的是命令本身：opencode 那一支要用它去起 CLI
+    listCliSessions(providerKey, cwd, value)
       .then((list) => {
         if (cancelled) return;
         setItems(list);
@@ -90,7 +93,7 @@ export function CliHistory({
     return () => {
       cancelled = true;
     };
-  }, [cwd, providerKey, open, nonce]);
+  }, [cwd, providerKey, value, open, nonce]);
 
   const openPicker = (target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
@@ -105,10 +108,12 @@ export function CliHistory({
   /** 列表区显示什么。优先级从高到低，只有一个能命中 */
   const body = () => {
     if (!provider) {
+      // 只有命令写成包名（`npx -y @anthropic-ai/claude-code`）这类认不出的情况
+      // 才走到这儿，提示一下支持哪几家
       return (
         <p className={HINT}>
-          当前 CLI（{current?.name || value}）读不到会话历史，目前只支持 CodeBuddy 和
-          Claude Code
+          认不出「{current?.name || value}」是哪家 CLI，读不到它的会话历史。目前支持
+          {CLI_PROVIDERS.map((item) => item.label).join(" / ")}
         </p>
       );
     }
@@ -131,7 +136,7 @@ export function CliHistory({
           <li key={item.id}>
             <button
               type="button"
-              onClick={() => onResume(resumeCommand(value, item.id))}
+              onClick={() => onResume(resumeCommand(value, item.id, provider))}
               title={`${item.title || "未命名会话"}\n${item.id}`}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
             >

@@ -1,10 +1,13 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::agent::{hide_console, resolve_launch, wrap_with_cmd, Launch};
 use crate::fs_api::simplify;
 use crate::pty::home_dir;
 
@@ -20,6 +23,10 @@ const MAX_SESSIONS: usize = 50;
 /// 标题最长多少字符。一行放不下，太长也没意义
 const TITLE_CHARS: usize = 60;
 
+/// opencode 的 `session list` 要连它自己的后台服务，服务没起时更慢。
+/// 前端是异步等的（命令标了 async），所以这里给宽一点，别把慢当成失败。
+const OPENCODE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// CLI 自己塞进会话里的模板文本，不是用户说的话。
 /// 末尾那条是 claude 的中断标记，本机 9 个会话的首条 user 就是它——
 /// 那种会话压根没有真正的提问，显示「未命名会话」比显示这个标记诚实。
@@ -33,7 +40,11 @@ const NOISE_PREFIXES: &[&str] = &[
     "[Request interrupted by user",
 ];
 
-/// 认得的 CLI -> 会话记录相对用户主目录的位置。不认识的就是不支持。
+/// 把会话记录写成 jsonl 文件的那两家 CLI -> 相对用户主目录的位置。
+///
+/// opencode 不在这张表里：它的会话在 sqlite 库里（而且 schema 正在从 `session`
+/// 迁到 `session_v2`，只读打开还读不到 WAL 里没 checkpoint 的新数据），所以改走
+/// 它自己的 `session list --format json`，见 `list_opencode`。
 /// 三端都用 `/` 拼：Windows 的 Path 也认它。
 fn provider_projects_dir(provider: &str) -> Option<&'static str> {
     match provider {
@@ -56,8 +67,22 @@ pub struct CliSession {
     pub cwd: String,
 }
 
-#[tauri::command]
-pub fn cli_list_sessions(provider: String, cwd: String) -> Result<Vec<CliSession>, String> {
+/// 列出某个 CLI 在当前工作区的会话历史。
+///
+/// `command` 是用户在设置里配的那条命令（`opencode`、`npx opencode`、完整路径
+/// 都行），只有 opencode 这一支用得上——它的记录得靠 opencode 自己来读。
+///
+/// 标了 `async`：opencode 那一支要起子进程、可能还要等它的后台服务，同步跑会把
+/// UI 卡住。Tauri 会把这里的同步 body 丢到线程池，写法不用变。
+#[tauri::command(async)]
+pub fn cli_list_sessions(
+    provider: String,
+    cwd: String,
+    command: String,
+) -> Result<Vec<CliSession>, String> {
+    if provider == "opencode" {
+        return list_opencode(&command, &cwd);
+    }
     let relative = provider_projects_dir(&provider)
         .ok_or_else(|| format!("不支持的 AI CLI: {provider}"))?;
     // 拿不到主目录、没装过这个 CLI，都当"没有会话"——列不出历史不是错误
@@ -65,6 +90,137 @@ pub fn cli_list_sessions(provider: String, cwd: String) -> Result<Vec<CliSession
         return Ok(Vec::new());
     };
     Ok(list_sessions_in(&home.join(relative), &provider, &cwd))
+}
+
+/// 把一条命令行拆成「可执行文件」+「前置参数」。
+///
+/// 用户可能填 `npx opencode` 这种带包管理器的形式，也可能填完整路径。
+/// 按空白拆是最省事的做法，代价是**路径带空格就拆不对**——和 GUI 侧
+/// `resolve_launch` 只认单个可执行文件是同一个约束，不在这里额外支持引号。
+fn split_command(command: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = command.split_whitespace();
+    let program = parts.next()?.to_string();
+    Some((program, parts.map(str::to_string).collect()))
+}
+
+/// 借 opencode 自己列会话。
+///
+/// 它的输出（`--format json`）正好是我们要的字段，而且已经按项目过滤、最新在前，
+/// 所以这里不重新过滤也不重排，只做数量和字段的兜底。
+fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
+    let (program, leading) =
+        split_command(command).ok_or_else(|| "没有配置 opencode 命令".to_string())?;
+
+    // PATH 用登录 shell 解析出来的那份：从 Dock / 开始菜单启动时进程自己的 PATH
+    // 可能不全（和 agent.rs 起服务时同一个理由）
+    let path = crate::shell_env::resolved_path(
+        &crate::shell_env::default_shell(),
+        Some(Path::new(cwd)),
+    );
+    let launch = resolve_launch(&program, path.as_deref())?;
+
+    let mut args = leading;
+    args.extend(
+        ["session", "list", "--format", "json", "--max-count"]
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    args.push(MAX_SESSIONS.to_string());
+
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = match launch {
+        Launch::Direct(found) => {
+            let mut cmd = Command::new(found);
+            cmd.args(&arg_refs);
+            cmd
+        }
+        // Windows 上 npm 装出来的只有 .cmd 垫片，CreateProcess 不认
+        Launch::ViaCmd(found) => wrap_with_cmd(&found, &arg_refs),
+    };
+    child
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console(&mut child);
+
+    // 起线程 + recv_timeout：Command 自己没有超时，卡住的服务会把调用它的线程
+    // 一起带走（同 git.rs 的写法）
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(child.output());
+    });
+
+    let output = match receiver.recv_timeout(OPENCODE_TIMEOUT) {
+        Ok(Ok(output)) => output,
+        Ok(Err(reason)) => return Err(format!("无法执行 {program}: {reason}")),
+        Err(_) => {
+            return Err(format!(
+                "opencode 超过 {} 秒没有响应",
+                OPENCODE_TIMEOUT.as_secs()
+            ))
+        }
+    };
+
+    if !output.status.success() {
+        // 整段回传：opencode 的报错常常是多行，截成一行反而看不出问题在哪
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if stderr.is_empty() { stdout } else { stderr };
+        return Err(if detail.is_empty() {
+            format!("opencode session list 退出码 {:?}", output.status.code())
+        } else {
+            detail
+        });
+    }
+
+    Ok(parse_opencode_sessions(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// 解析 `opencode session list --format json` 的输出。
+///
+/// 抽出来是为了能在单测里喂 JSON 字面量，不必真的装 opencode。
+/// 老版本没有 `--format json`，这里会拿到表格文本、解析不出数组——返回空列表，
+/// 由调用方（或"这个目录还没有会话"的空态）兜住。
+fn parse_opencode_sessions(raw: &str) -> Vec<CliSession> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+
+    let mut found: Vec<CliSession> = items
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str())?;
+            if id.is_empty() {
+                return None;
+            }
+            Some(CliSession {
+                id: id.to_string(),
+                // opencode 自己起的标题，通常不为空；真为空就交给前端显示「未命名会话」
+                title: item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                // 已经是 Unix 毫秒，和另两家对齐了才回给前端
+                updated: item.get("updated").and_then(|v| v.as_u64()).unwrap_or(0),
+                cwd: item
+                    .get("directory")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect();
+
+    // 顺序本来就是最新在前，不再重排，只封顶
+    found.truncate(MAX_SESSIONS);
+    found
 }
 
 /// 标题的三个候选槽，优先级从高到低。codebuddy 三档都有，claude 只有最后一档。
@@ -514,5 +670,63 @@ mod tests {
         assert!(provider_projects_dir("opencode").is_none());
         assert!(provider_projects_dir("codebuddy").is_some());
         assert!(provider_projects_dir("claude").is_some());
+    }
+
+    #[test]
+    fn splits_the_configured_command() {
+        assert_eq!(
+            split_command("opencode"),
+            Some(("opencode".to_string(), Vec::new()))
+        );
+        // 带包管理器的形式：program 是 npx，opencode 变成前置参数
+        assert_eq!(
+            split_command("npx opencode"),
+            Some(("npx".to_string(), vec!["opencode".to_string()]))
+        );
+        assert_eq!(
+            split_command("  /opt/bin/opencode  "),
+            Some(("/opt/bin/opencode".to_string(), Vec::new()))
+        );
+        // 空串 / 只有空白都拆不出 program
+        assert_eq!(split_command(""), None);
+        assert_eq!(split_command("   "), None);
+    }
+
+    #[test]
+    fn parses_opencode_json_output() {
+        let raw = r#"[
+          {"id":"ses_aaa","title":"修 auth 中间件","updated":1773762499903,
+           "created":1773762497649,"projectId":"p1","directory":"/Users/someone/work"},
+          {"id":"ses_bbb","title":"","updated":1773762405278,"directory":"/Users/someone/work"}
+        ]"#;
+        let found = parse_opencode_sessions(raw);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].id, "ses_aaa");
+        assert_eq!(found[0].title, "修 auth 中间件");
+        // 已经是毫秒，不该被再折算一次
+        assert_eq!(found[0].updated, 1773762499903);
+        assert_eq!(found[0].cwd, "/Users/someone/work");
+        // 标题为空时留空串，交给前端显示「未命名会话」
+        assert_eq!(found[1].title, "");
+    }
+
+    #[test]
+    fn opencode_parser_tolerates_junk() {
+        // 空目录就是这么答的
+        assert!(parse_opencode_sessions("[]").is_empty());
+        // 老版本没有 --format json，吐的是表格文本
+        assert!(parse_opencode_sessions("ses_aaa\t标题\t3/17/2026").is_empty());
+        // 缺 id 的条目要丢掉，不能让后面几条跟着陪葬
+        let raw = r#"[{"title":"没有 id"},{"id":"ses_ok","title":"好的","updated":1}]"#;
+        let found = parse_opencode_sessions(raw);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "ses_ok");
+        // 缺 updated / directory 时回落 0 和空串，不能 panic
+        let bare = parse_opencode_sessions(r#"[{"id":"ses_x"}]"#);
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].updated, 0);
+        assert_eq!(bare[0].cwd, "");
+        // 顶层不是数组
+        assert!(parse_opencode_sessions(r#"{"sessions":[]}"#).is_empty());
     }
 }
