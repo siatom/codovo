@@ -2,6 +2,7 @@
 
 mod agent;
 mod ai;
+mod cli_sessions;
 mod fs_api;
 mod git;
 mod pty;
@@ -50,6 +51,7 @@ pub fn run() {
             git::git_pull,
             git::git_push,
             ai::ai_generate_commit_message,
+            cli_sessions::cli_list_sessions,
             agent::agent_start,
             agent::agent_status,
             agent::agent_stop,

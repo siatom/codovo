@@ -78,6 +78,7 @@ src/                      React 前端
     icons.tsx             统一线条图标（侧边栏、文件树共用）
     SplitPane.tsx         自研可拖动分栏（pointer 事件 + setPointerCapture，支持收起第二块）
     Sidebar.tsx           侧边栏：项目历史（含当前项目的对话历史）/ 打开文件夹 / 主题切换（可收起成图标条）
+    CliHistory.tsx        侧边栏底部：当前 AI CLI 的会话历史（选择器 + 列表），点一条新开终端跑 resume
     WorkspaceEmpty.tsx    还没选工作区时的空态（选文件夹，或显示上次那个目录为什么打不开）
     TerminalPane.tsx      终端区：顶栏 TUI / GUI 切换，TUI 侧管标签栏与会话增删
     TerminalSession.tsx   单个会话：一个 xterm 实例独占一个 PTY
@@ -109,8 +110,10 @@ src/                      React 前端
     ai.ts                 invoke 薄封装：调大模型生成提交信息
     agent.ts              智能体：invoke 薄封装 + SSE 事件的纯函数归并（reducer）
     agent-session.tsx     TUI/GUI 模式、会话列表、当前会话的共享状态（侧边栏与对话面板共用）
+    cli-sessions.ts       CLI 会话历史：认 CLI 品牌、拼 resume 命令、按项目记住选的是哪家
 src-tauri/src/
   pty.rs                  PTY 会话管理
+  cli_sessions.rs         读各 CLI 写在磁盘上的会话记录（codebuddy / claude），按 cwd 过滤
   fs_api.rs               文件读写/新建 + 路径沙箱（未选工作区时全部拒绝）+ 按文件名递归搜索
   watcher.rs              工作区目录监听：防抖后把「哪个目录变了」推给前端
   git.rs                  git 状态查询、暂存/提交、提交历史与差异内容（调用系统 git CLI）
@@ -186,6 +189,10 @@ src-tauri/src/
 - **项目行的「⋯」菜单用 `position: fixed` 而不是绝对定位**：项目列表是 `overflow-auto` 的滚动容器，绝对定位的菜单会被裁掉，靠窗口底部的项目就看不到菜单了。位置在点按钮时从 `getBoundingClientRect()` 现量，纵向再跟窗口高度取个 min，免得贴底时被顶出去。
 - **右边栏的图标条常驻，收起的是内容面板**：工作区一打开，`ToolRail` 就一直画在最右侧，`rightOpen` 只管「模块内容 + 编辑器」那一列；点当前已选中的模块等于收起（VS Code 那套），图标条底部还有一个收放按钮（和左侧栏的收起按钮同一条水平线）。为此 `SplitPane` 的 `secondCollapsed` 从「宽度归零」改成「按内容宽度收（`flexBasis: auto`）」——第二块里只剩那条 44px 的图标条，于是自然收成一条竖栏，终端顺势占满其余宽度。内容面板是 `hidden` 藏着而不是卸载，文件树的展开态、提交草稿和 Monaco 的撤销历史照样留得住。
 - **AI CLI 的入口在侧边栏，执行在终端**：入口是项目行右侧那个 `+`（TUI 模式下才出现），而「往活动会话写命令」这件事只有 `TerminalPane` 做得了——会话句柄都关在它里面。所以走 `TerminalPaneHandle`（ref，和 `EditorPaneHandle` 一个路子）把它暴露给 `App`，再由 `App` 以 `onRunAiCommand` 传给侧边栏；没有架 Context，因为只有这一个动作、一层传递。菜单用 `fixed` 定位且比别的菜单宽（`AI_MENU_W`），名字前面挂 `AgentLogo`——按命令的第一个词认品牌（认得出 `npx opencode` 这种），认不出再按用户起的名字认，都不中回落成通用机器人图标。
+- **CLI 的会话历史读磁盘，不反解 slug**：codebuddy 和 claude 都把记录写成 `~/.codebuddy|.claude/projects/<slug>/<会话 id>.jsonl`，而 slug 是**有损**的（绝对路径里的 `-` 和分隔符撞车，两家的规则还不一样），反算会把 `/a-b/c` 和 `/a/b-c` 认成同一个。所以 `cli_sessions.rs` 遍历所有项目目录、读文件头里的 `cwd` 字段**正向匹配**，另外只在两层目录里认 `.jsonl`，旁边的 `<id>/tool-results/`、`memory/` 天然被挡掉。代价是每次要翻一百多个文件（读头封顶 128KB），所以**不做轮询**，只在挂载 / 换项目 / 换 CLI / 手动刷新时读。
+- **标题的取法按 CLI 分开，且必须跳过 CLI 自己塞的文本**：codebuddy 是 `ai-title.aiTitle` > `providerData.source === "initial-user-message"` 的 `summary` > 首个干净的 user 文本（同一个文件靠后还有 `periodic` / `pre-compact` 的上下文压缩摘要，判据必须是 `source` 而不是"位置靠前"，否则会拿到 `<conversation_history_summary>`）；claude 没有 `ai-title`，只取首个干净的 user 文本，且要跳过 `isMeta` / `isSidechain` 记录、`content` 是 `tool_result` 块的记录，以及 `<command-message>`、`[Request interrupted by user` 这类 CLI 自己的模板文本。**抠不出标题就留空**，界面显示「未命名会话」——硬造一个出来更误导。另外 0 字节的记录（开了就退的会话）一律跳过，本机实测占了很大比例。
+- **resume 必须新开标签，命令要等 shell 就绪再写**：不能把 resume 写进当前活动终端——那儿多半正跑着一个 AI CLI，命令会被当成它的输入。而新标签的 PTY 是异步 spawn 的，`TerminalSessionHandle.write` 走的 `ptyRef.current` 那一刻还是 null，立刻写必然被静默丢掉。所以命令走 props（`initialCommand`）进 `TerminalSession`，**等首个输出块到达再写**（那意味着提示符或 pwsh 的 `ESC[6n` 握手已经出来了）；`await` 之后还补一次，兜住"输出比 await 先到"的情况。`onData` 里读 `ptyRef` 而不是闭包里的 `handle`，因为后者那时还在 TDZ 里。这条命令用 `useState` 而不是 `useRef` 兜住——StrictMode 会立刻重挂一次，用 ref 并在 effect 里清空的话，第二轮就读到空值、命令被悄悄丢掉。
+- **会话记录里没有真正的提问时，列表会显示「未命名会话」**：有些会话开完就被打断，第一条 user 是 claude 的中断标记；这类显示空标题比显示标记诚实。
 
 ## 快捷键
 

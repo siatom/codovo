@@ -96,6 +96,11 @@ export default function App() {
     terminalRef.current?.runAiCommand(command);
   }, []);
 
+  /** 侧边栏点了某条 CLI 历史会话：新开一个终端标签跑 resume，不动正在用的那个 */
+  const resumeSession = useCallback((command: string) => {
+    terminalRef.current?.runInNewSession(command);
+  }, []);
+
   /**
    * 收起右边栏时全屏必须一起退出：那个全屏按钮在面板里，面板收起来就点不到了。
    * 展开时重置也无所谓——能点到这个按钮就说明面板是开着的。
@@ -313,6 +318,7 @@ export default function App() {
             onAdd={pickWorkspace}
             onRemove={removeWorkspace}
             onRunAiCommand={runAiCommand}
+            onResumeSession={resumeSession}
           />
         </div>
         <SplitPane

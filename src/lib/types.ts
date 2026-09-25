@@ -200,3 +200,15 @@ export interface AgentSessionSummary {
   /** 最后活动时间，Unix 毫秒（opencode 的 time.updated） */
   updated: number;
 }
+
+/** 某个 CLI 写在磁盘上的会话记录，cli_list_sessions 返回的一条 */
+export interface CliSessionInfo {
+  /** 会话 id，resume 要用的就是它 */
+  id: string;
+  /** 抠不出标题时是空串，显示成「未命名会话」 */
+  title: string;
+  /** 记录文件的最后修改时间，Unix 毫秒 */
+  updated: number;
+  /** 记录里记的工作目录，仅供排查 */
+  cwd: string;
+}

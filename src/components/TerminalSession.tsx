@@ -24,6 +24,8 @@ interface TerminalSessionProps {
   cwd: string | null;
   /** 是否是当前显示的那个会话：从后台切回来要重新量尺寸并聚焦 */
   active: boolean;
+  /** shell 起来后自动敲进去的一条命令（resume 会话用）。只在建实例那一次生效 */
+  initialCommand?: string;
 }
 
 /**
@@ -33,7 +35,7 @@ interface TerminalSessionProps {
 export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
->(function TerminalSession({ cwd, active }, ref) {
+>(function TerminalSession({ cwd, active, initialCommand }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyRef = useRef<PtyHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -55,6 +57,12 @@ export const TerminalSession = forwardRef<
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+
+  // 要自动敲的那条命令只在"这个会话被创建"那一次算数，所以用 useState 的初始化
+  // 把它定死、不跟着 prop 走（用户手动点「重开」或 cwd 变化重建 shell 时不该重放
+  // resume）。**不能用 ref + 在 effect 里清空**：StrictMode 会立刻重挂一次，清空
+  // 发生在那一轮，第二轮的 effect 就读到空了，命令会被悄悄丢掉。
+  const [bootCommand] = useState(initialCommand);
 
   useImperativeHandle(
     ref,
@@ -108,6 +116,26 @@ export const TerminalSession = forwardRef<
 
     let cancelled = false;
 
+    // 待敲的启动命令。每次 effect 跑起来都重新待命：StrictMode 的第一轮是作废的
+    // 那一轮，它写出去的命令会随 shell 一起被 kill，第二轮要重新写一遍；
+    // 用户点「重开」时也是重新拉起同一个会话，顺带把 resume 再执行一次
+    let bootPending = bootCommand;
+
+    /**
+     * 把待敲的启动命令交给刚就绪的 PTY。传 null 表示还没就绪——直接返回、
+     * 不消费 bootPending，留给下一次调用（首个输出块或 await 返回之后）。
+     *
+     * 拿"首个输出块到达"当就绪信号：它意味着提示符（或 pwsh 启动时的 ESC[6n
+     * 查询）已经出来了，此时写入不会被启动序列吞掉。往刚 spawn 完的 PTY 里
+     * 立刻写是不行的，命令可能先于提示符被丢掉。
+     */
+    const flushBoot = (pty: PtyHandle | null) => {
+      if (!pty || !bootPending) return;
+      const command = bootPending;
+      bootPending = undefined;
+      pty.write(`${command}\r`);
+    };
+
     const start = async () => {
       const handle = await spawnPty({
         cwd: cwd ?? undefined,
@@ -116,7 +144,12 @@ export const TerminalSession = forwardRef<
         // StrictMode 会挂载两次，第一轮的 channel 在 cleanup 之后才收到 exit。
         // 不挡住的话，已经作废的那次会话会把"shell 已退出"打到存活的界面上。
         onData: (bytes) => {
-          if (!cancelled) term.write(bytes);
+          if (cancelled) return;
+          term.write(bytes);
+          // 读 ptyRef 而不是直接用 handle：事件有可能先于 await 返回到达，
+          // 那时 handle 还在 TDZ 里，碰它会直接抛 ReferenceError。
+          // 那种情况下 ptyRef 还是 null，这一轮不消费，交给下面的补写。
+          flushBoot(ptyRef.current);
         },
         onExit: (code) => {
           if (cancelled) return;
@@ -130,6 +163,9 @@ export const TerminalSession = forwardRef<
         return;
       }
       ptyRef.current = handle;
+      // 首个输出块比 await 先到的话 bootPending 还挂着，这里补一次；
+      // 已经消费过就是空操作
+      flushBoot(handle);
     };
 
     void start().catch((reason) => {

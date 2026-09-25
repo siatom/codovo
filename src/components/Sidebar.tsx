@@ -1,7 +1,8 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
+import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import {
   readWorkspaceNames,
   saveWorkspaceNames,
@@ -10,6 +11,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
 import type { AgentSessionSummary } from "../lib/types";
+import { CliHistory } from "./CliHistory";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
@@ -38,6 +40,8 @@ interface SidebarProps {
   onRemove: (path: string) => void;
   /** 在当前活动的终端会话里启动 AI CLI；执行落在终端那边，这边只管入口 */
   onRunAiCommand: (command: string) => void;
+  /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume" */
+  onResumeSession: (command: string) => void;
 }
 
 const COLLAPSED_KEY = "codedock.sidebarCollapsed";
@@ -85,6 +89,7 @@ export function Sidebar({
   onAdd,
   onRemove,
   onRunAiCommand,
+  onResumeSession,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -111,6 +116,8 @@ export function Sidebar({
     id: string;
     value: string;
   } | null>(null);
+  /** 底部会话历史里当前选的是哪条命令；按项目记住 */
+  const [cliChoice, setCliChoice] = useState(() => readCliChoice(current));
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
   const {
@@ -128,6 +135,23 @@ export function Sidebar({
   const aiCommands = settings.aiCommands
     .map((item) => ({ ...item, name: item.name.trim(), command: item.command.trim() }))
     .filter((item) => item.command);
+
+  // 底部会话历史选中的命令。存的那条可能已经从设置里删掉了，回落第一条
+  const activeCliCommand =
+    aiCommands.find((item) => item.command === cliChoice)?.command ??
+    aiCommands[0]?.command ??
+    "";
+
+  // 换项目要跟着换回这个项目上次选的 CLI
+  useEffect(() => {
+    setCliChoice(readCliChoice(current));
+  }, [current]);
+
+  /** 选 CLI：改状态并按项目落盘。项目行的 + 和底部选择器共用它 */
+  const pickCli = (command: string) => {
+    setCliChoice(command);
+    saveCliChoice(current, command);
+  };
 
   const setCollapsedPersisted = (next: boolean) => {
     setCollapsed(next);
@@ -188,6 +212,8 @@ export function Sidebar({
   /** 点项目行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
   const launchAi = (target: HTMLElement) => {
     if (aiCommands.length === 1) {
+      // 顺便把底部会话历史的选择器切过去，两边始终看同一家
+      pickCli(aiCommands[0].command);
       onRunAiCommand(aiCommands[0].command);
       return;
     }
@@ -455,6 +481,18 @@ export function Sidebar({
         })}
       </ul>
 
+      {/* 当前 AI CLI 的会话历史。只在 TUI 下出现：GUI 那边项目行下面已经有
+          opencode 自己的对话历史了，两套同时出现会打架 */}
+      {current && !guiActive && aiCommands.length > 0 && (
+        <CliHistory
+          cwd={current}
+          commands={aiCommands}
+          value={activeCliCommand}
+          onChange={pickCli}
+          onResume={onResumeSession}
+        />
+      )}
+
       {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面项目列表的空间 */}
       <footer className="flex shrink-0 items-center gap-1 border-t border-line px-2 py-2">
         <button
@@ -600,6 +638,7 @@ export function Sidebar({
                 type="button"
                 onClick={() => {
                   setAiMenu(null);
+                  pickCli(item.command);
                   onRunAiCommand(item.command);
                 }}
                 title={item.name || "未命名 AI CLI"}

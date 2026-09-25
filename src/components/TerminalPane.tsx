@@ -18,6 +18,11 @@ import { IconBot, IconClose, IconPlus, IconTerminal } from "./icons";
 export interface TerminalPaneHandle {
   /** 在当前活动的会话里敲一条命令。AI CLI 的入口在侧边栏，执行落在这儿 */
   runAiCommand: (command: string) => void;
+  /**
+   * 新开一个终端标签并在里面执行命令（resume 会话用）。
+   * 不能写进当前活动会话——那儿多半正跑着一个 AI CLI，命令会被当成它的输入。
+   */
+  runInNewSession: (command: string) => void;
 }
 
 interface TerminalPaneProps {
@@ -37,6 +42,11 @@ interface TerminalPaneProps {
 export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
+  /**
+   * 新建标签时要自动敲进去的命令，按会话 id 记。和 sessions 在同一次事件里更新，
+   * 新会话第一次渲染就带着它——不存在"先挂载、后补命令"的时间窗。
+   */
+  const [launchFor, setLaunchFor] = useState<{ id: number; command: string } | null>(null);
   // TUI/GUI 的选择提到了 AgentSessionContext：侧边栏要在 GUI 模式下才列对话历史
   const { mode, setMode } = useAgentSession();
   const nextIdRef = useRef(1);
@@ -87,7 +97,24 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
     [activeId],
   );
 
-  useImperativeHandle(ref, () => ({ runAiCommand }), [runAiCommand]);
+  /**
+   * 新开标签跑一条命令。命令不在这儿写——新会话的 PTY 还在异步 spawn，
+   * 现在写必然被丢掉。交给 initialCommand，由 TerminalSession 在 shell
+   * 就绪后自己敲。
+   */
+  const runInNewSession = useCallback((command: string) => {
+    const id = nextIdRef.current;
+    nextIdRef.current += 1;
+    setLaunchFor({ id, command });
+    setSessions((list) => [...list, id]);
+    setActiveId(id);
+  }, []);
+
+  useImperativeHandle(
+    ref,
+    () => ({ runAiCommand, runInNewSession }),
+    [runAiCommand, runInNewSession],
+  );
 
   // 开关是在设置里随时能关的，而 mode 是共享状态：关掉之后分段控件不画了，
   // 要是还认 mode 就会把人锁在智能体面板里出不去，还白白起一个 opencode。
@@ -179,6 +206,8 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
               key={id}
               ref={attachHandle(id)}
               cwd={cwd}
+              // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
+              initialCommand={launchFor?.id === id ? launchFor.command : undefined}
               // 和 view 挂钩：切回终端时 TerminalSession 的 active effect 会补一次
               // fit + resize + focus，藏起来量不到尺寸的问题就自然解决了
               active={view === "terminal" && id === activeId}

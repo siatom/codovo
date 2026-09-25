@@ -89,7 +89,8 @@ fn default_shell() -> (String, Vec<String>) {
 
 /// 没选工作区时 shell 的落点。不设的话会继承应用进程的 cwd，
 /// 打包后从开始菜单启动时那往往是 System32 之类的地方。
-fn home_dir() -> Option<PathBuf> {
+/// cli_sessions 也要用（会话记录在用户主目录下），所以放开到 crate 内。
+pub(crate) fn home_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     let key = "USERPROFILE";
     #[cfg(unix)]
