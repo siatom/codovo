@@ -162,7 +162,8 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
 
       {/* TUI 界面：标签栏和终端本体都归这一套自己管，不和其他界面共用一行 */}
       <div className={view === "terminal" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line px-2">
+        {/* 高度和上面 AgentPane 的状态条对齐（都是 h-8），TUI / GUI 来回切时下面内容不跳 */}
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
           <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
             {sessions.map((id, index) => {
               const isActive = id === activeId;
