@@ -1,16 +1,27 @@
+import { openPath } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
-import { toDisplayPath } from "../lib/fs";
-import type { GitSnapshot } from "../lib/git";
+import { formatTime } from "../lib/agent";
+import { useAgentSession } from "../lib/agent-session";
+import {
+  readWorkspaceNames,
+  saveWorkspaceNames,
+  toDisplayPath,
+} from "../lib/fs";
+import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
+import type { AgentSessionSummary } from "../lib/types";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
-  IconBranch,
-  IconClose,
+  IconChevronDown,
+  IconChevronRight,
   IconFolder,
   IconFolderPlus,
   IconMoon,
+  IconMore,
   IconPanelCollapse,
   IconPanelExpand,
+  IconPlus,
   IconSettings,
   IconSun,
 } from "./icons";
@@ -20,8 +31,6 @@ interface SidebarProps {
   workspaces: string[];
   /** 当前工作区；null 表示还没选 */
   current: string | null;
-  /** 当前工作区的 git 状态 */
-  git: GitSnapshot;
   onSelect: (path: string) => void;
   onAdd: () => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
@@ -44,7 +53,13 @@ const FOOTER_BUTTON =
 
 /** 行内操作按钮：平时藏起来，悬停或键盘聚焦时才出现并接受点击 */
 const ROW_ACTION =
-  "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-danger focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100";
+  "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100";
+
+/** 项目行「⋯」弹出来的菜单项 */
+const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+
+/** 菜单宽度（px），贴着按钮右边缘往左排时要拿它算 left */
+const MENU_W = 112;
 
 function readCollapsed(): boolean {
   try {
@@ -60,17 +75,43 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-export function Sidebar({
-  workspaces,
-  current,
-  git,
-  onSelect,
-  onAdd,
-  onRemove,
-}: SidebarProps) {
+export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 当前项目的对话历史是否展开；默认展开 */
+  const [historyOpen, setHistoryOpen] = useState(true);
+  /** 等待确认删除的会话；非空时弹确认框 */
+  const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
+  /** 项目在 CodeDock 里的显示名（别名）；只影响界面，不改磁盘上的文件夹名 */
+  const [names, setNames] = useState(readWorkspaceNames);
+  /** 「⋯」菜单开在哪个项目上，以及贴着按钮的位置 */
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  /** 正在就地改名的项目 */
+  const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
+  /** 会话行的「⋯」菜单开在哪条会话上，位置同项目菜单 */
+  const [histMenu, setHistMenu] = useState<{
+    item: AgentSessionSummary;
+    x: number;
+    y: number;
+  } | null>(null);
+  /** 正在就地改名的会话 */
+  const [renamingSession, setRenamingSession] = useState<{
+    id: string;
+    value: string;
+  } | null>(null);
   const { theme, toggle } = useTheme();
+  const { settings } = useSettings();
+  const {
+    mode,
+    sessions,
+    currentId,
+    requestSession,
+    requestDelete,
+    requestNew,
+    requestRename,
+  } = useAgentSession();
+  // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
+  const guiActive = settings.agentEnabled && mode === "agent";
 
   const setCollapsedPersisted = (next: boolean) => {
     setCollapsed(next);
@@ -79,6 +120,65 @@ export function Sidebar({
     } catch {
       // 记不住就每次启动按展开算，不影响使用
     }
+  };
+
+  /** 列表里显示的名字：有别名的用别名，否则用目录名 */
+  const displayName = (path: string) => names[path] ?? baseName(path);
+
+  /**
+   * 改名只写 CodeDock 的显示名，**不动磁盘上的文件夹**。
+   * 清空、或者写回目录原名，都等于不要别名——留一条没意义的记录反而会在
+   * 用户真的去改目录名之后继续盖住新名字。
+   */
+  const renameWorkspace = (path: string, value: string) => {
+    const name = value.trim();
+    const next = { ...names };
+    if (!name || name === baseName(path)) delete next[path];
+    else next[path] = name;
+    setNames(next);
+    saveWorkspaceNames(next);
+    setRenaming(null);
+  };
+
+  /** 只去掉 CodeDock 里的记录，连同它的别名，不碰磁盘 */
+  const removeWorkspace = (path: string) => {
+    setMenu(null);
+    onRemove(path);
+    if (!(path in names)) return;
+    const next = { ...names };
+    delete next[path];
+    setNames(next);
+    saveWorkspaceNames(next);
+  };
+
+  /** 用系统的文件浏览器打开这个目录（Windows 资源管理器 / macOS 访达 / Linux 文件管理器） */
+  const openInSystem = (path: string) => {
+    setMenu(null);
+    void openPath(path).catch(() => {
+      // 打不开就算了（目录可能已经被删或改名），列表记录留着不动
+    });
+  };
+
+  const openMenu = (path: string, target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    setMenu({ path, x: rect.right, y: rect.bottom });
+  };
+
+  const openHistMenu = (item: AgentSessionSummary, target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    setHistMenu({ item, x: rect.right, y: rect.bottom });
+  };
+
+  /**
+   * 会话改名：空标题当取消（后端也拒），没改动就不打后端。
+   * 真正的 PATCH 由 AgentPane 做——它拿着刷新列表的入口，改完侧边栏自然换字。
+   */
+  const renameSession = (id: string, value: string) => {
+    setRenamingSession(null);
+    const title = value.trim();
+    if (!title) return;
+    if (sessions.find((item) => item.id === id)?.title === title) return;
+    requestRename(id, title);
   };
 
   // 收起后留一个图标宽的竖条：常用入口（打开文件夹、主题）仍然够得着，
@@ -168,48 +268,152 @@ export function Sidebar({
           const isCurrent = path === current;
           return (
             <li key={path}>
-              {/* 选中底色罩住整项（含下面的 git 行），不然高亮会在中间断掉 */}
+              {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
               <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
                 <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(path)}
-                    title={toDisplayPath(path)}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                  >
-                    <IconFolder />
-                    <span className="truncate">{baseName(path)}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onRemove(path)}
-                    title="从列表移除（不会删除文件夹）"
-                    className={ROW_ACTION}
-                  >
-                    <IconClose className="h-3 w-3" />
-                  </button>
+                  {renaming?.path === path ? (
+                    <>
+                      <IconFolder />
+                      {/* 就地改名：Enter 确认、Esc 取消、点别处也算确认 */}
+                      <input
+                        autoFocus
+                        value={renaming.value}
+                        onChange={(event) =>
+                          setRenaming({ path, value: event.target.value })
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            renameWorkspace(path, renaming.value);
+                          } else if (event.key === "Escape") {
+                            event.preventDefault();
+                            setRenaming(null);
+                          }
+                        }}
+                        onBlur={() => renameWorkspace(path, renaming.value)}
+                        placeholder={baseName(path)}
+                        title="只改 CodeDock 里的显示名，不会改文件夹名"
+                        className="min-w-0 flex-1 rounded border border-line bg-app px-1.5 py-0.5 text-[13px] text-fg outline-none placeholder:text-fg-faint focus:border-line-hover"
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(path)}
+                        title={toDisplayPath(path)}
+                        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                      >
+                        <IconFolder />
+                        <span className="truncate">{displayName(path)}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => openMenu(path, event.currentTarget)}
+                        title="更多操作"
+                        className={ROW_ACTION}
+                      >
+                        <IconMore className="h-3.5 w-3.5" />
+                      </button>
+                      {/* 新建对话和折叠按钮贴在文件夹名右侧，只在当前项目且停在 GUI 时才出现 */}
+                      {isCurrent && guiActive && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={requestNew}
+                            title="新建对话"
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
+                          >
+                            <IconPlus className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setHistoryOpen((open) => !open)}
+                            title={historyOpen ? "收起对话历史" : "展开对话历史"}
+                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
+                          >
+                            {historyOpen ? (
+                              <IconChevronDown className="h-3.5 w-3.5" />
+                            ) : (
+                              <IconChevronRight className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </>
+                      )}
+                    </>
+                  )}
                 </div>
 
-                {isCurrent && git.isRepo && (
-                  <p className="flex items-center gap-1.5 pr-2 pb-1.5 pl-[34px] text-[11px] text-fg-faint">
-                    <IconBranch className="h-3 w-3" />
-                    <span className="min-w-0 truncate" title={git.branch ?? "游离 HEAD"}>
-                      {git.branch ?? "游离 HEAD"}
-                    </span>
-                    {(git.ahead > 0 || git.behind > 0) && (
-                      <span className="shrink-0" title="与上游分支的差距">
-                        {git.ahead > 0 && `↑${git.ahead}`}
-                        {git.ahead > 0 && git.behind > 0 && " "}
-                        {git.behind > 0 && `↓${git.behind}`}
-                      </span>
-                    )}
-                    {git.changed > 0 && (
-                      <span className="shrink-0" title="未提交的改动条目数">
-                        · {git.changed} 处改动
-                      </span>
-                    )}
-                  </p>
-                )}
+                {/* 对话历史挂当前项目下，由文件夹行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
+                {isCurrent &&
+                  guiActive &&
+                  historyOpen &&
+                  (sessions.length === 0 ? (
+                    <p className="pr-2 pb-1 pl-[34px] text-[11px] text-fg-faint">还没有对话</p>
+                  ) : (
+                    <ul className="flex flex-col pb-1">
+                      {sessions.map((item) => {
+                        const isActive = item.id === currentId;
+                        return (
+                          <li
+                            key={item.id}
+                            className={`group/hist flex items-center rounded-md ${
+                              isActive ? "bg-active" : "hover:bg-hover"
+                            }`}
+                          >
+                            {renamingSession?.id === item.id ? (
+                              /* 就地改名：Enter 确认、Esc 取消、点别处也算确认 */
+                              <input
+                                autoFocus
+                                value={renamingSession.value}
+                                onChange={(event) =>
+                                  setRenamingSession({ id: item.id, value: event.target.value })
+                                }
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") {
+                                    event.preventDefault();
+                                    renameSession(item.id, renamingSession.value);
+                                  } else if (event.key === "Escape") {
+                                    event.preventDefault();
+                                    setRenamingSession(null);
+                                  }
+                                }}
+                                onBlur={() => renameSession(item.id, renamingSession.value)}
+                                className="my-0.5 mr-2 ml-[34px] min-w-0 flex-1 rounded border border-line bg-app px-1.5 py-0.5 text-[12px] text-fg outline-none focus:border-line-hover"
+                              />
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => requestSession(item.id)}
+                                  title={item.title}
+                                  className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-[34px] text-left text-[12px] ${
+                                    isActive
+                                      ? "text-fg"
+                                      : "text-fg-muted group-hover/hist:text-fg"
+                                  }`}
+                                >
+                                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                                  {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」，两个都留会把标题挤没 */}
+                                  <span className="shrink-0 text-[11px] text-fg-faint group-hover/hist:hidden">
+                                    {formatTime(item.updated)}
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(event) => openHistMenu(item, event.currentTarget)}
+                                  title="更多操作"
+                                  className="pointer-events-none mr-1.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/hist:pointer-events-auto group-hover/hist:opacity-100"
+                                >
+                                  <IconMore className="h-3.5 w-3.5" />
+                                </button>
+                              </>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ))}
               </div>
             </li>
           );
@@ -237,6 +441,101 @@ export function Sidebar({
       </footer>
 
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+
+      {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
+      {pendingDelete && (
+        <ConfirmDialog
+          message={`删除会话「${pendingDelete.title}」？这条对话的消息会一起删掉，不可撤销。`}
+          confirmLabel="删除"
+          onConfirm={() => {
+            requestDelete(pendingDelete.id);
+            setPendingDelete(null);
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {/* 项目行的「⋯」菜单。用 fixed 定位而不是绝对定位：项目列表是滚动容器，
+          绝对定位的菜单会被 overflow 裁掉，靠窗口底部的项目就看不见菜单了 */}
+      {menu && (
+        <>
+          {/* 铺一层透明遮罩接住外部点击 */}
+          <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: MENU_W,
+              left: menu.x - MENU_W,
+              // 贴近窗口底部时往上收，别把菜单顶出可视区
+              top: Math.min(menu.y + 4, window.innerHeight - 116),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => openInSystem(menu.path)}
+              className={MENU_ITEM}
+            >
+              打开
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const path = menu.path;
+                setMenu(null);
+                setRenaming({ path, value: displayName(path) });
+              }}
+              className={MENU_ITEM}
+            >
+              重命名
+            </button>
+            <button
+              type="button"
+              onClick={() => removeWorkspace(menu.path)}
+              className={MENU_ITEM}
+            >
+              移除
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* 会话行的「⋯」菜单。同样 fixed 定位，理由见上面项目菜单 */}
+      {histMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setHistMenu(null)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: MENU_W,
+              left: histMenu.x - MENU_W,
+              top: Math.min(histMenu.y + 4, window.innerHeight - 72),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const { item } = histMenu;
+                setHistMenu(null);
+                setRenamingSession({ id: item.id, value: item.title });
+              }}
+              className={MENU_ITEM}
+            >
+              重命名
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const { item } = histMenu;
+                setHistMenu(null);
+                setPendingDelete(item);
+              }}
+              className={MENU_ITEM}
+            >
+              删除对话
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

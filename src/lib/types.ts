@@ -121,3 +121,82 @@ export interface ReplaceResult {
   /** 单个文件失败不影响其它文件，失败的都记在这里 */
   errors: ReplaceFailure[];
 }
+
+// ---- 智能体（后端起一个 opencode 服务，见 src-tauri/src/agent.rs）----
+
+/** agent_start 的返回；同一工作区重复调用会复用已有实例 */
+export interface AgentInfo {
+  port: number;
+  version: string;
+}
+
+export interface AgentStatus {
+  running: boolean;
+  port: number | null;
+}
+
+/** 工具调用的四种状态，对应 opencode 里 ToolPart.state.status */
+export type AgentToolStatus = "pending" | "running" | "completed" | "error";
+
+export interface AgentToolState {
+  status: AgentToolStatus;
+  /** 工具入参，形状随工具而变（读文件是 filePath、bash 是 command） */
+  input?: unknown;
+  output?: string;
+  /** opencode 给的一句话摘要，通常比 input 更适合当标题 */
+  title?: string;
+  error?: string;
+}
+
+/**
+ * opencode 的 Part。只认渲染用得到的字段，其余类型原样兜在 raw 里——
+ * 它的 part 种类还在增加，写死结构一升级就崩。
+ */
+export type AgentPart =
+  | { id: string; messageID: string; type: "text"; text: string }
+  | { id: string; messageID: string; type: "reasoning"; text: string }
+  | {
+      id: string;
+      messageID: string;
+      type: "tool";
+      callID: string;
+      tool: string;
+      state: AgentToolState;
+    }
+  // 认不出的 part 类型都归到这里。type 必须是字面量而不是 string，
+  // 否则它会匹配上所有分支，判别联合就收窄不了了
+  | { id: string; messageID: string; type: "unknown"; raw: unknown };
+
+export interface AgentMessage {
+  id: string;
+  role: "user" | "assistant";
+  parts: AgentPart[];
+}
+
+/**
+ * SSE 事件。opencode 有两种壳：老事件把载荷放在 properties 里，
+ * 新的 durable 事件（如 session.idle）放在 data 里，取的时候得兼容。
+ */
+export interface AgentEvent {
+  type: string;
+  properties?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+}
+
+/** 一整轮对话的状态，由 lib/agent.ts 的 reducer 维护 */
+export interface AgentConversation {
+  /** 消息 id，按出现顺序 */
+  order: string[];
+  byId: Record<string, AgentMessage>;
+  /** 这一轮还在跑（收到 session.idle 才算完） */
+  streaming: boolean;
+  error: string | null;
+}
+
+/** opencode 的会话摘要，GET /session 里的一条 */
+export interface AgentSessionSummary {
+  id: string;
+  title: string;
+  /** 最后活动时间，Unix 毫秒（opencode 的 time.updated） */
+  updated: number;
+}

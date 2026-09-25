@@ -190,6 +190,20 @@ body.codedock-dragging-row * {
   margin-bottom: 0;
 }
 
+/* 智能体气泡里的 markdown：去掉预览用的内边距、底色和限宽，跟对话列表对齐。
+   字号比预览大一档——对话面板里没有代码高亮辅助，13px 读长段落太费劲。
+   注意只改这个组合选择器，`.markdown-body` 基类还被 MarkdownPreview 用着 */
+.markdown-body.agent-text {
+  padding: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.markdown-body.agent-text > * {
+  max-width: none;
+}
+
 .markdown-body h1,
 .markdown-body h2 {
   margin: 1.4em 0 0.7em;

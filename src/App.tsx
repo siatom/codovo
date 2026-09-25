@@ -8,6 +8,8 @@ import { EditorPane, type EditorPaneHandle } from "./components/EditorPane";
 import { BrowserPane } from "./components/BrowserPane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { useGitStatus } from "./lib/git";
+import { stopAgent } from "./lib/agent";
+import { AgentSessionProvider } from "./lib/agent-session";
 import { useSettings } from "./lib/settings";
 import { sameTab, type DiffSource, type Tab } from "./lib/tabs";
 import {
@@ -138,6 +140,9 @@ export default function App() {
   const applyWorkspace = useCallback(
     async (next: string) => {
       try {
+        // 智能体是跑在旧工作区里的常驻进程，换目录前先收掉；
+        // 下次切到智能体 tab 会按新目录重新拉起来（没起过就是空操作）
+        void stopAgent().catch(() => {});
         const resolved = await setRoot(next);
         saveWorkspace(resolved);
         const list = promoteWorkspace(workspaces, resolved);
@@ -250,98 +255,99 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-app">
-      {/* 全屏时侧边栏整块藏起来。用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
-      <div className={fullscreen ? "hidden" : "contents"}>
-        <Sidebar
-          workspaces={workspaces}
-          current={root}
-          git={git.snapshot}
-          onSelect={applyWorkspace}
-          onAdd={pickWorkspace}
-          onRemove={removeWorkspace}
+    <AgentSessionProvider cwd={root}>
+      <div className="flex h-full w-full overflow-hidden bg-app">
+        {/* 全屏时侧边栏整块藏起来。用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
+        <div className={fullscreen ? "hidden" : "contents"}>
+          <Sidebar
+            workspaces={workspaces}
+            current={root}
+            onSelect={applyWorkspace}
+            onAdd={pickWorkspace}
+            onRemove={removeWorkspace}
+          />
+        </div>
+        <SplitPane
+          initial={52}
+          min={20}
+          max={78}
+          secondCollapsed={!rightShown}
+          firstCollapsed={fullscreen}
+          first={
+            // 换工作区时整个终端区重建：每个会话的 shell 都落在旧目录里，留着反而是误导
+            <TerminalPane
+              key={root ?? ""}
+              cwd={root}
+              rightOpen={rightShown}
+              onToggleRight={root === null ? undefined : toggleRight}
+            />
+          }
+          second={
+            root ? (
+              <div className="flex min-h-0 min-w-0 flex-1">
+                <ToolRail
+                  active={activeTool}
+                  gitReady={gitReady}
+                  changed={git.snapshot.changed}
+                  visible={toolVisible}
+                  onPick={pickTool}
+                />
+                {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
+                    Monaco 的撤销历史和文件树的展开态都留得住。
+                    全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
+                <div
+                  className={
+                    activeTool === "browser" ? "hidden" : "flex min-h-0 min-w-0 flex-1"
+                  }
+                >
+                  <SplitPane
+                    initial={28}
+                    min={12}
+                    max={45}
+                    first={
+                      <ToolPane
+                        tool={activeTool}
+                        root={root}
+                        selected={activeTab?.kind === "file" ? activeTab.path : null}
+                        git={git}
+                        onSelectFile={openFile}
+                        onOpenDiff={openDiff}
+                        onOpenMatch={openMatch}
+                        onBeforeReplace={saveAllEdits}
+                        onAfterReplace={reloadAfterReplace}
+                      />
+                    }
+                    second={
+                      <EditorPane
+                        ref={editorRef}
+                        tabs={openTabs}
+                        active={activeTab}
+                        gitMarks={git.snapshot.marks}
+                        onActivate={setActiveTab}
+                        onClose={closeTab}
+                        fullscreen={fullscreen}
+                        onToggleFullscreen={toggleFullscreen}
+                      />
+                    }
+                  />
+                </div>
+                <div
+                  className={
+                    activeTool === "browser" ? "flex min-h-0 min-w-0 flex-1" : "hidden"
+                  }
+                >
+                  <BrowserPane
+                    fullscreen={fullscreen}
+                    onToggleFullscreen={toggleFullscreen}
+                  />
+                </div>
+              </div>
+            ) : (
+              <WorkspaceEmpty error={notice} onPick={pickWorkspace} />
+            )
+          }
         />
       </div>
-      <SplitPane
-        initial={52}
-        min={20}
-        max={78}
-        secondCollapsed={!rightShown}
-        firstCollapsed={fullscreen}
-        first={
-          // 换工作区时整个终端区重建：每个会话的 shell 都落在旧目录里，留着反而是误导
-          <TerminalPane
-            key={root ?? ""}
-            cwd={root}
-            rightOpen={rightShown}
-            onToggleRight={root === null ? undefined : toggleRight}
-          />
-        }
-        second={
-          root ? (
-            <div className="flex min-h-0 min-w-0 flex-1">
-              <ToolRail
-                active={activeTool}
-                gitReady={gitReady}
-                changed={git.snapshot.changed}
-                visible={toolVisible}
-                onPick={pickTool}
-              />
-              {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
-                  Monaco 的撤销历史和文件树的展开态都留得住。
-                  全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
-              <div
-                className={
-                  activeTool === "browser" ? "hidden" : "flex min-h-0 min-w-0 flex-1"
-                }
-              >
-                <SplitPane
-                  initial={28}
-                  min={12}
-                  max={45}
-                  first={
-                    <ToolPane
-                      tool={activeTool}
-                      root={root}
-                      selected={activeTab?.kind === "file" ? activeTab.path : null}
-                      git={git}
-                      onSelectFile={openFile}
-                      onOpenDiff={openDiff}
-                      onOpenMatch={openMatch}
-                      onBeforeReplace={saveAllEdits}
-                      onAfterReplace={reloadAfterReplace}
-                    />
-                  }
-                  second={
-                    <EditorPane
-                      ref={editorRef}
-                      tabs={openTabs}
-                      active={activeTab}
-                      gitMarks={git.snapshot.marks}
-                      onActivate={setActiveTab}
-                      onClose={closeTab}
-                      fullscreen={fullscreen}
-                      onToggleFullscreen={toggleFullscreen}
-                    />
-                  }
-                />
-              </div>
-              <div
-                className={
-                  activeTool === "browser" ? "flex min-h-0 min-w-0 flex-1" : "hidden"
-                }
-              >
-                <BrowserPane
-                  fullscreen={fullscreen}
-                  onToggleFullscreen={toggleFullscreen}
-                />
-              </div>
-            </div>
-          ) : (
-            <WorkspaceEmpty error={notice} onPick={pickWorkspace} />
-          )
-        }
-      />
-    </div>
+    </AgentSessionProvider>
   );
 }

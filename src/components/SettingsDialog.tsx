@@ -21,7 +21,7 @@ import {
 import { useTheme, type ResolvedTheme, type Theme } from "../lib/theme";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
-import { IconClose, IconPlus } from "./icons";
+import { IconChevronDown, IconClose, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -179,7 +179,7 @@ function Select<T extends string>({
         className={`${TEXT_INPUT} flex items-center gap-2 text-left hover:border-line-hover`}
       >
         <span className="min-w-0 flex-1 truncate">{current?.label ?? ""}</span>
-        <span className="shrink-0 text-[8px] leading-none text-fg-faint">▼</span>
+        <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
       </button>
 
       {open && (
@@ -266,7 +266,7 @@ function TerminalThemeSelect({
         <span className="min-w-0 flex-1 truncate">
           {current?.label ?? "跟随界面主题"}
         </span>
-        <span className="shrink-0 text-[8px] leading-none text-fg-faint">▼</span>
+        <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
       </button>
 
       {open && (
@@ -618,8 +618,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               {tab === "ai" && (
                 <>
                   <p className="text-[11px] leading-relaxed text-fg-faint">
-                    「变更」面板里的「生成」按钮用它按暂存区改动写提交信息。任何
-                    OpenAI 兼容的接口都能用，填基地址即可，密钥只存在本机。
+                    「变更」面板里的「生成」按钮用它按暂存区改动写提交信息，终端区的
+                    GUI tab（「智能体」）也复用这一份配置。任何 OpenAI 兼容的接口都能用，
+                    填基地址即可，密钥只存在本机。
                   </p>
                   <Field
                     label="接口地址"
@@ -651,6 +652,47 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       spellCheck={false}
                       placeholder="sk-…"
                       onChange={(event) => update({ aiApiKey: event.target.value })}
+                      className={TEXT_INPUT}
+                    />
+                  </Field>
+
+                  <p className="pt-1 text-[11px] leading-relaxed text-fg-faint">
+                    下面是「智能体」（终端区顶栏那个 GUI tab）。它在工作区里起一个 headless
+                    的 opencode 服务，由它自己读代码、改文件、跑命令，需要单独安装 opencode。
+                  </p>
+                  <Field label="智能体（GUI）">
+                    <BoolToggle
+                      value={settings.agentEnabled}
+                      options={[
+                        { value: true, label: "开启" },
+                        { value: false, label: "关闭" },
+                      ]}
+                      onChange={(next) => update({ agentEnabled: next })}
+                    />
+                  </Field>
+                  <Field
+                    label="opencode 可执行文件"
+                    hint="填裸命令名会去 PATH 里找；找不到时在这里填完整路径。改完下次启动智能体才生效"
+                  >
+                    <input
+                      type="text"
+                      value={settings.agentCommand}
+                      spellCheck={false}
+                      placeholder="opencode"
+                      onChange={(event) => update({ agentCommand: event.target.value })}
+                      className={TEXT_INPUT}
+                    />
+                  </Field>
+                  <Field
+                    label="智能体服务端口"
+                    hint="0 表示自动挑一个空闲端口；填固定值要保证没被别的程序占用"
+                  >
+                    <input
+                      type="number"
+                      min={0}
+                      max={65535}
+                      value={settings.agentPort}
+                      onChange={(event) => update({ agentPort: Number(event.target.value) })}
                       className={TEXT_INPUT}
                     />
                   </Field>

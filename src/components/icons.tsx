@@ -219,6 +219,15 @@ export const IconChevronRight = icon(<path d="m9 18 6-6-6-6" />);
 
 export const IconChevronDown = icon(<path d="m6 9 6 6 6-6" />);
 
+/** 行尾的「更多操作」入口：三个点。描边画出来太淡，直接填实心 */
+export const IconMore = icon(
+  <>
+    <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+    <circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none" />
+  </>,
+);
+
 export const IconSun = icon(
   <>
     <circle cx="12" cy="12" r="4" />
@@ -360,6 +369,34 @@ export const IconBot = icon(
     <path d="M9.2 13.5v2M14.8 13.5v2" />
   </>,
 );
+
+/** 「终端」tab 的图标：`>` 加下划线，命令行最通用的写法 */
+export const IconTerminal = icon(
+  <>
+    <path d="m4 17 6-6-6-6" />
+    <path d="M12 19h8" />
+  </>,
+);
+
+/** 「历史会话」：表盘 + 一圈回转箭头 */
+export const IconHistory = icon(
+  <>
+    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+    <path d="M3 3v5h5" />
+    <path d="M12 7v5l4 2" />
+  </>,
+);
+
+/** 发送消息 */
+export const IconSend = icon(
+  <>
+    <path d="M21.5 2.5 11 13" />
+    <path d="M21.5 2.5 15 21l-4-8-8-4Z" />
+  </>,
+);
+
+/** 中止正在跑的这一轮 */
+export const IconStop = icon(<rect x="6" y="6" width="12" height="12" rx="1.5" />);
 
 /**
  * 全字匹配：带下划线的 ab（编辑器里约定俗成的写法）。

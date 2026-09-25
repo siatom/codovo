@@ -17,6 +17,7 @@ import type {
 
 const WORKSPACE_KEY = "codedock.workspace";
 const WORKSPACES_KEY = "codedock.workspaces";
+const WORKSPACE_NAMES_KEY = "codedock.workspaceNames";
 
 /** 当前工作区；用户还没选目录时为 null */
 export function getRoot(): Promise<string | null> {
@@ -74,6 +75,34 @@ export function readSavedWorkspaces(): string[] {
 export function saveWorkspaces(paths: string[]) {
   try {
     window.localStorage.setItem(WORKSPACES_KEY, JSON.stringify(paths));
+  } catch {
+    // 同 saveWorkspace
+  }
+}
+
+/**
+ * 项目在 CodeDock 里的显示名（别名），按目录路径存。
+ * 只是界面上的名字，**不改磁盘上的文件夹名**；没有别名的目录直接用目录名。
+ */
+export function readWorkspaceNames(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_NAMES_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const names: Record<string, string> = {};
+    for (const [path, name] of Object.entries(parsed)) {
+      if (typeof name === "string" && name.trim()) names[path] = name;
+    }
+    return names;
+  } catch {
+    return {};
+  }
+}
+
+export function saveWorkspaceNames(names: Record<string, string>) {
+  try {
+    window.localStorage.setItem(WORKSPACE_NAMES_KEY, JSON.stringify(names));
   } catch {
     // 同 saveWorkspace
   }

@@ -18,7 +18,7 @@ import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { IconEye, IconPencil } from "./icons";
+import { IconClose, IconEye, IconPencil } from "./icons";
 
 interface EditorPaneProps {
   /** 已打开的标签，按打开顺序 */
@@ -707,9 +707,9 @@ export function EditorPane({
                   type="button"
                   onClick={() => closeTab(tab)}
                   title="关闭这个标签"
-                  className="px-1.5 py-0.5 text-[12px] leading-none text-fg-faint hover:text-danger"
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"
                 >
-                  ×
+                  <IconClose className="h-3 w-3" />
                 </button>
               </div>
             );

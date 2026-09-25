@@ -30,6 +30,9 @@ notify = "8.2"
 # AI 生成提交信息用。自带 rustls 而不是 native-tls：不带 OpenSSL 依赖，
 # 三端统一。注意 reqwest 0.13 起该特性叫 `rustls`（不再是 rustls-tls）。
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# 智能体后端读 opencode 的 SSE 时要做退避重连，只需要 time 这一个特性。
+# tauri 本来就依赖 tokio，这里只是显式声明版本、打开要用的特性。
+tokio = { version = "1", features = ["time"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -24,6 +24,12 @@ export interface Settings {
   aiModel: string;
   /** AI 接口密钥；明文存 localStorage，与其余设置一致 */
   aiApiKey: string;
+  /** 终端区是否出现「终端 / 智能体」切换；关掉就和以前一样只有终端 */
+  agentEnabled: boolean;
+  /** opencode 可执行文件；裸命令名会去 PATH 里找 */
+  agentCommand: string;
+  /** 智能体服务监听的端口；0 表示自动挑一个空闲的 */
+  agentPort: number;
   /** 终端字体（CSS font-family），留空用默认 */
   terminalFontFamily: string;
   /** 终端字号（px） */
@@ -81,6 +87,9 @@ const DEFAULTS: Settings = {
   aiBaseUrl: "",
   aiModel: "",
   aiApiKey: "",
+  agentEnabled: true,
+  agentCommand: "opencode",
+  agentPort: 0,
   terminalFontFamily: "",
   terminalFontSize: 13,
   terminalFontBold: false,
@@ -104,6 +113,12 @@ function clampSize(value: unknown, fallback: number): number {
 function clampDelay(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(AUTOSAVE_DELAY_MAX, Math.max(AUTOSAVE_DELAY_MIN, Math.round(value)));
+}
+
+/** 端口；0 是合法的（表示自动分配） */
+function clampPort(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(65535, Math.max(0, Math.round(value)));
 }
 
 /** 存的是字符串，但值域是固定的四个；读坏了回落默认 */
@@ -149,6 +164,10 @@ function readSaved(): Settings {
     aiBaseUrl: asString(raw.aiBaseUrl, DEFAULTS.aiBaseUrl),
     aiModel: asString(raw.aiModel, DEFAULTS.aiModel),
     aiApiKey: asString(raw.aiApiKey, DEFAULTS.aiApiKey),
+    // 老版本的设置里没有这三个字段，asBoolean 回落 true 就是默认开着
+    agentEnabled: asBoolean(raw.agentEnabled, DEFAULTS.agentEnabled),
+    agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
+    agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
     terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),

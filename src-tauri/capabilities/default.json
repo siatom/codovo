@@ -1,12 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "CodeDock 主窗口权限：仅放行自研 command、文件夹选择、用系统程序打开 http(s) 链接",
+  "description": "CodeDock 主窗口权限：仅放行自研 command、文件夹选择、用系统程序打开 http(s) 链接与本地目录",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:allow-open",
     "opener:allow-open-url",
-    "opener:allow-default-urls"
+    "opener:allow-default-urls",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    }
   ]
 }

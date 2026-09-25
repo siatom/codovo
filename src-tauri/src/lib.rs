@@ -1,3 +1,4 @@
+mod agent;
 mod ai;
 mod fs_api;
 mod git;
@@ -14,6 +15,7 @@ pub fn run() {
         .manage(pty::PtyState::new())
         .manage(fs_api::FsState::new())
         .manage(watcher::WatchState::new())
+        .manage(agent::AgentState::new())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -42,6 +44,16 @@ pub fn run() {
             git::git_pull,
             git::git_push,
             ai::ai_generate_commit_message,
+            agent::agent_start,
+            agent::agent_status,
+            agent::agent_stop,
+            agent::agent_create_session,
+            agent::agent_list_sessions,
+            agent::agent_messages,
+            agent::agent_send,
+            agent::agent_abort,
+            agent::agent_delete_session,
+            agent::agent_rename_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -49,6 +61,10 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 if let Some(state) = app.try_state::<pty::PtyState>() {
                     state.kill_all();
+                }
+                // 智能体是个常驻的 opencode 子进程，退出时必须带走
+                if let Some(state) = app.try_state::<agent::AgentState>() {
+                    state.kill();
                 }
             }
             _ => {}

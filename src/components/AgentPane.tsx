@@ -1,0 +1,453 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSettings } from "../lib/settings";
+import {
+  EMPTY_CONVERSATION,
+  abortAgentSession,
+  conversationFromHistory,
+  createAgentSession,
+  deleteAgentSession,
+  fetchAgentMessages,
+  listAgentSessions,
+  onAgentEvent,
+  onAgentExit,
+  parseSessions,
+  reduceAgentEvent,
+  renameAgentSession,
+  sendAgentMessage,
+  startAgent,
+} from "../lib/agent";
+import { useAgentSession } from "../lib/agent-session";
+import type { AgentConversation, AgentSessionSummary } from "../lib/types";
+import { AgentMessageView } from "./AgentMessageView";
+import { IconBot, IconSend, IconStop } from "./icons";
+
+interface AgentPaneProps {
+  cwd: string | null;
+  /** 当前是不是停在智能体 tab；第一次变 true 时才去拉服务 */
+  active: boolean;
+}
+
+type Phase = "idle" | "starting" | "ready" | "error";
+
+/** 当前选中的会话 id 按工作区记，换工作区就是另一套历史 */
+const SESSION_KEY_PREFIX = "codedock.agentSession.";
+
+/** 发送键是这一屏唯一的主操作，做成实心圆钮；圆底上的字色复用角标那套 text-app */
+const SEND_BUTTON =
+  "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent text-app transition-opacity hover:opacity-90 disabled:opacity-30 disabled:hover:opacity-30";
+
+/** 停止键和发送键同尺寸同位置，但保持中性色，免得被当成"再发一次" */
+const STOP_BUTTON =
+  "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
+
+/**
+ * 智能体对话面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
+ * 这里只负责发消息、把 SSE 事件渲染成对话。
+ */
+export function AgentPane({ cwd, active }: AgentPaneProps) {
+  const { settings } = useSettings();
+  // 会话列表和当前会话跟侧边栏共用：那边要按项目列出历史、并高亮正在聊的那条
+  const {
+    setSessions,
+    currentIdRef,
+    setCurrentId,
+    requestedId,
+    clearRequest,
+    requestedDeleteId,
+    clearDeleteRequest,
+    requestedNew,
+    clearNewRequest,
+    requestedRename,
+    clearRenameRequest,
+  } = useAgentSession();
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [fatal, setFatal] = useState<string | null>(null);
+  const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
+  const [input, setInput] = useState("");
+
+  const startedRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const { aiBaseUrl, aiModel, aiApiKey, agentCommand, agentPort } = settings;
+
+  /** 拉一次会话列表。失败不抛，返回空数组让调用方兜底 */
+  const refreshSessions = useCallback(async (): Promise<AgentSessionSummary[]> => {
+    if (!cwd) return [];
+    try {
+      const list = parseSessions(await listAgentSessions(), cwd);
+      setSessions(list);
+      return list;
+    } catch {
+      // 列表拉不到不该挡住对话，界面保持上一次的样子
+      return [];
+    }
+  }, [cwd]);
+
+  /** 打开某个会话：拉历史灌进来，并把它记成当前会话 */
+  const openSession = useCallback(
+    async (id: string) => {
+      if (!cwd) return;
+      try {
+        const history = await fetchAgentMessages(id);
+        setCurrentId(id);
+        window.localStorage.setItem(SESSION_KEY_PREFIX + cwd, id);
+        setConversation(conversationFromHistory(history));
+        setPhase("ready");
+      } catch (reason) {
+        setFatal(String(reason));
+        setPhase("error");
+      }
+    },
+    [cwd, setCurrentId],
+  );
+
+  /** 拉服务 → 接着上次的会话（没了就接最近的一条；一条都没有就停在空态，等用户发第一句再建） */
+  const boot = useCallback(async () => {
+    if (!cwd) {
+      setFatal("先选一个工作目录，智能体要知道在哪个仓库里干活");
+      setPhase("error");
+      return;
+    }
+    if (!aiBaseUrl.trim() || !aiModel.trim() || !aiApiKey.trim()) {
+      setFatal("请先在「设置 → AI」里填写接口地址、模型和密钥，智能体复用这份配置");
+      setPhase("error");
+      return;
+    }
+
+    setPhase("starting");
+    setFatal(null);
+
+    try {
+      await startAgent({
+        command: agentCommand,
+        port: agentPort,
+        baseUrl: aiBaseUrl.trim(),
+        model: aiModel.trim(),
+        apiKey: aiApiKey.trim(),
+      });
+    } catch (reason) {
+      setFatal(String(reason));
+      setPhase("error");
+      return;
+    }
+
+    // 会话列表才是真相：本地存的那个 id 可能已经被删了，也可能清过缓存。
+    // 所以先问列表——本地那条还在就接着它，否则退一步接最近的一条。
+    const list = await refreshSessions();
+    const saved = window.localStorage.getItem(SESSION_KEY_PREFIX + cwd);
+    const target = list.find((item) => item.id === saved) ?? list[0];
+    if (target) {
+      await openSession(target.id);
+      return;
+    }
+
+    // 一条历史都没有：不急着建会话，先停在「等第一句」的空态。
+    // 会话等用户真的发出去才建，否则历史列表里会堆一串聊都没聊过的空条目。
+    setCurrentId(null);
+    setConversation(EMPTY_CONVERSATION);
+    setPhase("ready");
+  }, [
+    cwd,
+    aiBaseUrl,
+    aiModel,
+    aiApiKey,
+    agentCommand,
+    agentPort,
+    refreshSessions,
+    openSession,
+    setCurrentId,
+  ]);
+
+  useEffect(() => {
+    if (!active || startedRef.current) return;
+    startedRef.current = true;
+    void boot();
+  }, [active, boot]);
+
+  // 事件流只订阅一次。后端是全量转发的，用 ref 拿当前会话 id，
+  // 免得每次开会话都要重订阅一遍
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    void onAgentEvent((event) => {
+      const sessionId = currentIdRef.current;
+      if (!sessionId) return;
+      setConversation((current) => reduceAgentEvent(current, event, sessionId));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [currentIdRef]);
+
+  // 侧边栏点了某条历史会话：真正打开的动作在这儿做。
+  // 服务还没就绪（比如刚切到 GUI）就等 phase 变 ready 再消费，别去拉一个还没起的服务。
+  useEffect(() => {
+    if (!requestedId || phase !== "ready") return;
+    clearRequest();
+    if (requestedId === currentIdRef.current) return;
+    setConversation(EMPTY_CONVERSATION);
+    void openSession(requestedId);
+  }, [requestedId, phase, clearRequest, currentIdRef, openSession]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    void onAgentExit(() => {
+      setFatal("智能体服务已退出，可能是被系统回收或端口被占");
+      setPhase("error");
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // 新内容进来就贴到底部
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [conversation]);
+
+  // 输入框跟着内容长高，超过上限就内部滚动
+  useEffect(() => {
+    const element = textareaRef.current;
+    if (!element) return;
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
+  }, [input]);
+
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if (!text || conversation.streaming) return;
+
+    setInput("");
+    // 用户消息不本地插：等 SSE 的 message.updated 回来，省得和真实消息对不上
+    setConversation((current) => ({ ...current, streaming: true, error: null }));
+
+    // 会话是发出第一句时才建的：还没会话就先建一个。
+    // 必须先 setCurrentId 再发消息——SSE 处理器靠 currentIdRef 认会话，晚一步这条消息的事件就被丢了
+    let sessionId = currentIdRef.current;
+    if (!sessionId) {
+      try {
+        const session = await createAgentSession();
+        sessionId = session.id;
+        setCurrentId(sessionId);
+        if (cwd) window.localStorage.setItem(SESSION_KEY_PREFIX + cwd, sessionId);
+        void refreshSessions();
+      } catch (reason) {
+        setConversation((current) => ({ ...current, streaming: false, error: String(reason) }));
+        return;
+      }
+    }
+
+    void sendAgentMessage(sessionId, text, aiModel.trim()).catch((reason) => {
+      setConversation((current) => ({
+        ...current,
+        streaming: false,
+        error: String(reason),
+      }));
+    });
+  }, [input, conversation.streaming, aiModel, cwd, setCurrentId, refreshSessions]);
+
+  const stop = useCallback(() => {
+    const sessionId = currentIdRef.current;
+    if (!sessionId) return;
+    void abortAgentSession(sessionId).catch(() => {
+      // 停不下来也无所谓：这一轮跑完自然会给 session.idle
+    });
+  }, [currentIdRef]);
+
+  /** 新对话：只把面板清成「等第一句」，会话本身等发送时再建，免得留下一串空记录 */
+  const newSession = useCallback(() => {
+    setCurrentId(null);
+    setConversation(EMPTY_CONVERSATION);
+  }, [setCurrentId]);
+
+  /** 侧边栏确认删了一条历史会话：删掉后刷新列表；删的正好是当前这条就退到最近的一条 */
+  const deleteSession = useCallback(
+    async (id: string) => {
+      try {
+        await deleteAgentSession(id);
+      } catch (reason) {
+        setConversation((current) => ({ ...current, error: String(reason) }));
+        return;
+      }
+      const list = await refreshSessions();
+      if (id !== currentIdRef.current) return;
+      if (list[0]) {
+        setConversation(EMPTY_CONVERSATION);
+        void openSession(list[0].id);
+      } else {
+        // 一条都不剩了：回到「等第一句」的空态，别再自动建一条空会话出来
+        newSession();
+      }
+    },
+    [refreshSessions, openSession, newSession, currentIdRef],
+  );
+
+  // 侧边栏确认删除后置上 id，真正删的动作在这儿做（和 requestedId 一个路子）。
+  // 必须写在 deleteSession 之后：依赖数组是在渲染期求值的，放前面会撞上 TDZ
+  useEffect(() => {
+    if (!requestedDeleteId) return;
+    clearDeleteRequest();
+    void deleteSession(requestedDeleteId);
+  }, [requestedDeleteId, clearDeleteRequest, deleteSession]);
+
+  // 侧边栏确认改名后置上 id 和新标题，真正改的动作在这儿做（和 requestedDeleteId 一个路子）。
+  // 面板自己不显示会话标题，改完刷一遍列表就行，侧边栏那边自然会换字
+  useEffect(() => {
+    if (!requestedRename) return;
+    const { id, title } = requestedRename;
+    clearRenameRequest();
+    void renameAgentSession(id, title)
+      .then(() => refreshSessions())
+      .catch((reason) => {
+        setConversation((current) => ({ ...current, error: String(reason) }));
+      });
+  }, [requestedRename, clearRenameRequest, refreshSessions]);
+
+  // 侧边栏那个「+」：服务就绪才把面板清成新对话，没就绪就先挂着等 phase 变 ready
+  useEffect(() => {
+    if (!requestedNew || phase !== "ready") return;
+    clearNewRequest();
+    newSession();
+  }, [requestedNew, phase, clearNewRequest, newSession]);
+
+  const messages = useMemo(
+    () => conversation.order.map((id) => conversation.byId[id]).filter(Boolean),
+    [conversation],
+  );
+
+  // 只有最后一条助手消息算「还在写」，其余的都按完成态渲染 markdown
+  const streamingId = useMemo(() => {
+    if (!conversation.streaming) return null;
+    for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
+      const message = conversation.byId[conversation.order[index]];
+      if (message?.role === "assistant") return message.id;
+    }
+    return null;
+  }, [conversation]);
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // 输入法组合中的回车是在选字，不能当发送
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      send();
+    }
+  };
+
+  if (phase === "error") {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="max-w-md rounded border border-line bg-app p-4 text-center">
+          <div className="text-[12px] leading-relaxed text-fg-muted">{fatal}</div>
+          <button
+            type="button"
+            onClick={() => void boot()}
+            className="mt-3 rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
+          >
+            重试
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase !== "ready") {
+    return (
+      <div className="flex h-full items-center justify-center text-[12px] text-fg-faint">
+        正在启动智能体…
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
+          opencode · {aiModel.trim() || "未配置模型"}
+        </span>
+        {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态 */}
+      </div>
+
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
+              <IconBot className="h-5 w-5" />
+            </span>
+            <div className="text-[13px] font-medium text-fg-muted">
+              让智能体读代码、改文件、跑命令
+            </div>
+            <div className="text-[12px] leading-relaxed text-fg-faint">
+              改动会直接落到工作区，git 面板能看到
+            </div>
+          </div>
+        ) : (
+          messages.map((message) => (
+            <AgentMessageView
+              key={message.id}
+              message={message}
+              streaming={message.id === streamingId}
+            />
+          ))
+        )}
+        {conversation.error && (
+          <div className="my-2 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
+            {conversation.error}
+          </div>
+        )}
+      </div>
+
+      {/* 输入区是一整块圆角卡片：底色用 app、和面板的 surface 拉开一层，
+          边界交给边框而不是分隔线，看着更像现代的对话输入框 */}
+      <div className="shrink-0 px-3 pt-1 pb-3">
+        <div className="rounded-2xl border border-line bg-app px-3 pt-3 pb-2 transition-colors focus-within:border-line-hover">
+          {/* textarea 自己不留内边距：自动长高量的是它的 scrollHeight，留了会把高度算虚 */}
+          <textarea
+            ref={textareaRef}
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={onKeyDown}
+            rows={1}
+            placeholder="让智能体改点什么…"
+            className="min-h-6 max-h-40 w-full resize-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-faint"
+          />
+          <div className="mt-1 flex items-center gap-2">
+            {/* 键盘提示常驻在底行，占位文案就能只留一句人话 */}
+            <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
+              Enter 发送 · Shift+Enter 换行
+            </span>
+            {conversation.streaming ? (
+              <button type="button" onClick={stop} title="停止" className={STOP_BUTTON}>
+                <IconStop className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={send}
+                disabled={!input.trim()}
+                title="发送"
+                className={SEND_BUTTON}
+              >
+                <IconSend className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
