@@ -6,13 +6,16 @@
 //! 进程模型：一个工作区一个 opencode 进程，cwd 就是工作区根。懒启动（用户第一次切到
 //! 智能体 tab 才起），换工作区或退出应用时杀掉。
 
+use std::collections::VecDeque;
 use std::ffi::OsStr;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -26,7 +29,7 @@ pub const EXIT_EVENT: &str = "agent-exit";
 
 /// 健康检查的等待上限。opencode 冷启动要装插件，慢机器上可能要十几秒。
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
-/// 管理类 HTTP 请求的超时。发消息走 prompt_async（立刻返回 204），不受这个影响。
+/// 管理类 HTTP 请求的超时。发消息走 prompt（立刻返回，正文靠事件流推回来），不受这个影响。
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// SSE 断线后的重连间隔。
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
@@ -36,8 +39,94 @@ const EXIT_POLL: Duration = Duration::from_secs(1);
 const MAX_ERROR_CHARS: usize = 500;
 /// 注入给 opencode 的密钥环境变量名。密钥不写进配置文件，只走环境变量。
 const API_KEY_ENV: &str = "CODEDOCK_AI_API_KEY";
+/// opencode v2 要求服务口令，我们自己定一个并通过这个环境变量注入。
+/// 不定的话它会随机生成、打到 stdout，我们还得去解析那行输出。
+const PASSWORD_ENV: &str = "OPENCODE_PASSWORD";
 /// CodeDock 注册给 opencode 的 provider id，配置和发消息时的 model 都要对上。
 const PROVIDER_ID: &str = "codedock";
+
+/// Basic 认证的用户名。v2 把它写死了，只有密码是可配的。
+const AUTH_USER: &str = "opencode";
+/// 留多少行子进程输出。启动失败的原因（端口被占、插件装不上、配置读不了）
+/// 只会打在 stdout/stderr 上，v1 时代这两路被 Stdio::null() 丢掉了，
+/// 界面上只能看到一句"启动超时"，完全没法排查。
+const CHILD_LOG_LINES: usize = 40;
+
+/// 子进程输出的环形缓冲。启动失败时靠它把原因带回给用户。
+type ChildLog = Arc<Mutex<VecDeque<String>>>;
+
+/// 对接的是哪一带 opencode 的接口。
+///
+/// 两代差异不小，但**相对路径几乎一样**：除了探针、发消息、中断这三处名字真的不同，
+/// 其余只差一个 `/api` 前缀，所以收敛成这么几个方法就够了，不用维护一张路由表。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Protocol {
+    /// 旧包 `opencode-ai`（1.x）：裸路由、免认证、响应不套壳、事件用 `message.part.*`
+    V1,
+    /// 新包 `@opencode/cli`（2.x）：`/api` 前缀、Basic 认证、响应套 `{data}`、
+    /// 事件用 `session.text.*`
+    V2,
+}
+
+impl Protocol {
+    fn prefix(self) -> &'static str {
+        match self {
+            Protocol::V1 => "",
+            Protocol::V2 => "/api",
+        }
+    }
+
+    /// 发消息：v1 叫 `prompt_async`（回 204），v2 叫 `prompt`（回 200，正文都走事件流）
+    fn prompt_path(self) -> &'static str {
+        match self {
+            Protocol::V1 => "prompt_async",
+            Protocol::V2 => "prompt",
+        }
+    }
+
+    /// 打断这一轮：v1 叫 `abort`，v2 改叫 `interrupt`
+    fn interrupt_path(self) -> &'static str {
+        match self {
+            Protocol::V1 => "abort",
+            Protocol::V2 => "interrupt",
+        }
+    }
+
+    /// v2 的每个请求（含 SSE）都要 Basic 认证，少了会拿到 401——那看起来很像"服务没起来"
+    fn needs_auth(self) -> bool {
+        matches!(self, Protocol::V2)
+    }
+
+    /// v2 把所有响应套了一层 `{data: ...}`（列表还多个 cursor），v1 是裸的。
+    /// 在这儿拆掉，前端那几个解析函数才能两头通吃。
+    fn unwrap(self, value: serde_json::Value) -> serde_json::Value {
+        match self {
+            Protocol::V1 => value,
+            Protocol::V2 => unwrap_data(value),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Protocol::V1 => "v1",
+            Protocol::V2 => "v2",
+        }
+    }
+}
+
+/// 探测用的候选：(探针路径, 要不要认证, 判成哪一代)。
+///
+/// 顺序<b>不能按版本号推</b>：过渡期的 `@opencode/cli@0.0.0-dev-*` 版本号是 0.x，
+/// 但接口已经是 v2 形态（用 `/api/health`、事件也是 `session.text.*`）——按版本号
+/// 判会把它当 v1，然后去打它根本不存在的 `/global/health`，于是永远起不来。
+/// 所以只能按接口探。
+const PROBES: &[(&str, bool, Protocol)] = &[
+    ("/info", true, Protocol::V2),
+    // 过渡期 dev 构建的健康路径，既不是 /api/info 也不是 /global/health
+    ("/health", true, Protocol::V2),
+    ("/global/health", false, Protocol::V1),
+];
+
 
 /// 前端传进来的配置。三个接口字段复用「设置 → AI」里已有的那份。
 #[derive(Debug, Deserialize)]
@@ -57,6 +146,8 @@ pub struct AgentConfig {
 pub struct AgentInfo {
     port: u16,
     version: String,
+    /// 探测出来的接口代次（"v1" / "v2"），界面拿它显示、排查时也用得上
+    protocol: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,12 +160,125 @@ pub struct AgentStatus {
 struct Running {
     child: Child,
     port: u16,
+    /// 探测出来的接口代次。起进程时还不知道，探测完补上（探测期间它是 V2，
+    /// 那只是占位——探测没通过就会被 kill 掉，不会有人读到）。
+    protocol: Protocol,
     /// 启动时的工作区根。和当前工作区对不上就说明该重启了。
     cwd: PathBuf,
     config_dir: PathBuf,
     /// 每次启动 +1。SSE 任务和退出轮询靠它判断自己是不是已经过期。
     generation: u64,
+    /// 我们自己定的服务口令，v2 的每个请求（含 SSE）都要拿它做 Basic 认证
+    password: String,
+    /// 子进程输出的尾巴。启动失败时拼进错误里，不然只能看到一句"启动超时"
+    log: ChildLog,
 }
+
+/// 给 opencode 生成一个服务口令。
+///
+/// 不引 rand：仓库没有这个依赖，而这里要的只是"猜不到"，不是密码学强度——
+/// 它保护的是一个只监听 127.0.0.1 的端口。RandomState 每次构造都用不同的随机
+/// key，所以同一个输入在不同实例上也会给出不同结果。
+fn random_password() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+
+    let mut out = String::with_capacity(32);
+    for salt in 0u64..2 {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u64(u64::from(std::process::id()));
+        hasher.write_u64(salt);
+        out.push_str(&format!("{:016x}", hasher.finish()));
+    }
+    out
+}
+
+/// 按协议拼一个接口地址。两代的相对路径基本一样，只差 `/api` 前缀。
+fn endpoint(protocol: Protocol, port: u16, path: &str) -> String {
+    format!("http://127.0.0.1:{port}{}{path}", protocol.prefix())
+}
+
+/// 发消息的请求体。两代形状不同：
+/// v1 把文本塞进 `parts: [{type:"text"}]`，v2 直接放顶层 `text`。
+///
+/// `model` 必须显式给：不给的话 opencode 会用用户全局配置里的默认模型
+/// （本机实测会落到没跑起来的 ollama，然后一路重试到超时）。
+fn prompt_body(
+    protocol: Protocol,
+    text: &str,
+    model: Option<&str>,
+) -> serde_json::Value {
+    let model = model.filter(|m| !m.trim().is_empty());
+    match protocol {
+        Protocol::V1 => {
+            let mut body = serde_json::json!({
+                "parts": [{ "type": "text", "text": text }],
+            });
+            if let Some(model) = model {
+                body["model"] = serde_json::json!({ "providerID": PROVIDER_ID, "modelID": model });
+            }
+            body
+        }
+        Protocol::V2 => {
+            let mut body = serde_json::json!({ "text": text });
+            if let Some(model) = model {
+                body["model"] = serde_json::json!({ "providerID": PROVIDER_ID, "modelID": model });
+            }
+            body
+        }
+    }
+}
+
+/// v2 的认证头。用户名固定 `opencode`，密码是我们起进程时注入的那个。
+/// 漏掉它每个请求都会拿到 401——包括健康检查，而那看起来像"服务没起来"。
+fn basic_auth(password: &str) -> String {
+    let raw = format!("{AUTH_USER}:{password}");
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(raw)
+    )
+}
+
+/// 把子进程一路输出的行推进环形缓冲。
+fn pump_child_log(stream: impl Read + Send + 'static, log: ChildLog) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+            let Ok(mut buffer) = log.lock() else { return };
+            if buffer.len() == CHILD_LOG_LINES {
+                buffer.pop_front();
+            }
+            buffer.push_back(line);
+        }
+    });
+}
+
+/// 取出子进程输出的尾巴，拼进错误文案。空的时候就返回空串。
+fn child_log_tail(log: &ChildLog) -> String {
+    let Ok(buffer) = log.lock() else {
+        return String::new();
+    };
+    buffer
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// 把 opencode 的 `{ "data": ... }` 信封拆掉。
+///
+/// v2 给所有响应都套了这一层（列表还多一个 `cursor`），而前端要的是里面那个
+/// 裸数组/对象。在这里拆掉，前端那几个解析函数就能维持原样。
+fn unwrap_data(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(mut map) if map.contains_key("data") => {
+            map.remove("data").unwrap_or(serde_json::Value::Null)
+        }
+        other => other,
+    }
+}
+
 
 pub struct AgentState {
     inner: Arc<Mutex<Option<Running>>>,
@@ -244,13 +448,15 @@ fn write_config(dir: &Path, base_url: &str, model: &str) -> Result<(), String> {
 
 // ---- 起进程 / 杀进程 ----
 
+/// 起 opencode 服务。返回子进程和它的输出缓冲（启动失败时要靠它说清原因）。
 fn spawn_opencode(
     command: &str,
     port: u16,
     cwd: &Path,
     config_dir: &Path,
     api_key: &str,
-) -> Result<Child, String> {
+    password: &str,
+) -> Result<(Child, ChildLog), String> {
     let port_text = port.to_string();
     let args = ["serve", "--port", port_text.as_str(), "--hostname", "127.0.0.1"];
     let path = crate::shell_env::resolved_path(
@@ -273,9 +479,13 @@ fn spawn_opencode(
     cmd.current_dir(cwd)
         .env("OPENCODE_CONFIG_DIR", config_dir)
         .env(API_KEY_ENV, api_key)
+        // 自己定口令，省得去解析它打到 stdout 的那行随机密码
+        .env(PASSWORD_ENV, password)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // 两路都接出来喂环形缓冲：opencode 启动失败时（端口被占、插件装不上、
+        // 配置读不了）只说在 stdout/stderr 上，丢掉的话界面上只剩"启动超时"
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     hide_console(&mut cmd);
 
     #[cfg(unix)]
@@ -285,9 +495,19 @@ fn spawn_opencode(
         cmd.process_group(0);
     }
 
-    cmd.spawn().map_err(|e| {
+    let mut child = cmd.spawn().map_err(|e| {
         format!("启动 opencode 失败: {e}。请确认已安装，或在「设置 → AI」里填写完整路径")
-    })
+    })?;
+
+    let log = Arc::new(Mutex::new(VecDeque::new()));
+    if let Some(stdout) = child.stdout.take() {
+        pump_child_log(stdout, Arc::clone(&log));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pump_child_log(stderr, Arc::clone(&log));
+    }
+
+    Ok((child, log))
 }
 
 /// 借 cmd 起 `.cmd`/`.bat` 垫片。
@@ -369,12 +589,13 @@ fn truncate(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
-/// 取当前运行实例的端口。锁在函数内就释放，不跨 await。
-fn current_port(state: &AgentState) -> Result<u16, String> {
+/// 拿当前实例的端口、口令、接口代次。每个命令都要这三样：
+/// 端口拼 URL、口令做认证（只有 v2 用得上）、协议决定走哪条路由。
+fn current_endpoint(state: &AgentState) -> Result<(Protocol, u16, String), String> {
     let guard = state.inner.lock().map_err(|e| e.to_string())?;
     guard
         .as_ref()
-        .map(|running| running.port)
+        .map(|running| (running.protocol, running.port, running.password.clone()))
         .ok_or_else(|| "智能体服务还没启动".to_string())
 }
 
@@ -382,13 +603,20 @@ fn current_port(state: &AgentState) -> Result<u16, String> {
 ///
 /// 不定义严格的响应结构体：opencode 的字段还在演进，换版本少一层就可能反序列化失败，
 /// 用 `Value` 逐层取更耐操（和 `ai.rs` 一个路子）。
+///
+/// 认证头只在协议需要时才加（v1 完全没认证，多送一个头虽然多半无害，但没必要）。
 async fn request_json(
     client: &reqwest::Client,
     method: reqwest::Method,
     url: String,
     body: Option<serde_json::Value>,
+    protocol: Protocol,
+    password: &str,
 ) -> Result<serde_json::Value, String> {
     let mut request = client.request(method, &url);
+    if protocol.needs_auth() {
+        request = request.header(reqwest::header::AUTHORIZATION, basic_auth(password));
+    }
     if let Some(payload) = body {
         request = request.json(&payload);
     }
@@ -419,34 +647,88 @@ async fn request_json(
         .map_err(|_| format!("无法解析 opencode 响应: {}", truncate(&text, MAX_ERROR_CHARS)))
 }
 
-/// 轮询健康接口直到就绪。返回版本号。
-async fn wait_healthy(port: u16, timeout: Duration) -> Result<String, String> {
+/// 一个探针打过去的结果，只用于报错时说明"每个探针各自返回了什么"。
+struct ProbeOutcome {
+    path: &'static str,
+    detail: String,
+}
+
+/// 探出对面是哪一代接口，顺带把版本号取回来。
+///
+/// **按接口探，不按版本号推**：过渡期的 `@opencode/cli@0.0.0-dev-*` 版本号是 0.x
+/// 但接口已经是 v2 形态，按号判会误当成 v1，然后去打它不存在的 `/global/health`。
+/// 探针顺序见 `PROBES`。服务要时间才起得来，所以在 `timeout` 内轮询。
+///
+/// 失败时把每个探针各自返回了什么、连同子进程输出尾巴一起报出去——
+/// 只说一句"启动超时"是没法排查的（这条是上一轮踩过的坑）。
+async fn detect_protocol(
+    port: u16,
+    password: &str,
+    log: &ChildLog,
+    timeout: Duration,
+) -> Result<(Protocol, String), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
         .build()
         .map_err(|e| format!("无法创建 HTTP 客户端: {e}"))?;
-    let url = format!("http://127.0.0.1:{port}/global/health");
 
     let deadline = Instant::now() + timeout;
-    let mut last = "连接失败".to_string();
+    let mut outcomes: Vec<ProbeOutcome> = PROBES
+        .iter()
+        .map(|(path, _, _)| ProbeOutcome {
+            path,
+            detail: "未响应".to_string(),
+        })
+        .collect();
+
     while Instant::now() < deadline {
-        match client.get(&url).send().await {
-            Ok(response) if response.status().is_success() => {
-                if let Ok(value) = response.json::<serde_json::Value>().await {
-                    return Ok(value
-                        .get("version")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string());
-                }
+        for (index, (path, needs_auth, protocol)) in PROBES.iter().enumerate() {
+            let url = endpoint(*protocol, port, path);
+            let mut request = client.get(&url);
+            if *needs_auth {
+                request = request.header(reqwest::header::AUTHORIZATION, basic_auth(password));
             }
-            Ok(response) => last = format!("HTTP {}", response.status().as_u16()),
-            Err(e) => last = e.to_string(),
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if !status.is_success() {
+                        outcomes[index].detail = format!("HTTP {}", status.as_u16());
+                        continue;
+                    }
+                    // 必须拿到 JSON 才算数：命中不了路由时 opencode 会把 SPA 的
+                    // index.html 吐出来（200 + text/html），那不能当成探针成功
+                    let Ok(value) = response.json::<serde_json::Value>().await else {
+                        outcomes[index].detail = "200 但不是 JSON（多半是前端页面兜底）".to_string();
+                        continue;
+                    };
+                    // 还必须有 version：v1 也会应答 /api/health，但只回
+                    // `{"healthy":true}`，光看 200 会把它误当 dev 构建
+                    let Some(version) = value.get("version").and_then(|v| v.as_str()) else {
+                        outcomes[index].detail = "200 JSON 但没有 version 字段".to_string();
+                        continue;
+                    };
+                    return Ok((*protocol, version.to_string()));
+                }
+                Err(e) => outcomes[index].detail = e.to_string(),
+            }
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 
-    Err(format!("opencode 启动超时（{last}）"))
+    let tried = outcomes
+        .iter()
+        .map(|o| format!("  {} → {}", o.path, o.detail))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tail = child_log_tail(log);
+    let mut message = format!(
+        "没认出 opencode 的接口代次（v1 / v2 都试了）：\n{tried}\n\n\
+         确认它的版本是否受支持；老版本可能需要升级。"
+    );
+    if !tail.is_empty() {
+        message.push_str(&format!("\n\nopencode 的输出：\n{tail}"));
+    }
+    Err(message)
 }
 
 // ---- SSE ----
@@ -494,16 +776,31 @@ fn frame_data(frame: &str) -> Option<&str> {
 }
 
 /// 起一个后台任务持续读 SSE 并转推给前端。断了就退避重连，直到这一代实例被换掉。
-fn spawn_sse(app: AppHandle, inner: Arc<Mutex<Option<Running>>>, port: u16, generation: u64) {
+///
+/// 事件流两代的路径只差 `/api` 前缀，但认证只有 v2 要——v2 漏了认证头会直接 401，
+/// 表现成"连上了但一条事件都没有"。
+fn spawn_sse(
+    app: AppHandle,
+    inner: Arc<Mutex<Option<Running>>>,
+    protocol: Protocol,
+    port: u16,
+    password: String,
+    generation: u64,
+) {
     tauri::async_runtime::spawn(async move {
         let client = match reqwest::Client::builder().build() {
             Ok(c) => c,
             Err(_) => return,
         };
-        let url = format!("http://127.0.0.1:{port}/event");
+        let url = endpoint(protocol, port, "/event");
+        let auth = basic_auth(&password);
 
         while is_current(&inner, generation) {
-            if let Ok(mut response) = client.get(&url).send().await {
+            let mut request = client.get(&url);
+            if protocol.needs_auth() {
+                request = request.header(reqwest::header::AUTHORIZATION, &auth);
+            }
+            if let Ok(mut response) = request.send().await {
                 let mut buffer = String::new();
                 loop {
                     match response.chunk().await {
@@ -608,6 +905,7 @@ pub async fn agent_start(
                 return Ok(AgentInfo {
                     port: running.port,
                     version: String::new(),
+                    protocol: running.protocol.label().to_string(),
                 });
             }
         }
@@ -632,30 +930,67 @@ pub async fn agent_start(
             .join("opencode");
         write_config(&config_dir, &base_url, &model)?;
 
-        let child = spawn_opencode(&config.command, port, &cwd, &config_dir, &api_key)?;
+        let password = random_password();
+        let (child, log) = spawn_opencode(
+            &config.command,
+            port,
+            &cwd,
+            &config_dir,
+            &api_key,
+            &password,
+        )?;
         let generation = state.generation.load(Ordering::SeqCst);
 
         *guard = Some(Running {
             child,
             port,
+            // 占位：探测通过后会就地改成真值。探测没过就 kill 掉，没人读得到这个值
+            protocol: Protocol::V2,
             cwd,
             config_dir,
             generation,
+            password,
+            log,
         });
 
         (port, generation)
     };
 
-    // 健康检查是异步的，放在锁外面
-    let version = match wait_healthy(port, HEALTH_TIMEOUT).await {
-        Ok(version) => version,
-        Err(reason) => {
-            state.kill();
-            return Err(reason);
+    // 探测是异步的，放在锁外面
+    let (password, log) = {
+        let guard = state.inner.lock().map_err(|e| e.to_string())?;
+        match guard.as_ref() {
+            Some(running) => (running.password.clone(), Arc::clone(&running.log)),
+            None => return Err("智能体服务没起来".to_string()),
         }
     };
 
-    spawn_sse(app.clone(), state.inner.clone(), port, generation);
+    let (protocol, version) =
+        match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
+            Ok(found) => found,
+            Err(reason) => {
+                state.kill();
+                return Err(reason);
+            }
+        };
+
+    // 探测结果落回状态里：后面每个命令都按它选路由
+    {
+        let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+        match guard.as_mut() {
+            Some(running) => running.protocol = protocol,
+            None => return Err("智能体服务没起来".to_string()),
+        }
+    }
+
+    spawn_sse(
+        app.clone(),
+        state.inner.clone(),
+        protocol,
+        port,
+        password,
+        generation,
+    );
     spawn_exit_watcher(
         app,
         state.inner.clone(),
@@ -663,7 +998,11 @@ pub async fn agent_start(
         port,
     );
 
-    Ok(AgentInfo { port, version })
+    Ok(AgentInfo {
+        port,
+        version,
+        protocol: protocol.label().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -685,12 +1024,14 @@ pub fn agent_stop(state: tauri::State<'_, AgentState>) {
     state.kill();
 }
 
+/// 建一个会话。v2 把返回包在 `{data: ...}` 里，拆掉再给前端——
+/// 前端只认 `{id}` 这一层。
 #[tauri::command]
 pub async fn agent_create_session(
     state: tauri::State<'_, AgentState>,
     title: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
 
     let mut body = serde_json::Map::new();
@@ -698,48 +1039,64 @@ pub async fn agent_create_session(
         body.insert("title".to_string(), serde_json::Value::String(title));
     }
 
-    request_json(
+    let created = request_json(
         &client,
         reqwest::Method::POST,
-        format!("http://127.0.0.1:{port}/session"),
+        endpoint(protocol, port, "/session"),
         Some(serde_json::Value::Object(body)),
+        protocol,
+        &password,
     )
-    .await
+    .await?;
+    Ok(protocol.unwrap(created))
 }
 
+/// 拉某个会话的历史消息。v2 返回 `{data: [...], cursor}`，拆成裸数组给前端。
 #[tauri::command]
 pub async fn agent_messages(
     state: tauri::State<'_, AgentState>,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
-    request_json(
+    let messages = request_json(
         &client,
         reqwest::Method::GET,
-        format!("http://127.0.0.1:{port}/session/{session_id}/message"),
+        endpoint(protocol, port, &format!("/session/{session_id}/message")),
         None,
+        protocol,
+        &password,
     )
-    .await
+    .await?;
+    Ok(protocol.unwrap(messages))
 }
 
 /// 列出所有会话。opencode 那边是全局存的、跨项目混在一起，调用方自己按 directory 过滤。
+///
+/// v2 是游标分页（`{data, cursor}`），这里只取第一页、丢掉 cursor——界面上本来就
+/// 只列最近一批，为此引入分页状态不划算。
 #[tauri::command]
 pub async fn agent_list_sessions(
     state: tauri::State<'_, AgentState>,
 ) -> Result<serde_json::Value, String> {
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
-    request_json(
+    let sessions = request_json(
         &client,
         reqwest::Method::GET,
-        format!("http://127.0.0.1:{port}/session"),
+        endpoint(protocol, port, "/session"),
         None,
+        protocol,
+        &password,
     )
-    .await
+    .await?;
+    Ok(protocol.unwrap(sessions))
 }
 
-/// 发一条消息。走 prompt_async：它立刻返回 204，正文靠 SSE 推回来。
+/// 发一条消息。
+///
+/// 两代都是"立刻返回、正文靠事件流推回来"，只是路由名与请求体形状不同，
+/// 分别由 `Protocol::prompt_path` 和 `prompt_body` 兜住。
 #[tauri::command]
 pub async fn agent_send(
     state: tauri::State<'_, AgentState>,
@@ -751,46 +1108,45 @@ pub async fn agent_send(
         return Err("消息不能为空".to_string());
     }
 
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
-
-    let mut body = serde_json::json!({
-        "parts": [{ "type": "text", "text": text }],
-    });
-
-    // 显式指定模型：不指定的话会落到用户全局配置里的默认模型
-    // （本机实测会落到没跑起来的 ollama，然后一路重试到超时）
-    if let Some(model) = model.filter(|m| !m.trim().is_empty()) {
-        if let Some(object) = body.as_object_mut() {
-            object.insert(
-                "model".to_string(),
-                serde_json::json!({ "providerID": PROVIDER_ID, "modelID": model }),
-            );
-        }
-    }
+    let body = prompt_body(protocol, &text, model.as_deref());
 
     request_json(
         &client,
         reqwest::Method::POST,
-        format!("http://127.0.0.1:{port}/session/{session_id}/prompt_async"),
+        endpoint(
+            protocol,
+            port,
+            &format!("/session/{session_id}/{}", protocol.prompt_path()),
+        ),
         Some(body),
+        protocol,
+        &password,
     )
     .await
     .map(|_| ())
 }
 
+/// 打断当前这一轮。这个名字两代不同（v1 叫 abort、v2 叫 interrupt）。
 #[tauri::command]
 pub async fn agent_abort(
     state: tauri::State<'_, AgentState>,
     session_id: String,
 ) -> Result<(), String> {
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
     request_json(
         &client,
         reqwest::Method::POST,
-        format!("http://127.0.0.1:{port}/session/{session_id}/abort"),
+        endpoint(
+            protocol,
+            port,
+            &format!("/session/{session_id}/{}", protocol.interrupt_path()),
+        ),
         None,
+        protocol,
+        &password,
     )
     .await
     .map(|_| ())
@@ -802,19 +1158,21 @@ pub async fn agent_delete_session(
     state: tauri::State<'_, AgentState>,
     session_id: String,
 ) -> Result<(), String> {
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
     request_json(
         &client,
         reqwest::Method::DELETE,
-        format!("http://127.0.0.1:{port}/session/{session_id}"),
+        endpoint(protocol, port, &format!("/session/{session_id}")),
         None,
+        protocol,
+        &password,
     )
     .await
     .map(|_| ())
 }
 
-/// 改会话标题。opencode 那边是 `PATCH /session/:id`，只动 title，不动消息。
+/// 改会话标题。两代都是 `PATCH /session/:id`，只动 title、不动消息。
 #[tauri::command]
 pub async fn agent_rename_session(
     state: tauri::State<'_, AgentState>,
@@ -825,13 +1183,15 @@ pub async fn agent_rename_session(
         return Err("会话标题不能为空".to_string());
     }
 
-    let port = current_port(&state)?;
+    let (protocol, port, password) = current_endpoint(&state)?;
     let client = http_client()?;
     request_json(
         &client,
         reqwest::Method::PATCH,
-        format!("http://127.0.0.1:{port}/session/{session_id}"),
+        endpoint(protocol, port, &format!("/session/{session_id}")),
         Some(serde_json::json!({ "title": title })),
+        protocol,
+        &password,
     )
     .await
     .map(|_| ())
@@ -840,6 +1200,123 @@ pub async fn agent_rename_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_adds_the_prefix_only_for_v2() {
+        // v1 是裸的 /session，v2 全在 /api 下；v2 漏了前缀会拿到 SPA 的 HTML
+        assert_eq!(
+            endpoint(Protocol::V2, 1234, "/session"),
+            "http://127.0.0.1:1234/api/session"
+        );
+        assert_eq!(
+            endpoint(Protocol::V1, 1234, "/session"),
+            "http://127.0.0.1:1234/session"
+        );
+    }
+
+    #[test]
+    fn only_v2_needs_auth() {
+        // v1 二进制里 OPENCODE_PASSWORD 一次都不出现，给它加认证头没意义
+        assert!(Protocol::V2.needs_auth());
+        assert!(!Protocol::V1.needs_auth());
+    }
+
+    #[test]
+    fn routes_differ_in_exactly_three_places() {
+        // 探针、发消息、中断——其余路由只差 /api 前缀
+        assert_eq!(Protocol::V1.prompt_path(), "prompt_async");
+        assert_eq!(Protocol::V2.prompt_path(), "prompt");
+        assert_eq!(Protocol::V1.interrupt_path(), "abort");
+        assert_eq!(Protocol::V2.interrupt_path(), "interrupt");
+        // 探针顺序是探测的关键：过渡期 dev 构建只认 /api/health
+        assert_eq!(PROBES[0].0, "/info");
+        assert_eq!(PROBES[1].0, "/health");
+        assert_eq!(PROBES[2].0, "/global/health");
+        assert!(!PROBES[2].1, "v1 那条探针不该带认证");
+        assert_eq!(PROBES[2].2, Protocol::V1);
+    }
+
+    #[test]
+    fn unwrap_is_identity_for_v1() {
+        // v1 返回裸数组，v2 套 {data}——这一层差异只该在协议方法里
+        let bare = serde_json::json!([{ "id": "ses_1" }]);
+        assert_eq!(Protocol::V1.unwrap(bare.clone()), bare);
+
+        let wrapped = serde_json::json!({ "data": [{ "id": "ses_1" }], "cursor": "c" });
+        assert_eq!(Protocol::V2.unwrap(wrapped), bare);
+    }
+
+    #[test]
+    fn prompt_body_matches_each_generation() {
+        // v1 把文本放进 parts[]，v2 直接放顶层 text
+        let v1 = prompt_body(Protocol::V1, "你好", Some("m"));
+        assert_eq!(v1["parts"][0]["type"], "text");
+        assert_eq!(v1["parts"][0]["text"], "你好");
+        assert!(v1.get("text").is_none());
+        assert_eq!(v1["model"]["modelID"], "m");
+        assert_eq!(v1["model"]["providerID"], PROVIDER_ID);
+
+        let v2 = prompt_body(Protocol::V2, "你好", Some("m"));
+        assert_eq!(v2["text"], "你好");
+        assert!(v2.get("parts").is_none());
+        assert_eq!(v2["model"]["modelID"], "m");
+
+        // 模型留空时两代都不带 model 字段（交给 opencode 自己的默认）
+        assert!(prompt_body(Protocol::V1, "x", None).get("model").is_none());
+        assert!(prompt_body(Protocol::V2, "x", Some("   "))
+            .get("model")
+            .is_none());
+    }
+
+    #[test]
+    fn basic_auth_uses_the_fixed_username() {
+        // 用户名是 opencode 写死的，只有密码可配；base64("opencode:pw")
+        assert_eq!(basic_auth("pw"), "Basic b3BlbmNvZGU6cHc=");
+    }
+
+    #[test]
+    fn unwrap_data_peels_the_v2_envelope() {
+        // 列表：多一个 cursor，只要 data
+        let listed = serde_json::json!({ "data": [{"id": "ses_1"}], "cursor": "abc" });
+        assert_eq!(unwrap_data(listed), serde_json::json!([{"id": "ses_1"}]));
+
+        // 单个对象
+        let one = serde_json::json!({ "data": {"id": "ses_2"} });
+        assert_eq!(unwrap_data(one), serde_json::json!({"id": "ses_2"}));
+
+        // 没有 data 就原样返回，别把裸数组也拆坏
+        let bare = serde_json::json!([1, 2]);
+        assert_eq!(unwrap_data(bare), serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn random_password_is_long_and_varies() {
+        let a = random_password();
+        let b = random_password();
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        // 同一个进程里连着要两次也必须不同，否则两个实例会共用一个口令
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn child_log_tail_keeps_the_last_lines() {
+        let log = Arc::new(Mutex::new(VecDeque::new()));
+        {
+            let mut buffer = log.lock().unwrap();
+            for i in 0..(CHILD_LOG_LINES + 5) {
+                if buffer.len() == CHILD_LOG_LINES {
+                    buffer.pop_front();
+                }
+                buffer.push_back(format!("line {i}"));
+            }
+        }
+        let tail = child_log_tail(&log);
+        // 只留最后 CHILD_LOG_LINES 行，最老的已经被挤掉
+        assert!(!tail.contains("line 0\n"));
+        assert!(tail.contains(&format!("line {}", CHILD_LOG_LINES + 4)));
+        assert_eq!(tail.lines().count(), CHILD_LOG_LINES);
+    }
 
     #[test]
     fn frame_splits_on_blank_line() {

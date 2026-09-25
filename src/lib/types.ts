@@ -127,7 +127,10 @@ export interface ReplaceResult {
 /** agent_start 的返回；同一工作区重复调用会复用已有实例 */
 export interface AgentInfo {
   port: number;
+  /** opencode 报的版本号，裸 semver（v1 是 1.18.32、v2 是 2.0.16） */
   version: string;
+  /** 启动时探测出来的接口代次："v1" / "v2"。界面显示用，排查时也用得上 */
+  protocol: string;
 }
 
 export interface AgentStatus {
@@ -174,8 +177,10 @@ export interface AgentMessage {
 }
 
 /**
- * SSE 事件。opencode 有两种壳：老事件把载荷放在 properties 里，
- * 新的 durable 事件（如 session.idle）放在 data 里，取的时候得兼容。
+ * SSE 事件。opencode v2 的信封长这样：
+ * `{id, created, type, location?, data?, durable?}` —— 事件类型在 `type`，
+ * 载荷在 `data`。`properties` 是 v2 之前的旧壳，留着是为了容错（少一层字段
+ * 就整个解析失败更糟）。
  */
 export interface AgentEvent {
   type: string;

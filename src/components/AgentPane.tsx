@@ -64,6 +64,8 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
   const [fatal, setFatal] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
   const [input, setInput] = useState("");
+  /** 探测出来的 opencode 版本，只为在状态行显示（v1 / v2 装在不同机器上时一眼可辨） */
+  const [agentVersion, setAgentVersion] = useState("");
 
   const startedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -119,13 +121,15 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
     setFatal(null);
 
     try {
-      await startAgent({
+      const info = await startAgent({
         command: agentCommand,
         port: agentPort,
         baseUrl: aiBaseUrl.trim(),
         model: aiModel.trim(),
         apiKey: aiApiKey.trim(),
       });
+      // 复用已有实例时后端回的是空版本号，那就保留上一次探到的
+      setAgentVersion((current) => info.version || current);
     } catch (reason) {
       setFatal(String(reason));
       setPhase("error");
@@ -377,7 +381,8 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-          opencode · {aiModel.trim() || "未配置模型"}
+          opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
+          {aiModel.trim() || "未配置模型"}
         </span>
         {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态 */}
       </div>

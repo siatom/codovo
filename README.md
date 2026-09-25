@@ -118,7 +118,7 @@ src-tauri/src/
   watcher.rs              工作区目录监听：防抖后把「哪个目录变了」推给前端
   git.rs                  git 状态查询、暂存/提交、提交历史与差异内容（调用系统 git CLI）
   ai.rs                   AI 生成提交信息：取暂存区上下文、拼 prompt、走 reqwest 调 OpenAI 兼容接口
-  agent.rs                智能体后端：起停 opencode 进程、代理它的 HTTP、把 SSE 转推给前端
+  agent.rs                智能体后端：起停 opencode 进程、代理它的 HTTP（opencode v2 的 /api + Basic 认证）、把 SSE 转推给前端
   lib.rs                  state / command 注册 / 退出回收
 ```
 
@@ -138,14 +138,30 @@ src-tauri/src/
 - **非当前会话用 `display:none` 藏起来而不是卸载**：卸载会杀掉 shell，切回来历史就没了。代价是藏起来的会话量不到尺寸（FitAddon 会算成 0），所以切回来那一帧要补一次 `fit()` 并把新的 cols/rows 同步给 PTY。
 - **git 状态走 `status --porcelain=v2 --branch -z`**。v2 的 XY 两列分别给出暂存区和工作区状态，比 v1 好判断；`-z` 让路径不做引号转义，空格和中文原样拿到，省掉一整套反解析（也因此不用管 `core.quotepath`）。`-z` 下重命名记录后面还跟着一条原路径，解析时必须一并吞掉。
 - **工作区可能只是仓库的一个子目录**：先跑 `rev-parse --show-prefix`，一次调用同时回答"是不是仓库"和"工作区在仓库里的位置"，再用它把仓库级的条目折算成工作区内的绝对路径（前缀带尾斜杠，`sub/` 不会误伤 `subber.txt`）。
-- **智能体的 HTTP 和 SSE 都走 Rust 代理，前端不直连 opencode**。它监听在 localhost 的动态端口上，不会给 WebView 回 CORS 头，直连必被拦；端口每次还可能不一样。顺带把密钥和网络调用留在 Rust 侧，和 `ai.rs` 一个路子。
+- **智能体的 HTTP 和 SSE 都走 Rust 代理，前端不直连 opencode**。它监听在 localhost 的动态端口上，不会给 WebView 回 CORS 头，直连必被拦；端口每次还可能不一样。顺带把密钥和网络请求留在 Rust 侧，和 `ai.rs` 一个路子。
+- **同时兼容 opencode 的两代接口，启动时按接口探测自动选**。opencode 换过包名也换过接口：老包 `opencode-ai`（1.x）用裸路由、**没有认证**、事件走 `message.part.*`；新包 `@opencode/cli`（2.x）把 API 整个挪到 `/api` 下、**要求 Basic 认证**、事件走 `session.text.*`。差异其实很小——**除了探针、发消息、中断这三处名字不同，其余路由只差一个 `/api` 前缀**，所以收敛成一个 `Protocol` 枚举，各命令按它拼 URL、决定要不要认证头、要不要拆 `{data}` 信封。
+
+  | | v1（`opencode-ai` 1.x） | v2（`@opencode/cli` 2.x） |
+  |---|---|---|
+  | 探针 | `GET /global/health`（免认证） | `GET /api/info`（要认证） |
+  | 发消息 | `POST /session/:id/prompt_async`，体 `parts:[{type:"text"}]` | `POST /api/session/:id/prompt`，体顶层 `text` |
+  | 中断 | `/abort` | `/interrupt` |
+  | 响应 | 裸数组/对象 | 套一层 `{data:...}`（列表多一个 `cursor`） |
+  | 会话目录 | 顶层 `directory` | `location.directory` |
+
+- **判代次只能按接口探，不能按版本号推**。过渡期 `@opencode/cli` 发过一批 `0.0.0-dev-*`（9/3–9/11）：版本号是 `0.x`，但接口**已经是 v2 形态**（健康路径是 `/api/health`、事件也是 `session.text.*`）。按版本号判会把它当 v1，然后去打它根本不存在的 `/global/health`，于是永远起不来。所以 `PROBES` 里按顺序试三条路径，**判据是响应 JSON 里必须有 `version` 字段**——光看 200 不够：实测 v1 也会应答 `/api/health`，但只回 `{"healthy":true}`（没有 version），光看状态码会把它误判成 dev 构建、进而当成 v2（这个 bug 是拿真二进制跑出来的）。探测每次启动都做，所以用户换了 opencode 版本、重开面板就能自动切过去。
+- **两代的事件名完全不重叠，所以一个 reducer 就能同时吃下**，不用把"当前是哪一代"传到前端：v2 分支处理 `session.text.*` / `session.tool.*` / `session.step.started` / `session.execution.*`，v1 分支处理 `message.updated` / `message.part.updated` / `message.part.delta` / `message.part.removed` / `message.removed` / `session.idle` / `session.status`。历史消息也一样**按记录形状分派**（有 `info` 就是 v1 的 `{info, parts}`，否则是 v2 的 `{id, type, text|content}`）。内部的 `AgentPart` 模型和渲染层（`AgentMessageView` / `AgentToolCard`）两代共用，一行没改。
+- **v1 的认证是"没有"**。v1 二进制里 `OPENCODE_PASSWORD` 一次都不出现，所以 `needs_auth()` 为假时连认证头都不加。`OPENCODE_PASSWORD` 只对 v2 有意义（v2 拿错口令会 401，那看起来很像"服务没起来"，所以探测把认证也算进去验了一遍）。
+- **前端不感知代次，但把版本号显示出来**（顶部状态行 `opencode v1.18.32 · 模型`）。探测出来的 `version` 由 `AgentInfo` 带回，装了两代的机器上一眼能看出连的是哪条路；排查时也用得上。
+- **v2 那一侧的流式细节**（v1 那侧见上一条的 reducer 分派）：流式文本是 `session.text.started` / `session.text.delta` / `session.text.ended`，其中 `delta` 实测是**增量**（实测 A、B、C、D 逐个到），所以是逐个追加；`ended` 会给一段完整文本，用它兜一次漂移。工具调用拆成 `session.tool.called` / `input.started` / `input.delta` / `input.ended` / `progress` / `success` / `failed` 一堆事件，**工具调用的 id 在 `id` 字段**（不是 v1 的 `callID`）、名字在 `name`（不是 v1 的 `tool`），按 id 归并到同一个 part。工具事件的 `error` 有时是字符串、有时是 `{message}` 对象，取值要两种都认。
+- **opencode 子进程的 stdout/stderr 要接出来**。v1 时代这两路是 `Stdio::null()`，于是 opencode 启动失败时（比如端口被占，它会打印 `Failed to start server. Is port X in use?` 再以退出码 1 静默退出）界面上只剩一句"启动超时"，完全没法排查。现在两路都接进一个环形缓冲（`CHILD_LOG_LINES` 行），健康检查超时时把尾巴拼进错误文案。实测错误长这样：先一句超时、空行、再跟 `opencode 的输出：` 和它原始的 `ServeError`。
 - **SSE 事件推给前端用全局事件名（`agent-event`）而不是 `Channel`**。全局只有一个 agent 服务、不会有终端那种多实例串台，静态事件名就够；而且**只有一条 SSE 连接**，天然扛得住 React StrictMode 的双挂载。
-- **opencode 的 SSE 只有 `data:` 行、没有 `event:` 行**，事件类型在 JSON 的 `type` 字段里。它的载荷还有两种壳：老的放 `properties`、新的 durable 事件（如 `session.idle`）放 `data`，读的时候得兼容。
+- **opencode 的 SSE 只有 `data:` 行、没有 `event:` 行**，事件类型在 JSON 的 `type` 字段里。v2 的信封是 `{id, created, type, location?, data?, durable?}`，载荷在 `data`（早期版本放 `properties`，取的时候两个都认一下更稳）。`: heartbeat` 这种只有注释的心跳帧没有 `data:` 行，`frame_data` 返回 `None` 直接跳过，不用特殊处理。
 - **Windows 上 npm 装的 opencode 是 `.cmd` 垫片**：`CreateProcess` 只补 `.exe`、不认 `.cmd`，`Command::new("opencode")` 必然失败。所以要先扫 PATH 找 `.exe`/`.cmd`/`.bat`，命中 `.cmd` 时借 `cmd /S /C` 起（`/S` 让它只剥掉最外层一对引号，路径带空格也不会被拆散）。杀的时候也要连进程树一起杀——它跑 bash 工具会派生子 shell，`child.kill()` 收不干净，Windows 上走 `taskkill /PID <pid> /T /F`。
 - **发消息必须显式带 model**。不带的话 opencode 会用用户全局配置里的默认模型——本机实测落到了没跑起来的本地 ollama，然后一路重试到超时。
 - **给 opencode 的配置里写死 `"permission": "allow"`**。第一版没有审批 UI，不放行的话 `doom_loop` / `external_directory` 这类默认 ask 的规则会让会话卡在那儿等人点确认。这是有意的取舍，等审批 UI 做出来再收紧。
 - **TUI / GUI 这个选择是组件本地 state，而开关是设置里随时能改的**：关掉开关时那两个 tab 不画了，要是渲染还认那个 state，人就被锁在 GUI 面板里出不去，还会白白起一个 opencode。所以渲染用的是一个派生值（开关关掉就当 TUI），另外再用 effect 把 state 也归零——不归零的话重新打开开关会突然跳回 GUI 面板，看着像自己乱切。
-- **GUI 的历史会话以 opencode 为准，localStorage 只记「当前选中的那条」**：`GET /session` 是全局的，把各个项目的对话混在一起返回，所以得按 `directory` 过滤（`parseSessions`），否则在 A 项目里会看到 B 项目的会话。启动时先问列表——本地记的那条还在就用它，否则退一步接**最近的一条**，一条都没有才新建；不这么兜的话，清过缓存或会话被删掉时会凭空多出一个空会话。
+- **GUI 的历史会话以 opencode 为准，localStorage 只记「当前选中的那条」**：`GET /api/session` 是全局的，把各个项目的对话混在一起返回，所以得按目录过滤（`parseSessions`），否则在 A 项目里会看到 B 项目的会话。**v2 把目录挪进了 `location.directory`**（v1 是顶层的 `directory`）；列表在 v2 里是游标分页，我们只取第一页、丢掉 `cursor`——界面本来就只列最近一批。启动时先问列表——本地记的那条还在就用它，否则退一步接**最近的一条**，一条都没有才新建；不这么兜的话，清过缓存或会话被删掉时会凭空多出一个空会话。
 - **TUI/GUI 模式、会话列表、当前会话提到 `lib/agent-session.tsx` 共享**：侧边栏要在当前项目下列出该目录的对话历史，这几个状态原先关在 `TerminalPane` / `AgentPane` 内部就够不着了。侧边栏点一条历史走的是 `requestSession`（顺带把模式切到 GUI），真正的打开动作由 `AgentPane` 在服务就绪后消费 `requestedId`——服务没起来时硬开会去拉一个还没起的 opencode。换工作区（`cwd` 变）时这几项一起归零，否则会拿旧目录的会话列表去配新目录的项目行。侧边栏那个 `+`（新建对话）走同一套：`requestNew` 只置个标志，真正建会话的 `newSession` 留在 `AgentPane` 里、且要等服务就绪才执行。
 - **删会话 / 改标题只把请求交给 `AgentPane`，收尾逻辑留在面板侧**：侧边栏负责弹确认框、就地编辑标题，然后调 `requestDelete` / `requestRename`，真正的 `DELETE /session/:id`、`PATCH /session/:id`、以及改完刷新列表都在 `AgentPane` 里做；删除还要额外处理"删的是当前这条就退到最近一条 / 一条不剩就新建"，这些都要碰对话状态，搬到侧边栏等于把 AgentPane 的模型拆出去。删除不可撤销，走自研 `ConfirmDialog` 而不是 `window.confirm`（理由同「放弃修改」那条）。
 - **会话行悬停时用 `⋯` 顶掉时间，而不是并排**：一行只有 200px 出头，标题、时间、`⋯` 三个并排会把标题挤成两三个字。所以不悬停时右侧给时间、悬停时换成 `⋯`（`group-hover/hist:hidden` + 反向 `opacity`），互斥出现，标题始终拿到最大宽度。
