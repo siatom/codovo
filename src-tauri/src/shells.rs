@@ -45,17 +45,22 @@ fn describe(program: &str) -> (String, String) {
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
     let stem = base.strip_suffix(".exe").unwrap_or(&base);
-    let (name, kind) = match stem {
-        "pwsh" => ("pwsh", "pwsh"),
-        "powershell" => ("powershell", "powershell"),
-        "cmd" => ("cmd", "cmd"),
-        "zsh" => ("zsh", "zsh"),
-        "bash" => ("bash", "bash"),
-        "fish" => ("fish", "fish"),
-        "nu" => ("nu", "nushell"),
-        other => (other, "shell"),
+    // 显示名就是可执行文件名；图标键另算——同族的 shell 共用一个 logo
+    let kind = match stem {
+        "pwsh" => "pwsh",
+        "powershell" => "powershell",
+        "cmd" => "cmd",
+        "zsh" => "zsh",
+        "fish" => "fish",
+        "nu" => "nushell",
+        // POSIX / bash 兼容（含 Debian 的 dash、BSD 的 ksh、busybox 的 ash）：
+        // 这些都没有各自的 logo，共用 GNU Bash 那一个
+        "bash" | "sh" | "dash" | "ksh" | "mksh" | "rbash" | "ash" => "bash",
+        // C shell 家族同样没有 logo，落到通用命令行窗口图标
+        "csh" | "tcsh" => "csh",
+        _ => "shell",
     };
-    (name.to_string(), kind.to_string())
+    (stem.to_string(), kind.to_string())
 }
 
 #[cfg(windows)]
@@ -251,5 +256,18 @@ mod tests {
         // tab 靠这两个字段画图标和名字，空了界面就只剩占位
         assert!(!list[0].name.is_empty());
         assert!(!list[0].kind.is_empty());
+    }
+
+    #[test]
+    fn describe_groups_shells_that_share_a_logo() {
+        // POSIX 系（含 Debian 的 dash、BSD 的 ksh）共用 bash 的图标，显示名仍是自己
+        assert_eq!(describe("/bin/dash"), ("dash".to_string(), "bash".to_string()));
+        assert_eq!(describe("/usr/bin/ksh"), ("ksh".to_string(), "bash".to_string()));
+        assert_eq!(describe("/bin/sh"), ("sh".to_string(), "bash".to_string()));
+        // C shell 家族单独一类
+        assert_eq!(describe("/bin/tcsh"), ("tcsh".to_string(), "csh".to_string()));
+        assert_eq!(describe("/bin/zsh"), ("zsh".to_string(), "zsh".to_string()));
+        // 认不出的落到通用图标，别乱套 logo
+        assert_eq!(describe("/usr/bin/weird-shell").1, "shell");
     }
 }
