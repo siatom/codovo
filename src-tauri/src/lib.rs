@@ -52,6 +52,8 @@ pub fn run() {
             git::git_fetch,
             git::git_pull,
             git::git_push,
+            git::git_ignored,
+            git::git_add_to_ignore,
             ai::ai_generate_commit_message,
             cli_sessions::cli_list_sessions,
             agent::agent_start,

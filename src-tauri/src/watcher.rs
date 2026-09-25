@@ -48,13 +48,7 @@ impl WatchState {
                 // 监听本身出问题（缓冲溢出等）不该把界面搞崩，丢一轮即可
                 return;
             };
-            // 只关心"目录结构"变化：改动文件内容（编辑器保存）不影响文件树
-            if !matches!(
-                event.kind,
-                EventKind::Create(_)
-                    | EventKind::Remove(_)
-                    | EventKind::Modify(ModifyKind::Name(_))
-            ) {
+            if !should_refresh(&event.kind, &event.paths) {
                 return;
             }
             for dir in changed_dirs(&event_root, &event.paths) {
@@ -105,6 +99,25 @@ impl WatchState {
             stop: tx,
         });
         Ok(())
+    }
+}
+
+/// 这次事件该不该让文件树重列。
+///
+/// 一般只认"目录结构"变化——改动文件内容（编辑器保存）不影响文件树。但
+/// `.gitignore` 是例外：条目置灰用的忽略状态就是按它算的，改完得跟着重列，
+/// 否则用户刚把某个目录加进忽略名单，界面却毫无反应。
+fn should_refresh(kind: &EventKind, paths: &[PathBuf]) -> bool {
+    match kind {
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => true,
+        EventKind::Modify(ModifyKind::Data(_)) => {
+            paths.iter().any(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == ".gitignore")
+            })
+        }
+        _ => false,
     }
 }
 
@@ -189,6 +202,40 @@ mod tests {
             PathBuf::from("/elsewhere/a.txt")
         };
         assert!(changed_dirs(&root(), &[outside]).is_empty());
+    }
+
+    #[test]
+    fn refreshes_on_structure_changes_but_not_on_content_edits() {
+        use notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
+
+        let file = under(&["src", "main.rs"]);
+        let content = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+
+        assert!(should_refresh(
+            &EventKind::Create(CreateKind::File),
+            &[file.clone()]
+        ));
+        assert!(should_refresh(
+            &EventKind::Remove(RemoveKind::File),
+            &[file.clone()]
+        ));
+        assert!(should_refresh(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            &[file.clone()]
+        ));
+        // 编辑器保存正文不影响文件树
+        assert!(!should_refresh(&content, &[file]));
+    }
+
+    #[test]
+    fn refreshes_when_gitignore_changes() {
+        use notify::event::DataChange;
+
+        // 忽略状态是按 .gitignore 算的，它被改写就得跟着重列
+        assert!(should_refresh(
+            &EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            &[under(&[".gitignore"])]
+        ));
     }
 
     // `\\?\` 前缀是 Windows 独有的形态，Unix 上它只是普通文件名，剥前缀那套逻辑无从触发

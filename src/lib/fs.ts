@@ -191,6 +191,22 @@ export function gitStatus(): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_status");
 }
 
+/**
+ * 这批绝对路径里，哪些被 .gitignore 之类的规则忽略了。文件树按它把条目置灰。
+ * 目录不是仓库（或没装 git）时返回空数组，不是错误。
+ */
+export function gitIgnored(paths: string[]): Promise<string[]> {
+  return invoke<string[]>("git_ignored", { paths });
+}
+
+/**
+ * 把一条路径追加进工作区根的 `.gitignore`（目录自动带上尾斜杠）。
+ * 已经有同样的规则时后端什么都不做，不是错误。
+ */
+export function gitAddToIgnore(path: string): Promise<void> {
+  return invoke("git_add_to_ignore", { path });
+}
+
 /** 暂存；不传 paths 表示全部暂存。返回写完之后的新状态。 */
 export function gitStage(paths?: string[]): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_stage", { paths: paths ?? null });

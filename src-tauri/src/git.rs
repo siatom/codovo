@@ -952,6 +952,148 @@ pub fn git_push(state: tauri::State<'_, FsState>) -> Result<GitStatus, String> {
     push_remote(&state)
 }
 
+/// 一批路径里，哪些被 .gitignore 之类的排除规则忽略了。文件树按这个把条目置灰。
+#[tauri::command(async)]
+pub fn git_ignored(
+    state: tauri::State<'_, FsState>,
+    paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    ignored_paths(&state, &paths)
+}
+
+/// 把一条路径追加进工作区根的 `.gitignore`。已经有一条同样的规则时什么都不做。
+#[tauri::command(async)]
+pub fn git_add_to_ignore(state: tauri::State<'_, FsState>, path: String) -> Result<(), String> {
+    add_to_ignore(&state, &path)
+}
+
+/// 一次问 git 多少条路径。argv 有命令行长度上限（Windows 是 32767 个字符），
+/// 80 条离上限还远，又不用为一个目录起太多次进程。
+const IGNORE_CHUNK: usize = 80;
+
+/// 忽略判定交给 `git check-ignore`，不在前端解析 .gitignore：嵌套 .gitignore、
+/// 取反 `!`、目录整棵子树继承这些规则自己实现必然出错。
+///
+/// **不带 `--no-index`**：已经被跟踪的文件即使匹配规则也不算忽略（这正是 git 的
+/// 语义），界面只该把真被过滤掉的置灰。
+///
+/// 路径走 argv 而不是 `--stdin`：`run_git_raw` 的 stdin 是关掉的，为它单开一套
+/// 写管道的路不值当。代价是输出不能带 `-z`（git 只在 `--stdin` 下认它），只能按行读。
+fn ignored_paths(state: &FsState, raw: &[String]) -> Result<Vec<String>, String> {
+    let root = state.root()?;
+
+    // 绝对路径 -> 喂给 git 的相对路径。越界的（前端理论上不会传）跳过而不是整批报错：
+    // 这只是个显示效果，不该因为一条脏路径就让整棵树都不置灰
+    let mut specs: Vec<(String, String)> = Vec::new();
+    for item in raw {
+        let Ok((target, spec)) = workspace_relative(state, &root, item) else {
+            continue;
+        };
+        // 形如 `dist/` 的规则只匹配目录，路径不带尾斜杠 git 就不认它
+        let is_dir = std::fs::metadata(&target)
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false);
+        let spec = if is_dir { format!("{spec}/") } else { spec };
+        specs.push((item.clone(), spec));
+    }
+
+    let mut ignored = Vec::new();
+    for chunk in specs.chunks(IGNORE_CHUNK) {
+        let mut args: Vec<&str> = vec!["check-ignore", "--"];
+        args.extend(chunk.iter().map(|(_, spec)| spec.as_str()));
+        // 退出码 1 是「一条都没匹配」，不是错误；run_git 已经把它折成 None
+        let Some(bytes) = run_git(&root, &args)? else {
+            continue;
+        };
+        // 没有 --stdin 就用不了 -z（git 直接报 fatal），输出是按行一条。
+        // git 回显的就是传进去的那份路径，抹掉尾斜杠再对回来。
+        // 文件名里带换行会解析错：Windows 上不允许，Unix 上属于病态输入，不管。
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            let hit = trim_spec(line);
+            if let Some((abs, _)) = chunk.iter().find(|(_, spec)| trim_spec(spec) == hit) {
+                ignored.push(abs.clone());
+            }
+        }
+    }
+    Ok(ignored)
+}
+
+/// 抹掉 git 回显里的尾斜杠（目录我们传的是 `dir/`）和 Windows 可能带上的行尾
+fn trim_spec(text: &str) -> &str {
+    text.trim_end_matches(['\r', '/'])
+}
+
+/// 写进 .gitignore 的一行规则里需要转义的字符。
+///
+/// `*?[]` 是通配符、反斜杠自己是转义符——不转义的话文件名里带这些字符就会匹配到
+/// 别的文件（和 `--literal-pathspecs` 要挡的是同一类问题）。行首的 `#` 是注释、
+/// `!` 是取反，行尾空格会被 gitignore 当空白吃掉，这三样也得转义。
+fn escape_gitignore(spec: &str) -> String {
+    let mut out = String::with_capacity(spec.len() + 2);
+    for (index, ch) in spec.chars().enumerate() {
+        let special = match ch {
+            '\\' | '*' | '?' | '[' | ']' => true,
+            '#' | '!' => index == 0,
+            _ => false,
+        };
+        if special {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    // 尾空格的转义要补在空格**前面**。目录的尾斜杠是后面才加的，
+    // 所以 `dir /` 里的空格不算行尾，天然不用处理
+    if out.ends_with(' ') {
+        out.insert(out.len() - 1, '\\');
+    }
+    out
+}
+
+/// 把一条路径追加进工作区根的 `.gitignore`。
+///
+/// 写工作区根而不是仓库根：工作区可能只是仓库的一个子目录，而 .gitignore 的规则
+/// 本来就以自己所在的目录为基准，写在这里不用先算出仓库根在哪一层；git 支持嵌套的
+/// .gitignore，两种情形下都生效。
+///
+/// 不去校验是不是仓库：这只是往一个文本文件里追加一行，目录还不是仓库时写了也无害
+/// （将来 init 的时候规则正好现成）。界面上按 `isRepo` 决定给不给这个菜单项。
+fn add_to_ignore(state: &FsState, raw: &str) -> Result<(), String> {
+    let root = state.root()?;
+    let (target, mut spec) = workspace_relative(state, &root, raw)?;
+    // 目录带尾斜杠，和 ignored_paths 喂给 check-ignore 的写法一致：不然一条
+    // `build` 会把同名的**文件**也一起忽略掉
+    let is_dir = std::fs::metadata(&target)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    if is_dir {
+        spec.push('/');
+    }
+    let entry = escape_gitignore(&spec);
+
+    let file = root.join(".gitignore");
+    let existing = match std::fs::read(&file) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|_| ".gitignore 不是 UTF-8 文本，没有改动它".to_string())?,
+        Err(reason) if reason.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(reason) => return Err(format!("读取 .gitignore 失败: {reason}")),
+    };
+
+    // 已经有这条规则就当无事发生；`build` 和 `build/` 说的是同一件事
+    let bare = entry.trim_end_matches('/');
+    if existing.lines().any(|line| line.trim_end() == bare) {
+        return Ok(());
+    }
+
+    let mut next = existing;
+    // 原文件最后一行没有换行就先补一个，否则新规则会和它粘成一条
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(&entry);
+    next.push('\n');
+    std::fs::write(&file, next).map_err(|reason| format!("写入 .gitignore 失败: {reason}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1926,4 +2068,150 @@ mod tests {
         cleanup(&top);
     }
 
+    // ---- 忽略判定 ----
+
+    #[test]
+    fn reports_only_paths_that_git_actually_ignores() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+
+        fs::write(repo.join(".gitignore"), "ignored.txt\nbuild/\n*.log\n").unwrap();
+        fs::write(repo.join("kept.txt"), "k\n").unwrap();
+        fs::write(repo.join("ignored.txt"), "i\n").unwrap();
+        fs::create_dir(repo.join("build")).unwrap();
+        fs::write(repo.join("build").join("out.bin"), "b\n").unwrap();
+        fs::write(repo.join("kept.log"), "l\n").unwrap();
+        // 强行跟踪一个匹配规则的文件：进过 index 之后 git 就不认为它被忽略了
+        assert!(git(&repo, &["add", "-f", "kept.log"]));
+
+        let build = repo.join("build").to_string_lossy().to_string();
+        let listed = vec![
+            path_of_file(&repo, "kept.txt"),
+            path_of_file(&repo, "ignored.txt"),
+            path_of_file(&repo, ".gitignore"),
+            build.clone(),
+            path_of_file(&repo, "kept.log"),
+        ];
+        let ignored = ignored_paths(&state, &listed).unwrap();
+
+        assert!(ignored.contains(&path_of_file(&repo, "ignored.txt")));
+        // 目录规则 `build/` 只有带上尾斜杠才匹配得上
+        assert!(ignored.contains(&build));
+        assert!(!ignored.contains(&path_of_file(&repo, "kept.txt")));
+        assert!(!ignored.contains(&path_of_file(&repo, ".gitignore")));
+        // 已跟踪的不算忽略，这正是「不带 --no-index」的意义
+        assert!(!ignored.contains(&path_of_file(&repo, "kept.log")));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn ignore_check_is_empty_outside_a_repository() {
+        // 不是仓库时 check-ignore 非 0 退出，应当安静地给空结果——文件树照样能用
+        let (state, repo, top) = temp_repo();
+        fs::write(repo.join("a.txt"), "a\n").unwrap();
+
+        let ignored = ignored_paths(&state, &[path_of_file(&repo, "a.txt")]).unwrap();
+        assert!(ignored.is_empty());
+
+        cleanup(&top);
+    }
+
+    // ---- 加入 .gitignore ----
+
+    #[test]
+    fn escapes_characters_that_would_change_meaning() {
+        // 通配符和反斜杠不转义会匹配到别的文件
+        assert_eq!(escape_gitignore("a[1].txt"), "a\\[1\\].txt");
+        assert_eq!(escape_gitignore("star*.txt"), "star\\*.txt");
+        assert_eq!(escape_gitignore("back\\slash"), "back\\\\slash");
+        // 行首的注释 / 取反标记要转义，出现在中间就没有特殊含义了
+        assert_eq!(escape_gitignore("#note"), "\\#note");
+        assert_eq!(escape_gitignore("!keep"), "\\!keep");
+        assert_eq!(escape_gitignore("a#b!c"), "a#b!c");
+        // 行尾空格会被 gitignore 吃掉，转义才留得住
+        assert_eq!(escape_gitignore("trail "), "trail\\ ");
+    }
+
+    #[test]
+    fn appends_a_file_and_a_directory_rule() {
+        let (state, repo, top) = temp_repo();
+        fs::write(repo.join("app.log"), "l\n").unwrap();
+        fs::create_dir(repo.join("build")).unwrap();
+
+        add_to_ignore(&state, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&state, &path_of_file(&repo, "build")).unwrap();
+
+        // 规则一律正斜杠；目录带尾斜杠，只匹配目录
+        assert_eq!(read_text(&repo.join(".gitignore")), "app.log\nbuild/\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn does_not_append_a_rule_twice() {
+        let (state, repo, top) = temp_repo();
+        fs::write(repo.join("app.log"), "l\n").unwrap();
+
+        add_to_ignore(&state, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&state, &path_of_file(&repo, "app.log")).unwrap();
+
+        assert_eq!(read_text(&repo.join(".gitignore")), "app.log\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn treats_a_trailing_slash_as_the_same_rule() {
+        let (state, repo, top) = temp_repo();
+        fs::create_dir(repo.join("build")).unwrap();
+        // 手写的规则没有尾斜杠，但说的就是这个目录，不该再写一条
+        fs::write(repo.join(".gitignore"), "build\n").unwrap();
+
+        add_to_ignore(&state, &path_of_file(&repo, "build")).unwrap();
+
+        assert_eq!(read_text(&repo.join(".gitignore")), "build\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn appends_after_a_file_without_a_final_newline() {
+        let (state, repo, top) = temp_repo();
+        fs::write(repo.join(".gitignore"), "dist").unwrap();
+        fs::write(repo.join("app.log"), "l\n").unwrap();
+
+        add_to_ignore(&state, &path_of_file(&repo, "app.log")).unwrap();
+
+        // 不补换行的话两条规则会粘成 `distapp.log`
+        assert_eq!(read_text(&repo.join(".gitignore")), "dist\napp.log\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn the_written_rule_is_honored_by_git() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("app.log"), "l\n").unwrap();
+        fs::create_dir(repo.join("build")).unwrap();
+        fs::write(repo.join("build").join("out.bin"), "b\n").unwrap();
+
+        add_to_ignore(&state, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&state, &path_of_file(&repo, "build")).unwrap();
+
+        let listed = vec![path_of_file(&repo, "app.log"), path_of_file(&repo, "build")];
+        let ignored = ignored_paths(&state, &listed).unwrap();
+        assert!(ignored.contains(&path_of_file(&repo, "app.log")));
+        // 目录规则要能被 check-ignore 认出来（尾斜杠的写法必须对得上）
+        assert!(ignored.contains(&path_of_file(&repo, "build")));
+
+        cleanup(&top);
+    }
 }

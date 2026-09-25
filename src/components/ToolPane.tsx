@@ -83,6 +83,7 @@ export function ToolPane({
           root={root}
           selected={selected}
           gitMarks={git.snapshot.marks}
+          isRepo={git.snapshot.isRepo}
           onSelect={onSelectFile}
           onBeforeRename={onBeforeRename}
           onRenamed={onEntryRenamed}

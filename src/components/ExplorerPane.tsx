@@ -5,6 +5,8 @@ import {
   createDirectory,
   createFile,
   deleteEntry,
+  gitAddToIgnore,
+  gitIgnored,
   isPathInside,
   listDir,
   onDirsChanged,
@@ -30,6 +32,8 @@ interface ExplorerPaneProps {
   selected: string | null;
   /** 归一化路径 -> git 标记，行尾那个字母 */
   gitMarks: ReadonlyMap<string, GitMark>;
+  /** 工作区是不是 git 仓库。不是的话「加入 .gitignore」没有意义，不给这个菜单项 */
+  isRepo: boolean;
   onSelect: (path: string) => void;
   /** 改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
   onBeforeRename: () => Promise<boolean>;
@@ -49,9 +53,9 @@ const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
 const ICON_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
-/** 右键菜单：宽度和高度按 4 项算出来，用来贴着窗口边缘收一收 */
+/** 右键菜单：宽度和高度按 5 项算出来，用来贴着窗口边缘收一收 */
 const MENU_W = 132;
-const MENU_H = 116;
+const MENU_H = 143;
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /** 所在目录。改名/删除之后要重新列的就是它 */
@@ -131,6 +135,7 @@ export function ExplorerPane({
   root,
   selected,
   gitMarks,
+  isRepo,
   onSelect,
   onBeforeRename,
   onRenamed,
@@ -142,6 +147,8 @@ export function ExplorerPane({
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [errors, setErrors] = useState<Map<string, string>>(new Map());
   const [rootError, setRootError] = useState<string | null>(null);
+  /** 归一化路径 -> 被 .gitignore 忽略了。按它把行置灰 */
+  const [ignored, setIgnored] = useState<ReadonlySet<string>>(new Set());
   const [reloadKey, setReloadKey] = useState(0);
   const [creating, setCreating] = useState<CreatingState | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -189,6 +196,7 @@ export function ExplorerPane({
     setLoading(new Set());
     setErrors(new Map());
     setRootError(null);
+    setIgnored(new Set());
     // 搜索命中的是上一个工作区的路径，一并清掉
     setQuery("");
     setHits(null);
@@ -345,6 +353,23 @@ export function ExplorerPane({
     if (!(await copyText(text))) setActionError("复制失败：系统剪贴板不可用");
   }, []);
 
+  /** 把这一行加进工作区根的 .gitignore，然后重列根目录让置灰立刻生效 */
+  const addToIgnore = useCallback(
+    async (entry: FileEntry) => {
+      setMenu(null);
+      setActionError(null);
+      try {
+        await gitAddToIgnore(entry.path);
+        // 后端的 watcher 也会报 .gitignore 的改动，但得等 300ms 防抖；这里直接
+        // 重列一次：重列会换掉 entries 的引用，忽略状态那个 effect 跟着重算
+        await refreshDir(root);
+      } catch (reason) {
+        setActionError(String(reason));
+      }
+    },
+    [root, refreshDir],
+  );
+
   const startRename = useCallback((entry: FileEntry) => {
     setMenu(null);
     setActionError(null);
@@ -460,6 +485,32 @@ export function ExplorerPane({
     return all;
   }, [entries, children]);
 
+  /**
+   * 哪些条目被 .gitignore 忽略了。判定交给 git（后端 `check-ignore`），前端不解析规则。
+   *
+   * 拿的是**全部已加载条目**而不是刚列出来的那个目录：这样整体替换、不用做增量合并，
+   * 也不会有残留的旧状态。`loadedEntries` 每次列目录都会换新对象，所以展开目录、
+   * `fs-changed` 重列、改了 .gitignore（watcher 会把它的父目录报上来）都会自动重算。
+   */
+  useEffect(() => {
+    if (loadedEntries.length === 0) {
+      setIgnored(new Set());
+      return;
+    }
+    let cancelled = false;
+    void gitIgnored(loadedEntries.map((entry) => entry.path))
+      .then((paths) => {
+        if (!cancelled) setIgnored(new Set(paths.map(pathKey)));
+      })
+      .catch(() => {
+        // 算不出来就当都没被忽略：这是锦上添花的显示效果，不该把树搞出错误
+        if (!cancelled) setIgnored(new Set());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadedEntries]);
+
   const beginCreate = useCallback(
     async (kind: CreateKind) => {
       if (filtering || creatingBusy) return;
@@ -560,6 +611,7 @@ export function ExplorerPane({
         children: filtered.children,
         selected: focusRow,
         gitMarks,
+        ignored,
         toggle: toggleFilter,
         select: (entry: FileEntry) => onSelect(entry.path),
         creating: null,
@@ -582,6 +634,7 @@ export function ExplorerPane({
       children,
       selected: focusRow,
       gitMarks,
+      ignored,
       toggle,
       select: (entry: FileEntry) => onSelect(entry.path),
       creating,
@@ -612,6 +665,7 @@ export function ExplorerPane({
     children,
     focusRow,
     gitMarks,
+    ignored,
     toggle,
     creating,
     createError,
@@ -817,6 +871,16 @@ export function ExplorerPane({
             >
               复制相对路径
             </button>
+            {/* 已经被忽略的行不给这一项：再写一条同样的规则没有意义 */}
+            {isRepo && !ignored.has(pathKey(menu.entry.path)) && (
+              <button
+                type="button"
+                onClick={() => void addToIgnore(menu.entry)}
+                className={MENU_ITEM}
+              >
+                加入 .gitignore
+              </button>
+            )}
             <button
               type="button"
               onClick={() => startRename(menu.entry)}

@@ -33,6 +33,8 @@ export interface TreeController {
   selected: string | null;
   /** 归一化路径 -> git 标记 */
   gitMarks: ReadonlyMap<string, GitMark>;
+  /** 被 .gitignore 忽略的条目（归一化路径），这些行置灰 */
+  ignored: ReadonlySet<string>;
   toggle: (entry: FileEntry) => void;
   select: (entry: FileEntry) => void;
   creating: CreatingState | null;
@@ -64,8 +66,20 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const error = tree.errors.get(entry.path);
   const childEntries = tree.children.get(entry.path) ?? [];
   const mark = tree.gitMarks.get(pathKey(entry.path));
+  const isIgnored = tree.ignored.has(pathKey(entry.path));
   const isCreatingHere = isOpen && tree.creating?.parent === entry.path;
   const isRenamingHere = tree.renaming?.path === entry.path;
+  /**
+   * 行的配色。被忽略的行用更淡的颜色，而且悬停**不**转亮——置灰要一直成立，
+   * 否则鼠标扫过去以为它没被忽略。选中态优先，照旧用高亮底色。
+   */
+  const tone = isSelected
+    ? "bg-selected text-fg"
+    : isIgnored
+      ? "text-fg-faint hover:bg-hover"
+      : "text-fg-muted hover:bg-hover hover:text-fg";
+  /** 图标降不透明度的类，前面自带空格，好直接拼进 className */
+  const dim = isIgnored ? " opacity-50" : "";
 
   return (
     <li>
@@ -115,14 +129,10 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           title={toDisplayPath(entry.path)}
           onClick={() => (entry.isDir ? tree.toggle(entry) : tree.select(entry))}
           onContextMenu={(event) => tree.openMenu(entry, event)}
-          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${
-            isSelected
-              ? "bg-selected text-fg"
-              : "text-fg-muted hover:bg-hover hover:text-fg"
-          }`}
+          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}`}
           style={{ paddingLeft: depth * INDENT + 4 }}
         >
-          <span className="flex w-3 shrink-0 justify-center text-fg-icon">
+          <span className={`flex w-3 shrink-0 justify-center text-fg-icon${dim}`}>
             {entry.isDir &&
               (isOpen ? (
                 <IconChevronDown className="h-3 w-3" />
@@ -130,7 +140,8 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
                 <IconChevronRight className="h-3 w-3" />
               ))}
           </span>
-          <span className="flex shrink-0 items-center text-fg-icon">
+          {/* 品牌色的文件图标也要跟着降不透明度：只把文字调淡、图标还鲜亮会很割裂 */}
+          <span className={`flex shrink-0 items-center text-fg-icon${dim}`}>
             {entry.isDir ? (
               <IconFolder className="h-3.5 w-3.5" />
             ) : (
