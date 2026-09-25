@@ -5,6 +5,7 @@ mod ai;
 mod fs_api;
 mod git;
 mod pty;
+mod shell_env;
 mod watcher;
 
 use tauri::Manager;

@@ -6,6 +6,7 @@
 //! 进程模型：一个工作区一个 opencode 进程，cwd 就是工作区根。懒启动（用户第一次切到
 //! 智能体 tab 才起），换工作区或退出应用时杀掉。
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -113,7 +114,7 @@ enum Launch {
 }
 
 /// 把配置里的「opencode」解析成一个能 spawn 的目标。
-fn resolve_launch(configured: &str) -> Result<Launch, String> {
+fn resolve_launch(configured: &str, path: Option<&OsStr>) -> Result<Launch, String> {
     let trimmed = configured.trim();
     if trimmed.is_empty() {
         return Err("没有配置 opencode 可执行文件".to_string());
@@ -126,7 +127,7 @@ fn resolve_launch(configured: &str) -> Result<Launch, String> {
         }
         path
     } else {
-        find_on_path(trimmed).ok_or_else(|| {
+        find_on_path(trimmed, path).ok_or_else(|| {
             format!("在 PATH 里找不到 {trimmed}，请先安装，或在「设置 → AI」里填写完整路径")
         })?
     };
@@ -140,9 +141,7 @@ fn resolve_launch(configured: &str) -> Result<Launch, String> {
 
 /// Windows 上找可执行文件得挨个试后缀：npm 全局装出来的只有 `.cmd` 和无扩展名的
 /// shell 脚本，没有 `.exe`，而 `CreateProcess` 只会自动补 `.exe`。
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-
+fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
     #[cfg(windows)]
     let names: Vec<String> = if Path::new(name).extension().is_some() {
         vec![name.to_string()]
@@ -156,7 +155,7 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
     #[cfg(not(windows))]
     let names: Vec<String> = vec![name.to_string()];
 
-    std::env::split_paths(&path)
+    std::env::split_paths(path?)
         .flat_map(|dir| names.iter().map(move |n| dir.join(n)))
         .find(|candidate| candidate.is_file())
 }
@@ -248,8 +247,12 @@ fn spawn_opencode(
 ) -> Result<Child, String> {
     let port_text = port.to_string();
     let args = ["serve", "--port", port_text.as_str(), "--hostname", "127.0.0.1"];
+    let path = crate::shell_env::resolved_path(
+        &crate::shell_env::default_shell(),
+        Some(cwd),
+    );
 
-    let mut cmd = match resolve_launch(command)? {
+    let mut cmd = match resolve_launch(command, path.as_deref())? {
         Launch::Direct(path) => {
             let mut c = Command::new(path);
             c.args(args);
@@ -258,6 +261,9 @@ fn spawn_opencode(
         Launch::ViaCmd(path) => wrap_with_cmd(&path, &args),
     };
 
+    if let Some(path) = path {
+        cmd.env("PATH", path);
+    }
     cmd.current_dir(cwd)
         .env("OPENCODE_CONFIG_DIR", config_dir)
         .env(API_KEY_ENV, api_key)
@@ -891,11 +897,29 @@ mod tests {
         } else {
             "/nope/opencode"
         };
-        assert!(resolve_launch(missing).is_err());
+        assert!(resolve_launch(missing, None).is_err());
     }
 
     #[test]
     fn empty_command_is_rejected() {
-        assert!(resolve_launch("   ").is_err());
+        assert!(resolve_launch("   ", None).is_err());
+    }
+
+    #[test]
+    fn command_lookup_uses_explicit_path() {
+        let dir = std::env::temp_dir().join(format!("codedock-agent-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        let executable = dir.join("opencode.cmd");
+        #[cfg(not(windows))]
+        let executable = dir.join("opencode");
+        std::fs::write(&executable, b"placeholder").unwrap();
+        let path = std::env::join_paths([dir.as_os_str()]).unwrap();
+
+        assert!(resolve_launch("opencode", Some(path.as_os_str())).is_ok());
+        assert!(resolve_launch("missing", Some(path.as_os_str())).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

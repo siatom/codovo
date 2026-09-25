@@ -82,13 +82,9 @@ fn default_shell() -> (String, Vec<String>) {
     // （实测 `launchctl getenv SHELL` 为空），所以打包后必然走 fallback，
     // 只有从终端 `pnpm tauri dev` 起才拿得到。macOS 的默认 shell 是 zsh，
     // /bin/bash 还停在 2007 年的 3.2，别把用户退到那儿去。
-    let fallback = if cfg!(target_os = "macos") {
-        "/bin/zsh"
-    } else {
-        "/bin/bash"
-    };
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.to_string());
-    (shell, Vec::new())
+    let shell = crate::shell_env::default_shell();
+    let args = crate::shell_env::login_args(&shell);
+    (shell, args)
 }
 
 /// 没选工作区时 shell 的落点。不设的话会继承应用进程的 cwd，
@@ -132,8 +128,11 @@ fn open_shell(cwd: Option<&str>, cols: u16, rows: u16) -> Result<SpawnedShell, S
         .filter(|dir| !dir.is_empty() && Path::new(dir).is_dir())
         .map(PathBuf::from)
         .or_else(home_dir);
-    if let Some(dir) = workdir {
+    if let Some(dir) = workdir.as_ref() {
         cmd.cwd(dir);
+    }
+    if let Some(path) = crate::shell_env::resolved_path(&program, workdir.as_deref()) {
+        cmd.env("PATH", path);
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
