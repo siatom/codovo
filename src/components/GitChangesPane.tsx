@@ -37,17 +37,21 @@ import { GitMarkBadge } from "./GitMarkBadge";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
+  FileTypeIcon,
   IconArrowDownToLine,
   IconArrowUpFromLine,
   IconBranch,
   IconChevronDown,
   IconChevronRight,
   IconCloudDownload,
+  IconFolder,
+  IconList,
   IconMinus,
   IconPlus,
   IconRefresh,
   IconSparkle,
   IconSync,
+  IconTree,
   IconUndo,
 } from "./icons";
 
@@ -120,6 +124,23 @@ function readLogHeight(): number {
   return DEFAULT_LOG_HEIGHT;
 }
 
+const VIEW_KEY = "codedock.gitChangesView";
+
+/** 改动列表的两种排法：平铺，或按目录层级收起来 */
+type ChangeView = "list" | "tree";
+
+/** 树视图每一层缩进多少像素。和 FileTreeNode 用同一个值，两处观感一致 */
+const INDENT = 12;
+
+function readChangeView(): ChangeView {
+  try {
+    // 只有明确存过 "tree" 才认，读坏了、存了怪值都回落列表
+    return window.localStorage.getItem(VIEW_KEY) === "tree" ? "tree" : "list";
+  } catch {
+    return "list";
+  }
+}
+
 /** 提交里的状态字母映射到徽标配色（`R`/`C` 沿用改动的黄色） */
 function statusMark(status: string): GitMark {
   switch (status) {
@@ -154,6 +175,68 @@ function baseName(relative: string): string {
 function dirOf(relative: string): string {
   const slash = relative.lastIndexOf("/");
   return slash === -1 ? "" : relative.slice(0, slash);
+}
+
+/**
+ * 树视图的一个节点。目录带 `children`，文件是叶子、带一条改动。
+ * `path` 一律是工作区相对路径（正斜杠）——目录节点拿它当折叠状态的 key。
+ */
+interface ChangeTreeNode {
+  /** 目录名，或者文件名 */
+  name: string;
+  path: string;
+  children?: ChangeTreeNode[];
+  change?: GitChange;
+}
+
+/** 目录节点：`children` 一定在的时候用，省得每处都判一次 */
+type DirNode = ChangeTreeNode & { children: ChangeTreeNode[] };
+
+/**
+ * 把改动列表按目录层级拼成一棵树。
+ *
+ * `change.relative` 已经是工作区相对路径、正斜杠，直接 split 就行。
+ * 同一路径不会重复（后端去重过），所以插进去就是唯一的。
+ */
+function buildChangeTree(changes: readonly GitChange[]): ChangeTreeNode[] {
+  // 根节点只用来挂第一层，不进最终结果
+  const root: DirNode = { name: "", path: "", children: [] };
+  for (const change of changes) {
+    const segments = change.relative.split("/");
+    let node: DirNode = root;
+    // 最后一段是文件名，前面每一段都是一个目录
+    for (let i = 0; i < segments.length - 1; i += 1) {
+      const path = segments.slice(0, i + 1).join("/");
+      let next = node.children.find(
+        (child): child is DirNode => child.children !== undefined && child.name === segments[i],
+      );
+      if (!next) {
+        next = { name: segments[i], path, children: [] };
+        node.children.push(next);
+      }
+      node = next;
+    }
+    node.children.push({
+      name: segments[segments.length - 1],
+      path: change.relative,
+      change,
+    });
+  }
+  sortChangeTree(root.children);
+  return root.children;
+}
+
+/** 目录排在文件前面，同类按名字排——和文件树那边的顺序观感一致 */
+function sortChangeTree(nodes: ChangeTreeNode[]): void {
+  nodes.sort((a, b) => {
+    const aDir = a.children !== undefined;
+    const bDir = b.children !== undefined;
+    if (aDir !== bDir) return aDir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  for (const node of nodes) {
+    if (node.children) sortChangeTree(node.children);
+  }
 }
 
 const TEXT_INPUT =
@@ -245,9 +328,11 @@ function ChangeRow({
   /** true = 在"暂存的改动"组里，行内按钮是取消暂存 */
   staged: boolean;
   busy: boolean;
+  /** 树视图里的层级；null = 列表视图（不缩进、不画文件图标、名字后面补目录） */
+  depth: number | null;
   onOpen: (path: string, source: DiffSource) => void;
   onToggle: (path: string) => void;
-  onDiscard: (path: string) => void;
+  onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
 }) {
   const slash = change.relative.lastIndexOf("/");
@@ -259,6 +344,7 @@ function ChangeRow({
   return (
     <div
       className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
+      style={depth === null ? undefined : { paddingLeft: depth * INDENT + 4 }}
       onContextMenu={(event) => onMenu(change, staged, event)}
     >
       <button
@@ -269,18 +355,31 @@ function ChangeRow({
         title={toDisplayPath(change.path)}
         className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
       >
+        {depth !== null && (
+          <>
+            {/* 空出目录行折叠箭头的宽度，这样文件名和同层目录名左边缘对齐 */}
+            <span className="w-3 shrink-0" />
+            <span className="flex shrink-0 items-center text-fg-icon">
+              <FileTypeIcon name={name} className="h-3.5 w-3.5" />
+            </span>
+          </>
+        )}
         <span className="min-w-0 truncate text-fg-muted">{name}</span>
-        {dir && <span className="min-w-0 truncate text-[11px] text-fg-faint">{dir}</span>}
+        {/* 树视图里层级已经说明了在哪个目录，再补一遍目录反而啰嗦 */}
+        {depth === null && dir && (
+          <span className="min-w-0 truncate text-[11px] text-fg-faint">{dir}</span>
+        )}
       </button>
-      {/* 右侧这一串（状态徽标 + 操作图标）单独成组：行上的 gap-1.5 对它们太松，
-          组内压到 gap-0.5 更紧凑；命中区仍是 20px，不为了紧凑牺牲点击 */}
+      {/* 右侧这一串（操作图标 + 状态徽标）单独成组：行上的 gap-1.5 对它们太松，
+          组内压到 gap-0.5 更紧凑；命中区仍是 20px，不为了紧凑牺牲点击。
+          徽标压在最后（最右）：它每行都在、按钮是悬停才显形，这样同一列的
+          徽标在每行都对齐，扫下来不用左右找 */}
       <div className="flex shrink-0 items-center gap-0.5">
-        <GitMarkBadge mark={mark} className="text-[10px]" />
         {/* 放弃修改排在暂存按钮左边（和 VS Code 一致）。它带确认，误点还能取消 */}
         {canDiscard(change, staged) && (
           <button
             type="button"
-            onClick={() => onDiscard(change.path)}
+            onClick={() => onDiscard(change)}
             disabled={busy}
             title={staged ? "放弃修改（还原到 HEAD）" : "放弃修改（还原到暂存区）"}
             className={ROW_DANGER}
@@ -297,8 +396,135 @@ function ChangeRow({
         >
           {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
         </button>
+        <GitMarkBadge mark={mark} className="text-[10px]" />
       </div>
     </div>
+  );
+}
+
+/** 树视图里的目录行：点一下收起或展开它下面的东西 */
+function ChangeDirRow({
+  node,
+  depth,
+  collapsed,
+  onToggle,
+}: {
+  node: ChangeTreeNode;
+  depth: number;
+  collapsed: boolean;
+  onToggle: (path: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(node.path)}
+      title={node.path}
+      className="flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+      style={{ paddingLeft: depth * INDENT + 4 }}
+    >
+      <span className="flex w-3 shrink-0 justify-center text-fg-icon">
+        {collapsed ? (
+          <IconChevronRight className="h-3 w-3" />
+        ) : (
+          <IconChevronDown className="h-3 w-3" />
+        )}
+      </span>
+      <span className="flex shrink-0 items-center text-fg-icon">
+        <IconFolder className="h-3.5 w-3.5" />
+      </span>
+      <span className="min-w-0 flex-1 truncate">{node.name}</span>
+    </button>
+  );
+}
+
+/** 一组改动共用的行内操作，从分组一路传到每个文件行 */
+interface ChangeRowActions {
+  staged: boolean;
+  busy: boolean;
+  onOpen: (path: string, source: DiffSource) => void;
+  onToggle: (path: string) => void;
+  onDiscard: (change: GitChange) => void;
+  onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+}
+
+interface ChangeTreeActions extends ChangeRowActions {
+  /** 收起来的目录（工作区相对路径）。空集合 = 全展开 */
+  collapsedDirs: ReadonlySet<string>;
+  onToggleDir: (path: string) => void;
+}
+
+/** 递归渲染一棵改动树：目录行 + 缩进的子层，文件行复用 ChangeRow */
+function ChangeTree({
+  nodes,
+  depth,
+  collapsedDirs,
+  onToggleDir,
+  ...rowActions
+}: ChangeTreeActions & { nodes: readonly ChangeTreeNode[]; depth: number }) {
+  return (
+    <ul>
+      {nodes.map((node) =>
+        node.children ? (
+          <li key={node.path}>
+            <ChangeDirRow
+              node={node}
+              depth={depth}
+              collapsed={collapsedDirs.has(node.path)}
+              onToggle={onToggleDir}
+            />
+            {!collapsedDirs.has(node.path) && (
+              <ChangeTree
+                nodes={node.children}
+                depth={depth + 1}
+                collapsedDirs={collapsedDirs}
+                onToggleDir={onToggleDir}
+                {...rowActions}
+              />
+            )}
+          </li>
+        ) : node.change ? (
+          <li key={node.path}>
+            <ChangeRow change={node.change} depth={depth} {...rowActions} />
+          </li>
+        ) : null,
+      )}
+    </ul>
+  );
+}
+
+/**
+ * 改动列表。两种视图只是排法不同，行本身和行内操作完全一样：
+ * 列表视图平铺，树视图按目录层级收起来（默认全展开，点目录才收）。
+ */
+function ChangeList({
+  changes,
+  tree,
+  view,
+  collapsedDirs,
+  onToggleDir,
+  ...rowActions
+}: ChangeTreeActions & {
+  changes: readonly GitChange[];
+  tree: readonly ChangeTreeNode[];
+  view: ChangeView;
+}) {
+  if (view === "list") {
+    return (
+      <>
+        {changes.map((change) => (
+          <ChangeRow key={pathKey(change.path)} change={change} depth={null} {...rowActions} />
+        ))}
+      </>
+    );
+  }
+  return (
+    <ChangeTree
+      nodes={tree}
+      depth={0}
+      collapsedDirs={collapsedDirs}
+      onToggleDir={onToggleDir}
+      {...rowActions}
+    />
   );
 }
 
@@ -406,6 +632,11 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
   const [logRevision, setLogRevision] = useState(0);
 
+  /** 改动列表怎么排：平铺还是按目录收起来。选择落盘，下次进应用照旧 */
+  const [view, setView] = useState<ChangeView>(readChangeView);
+  /** 树视图里收起来的目录。空集合就是全展开，正好是默认要的样子 */
+  const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
+
   /** 右键的那一行。staged 决定解读时跟谁比（暂存看 HEAD、未暂存看 index） */
   const [menu, setMenu] = useState<{
     change: GitChange;
@@ -431,6 +662,9 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
   const staged = useMemo(() => changes.filter(isStaged), [changes]);
   const unstaged = useMemo(() => changes.filter(isUnstaged), [changes]);
+  // 两棵树只在树视图里用得上，但提前算好——改动列表通常就几十条，不值当再懒一层
+  const stagedTree = useMemo(() => buildChangeTree(staged), [staged]);
+  const unstagedTree = useMemo(() => buildChangeTree(unstaged), [unstaged]);
   // 「全部放弃」只覆盖能放弃的那些，新文件不在内（见 canDiscard）
   const stagedDiscardable = useMemo(
     () => staged.filter((change) => canDiscard(change, true)),
@@ -610,6 +844,25 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
       // 记不住就按展开算，不影响使用
     }
   };
+
+  const setViewPersisted = (next: ChangeView) => {
+    setView(next);
+    try {
+      window.localStorage.setItem(VIEW_KEY, next);
+    } catch {
+      // 记不住就下次回到列表，不影响使用
+    }
+  };
+
+  /** 收起 / 展开一个目录。这个不落盘：属于"这次看的时候顺手收起"的临时状态 */
+  const toggleDir = useCallback((path: string) => {
+    setCollapsedDirs((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
 
   /**
    * 拖动提交历史的上边缘改高度。
@@ -846,6 +1099,20 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
             />
           </button>
 
+          {/* 改动列表的排法切换：图标画的是**当前**模式，点一下换成另一种 */}
+          <button
+            type="button"
+            onClick={() => setViewPersisted(view === "list" ? "tree" : "list")}
+            title={view === "list" ? "切换为树形显示" : "切换为列表显示"}
+            className={HEADER_ACTION}
+          >
+            {view === "list" ? (
+              <IconList className="h-3.5 w-3.5" />
+            ) : (
+              <IconTree className="h-3.5 w-3.5" />
+            )}
+          </button>
+
           <button
             type="button"
             onClick={reloadAll}
@@ -967,20 +1234,21 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   <IconMinus className="h-3 w-3" />
                 </button>
               </div>
-              {staged.map((change) => (
-                <ChangeRow
-                  key={`staged:${pathKey(change.path)}`}
-                  change={change}
-                  staged
-                  busy={busy !== null}
-                  onOpen={onOpen}
-                  onToggle={(path) => void run("unstage", () => gitUnstage([path]))}
-                  onDiscard={(path) =>
-                    discard([path], { mode: "staged" }, change.relative)
-                  }
-                  onMenu={openMenu}
-                />
-              ))}
+              <ChangeList
+                changes={staged}
+                tree={stagedTree}
+                view={view}
+                staged
+                busy={busy !== null}
+                collapsedDirs={collapsedDirs}
+                onToggleDir={toggleDir}
+                onOpen={onOpen}
+                onToggle={(path) => void run("unstage", () => gitUnstage([path]))}
+                onDiscard={(change) =>
+                  discard([change.path], { mode: "staged" }, change.relative)
+                }
+                onMenu={openMenu}
+              />
             </>
           )}
 
@@ -1011,21 +1279,21 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                   <IconPlus className="h-3 w-3" />
                 </button>
               </div>
-              {unstaged.map((change) => (
-                <ChangeRow
-                  // 同一文件可能同时出现在两组里（`MM`），key 得带组名
-                  key={`unstaged:${pathKey(change.path)}`}
-                  change={change}
-                  staged={false}
-                  busy={busy !== null}
-                  onOpen={onOpen}
-                  onToggle={(path) => void run("stage", () => gitStage([path]))}
-                  onDiscard={(path) =>
-                    discard([path], { mode: "unstaged" }, change.relative)
-                  }
-                  onMenu={openMenu}
-                />
-              ))}
+              <ChangeList
+                changes={unstaged}
+                tree={unstagedTree}
+                view={view}
+                staged={false}
+                busy={busy !== null}
+                collapsedDirs={collapsedDirs}
+                onToggleDir={toggleDir}
+                onOpen={onOpen}
+                onToggle={(path) => void run("stage", () => gitStage([path]))}
+                onDiscard={(change) =>
+                  discard([change.path], { mode: "unstaged" }, change.relative)
+                }
+                onMenu={openMenu}
+              />
             </>
           )}
         </div>
