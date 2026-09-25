@@ -13,7 +13,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
 import { AgentPane } from "./AgentPane";
-import { IconBot, IconClose, IconPlus, IconTerminal } from "./icons";
+import { IconClose, IconPlus } from "./icons";
 
 export interface TerminalPaneHandle {
   /** 在当前活动的会话里敲一条命令。AI CLI 的入口在侧边栏，执行落在这儿 */
@@ -131,27 +131,29 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
       <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
         {/* 关掉智能体后这组按钮整个不出，终端区的行为和以前一模一样 */}
         {settings.agentEnabled && (
-          <div className="flex items-center gap-0.5 rounded bg-app p-0.5">
+          <div className="flex items-center gap-0.5 rounded-full bg-app p-0.5">
             <button
               type="button"
               onClick={() => setMode("terminal")}
               title="终端（TUI）"
-              className={`flex h-6 items-center gap-1.5 rounded px-3 text-[12px] ${
-                view === "terminal" ? "bg-active text-fg" : "text-fg-dim hover:text-fg"
+              className={`flex h-6 items-center justify-center rounded-full px-4 text-[12px] ${
+                view === "terminal"
+                  ? "bg-surface text-fg shadow-sm"
+                  : "text-fg-dim hover:text-fg"
               }`}
             >
-              <IconTerminal className="h-3.5 w-3.5" />
               终端
             </button>
             <button
               type="button"
               onClick={() => setMode("agent")}
               title="智能体（GUI）"
-              className={`flex h-6 items-center gap-1.5 rounded px-3 text-[12px] ${
-                view === "agent" ? "bg-active text-fg" : "text-fg-dim hover:text-fg"
+              className={`flex h-6 items-center justify-center rounded-full px-4 text-[12px] ${
+                view === "agent"
+                  ? "bg-surface text-fg shadow-sm"
+                  : "text-fg-dim hover:text-fg"
               }`}
             >
-              <IconBot className="h-3.5 w-3.5" />
               智能体
             </button>
           </div>

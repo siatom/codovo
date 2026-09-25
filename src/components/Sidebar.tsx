@@ -233,7 +233,7 @@ export function Sidebar({
     requestRename(id, title);
   };
 
-  // 收起后留一个图标宽的竖条：常用入口（打开文件夹、主题）仍然够得着，
+  // 收起后留一个图标宽的竖条：常用入口（打开项目、主题）仍然够得着，
   // 顶上那个按钮负责展开。
   // 每段的上下留白都照展开态来（头部同高、导航行同高、底部同边距），
   // 这样来回切换时图标只横向挪位，不会上下跳。
@@ -247,7 +247,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onAdd}
-            title="打开文件夹"
+            title="打开项目"
             className={`flex w-7 ${ROW_H} items-center justify-center rounded-lg text-fg-dim hover:bg-hover hover:text-fg`}
           >
             <IconFolderPlus />
@@ -288,16 +288,19 @@ export function Sidebar({
 
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-panel">
-      {/* 副标题放在 CodeDock 右侧，保持标题栏单行，收起/展开时顶部高度一致 */}
-      <header className="flex h-11 shrink-0 items-center gap-2 px-2">
-        <span className="shrink-0 px-2 text-[16px] font-semibold text-fg">CodeDock</span>
-        <span className="min-w-0 truncate text-[11px] text-fg-faint">AI 编程驾驶舱</span>
+      {/* 副标题放在 CodeDock 右侧，保持标题栏单行，收起/展开时顶部高度一致。
+          两个字号不同，用 items-baseline 让副标题与大标题底部对齐（居中会显得副标题飘高）。 */}
+      <header className="flex h-11 shrink-0 items-center px-2">
+        <span className="flex min-w-0 items-baseline gap-2 px-2">
+          <span className="shrink-0 text-[16px] font-semibold text-fg">CodeDock</span>
+          <span className="truncate text-[11px] text-fg-faint">AI 编程驾驶舱</span>
+        </span>
       </header>
 
       <nav className="flex shrink-0 flex-col gap-0.5 px-2 pb-1">
         <button type="button" onClick={onAdd} className={ROW}>
           <IconFolderPlus />
-          <span className="truncate">打开文件夹</span>
+          <span className="truncate">打开项目</span>
         </button>
       </nav>
 
