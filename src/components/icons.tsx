@@ -1,15 +1,23 @@
 import type { ReactNode } from "react";
 import {
+  siAnthropic,
   siC,
+  siClaude,
+  siClaudecode,
   siCmake,
+  siCodebuddy,
   siCplusplus,
   siCss,
+  siCursor,
   siDart,
+  siDeepseek,
   siDocker,
   siDotenv,
   siGit,
+  siGithubcopilot,
   siGnubash,
   siGo,
+  siGooglegemini,
   siHaskell,
   siHtml5,
   siJavascript,
@@ -20,11 +28,15 @@ import {
   siLess,
   siLua,
   siMarkdown,
+  siMistralai,
   siNpm,
+  siOllama,
   siOpenjdk,
+  siOpencode,
   siPhp,
   siPnpm,
   siPython,
+  siQwen,
   siR,
   siReact,
   siRuby,
@@ -251,20 +263,22 @@ export const IconPanelExpand = icon(
   </>,
 );
 
-/** 右边栏收起态：只画出右侧那一栏的轮廓 */
+/**
+ * 右边栏收起/展开：把侧边栏那对（IconPanelCollapse / IconPanelExpand）水平镜像过来，
+ * 分隔线落到右侧、箭头方向相反。两处收放长得一样，用户扫一眼就知道是同一类控件。
+ * 不要用「填实右栏」表示状态——那是个直角块，会顶出外框的圆角。
+ */
 export const IconPanelRight = icon(
   <>
     <rect width="18" height="18" x="3" y="3" rx="2" />
-    <path d="M15 3v18" />
+    <path d="M15 3v18M10 9l-3 3 3 3" />
   </>,
 );
 
-/** 右边栏展开态：右侧那一栏填实 */
 export const IconPanelRightOpen = icon(
   <>
     <rect width="18" height="18" x="3" y="3" rx="2" />
-    <rect width="6" height="18" x="15" y="3" fill="currentColor" />
-    <path d="M15 3v18" />
+    <path d="M15 3v18M8 15l3-3-3-3" />
   </>,
 );
 
@@ -473,3 +487,49 @@ export const IconPencil = icon(
     <path d="m15 5 4 4" />
   </>,
 );
+
+/* ---------- AI CLI 的品牌 logo ---------- */
+
+/** 认得出是哪家就上哪家的 logo；认不出回落成上面那个通用的机器人图标 */
+const AGENT_LOGOS: Record<string, BrandIcon> = {
+  claude: siClaude,
+  "claude-code": siClaudecode,
+  anthropic: siAnthropic,
+  codebuddy: siCodebuddy,
+  opencode: siOpencode,
+  gemini: siGooglegemini,
+  cursor: siCursor,
+  copilot: siGithubcopilot,
+  deepseek: siDeepseek,
+  qwen: siQwen,
+  ollama: siOllama,
+  mistral: siMistralai,
+};
+
+/**
+ * 从一段文本里认出 agent 名：取第一个词（可执行文件名），去掉目录前缀和
+ * Windows 上常见的 .exe / .cmd 垫片后缀。用户填的是命令行，不是品牌名。
+ */
+function agentKey(text: string): string {
+  const first = text.trim().split(/\s+/)[0] ?? "";
+  const base = first.split(/[\\/]/).pop() ?? "";
+  return base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+}
+
+/**
+ * AI CLI 菜单里名字前面的 logo。先按命令认（`npx opencode` 这种也认得出来），
+ * 认不出再按用户起的名字认——名字可以随便填，命令才是真正会跑的那个。
+ */
+export function AgentLogo({
+  name,
+  command,
+  className = "h-3.5 w-3.5",
+}: {
+  name: string;
+  command: string;
+  className?: string;
+}) {
+  const logo = AGENT_LOGOS[agentKey(command)] ?? AGENT_LOGOS[agentKey(name)];
+  if (!logo) return <IconBot className={className} />;
+  return <BrandGlyph icon={logo} className={className} />;
+}

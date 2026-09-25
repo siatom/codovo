@@ -10,7 +10,7 @@ import {
 import { monaco, DARK_THEME, LIGHT_THEME } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { renderMarkdown } from "../lib/markdown";
-import { gitFileDiff, pathKey, readFile, toDisplayPath, writeFile } from "../lib/fs";
+import { gitFileDiff, isPathInside, pathKey, readFile, toDisplayPath, writeFile } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { useSettings, resolveFont } from "../lib/settings";
 import { tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
@@ -70,6 +70,12 @@ export interface EditorPaneHandle {
   reload: (paths: string[]) => Promise<void>;
   /** 打开文件并定位到指定位置 */
   revealAt: (target: RevealTarget) => void;
+  /**
+   * 丢掉落在这些路径下（含路径本身）的缓存 model。文件树里改了名或删了文件时用：
+   * 名字变了要按新路径重读，文件没了就不该再留着——留着的话 Ctrl+S 会把删掉的
+   * 文件又写回磁盘。
+   */
+  dropPaths: (paths: string[]) => void;
 }
 
 type Status =
@@ -157,6 +163,51 @@ export function EditorPane({
       else next.delete(key);
       return next;
     });
+  }, []);
+
+  /**
+   * 按条件丢掉缓存里的 model，普通文件和差异（成对的）一起处理。返回被丢掉的
+   * tabKey，调用处拿它清理脏标记和预览集合。只碰 ref，不碰 state。
+   */
+  const disposeModels = useCallback((match: (path: string, key: string) => boolean): string[] => {
+    const dropped: string[] = [];
+
+    for (const [key, cached] of modelsRef.current) {
+      if (!match(cached.path, key)) continue;
+      modelsRef.current.delete(key);
+      // Monaco 不允许 dispose 正在编辑的 model，先把编辑器摘下来
+      if (editorRef.current?.getModel() === cached.model) editorRef.current.setModel(null);
+      cached.model.dispose();
+      dropped.push(key);
+    }
+
+    for (const [key, pair] of diffModelsRef.current) {
+      if (!match(pair.path, key)) continue;
+      diffModelsRef.current.delete(key);
+      const showing = diffRef.current?.getModel();
+      if (showing && (showing.original === pair.original || showing.modified === pair.modified)) {
+        diffRef.current?.setModel(null);
+      }
+      // 成对的 model 要一起销毁
+      pair.original.dispose();
+      pair.modified.dispose();
+      dropped.push(key);
+    }
+
+    return dropped;
+  }, []);
+
+  /** 把已经销毁的标签从脏标记 / 预览集合里摘掉 */
+  const forgetKeys = useCallback((keys: string[]) => {
+    if (keys.length === 0) return;
+    const prune = (prev: ReadonlySet<string>) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const key of keys) if (next.delete(key)) changed = true;
+      return changed ? next : prev;
+    };
+    setDirtyPaths(prune);
+    setPreviewPaths(prune);
   }, []);
 
   /**
@@ -267,8 +318,14 @@ export function EditorPane({
       },
 
       revealAt: (target) => setReveal(target),
+
+      dropPaths: (paths) => {
+        forgetKeys(
+          disposeModels((path) => paths.some((item) => isPathInside(path, item))),
+        );
+      },
     }),
-    [],
+    [disposeModels, forgetKeys],
   );
 
   // 差异编辑器只在第一次真的要看差异时才建：省一份初始化，
@@ -590,46 +647,10 @@ export function EditorPane({
         return;
       }
 
-      const cached = modelsRef.current.get(key);
-      if (cached) {
-        modelsRef.current.delete(key);
-        // Monaco 不允许 dispose 正在编辑的 model，先把编辑器摘下来
-        if (editorRef.current?.getModel() === cached.model) {
-          editorRef.current.setModel(null);
-        }
-        cached.model.dispose();
-      }
-
-      const pair = diffModelsRef.current.get(key);
-      if (pair) {
-        diffModelsRef.current.delete(key);
-        const showing = diffRef.current?.getModel();
-        if (showing && (showing.original === pair.original || showing.modified === pair.modified)) {
-          diffRef.current?.setModel(null);
-        }
-        // 成对的 model 要一起销毁
-        pair.original.dispose();
-        pair.modified.dispose();
-      }
-
-      setDirtyPaths((prev) => {
-        if (!prev.has(key)) return prev;
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-
-      // 关掉的标签不该在预览集合里留下名字
-      setPreviewPaths((prev) => {
-        if (!prev.has(key)) return prev;
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-
+      forgetKeys(disposeModels((_, current) => current === key));
       onClose(tab);
     },
-    [dirtyPaths, onClose],
+    [dirtyPaths, onClose, disposeModels, forgetKeys],
   );
 
   const isDiffTab = active?.kind === "diff";

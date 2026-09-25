@@ -12,6 +12,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(pty::PtyState::new())
         .manage(fs_api::FsState::new())
         .manage(watcher::WatchState::new())
@@ -32,6 +33,8 @@ pub fn run() {
             fs_api::fs_write_file,
             fs_api::fs_create_file,
             fs_api::fs_create_directory,
+            fs_api::fs_rename,
+            fs_api::fs_delete,
             git::git_status,
             git::git_stage,
             git::git_unstage,

@@ -13,6 +13,7 @@ import type { AgentSessionSummary } from "../lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
+  AgentLogo,
   IconChevronDown,
   IconChevronRight,
   IconFolder,
@@ -35,6 +36,8 @@ interface SidebarProps {
   onAdd: () => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
   onRemove: (path: string) => void;
+  /** 在当前活动的终端会话里启动 AI CLI；执行落在终端那边，这边只管入口 */
+  onRunAiCommand: (command: string) => void;
 }
 
 const COLLAPSED_KEY = "codedock.sidebarCollapsed";
@@ -44,9 +47,6 @@ const ROW_H = "h-[34px]";
 
 /** 一行导航/列表项的统一样式，只靠调用处追加选中态 */
 const ROW = `flex w-full ${ROW_H} items-center gap-2.5 rounded-lg px-2 text-left text-[13px] text-fg-muted hover:bg-hover hover:text-fg`;
-
-const ICON_BUTTON =
-  "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg";
 
 const FOOTER_BUTTON =
   "flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg";
@@ -60,6 +60,9 @@ const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover 
 
 /** 菜单宽度（px），贴着按钮右边缘往左排时要拿它算 left */
 const MENU_W = 112;
+
+/** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
+const AI_MENU_W = 150;
 
 function readCollapsed(): boolean {
   try {
@@ -75,7 +78,14 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: SidebarProps) {
+export function Sidebar({
+  workspaces,
+  current,
+  onSelect,
+  onAdd,
+  onRemove,
+  onRunAiCommand,
+}: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 当前项目的对话历史是否展开；默认展开 */
@@ -86,6 +96,8 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
   const [names, setNames] = useState(readWorkspaceNames);
   /** 「⋯」菜单开在哪个项目上，以及贴着按钮的位置 */
   const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  /** AI CLI 菜单开在哪儿；配了多个命令时才用得上，位置同项目菜单 */
+  const [aiMenu, setAiMenu] = useState<{ x: number; y: number } | null>(null);
   /** 正在就地改名的项目 */
   const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
   /** 会话行的「⋯」菜单开在哪条会话上，位置同项目菜单 */
@@ -112,6 +124,10 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
   } = useAgentSession();
   // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
   const guiActive = settings.agentEnabled && mode === "agent";
+  // 空命令是用户在设置里加了还没填的，不进菜单
+  const aiCommands = settings.aiCommands
+    .map((item) => ({ ...item, name: item.name.trim(), command: item.command.trim() }))
+    .filter((item) => item.command);
 
   const setCollapsedPersisted = (next: boolean) => {
     setCollapsed(next);
@@ -169,6 +185,16 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
     setHistMenu({ item, x: rect.right, y: rect.bottom });
   };
 
+  /** 点项目行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
+  const launchAi = (target: HTMLElement) => {
+    if (aiCommands.length === 1) {
+      onRunAiCommand(aiCommands[0].command);
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    setAiMenu({ x: rect.right, y: rect.bottom });
+  };
+
   /**
    * 会话改名：空标题当取消（后端也拒），没改动就不打后端。
    * 真正的 PATCH 由 AgentPane 做——它拿着刷新列表的入口，改完侧边栏自然换字。
@@ -188,16 +214,8 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
   if (collapsed) {
     return (
       <div className="flex h-full w-11 shrink-0 flex-col border-r border-line bg-panel">
-        <div className="flex h-11 shrink-0 items-center justify-center">
-          <button
-            type="button"
-            onClick={() => setCollapsedPersisted(false)}
-            title="展开侧边栏"
-            className={ICON_BUTTON}
-          >
-            <IconPanelExpand />
-          </button>
-        </div>
+        {/* 顶部空出和展开态头部同高的一段：来回切换时下面的图标只横向挪位、不上下跳 */}
+        <div className="h-11 shrink-0" />
 
         <div className="flex shrink-0 flex-col px-2 pb-1">
           <button
@@ -227,6 +245,14 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
           >
             <IconSettings />
           </button>
+          <button
+            type="button"
+            onClick={() => setCollapsedPersisted(false)}
+            title="展开侧边栏"
+            className={FOOTER_BUTTON}
+          >
+            <IconPanelExpand />
+          </button>
         </div>
 
         {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
@@ -236,18 +262,10 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
 
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-panel">
-      <header className="flex h-11 shrink-0 items-center gap-1 px-2">
-        <span className="min-w-0 flex-1 truncate px-2 text-[16px] font-semibold text-fg">
-          CodeDock
-        </span>
-        <button
-          type="button"
-          onClick={() => setCollapsedPersisted(true)}
-          title="收起侧边栏"
-          className={ICON_BUTTON}
-        >
-          <IconPanelCollapse />
-        </button>
+      {/* 副标题放在 CodeDock 右侧，保持标题栏单行，收起/展开时顶部高度一致 */}
+      <header className="flex h-11 shrink-0 items-center gap-2 px-2">
+        <span className="shrink-0 px-2 text-[16px] font-semibold text-fg">CodeDock</span>
+        <span className="min-w-0 truncate text-[11px] text-fg-faint">AI 编程驾驶舱</span>
       </header>
 
       <nav className="flex shrink-0 flex-col gap-0.5 px-2 pb-1">
@@ -339,6 +357,23 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
                             )}
                           </button>
                         </>
+                      )}
+                      {/* TUI 下同一个位置放 AI CLI 的入口：往当前终端注入一条命令。
+                          配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
+                      {isCurrent && !guiActive && (
+                        <button
+                          type="button"
+                          onClick={(event) => launchAi(event.currentTarget)}
+                          disabled={aiCommands.length === 0}
+                          title={
+                            aiCommands.length === 0
+                              ? "还没配置 AI CLI 命令，去设置里加一个"
+                              : "在当前终端中启动 AI CLI"
+                          }
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                        >
+                          <IconPlus className="h-3.5 w-3.5" />
+                        </button>
                       )}
                     </>
                   )}
@@ -438,6 +473,15 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
         >
           <IconSettings />
         </button>
+        {/* 收起按钮跟着主题、设置一起沉到底部，头部只留标题 */}
+        <button
+          type="button"
+          onClick={() => setCollapsedPersisted(true)}
+          title="收起侧边栏"
+          className={`${FOOTER_BUTTON} ml-auto`}
+        >
+          <IconPanelCollapse />
+        </button>
       </footer>
 
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
@@ -533,6 +577,38 @@ export function Sidebar({ workspaces, current, onSelect, onAdd, onRemove }: Side
             >
               删除对话
             </button>
+          </div>
+        </>
+      )}
+
+      {/* AI CLI 菜单。同样 fixed 定位，理由见上面项目菜单 */}
+      {aiMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setAiMenu(null)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: AI_MENU_W,
+              left: aiMenu.x - AI_MENU_W,
+              // 条数不定，按实际行数折算高度，免得贴底时被顶出可视区
+              top: Math.min(aiMenu.y + 4, window.innerHeight - (aiCommands.length * 26 + 20)),
+            }}
+          >
+            {aiCommands.map((item, index) => (
+              <button
+                key={`${item.name}-${item.command}-${index}`}
+                type="button"
+                onClick={() => {
+                  setAiMenu(null);
+                  onRunAiCommand(item.command);
+                }}
+                title={item.name || "未命名 AI CLI"}
+                className={`${MENU_ITEM} flex items-center gap-2`}
+              >
+                <AgentLogo name={item.name} command={item.command} />
+                <span className="truncate">{item.name || "未命名 AI CLI"}</span>
+              </button>
+            ))}
           </div>
         </>
       )}

@@ -48,6 +48,12 @@ interface ToolPaneProps {
   onBeforeReplace: () => Promise<boolean>;
   /** 替换后让编辑器重新从磁盘加载这些文件 */
   onAfterReplace: (paths: string[]) => void;
+  /** 文件树里改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
+  onBeforeRename: () => Promise<boolean>;
+  /** 文件树里改名成功：编辑器标签要跟着换路径 */
+  onEntryRenamed: (from: string, to: string) => void;
+  /** 文件树里删除成功：编辑器标签要关掉 */
+  onEntryDeleted: (path: string) => void;
 }
 
 /**
@@ -64,6 +70,9 @@ export function ToolPane({
   onOpenMatch,
   onBeforeReplace,
   onAfterReplace,
+  onBeforeRename,
+  onEntryRenamed,
+  onEntryDeleted,
 }: ToolPaneProps) {
   const filesHidden = tool === "changes" || tool === "search";
 
@@ -75,6 +84,9 @@ export function ToolPane({
           selected={selected}
           gitMarks={git.snapshot.marks}
           onSelect={onSelectFile}
+          onBeforeRename={onBeforeRename}
+          onRenamed={onEntryRenamed}
+          onDeleted={onEntryDeleted}
         />
       </div>
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>

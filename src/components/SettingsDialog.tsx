@@ -18,9 +18,10 @@ import {
   TERMINAL_THEME_OPTIONS,
   resolveTerminalTheme,
 } from "../lib/terminal-themes";
-import { useTheme, type ResolvedTheme, type Theme } from "../lib/theme";
+import { useTheme, DEFAULT_THEME, type ResolvedTheme, type Theme } from "../lib/theme";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { IconChevronDown, IconClose, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
@@ -70,6 +71,10 @@ const LIST_ACTION =
 /** 分组标题右端的行内操作按钮，和列表里的删除按钮同一套视觉 */
 const HEAD_ACTION =
   "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg";
+
+/** 底部的「恢复默认设置」：描边按钮，悬停才透出危险色——它会把密钥和 CLI 列表一起清掉 */
+const RESET_BUTTON =
+  "rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:border-danger-line hover:bg-danger-bg hover:text-danger";
 
 /** 标签在上、控件在下：字体名可能很长，横排放不下。
     action 放在标签那一行的右端，省掉列表下面单独占一行的操作按钮。 */
@@ -284,9 +289,11 @@ function TerminalThemeSelect({
 }
 
 export function SettingsDialog({ onClose }: SettingsDialogProps) {
-  const { settings, update } = useSettings();
+  const { settings, update, reset } = useSettings();
   const { theme, preference, setPreference } = useTheme();
   const [tab, setTab] = useState<TabId>("appearance");
+  /** 等确认的「恢复默认」；非空时弹确认框 */
+  const [confirmReset, setConfirmReset] = useState(false);
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
   const lastFlipRef = useRef(0);
 
@@ -303,11 +310,12 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      // 确认框开着时 Esc 归它管（取消这一下），别顺手把整个设置面板也关了
+      if (event.key === "Escape" && !confirmReset) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, confirmReset]);
 
   const flipTab = (step: number) => {
     const next = TABS[TABS.findIndex((item) => item.id === tab) + step];
@@ -331,7 +339,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
-      onClick={onClose}
+      onClick={() => {
+        // 确认框开着时，点它的遮罩只算取消那一下，别顺手把设置面板也关了
+        if (!confirmReset) onClose();
+      }}
     >
       {/* 尺寸写死：内容少的分类不缩、内容多就滚动，来回切 tab 面板不会跳大小。
           max-h-full 留着，窗口比面板还矮时还能压下来 */}
@@ -701,7 +712,33 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             </div>
           </div>
         </div>
+
+        {/* 恢复默认沉在底部：它管的是所有分类，放某个 tab 里会让人以为只重置那一页 */}
+        <footer className="flex h-12 shrink-0 items-center justify-end border-t border-line px-4">
+          <button
+            type="button"
+            onClick={() => setConfirmReset(true)}
+            className={RESET_BUTTON}
+          >
+            恢复默认设置
+          </button>
+        </footer>
       </div>
+
+      {/* 挂在卡片外面、但仍在遮罩里：确认框的遮罩接住点击，冒到这一层时被上面的
+          `confirmReset` 挡掉，不会连设置面板一起关 */}
+      {confirmReset && (
+        <ConfirmDialog
+          message="恢复默认设置？接口地址、密钥、AI CLI 列表、字体、主题和右栏模块都会回到初始值，无法撤销。"
+          confirmLabel="恢复默认"
+          onConfirm={() => {
+            reset();
+            setPreference(DEFAULT_THEME);
+            setConfirmReset(false);
+          }}
+          onCancel={() => setConfirmReset(false)}
+        />
+      )}
     </div>
   );
 }

@@ -1,5 +1,12 @@
 import type { ToolId } from "./ToolPane";
-import { IconBranch, IconFile, IconGlobe, IconSearch } from "./icons";
+import {
+  IconBranch,
+  IconFile,
+  IconGlobe,
+  IconPanelRight,
+  IconPanelRightOpen,
+  IconSearch,
+} from "./icons";
 
 /** 和左侧栏收起时同宽，两条竖栏看起来才是一套 */
 const RAIL = "flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2";
@@ -32,16 +39,27 @@ interface ToolRailProps {
   /** 设置里关掉的模块不上图标条 */
   visible: Record<ToolId, boolean>;
   onPick: (id: ToolId) => void;
+  /** 内容面板是否展开，决定底部那个收放按钮的图标方向 */
+  rightOpen: boolean;
+  /** 收放按钮沉在图标条最下面，和左侧栏的收起按钮同一个位置 */
+  onToggleRight: () => void;
 }
 
 /** 角标数字的上限，再多就写成 99+，否则图标条装不下 */
 const BADGE_MAX = 99;
 
 /**
- * 右边栏最左侧的图标条：切换各个模块。
- * 整个右边栏的收放由终端右上角那个按钮负责，这里只管切模块。
+ * 右边栏最左侧的图标条：切换各个模块，底部收放整条右边栏的内容面板。
  */
-export function ToolRail({ active, gitReady, changed, visible, onPick }: ToolRailProps) {
+export function ToolRail({
+  active,
+  gitReady,
+  changed,
+  visible,
+  onPick,
+  rightOpen,
+  onToggleRight,
+}: ToolRailProps) {
   return (
     <div className={RAIL}>
       {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
@@ -72,6 +90,16 @@ export function ToolRail({ active, gitReady, changed, visible, onPick }: ToolRai
           </button>
         );
       })}
+
+      {/* mt-auto 把它顶到底部，和左侧栏的收起按钮一条水平线 */}
+      <button
+        type="button"
+        onClick={onToggleRight}
+        title={rightOpen ? "收起右侧面板" : "展开右侧面板"}
+        className={`${BUTTON} mt-auto`}
+      >
+        {rightOpen ? <IconPanelRightOpen /> : <IconPanelRight />}
+      </button>
     </div>
   );
 }

@@ -353,12 +353,11 @@ pub fn fs_write_file(
     fs::write(&file, text).map_err(|e| format!("写入文件失败 {}: {e}", display(&file)))
 }
 
-fn validate_create_target(state: &FsState, path: &str) -> Result<PathBuf, String> {
-    let name = Path::new(path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| "文件名无效".to_string())?;
-    if name.trim().is_empty()
+/// 名称校验：只能是一段名字，不能是空 / `.` / `..`，也不许夹分隔符。
+/// 新建和重命名共用同一套规则——两处各写一份迟早会走偏。
+fn validate_name(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty()
         || name == "."
         || name == ".."
         || name.contains('/')
@@ -366,6 +365,15 @@ fn validate_create_target(state: &FsState, path: &str) -> Result<PathBuf, String
     {
         return Err("文件名无效".to_string());
     }
+    Ok(())
+}
+
+fn validate_create_target(state: &FsState, path: &str) -> Result<PathBuf, String> {
+    let name = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "文件名无效".to_string())?;
+    validate_name(name)?;
 
     let target = resolve(state, path)?;
     if target.exists() {
@@ -406,6 +414,78 @@ pub fn fs_create_file(state: tauri::State<'_, FsState>, path: String) -> Result<
 #[tauri::command]
 pub fn fs_create_directory(state: tauri::State<'_, FsState>, path: String) -> Result<(), String> {
     create_directory_at(&state, &path)
+}
+
+// ==================== 重命名与删除 ====================
+
+/// 就地改名。`new_name` 只是一段名字（`validate_name` 挡掉分隔符），所以文件
+/// 不会跑到别的目录去，也不用再校验一次是否越界。
+fn rename_at(source: &Path, new_name: &str) -> Result<String, String> {
+    validate_name(new_name)?;
+    let name = new_name.trim();
+    if !source.exists() {
+        return Err(format!("路径不存在: {}", display(source)));
+    }
+
+    let parent = source.parent().ok_or_else(|| "父目录无效".to_string())?;
+    let target = parent.join(name);
+    if target == source {
+        // 名字一模一样，什么都没发生
+        return Ok(display(&target));
+    }
+
+    // Windows 上大小写不敏感，`a.txt` -> `A.txt` 时 exists() 会说"目标已存在"，
+    // 但它其实就是自己。统一小写比一遍，把这种只改大小写的情况放行给 fs::rename
+    let occupied = target.exists()
+        && target.to_string_lossy().to_lowercase() != source.to_string_lossy().to_lowercase();
+    if occupied {
+        return Err(format!("目标已存在: {}", display(&target)));
+    }
+
+    fs::rename(source, &target).map_err(|e| format!("重命名失败 {}: {e}", display(source)))?;
+    Ok(display(&target))
+}
+
+/// 删除文件或整个目录（递归）。**不可撤销**，前端必须先跟用户确认。
+fn delete_at(target: &Path) -> Result<(), String> {
+    // 路径已经过 resolve 的 canonicalize，指向的就是磁盘上真实的那一项
+    if target.is_dir() {
+        fs::remove_dir_all(target).map_err(|e| format!("删除失败 {}: {e}", display(target)))
+    } else {
+        fs::remove_file(target).map_err(|e| format!("删除失败 {}: {e}", display(target)))
+    }
+}
+
+fn rename_entry(state: &FsState, path: &str, new_name: &str) -> Result<String, String> {
+    let source = resolve(state, path)?;
+    // 工作区根没有父目录，也不该被改名——改掉之后前后端的沙箱边界就对不上了
+    if source == state.root()? {
+        return Err("不能重命名工作区根目录".to_string());
+    }
+    rename_at(&source, new_name)
+}
+
+fn delete_entry(state: &FsState, path: &str) -> Result<(), String> {
+    let target = resolve(state, path)?;
+    if target == state.root()? {
+        return Err("不能删除工作区根目录".to_string());
+    }
+    delete_at(&target)
+}
+
+/// 重命名，返回改名后的绝对路径——前端据此把编辑器标签上的路径一起换掉。
+#[tauri::command]
+pub fn fs_rename(
+    state: tauri::State<'_, FsState>,
+    path: String,
+    new_name: String,
+) -> Result<String, String> {
+    rename_entry(&state, &path, &new_name)
+}
+
+#[tauri::command]
+pub fn fs_delete(state: tauri::State<'_, FsState>, path: String) -> Result<(), String> {
+    delete_entry(&state, &path)
 }
 
 // ==================== 全工作区的内容搜索与替换 ====================
@@ -965,6 +1045,100 @@ mod tests {
             create_directory_at(&state, dir.join("a").join("b").to_str().unwrap()).is_err(),
             "中间目录不存在时不该用 create_dir_all 造出来"
         );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn renames_a_file_and_a_directory() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+
+        let file = workspace.join("old.txt");
+        fs::write(&file, "hi").unwrap();
+        let renamed = rename_entry(&state, file.to_str().unwrap(), "new.txt").unwrap();
+        assert_eq!(renamed, display(&workspace.join("new.txt")));
+        assert!(!file.exists());
+        assert_eq!(fs::read_to_string(workspace.join("new.txt")).unwrap(), "hi", "内容要跟着走");
+
+        let dir = workspace.join("src");
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("main.rs"), "").unwrap();
+        let moved = rename_entry(&state, dir.to_str().unwrap(), "app").unwrap();
+        assert!(workspace.join("app").join("main.rs").is_file(), "目录要连内容一起搬");
+        assert!(moved.ends_with("app"));
+
+        // 名称带首尾空格是允许的（trim 掉），中文和空格也要能改
+        let spaced = rename_entry(&state, workspace.join("new.txt").to_str().unwrap(), "我的 笔记.md")
+            .unwrap();
+        assert!(spaced.ends_with("我的 笔记.md"));
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rename_refuses_bad_names_and_occupied_targets() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "a").unwrap();
+        fs::write(workspace.join("b.txt"), "b").unwrap();
+
+        for bad in ["", "  ", ".", "..", "sub/c.txt", r"sub\c.txt"] {
+            assert!(
+                rename_entry(&state, file.to_str().unwrap(), bad).is_err(),
+                "{bad:?} 不该被当成名称"
+            );
+        }
+        assert!(file.exists(), "校验失败时原文件一个字节都不该动");
+
+        assert!(rename_entry(&state, file.to_str().unwrap(), "b.txt").is_err(), "不能覆盖同名文件");
+        assert_eq!(fs::read_to_string(workspace.join("b.txt")).unwrap(), "b");
+
+        // 改名不能跨目录：名称里带分隔符已经被上面挡掉了，越界的写法也一并拒绝
+        let outside = root.join("outside.txt");
+        assert!(rename_entry(&state, outside.to_str().unwrap(), "x.txt").is_err());
+
+        // 工作区根不能被改名，否则前后端的沙箱边界就对不上了
+        assert!(rename_entry(&state, workspace.to_str().unwrap(), "other").is_err());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rename_only_changes_the_case_of_a_name() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let file = workspace.join("readme.md");
+        fs::write(&file, "hi").unwrap();
+
+        // Windows 上 exists() 会说"目标已存在"，但它就是自己，不该被拦下
+        let renamed = rename_entry(&state, file.to_str().unwrap(), "README.md").unwrap();
+        assert_eq!(renamed.to_lowercase(), display(&file).to_lowercase());
+        assert!(workspace.join("README.md").exists() || workspace.join("readme.md").exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn deletes_files_and_directories_recursively() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+
+        let file = workspace.join("a.txt");
+        fs::write(&file, "").unwrap();
+        delete_entry(&state, file.to_str().unwrap()).unwrap();
+        assert!(!file.exists());
+
+        let dir = workspace.join("src");
+        fs::create_dir_all(dir.join("deep")).unwrap();
+        fs::write(dir.join("deep").join("main.rs"), "").unwrap();
+        delete_entry(&state, dir.to_str().unwrap()).unwrap();
+        assert!(!dir.exists(), "目录要连里面的文件一起删掉");
+
+        // 越界和工作区根都不许删
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        assert!(delete_entry(&state, outside.to_str().unwrap()).is_err());
+        assert!(outside.is_dir(), "越界时不能真删");
+        assert!(delete_entry(&state, workspace.to_str().unwrap()).is_err());
+        assert!(workspace.is_dir());
         fs::remove_dir_all(&root).ok();
     }
 

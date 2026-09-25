@@ -15,12 +15,15 @@ export type ResolvedTheme = "dark" | "light";
 const THEME_KEY = "codedock.theme";
 const MEDIA = "(prefers-color-scheme: dark)";
 
+/** 没存过偏好（或存坏了）时的主题；设置面板「恢复默认」也回到它 */
+export const DEFAULT_THEME: Theme = "dark";
+
 export function readSavedTheme(): Theme {
   try {
     const saved = window.localStorage.getItem(THEME_KEY);
-    return saved === "light" || saved === "system" ? saved : "dark";
+    return saved === "light" || saved === "system" ? saved : DEFAULT_THEME;
   } catch {
-    return "dark";
+    return DEFAULT_THEME;
   }
 }
 

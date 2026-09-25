@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SplitPane } from "./components/SplitPane";
 import { Sidebar } from "./components/Sidebar";
-import { TerminalPane } from "./components/TerminalPane";
+import { TerminalPane, type TerminalPaneHandle } from "./components/TerminalPane";
 import { ToolPane, readTool, saveTool, type ToolId } from "./components/ToolPane";
 import { RIGHT_TOOLS, ToolRail } from "./components/ToolRail";
 import { EditorPane, type EditorPaneHandle } from "./components/EditorPane";
@@ -14,6 +14,7 @@ import { useSettings } from "./lib/settings";
 import { sameTab, type DiffSource, type Tab } from "./lib/tabs";
 import {
   clearSavedWorkspace,
+  isPathInside,
   pickWorkspaceFolder,
   readSavedWorkspace,
   readSavedWorkspaces,
@@ -45,7 +46,7 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   /** 右栏看的是哪个模块 */
   const [tool, setTool] = useState<ToolId>(readTool);
-  /** 右边栏默认收起：打开时只看到侧边栏 + 终端，点终端右上角那个按钮才展开 */
+  /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(false);
   /** 全屏展示：整个右边栏铺满窗口，侧边栏和终端让位 */
   const [fullscreen, setFullscreen] = useState(false);
@@ -70,15 +71,30 @@ export default function App() {
     ) ?? "files";
   const activeTool: ToolId =
     toolVisible[tool] && (tool !== "changes" || gitReady) ? tool : firstVisible;
-  // 还没选工作区时右边栏里是「选择文件夹」提示，收起来用户就没法选目录了
-  const rightShown = rightOpen || root === null;
+  // 还没选工作区时右边栏里是「选择文件夹」提示，这时不收——而且图标条本来也要有工作区才画
+  const rightCollapsed = root !== null && !rightOpen;
 
-  const pickTool = useCallback((id: ToolId) => {
-    setTool(id);
-    saveTool(id);
-  }, []);
+  const pickTool = useCallback(
+    (id: ToolId) => {
+      // 图标条常驻，所以再点一次当前模块就是收起内容面板（照 VS Code 那套）
+      if (rightOpen && id === activeTool) {
+        setRightOpen(false);
+        return;
+      }
+      setTool(id);
+      saveTool(id);
+      setRightOpen(true);
+    },
+    [rightOpen, activeTool],
+  );
 
   const toggleFullscreen = useCallback(() => setFullscreen((on) => !on), []);
+
+  /** AI CLI 的入口挂在侧边栏的项目行上，命令要落到终端那边的活动会话里 */
+  const terminalRef = useRef<TerminalPaneHandle>(null);
+  const runAiCommand = useCallback((command: string) => {
+    terminalRef.current?.runAiCommand(command);
+  }, []);
 
   /**
    * 收起右边栏时全屏必须一起退出：那个全屏按钮在面板里，面板收起来就点不到了。
@@ -223,6 +239,37 @@ export default function App() {
     void editorRef.current?.reload(paths);
   }, []);
 
+  /**
+   * 文件树里改了名：编辑器里落在旧路径下的标签换到新路径去。
+   * model 直接丢掉，由编辑器按新路径重读——改名前的未保存改动已经落过盘了。
+   */
+  const renameOpenTabs = useCallback((from: string, to: string) => {
+    editorRef.current?.dropPaths([from]);
+    const moved = (path: string) => isPathInside(path, from);
+    const nextPath = (path: string) => to + path.slice(from.length);
+    setOpenTabs((current) =>
+      current.map((tab) => (moved(tab.path) ? { ...tab, path: nextPath(tab.path) } : tab)),
+    );
+    setActiveTab((current) =>
+      current && moved(current.path) ? { ...current, path: nextPath(current.path) } : current,
+    );
+  }, []);
+
+  /** 文件树里删了东西：落在它下面的标签一并关掉，当前标签落到它右边那个 */
+  const dropOpenTabs = useCallback(
+    (path: string) => {
+      editorRef.current?.dropPaths([path]);
+      const index = openTabs.findIndex((tab) => isPathInside(tab.path, path));
+      if (index === -1) return;
+      const rest = openTabs.filter((tab) => !isPathInside(tab.path, path));
+      setOpenTabs(rest);
+      if (activeTab && isPathInside(activeTab.path, path)) {
+        setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
+      }
+    },
+    [openTabs, activeTab],
+  );
+
   const closeTab = useCallback(
     (tab: Tab) => {
       const index = openTabs.findIndex((item) => sameTab(item, tab));
@@ -265,22 +312,18 @@ export default function App() {
             onSelect={applyWorkspace}
             onAdd={pickWorkspace}
             onRemove={removeWorkspace}
+            onRunAiCommand={runAiCommand}
           />
         </div>
         <SplitPane
           initial={52}
           min={20}
           max={78}
-          secondCollapsed={!rightShown}
+          secondCollapsed={rightCollapsed}
           firstCollapsed={fullscreen}
           first={
             // 换工作区时整个终端区重建：每个会话的 shell 都落在旧目录里，留着反而是误导
-            <TerminalPane
-              key={root ?? ""}
-              cwd={root}
-              rightOpen={rightShown}
-              onToggleRight={root === null ? undefined : toggleRight}
-            />
+            <TerminalPane key={root ?? ""} cwd={root} ref={terminalRef} />
           }
           second={
             root ? (
@@ -291,13 +334,18 @@ export default function App() {
                   changed={git.snapshot.changed}
                   visible={toolVisible}
                   onPick={pickTool}
+                  rightOpen={rightOpen}
+                  onToggleRight={toggleRight}
                 />
                 {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
                     Monaco 的撤销历史和文件树的展开态都留得住。
+                    收起面板时整块内容一起藏起来，图标条单独留着。
                     全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
                 <div
                   className={
-                    activeTool === "browser" ? "hidden" : "flex min-h-0 min-w-0 flex-1"
+                    rightOpen && activeTool !== "browser"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
                   }
                 >
                   <SplitPane
@@ -315,6 +363,9 @@ export default function App() {
                         onOpenMatch={openMatch}
                         onBeforeReplace={saveAllEdits}
                         onAfterReplace={reloadAfterReplace}
+                        onBeforeRename={saveAllEdits}
+                        onEntryRenamed={renameOpenTabs}
+                        onEntryDeleted={dropOpenTabs}
                       />
                     }
                     second={
@@ -333,7 +384,9 @@ export default function App() {
                 </div>
                 <div
                   className={
-                    activeTool === "browser" ? "flex min-h-0 min-w-0 flex-1" : "hidden"
+                    rightOpen && activeTool === "browser"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
                   }
                 >
                   <BrowserPane

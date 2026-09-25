@@ -168,6 +168,16 @@ export function createDirectory(path: string): Promise<void> {
   return invoke("fs_create_directory", { path });
 }
 
+/** 就地改名。`newName` 只是一段名字，不带分隔符；返回改名后的绝对路径。 */
+export function renameEntry(path: string, newName: string): Promise<string> {
+  return invoke<string>("fs_rename", { path, newName });
+}
+
+/** 删除文件或整个目录（递归）。**不可撤销**，调用前必须先跟用户确认。 */
+export function deleteEntry(path: string): Promise<void> {
+  return invoke("fs_delete", { path });
+}
+
 /**
  * 工作区里的目录结构变了（后端监听 + 防抖后才发）。载荷是需要重新列一遍的
  * 目录绝对路径，调用方自己决定哪些还没展开、不用管。
@@ -259,4 +269,16 @@ export function pathKey(path: string): string {
 /** 判断两个路径是不是同一个目录。 */
 export function samePath(a: string, b: string): boolean {
   return pathKey(a) === pathKey(b);
+}
+
+/**
+ * child 是不是 parent 本身、或者落在 parent 目录里。
+ * 比的是归一化后的路径段，所以 `a/bc` 不会被 `a/b` 误判成子孙；
+ * 父路径末尾的分隔符先去掉，否则盘符根（`D:\`）拼出来会是 `d://`。
+ */
+export function isPathInside(child: string, parent: string): boolean {
+  const base = pathKey(parent).replace(/\/+$/, "");
+  const kid = pathKey(child);
+  if (kid === base) return true;
+  return kid.startsWith(base ? `${base}/` : "/");
 }

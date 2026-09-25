@@ -82,6 +82,7 @@ const DEFAULTS: Settings = {
   aiCommands: [
     { name: "claude", command: "claude" },
     { name: "codebuddy", command: "codebuddy" },
+    { name: "opencode", command: "opencode" },
   ],
   // 接口地址和模型留空：不预置某一家厂商，让用户自己填
   aiBaseUrl: "",
@@ -92,12 +93,12 @@ const DEFAULTS: Settings = {
   agentPort: 0,
   terminalFontFamily: "",
   terminalFontSize: 13,
-  terminalFontBold: false,
+  terminalFontBold: true,
   terminalTheme: "",
   editorFontFamily: "",
   editorFontSize: 13,
-  editorFontBold: false,
-  editorAutoSave: "off",
+  editorFontBold: true,
+  editorAutoSave: "afterDelay",
   editorAutoSaveDelay: 1000,
   rightFilesVisible: true,
   rightChangesVisible: true,
@@ -200,6 +201,8 @@ function readSaved(): Settings {
 interface SettingsValue {
   settings: Settings;
   update: (patch: Partial<Settings>) => void;
+  /** 整块回到出厂默认，设置面板上的每一项都算在内 */
+  reset: () => void;
 }
 
 const SettingsContext = createContext<SettingsValue | null>(null);
@@ -219,8 +222,17 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setSettings((current) => ({ ...current, ...patch }));
   }, []);
 
+  // aiCommands 要拷一份：DEFAULTS 是模块级常量，直接把它的数组当成实时状态挂上去，
+  // 哪天有人在原地改这个数组，默认值就跟着被改掉了
+  const reset = useCallback(() => {
+    setSettings({
+      ...DEFAULTS,
+      aiCommands: DEFAULTS.aiCommands.map((item) => ({ ...item })),
+    });
+  }, []);
+
   return (
-    <SettingsContext.Provider value={{ settings, update }}>
+    <SettingsContext.Provider value={{ settings, update, reset }}>
       {children}
     </SettingsContext.Provider>
   );

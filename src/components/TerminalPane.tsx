@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import {
   TerminalSession,
   type TerminalSessionHandle,
@@ -6,23 +13,18 @@ import {
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
 import { AgentPane } from "./AgentPane";
-import {
-  IconBot,
-  IconChevronDown,
-  IconClose,
-  IconPanelRight,
-  IconPanelRightOpen,
-  IconPlus,
-  IconTerminal,
-} from "./icons";
+import { IconBot, IconClose, IconPlus, IconTerminal } from "./icons";
+
+export interface TerminalPaneHandle {
+  /** 在当前活动的会话里敲一条命令。AI CLI 的入口在侧边栏，执行落在这儿 */
+  runAiCommand: (command: string) => void;
+}
 
 interface TerminalPaneProps {
   /** 当前工作目录；null 表示用户还没选工作区，shell 落在用户主目录 */
   cwd: string | null;
-  /** 右边栏（文件/变更 + 编辑器）是否展开 */
-  rightOpen: boolean;
-  /** 不传就不显示切换按钮——还没选工作区时右边栏是「选择文件夹」提示，收不起来 */
-  onToggleRight?: () => void;
+  /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
+  ref?: Ref<TerminalPaneHandle>;
 }
 
 /**
@@ -32,10 +34,9 @@ interface TerminalPaneProps {
  * 开了智能体之后顶栏多出 TUI / GUI 两个入口，各自是一套完整界面（标签栏、状态条各管各的）。
  * 两套内容都挂在 DOM 上只切显隐，切回 TUI 时 shell 和滚动历史都还在。
  */
-export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProps) {
+export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
-  const [aiMenuOpen, setAiMenuOpen] = useState(false);
   // TUI/GUI 的选择提到了 AgentSessionContext：侧边栏要在 GUI 模式下才列对话历史
   const { mode, setMode } = useAgentSession();
   const nextIdRef = useRef(1);
@@ -76,20 +77,17 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
     }
   };
 
-  const runAiCommand = (command: string) => {
-    const handle = handlesRef.current.get(activeId);
-    handle?.write(`${command}\r`);
-    handle?.focus();
-  };
+  // 入口在侧边栏的项目行上，这里只把「往活动会话写命令」这个动作交出去
+  const runAiCommand = useCallback(
+    (command: string) => {
+      const handle = handlesRef.current.get(activeId);
+      handle?.write(`${command}\r`);
+      handle?.focus();
+    },
+    [activeId],
+  );
 
-  // 空命令是用户在设置里加了还没填的，不进下拉
-  const aiCommands = settings.aiCommands
-    .map((item) => ({
-      ...item,
-      name: item.name.trim(),
-      command: item.command.trim(),
-    }))
-    .filter((item) => item.command);
+  useImperativeHandle(ref, () => ({ runAiCommand }), [runAiCommand]);
 
   // 开关是在设置里随时能关的，而 mode 是共享状态：关掉之后分段控件不画了，
   // 要是还认 mode 就会把人锁在智能体面板里出不去，还白白起一个 opencode。
@@ -102,11 +100,11 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      {/* 绝对居中而不是靠 flex 排：右边还挂着右栏开关，走 flex 的话会跟着偏 */}
-      <header className="relative flex h-9 shrink-0 items-center border-b border-line px-2">
+      {/* 顶栏只剩居中的 TUI / GUI 入口，收放右边栏的按钮在图标条底部 */}
+      <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
         {/* 关掉智能体后这组按钮整个不出，终端区的行为和以前一模一样 */}
         {settings.agentEnabled && (
-          <div className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center gap-0.5 rounded bg-app p-0.5">
+          <div className="flex items-center gap-0.5 rounded bg-app p-0.5">
             <button
               type="button"
               onClick={() => setMode("terminal")}
@@ -116,7 +114,7 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
               }`}
             >
               <IconTerminal className="h-3.5 w-3.5" />
-              TUI
+              终端
             </button>
             <button
               type="button"
@@ -127,28 +125,9 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
               }`}
             >
               <IconBot className="h-3.5 w-3.5" />
-              GUI
+              智能体
             </button>
           </div>
-        )}
-
-        <div className="min-w-0 flex-1" />
-
-        {onToggleRight && (
-          <button
-            type="button"
-            onClick={onToggleRight}
-            title={rightOpen ? "收起右边栏" : "展开右边栏"}
-            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-active hover:text-fg ${
-              rightOpen ? "text-fg" : "text-fg-dim"
-            }`}
-          >
-            {rightOpen ? (
-              <IconPanelRightOpen className="h-3.5 w-3.5" />
-            ) : (
-              <IconPanelRight className="h-3.5 w-3.5" />
-            )}
-          </button>
         )}
       </header>
 
@@ -192,57 +171,6 @@ export function TerminalPane({ cwd, rightOpen, onToggleRight }: TerminalPaneProp
               <IconPlus className="h-3.5 w-3.5" />
             </button>
           </div>
-          {aiCommands.length > 1 ? (
-            <div className="relative shrink-0">
-              <button
-                type="button"
-                onClick={() => setAiMenuOpen((open) => !open)}
-                title="在当前终端中启动 AI CLI（可下拉选择命令）"
-                className={`flex h-6 shrink-0 items-center gap-0.5 rounded px-1 hover:bg-active hover:text-fg ${
-                  aiMenuOpen ? "bg-active text-fg" : "text-fg-dim"
-                }`}
-              >
-                <IconBot className="h-3.5 w-3.5" />
-                <IconChevronDown className="h-3 w-3" />
-              </button>
-              {aiMenuOpen && (
-                <>
-                  {/* 铺一层透明遮罩接住外部点击 */}
-                  <div className="fixed inset-0 z-30" onClick={() => setAiMenuOpen(false)} />
-                  <div className="absolute right-0 top-full z-40 mt-1 flex w-44 flex-col rounded border border-line-strong bg-raised py-1 shadow-lg">
-                    {aiCommands.map((item, index) => (
-                      <button
-                        key={`${item.name}-${item.command}-${index}`}
-                        type="button"
-                        onClick={() => {
-                          setAiMenuOpen(false);
-                          runAiCommand(item.command);
-                        }}
-                        title={item.name || "未命名 AI CLI"}
-                        className="truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
-                      >
-                        {item.name || "未命名 AI CLI"}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => runAiCommand(aiCommands[0]?.command ?? "")}
-              disabled={aiCommands.length === 0}
-              title={
-                aiCommands.length === 0
-                  ? "还没配置 AI CLI 命令，去设置里加一个"
-                  : `在当前终端中启动 ${aiCommands[0].name || "未命名 AI CLI"}`
-              }
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
-            >
-              <IconBot className="h-3.5 w-3.5" />
-            </button>
-          )}
         </div>
 
         <div className="relative min-h-0 flex-1">

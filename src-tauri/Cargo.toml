@@ -25,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 tauri-plugin-opener = "2.5.5"
+tauri-plugin-clipboard-manager = "2"
 regex = "1.13.1"
 notify = "8.2"
 # AI 生成提交信息用。自带 rustls 而不是 native-tls：不带 OpenSSL 依赖，

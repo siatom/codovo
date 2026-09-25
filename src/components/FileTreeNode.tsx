@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import type { FileEntry } from "../lib/types";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import type { GitMark } from "../lib/git";
@@ -17,6 +18,13 @@ export interface CreatingState {
   value: string;
 }
 
+/** 正在就地改名的那一行。`original` 用来判断用户是不是压根没改 */
+export interface RenamingState {
+  path: string;
+  original: string;
+  value: string;
+}
+
 export interface TreeController {
   expanded: ReadonlySet<string>;
   loading: ReadonlySet<string>;
@@ -32,6 +40,13 @@ export interface TreeController {
   onCreateChange: (value: string) => void;
   onCreateSubmit: () => void;
   onCreateCancel: () => void;
+  /** 右键一行：菜单由 ExplorerPane 统一画（它才知道菜单该贴哪、点完怎么刷新） */
+  openMenu: (entry: FileEntry, event: MouseEvent) => void;
+  renaming: RenamingState | null;
+  renameError: string | null;
+  onRenameChange: (value: string) => void;
+  onRenameSubmit: () => void;
+  onRenameCancel: () => void;
 }
 
 interface FileTreeNodeProps {
@@ -50,39 +65,83 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const childEntries = tree.children.get(entry.path) ?? [];
   const mark = tree.gitMarks.get(pathKey(entry.path));
   const isCreatingHere = isOpen && tree.creating?.parent === entry.path;
+  const isRenamingHere = tree.renaming?.path === entry.path;
 
   return (
     <li>
-      <button
-        type="button"
-        title={toDisplayPath(entry.path)}
-        onClick={() => (entry.isDir ? tree.toggle(entry) : tree.select(entry))}
-        className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${
-          isSelected
-            ? "bg-selected text-fg"
-            : "text-fg-muted hover:bg-hover hover:text-fg"
-        }`}
-        style={{ paddingLeft: depth * INDENT + 4 }}
-      >
-        <span className="flex w-3 shrink-0 justify-center text-fg-icon">
-          {entry.isDir &&
-            (isOpen ? (
-              <IconChevronDown className="h-3 w-3" />
-            ) : (
-              <IconChevronRight className="h-3 w-3" />
-            ))}
-        </span>
-        <span className="flex shrink-0 items-center text-fg-icon">
-          {entry.isDir ? (
-            <IconFolder className="h-3.5 w-3.5" />
-          ) : (
-            <FileTypeIcon name={entry.name} className="h-3.5 w-3.5" />
+      {isRenamingHere && tree.renaming ? (
+        <div style={{ paddingLeft: depth * INDENT + 4 }}>
+          {/* 和行按钮同一个缩进、同一个行高，改完就地变回那一行 */}
+          <input
+            autoFocus
+            value={tree.renaming.value}
+            onChange={(event) => tree.onRenameChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                tree.onRenameSubmit();
+              }
+              if (event.key === "Escape") {
+                // 别让 Esc 冒到窗口上：那里接着「退出全屏」
+                event.stopPropagation();
+                tree.onRenameCancel();
+              }
+            }}
+            onFocus={(event) => {
+              // 默认只选中主干名、把扩展名留下——改名多半只动主干（照 VS Code）。
+              // 必须等一帧：React 会在 focus 之后才把 value 写进 DOM，那一下会把
+              // 光标推到末尾，紧接着设的选中范围就白设了
+              const input = event.target;
+              const dot = entry.name.lastIndexOf(".");
+              const end = dot > 0 ? dot : entry.name.length;
+              requestAnimationFrame(() => input.setSelectionRange(0, end));
+            }}
+            onBlur={tree.onRenameSubmit}
+            aria-label="重命名"
+            className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
+          />
+          {tree.renameError && (
+            <p
+              className="py-[2px] text-[11px] text-danger"
+              style={{ paddingLeft: 20 }}
+            >
+              {tree.renameError}
+            </p>
           )}
-        </span>
-        <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-        {mark && <GitMarkBadge mark={mark} className="text-[10px]" />}
-        {isLoading && <span className="shrink-0 text-[10px] text-fg-faint">…</span>}
-      </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          title={toDisplayPath(entry.path)}
+          onClick={() => (entry.isDir ? tree.toggle(entry) : tree.select(entry))}
+          onContextMenu={(event) => tree.openMenu(entry, event)}
+          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${
+            isSelected
+              ? "bg-selected text-fg"
+              : "text-fg-muted hover:bg-hover hover:text-fg"
+          }`}
+          style={{ paddingLeft: depth * INDENT + 4 }}
+        >
+          <span className="flex w-3 shrink-0 justify-center text-fg-icon">
+            {entry.isDir &&
+              (isOpen ? (
+                <IconChevronDown className="h-3 w-3" />
+              ) : (
+                <IconChevronRight className="h-3 w-3" />
+              ))}
+          </span>
+          <span className="flex shrink-0 items-center text-fg-icon">
+            {entry.isDir ? (
+              <IconFolder className="h-3.5 w-3.5" />
+            ) : (
+              <FileTypeIcon name={entry.name} className="h-3.5 w-3.5" />
+            )}
+          </span>
+          <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+          {mark && <GitMarkBadge mark={mark} className="text-[10px]" />}
+          {isLoading && <span className="shrink-0 text-[10px] text-fg-faint">…</span>}
+        </button>
+      )}
 
       {error && (
         <p

@@ -8,8 +8,9 @@ interface SplitPaneProps {
   min?: number;
   max?: number;
   /**
-   * 收起第二块：宽度归零、分隔条也不画。
-   * 内容仍然挂载，只是被裁掉——这样收起再展开不会把 Monaco 实例重建一遍。
+   * 收起第二块：不再占分栏宽度，改由它自己的内容撑开，分隔条也不画。
+   * 右栏收起时第二块里只剩那条图标条，于是自然收成一条竖栏；
+   * 其余内容仍然挂载（调用方用 hidden 藏起来），收起再展开不会把 Monaco 实例重建一遍。
    */
   secondCollapsed?: boolean;
   /**
@@ -93,7 +94,10 @@ export function SplitPane({
 
       <div
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-        style={secondCollapsed ? { flexBasis: 0, flexGrow: 0, flexShrink: 0 } : undefined}
+        style={
+          // 收起时按内容宽度收（flexBasis auto），不是归零——右栏里那条图标条得留着
+          secondCollapsed ? { flexBasis: "auto", flexGrow: 0, flexShrink: 0 } : undefined
+        }
       >
         {second}
       </div>

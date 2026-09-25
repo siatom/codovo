@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   createDirectory,
   createFile,
+  deleteEntry,
+  isPathInside,
   listDir,
   onDirsChanged,
   pathKey,
+  renameEntry,
   searchFiles,
   toDisplayPath,
 } from "../lib/fs";
@@ -15,8 +19,10 @@ import {
   FileTreeNode,
   type CreateKind,
   type CreatingState,
+  type RenamingState,
   type TreeController,
 } from "./FileTreeNode";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { IconClose, IconFolderPlus, IconPlus, IconRefresh, IconSearch } from "./icons";
 
 interface ExplorerPaneProps {
@@ -25,6 +31,12 @@ interface ExplorerPaneProps {
   /** 归一化路径 -> git 标记，行尾那个字母 */
   gitMarks: ReadonlyMap<string, GitMark>;
   onSelect: (path: string) => void;
+  /** 改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
+  onBeforeRename: () => Promise<boolean>;
+  /** 改名成功：编辑器里指向旧路径的标签要跟着换 */
+  onRenamed: (from: string, to: string) => void;
+  /** 删除成功：编辑器里落在它下面的标签要关掉 */
+  onDeleted: (path: string) => void;
 }
 
 /** 输入停下来多久才去搜，省得每敲一个字都跑一趟目录遍历 */
@@ -36,6 +48,32 @@ const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
 
 const ICON_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
+
+/** 右键菜单：宽度和高度按 4 项算出来，用来贴着窗口边缘收一收 */
+const MENU_W = 132;
+const MENU_H = 116;
+const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+
+/** 所在目录。改名/删除之后要重新列的就是它 */
+function parentOf(path: string): string {
+  const separator = path.includes("\\") ? "\\" : "/";
+  const index = path.lastIndexOf(separator);
+  return index > 0 ? path.slice(0, index) : path;
+}
+
+/**
+ * 写系统剪贴板。走 Tauri 的 clipboard 插件而不是 `navigator.clipboard`：
+ * WebView 那套要文档有焦点、WebView2 还会弹一个系统授权框（实测点一次
+ * 「复制路径」就跳出去），插件是从 Rust 侧直接写系统剪贴板，三端都不问人。
+ */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 interface FilterTree {
   /** 工作区根下要显示的项 */
@@ -89,7 +127,15 @@ function buildFilter(root: string, hits: string[]): FilterTree {
   return { rootEntries, children, dirs };
 }
 
-export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPaneProps) {
+export function ExplorerPane({
+  root,
+  selected,
+  gitMarks,
+  onSelect,
+  onBeforeRename,
+  onRenamed,
+  onDeleted,
+}: ExplorerPaneProps) {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, FileEntry[]>>(new Map());
@@ -105,6 +151,17 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
    * 点目录则落在目录上——新建就建在选中的那一行里，目录也不例外。
    */
   const [activeRow, setActiveRow] = useState<string | null>(null);
+
+  // 右键菜单：开在哪一行、贴光标多远处。位置用 fixed 定位，所以要的是视口坐标
+  const [menu, setMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
+  const [renaming, setRenaming] = useState<RenamingState | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  /** 等着确认删除的那一项；非空时弹确认框 */
+  const [pendingDelete, setPendingDelete] = useState<FileEntry | null>(null);
+  /** 改名 / 删除正在跑，期间不再接第二次 */
+  const [busy, setBusy] = useState(false);
+  /** 改名 / 删除失败的原因，挂在树顶上 */
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // 搜索：输入框开着 + 有关键词才进入过滤模式
   const [searching, setSearching] = useState(false);
@@ -136,6 +193,12 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
     setQuery("");
     setHits(null);
     setFilterCollapsed(new Set());
+    // 就地改名/菜单里的那一行也属于旧工作区
+    setRenaming(null);
+    setRenameError(null);
+    setMenu(null);
+    setPendingDelete(null);
+    setActionError(null);
 
     // 上一个工作区的请求可能还在飞，它回来时已经属于旧工作区了，必须丢掉：
     // 否则后端会按新工作区校验旧路径，把"路径越界"盖到刚加载好的新目录上
@@ -258,6 +321,92 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
     },
     [root],
   );
+
+  /** 工作区内的相对路径，一律用 `/` 分隔——粘到代码、终端、文档里都能直接用 */
+  const relativePath = useCallback(
+    (path: string) => {
+      const full = toDisplayPath(path);
+      const base = toDisplayPath(root).replace(/\/+$/, "");
+      return full.startsWith(`${base}/`) ? full.slice(base.length + 1) : full;
+    },
+    [root],
+  );
+
+  /** 右键一行：先把它选中（跟 VS Code 一样，右键同时改变选中项），再开菜单 */
+  const openMenu = useCallback((entry: FileEntry, event: MouseEvent) => {
+    event.preventDefault();
+    setActiveRow(entry.path);
+    setActionError(null);
+    setMenu({ entry, x: event.clientX, y: event.clientY });
+  }, []);
+
+  const copyPath = useCallback(async (text: string) => {
+    setMenu(null);
+    if (!(await copyText(text))) setActionError("复制失败：系统剪贴板不可用");
+  }, []);
+
+  const startRename = useCallback((entry: FileEntry) => {
+    setMenu(null);
+    setActionError(null);
+    setRenameError(null);
+    setRenaming({ path: entry.path, original: entry.name, value: entry.name });
+  }, []);
+
+  const submitRename = useCallback(async () => {
+    if (!renaming || busy) return;
+    const name = renaming.value.trim();
+    if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
+      setRenameError("名称无效");
+      return;
+    }
+    // 名字没动就别白跑一趟后端，也免得下面把编辑器里的 model 丢掉重读
+    if (name === renaming.original) {
+      setRenaming(null);
+      return;
+    }
+
+    const { path } = renaming;
+    setBusy(true);
+    setRenameError(null);
+    try {
+      // 先落盘：下面编辑器会丢掉旧 model、按新路径重读，没存下来的改动会跟着一起没
+      if (!(await onBeforeRename())) {
+        setRenameError("有文件没保存成功，已取消重命名");
+        return;
+      }
+      const next = await renameEntry(path, name);
+      setRenaming(null);
+      setActiveRow(next);
+      onRenamed(path, next);
+      await refreshDir(parentOf(path));
+      // 过滤模式下的结果是按旧路径拼的，改完名字就作废了
+      if (filtering) closeSearch();
+    } catch (reason) {
+      setRenameError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [renaming, busy, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch]);
+
+  const confirmDelete = useCallback(async () => {
+    const entry = pendingDelete;
+    if (!entry || busy) return;
+    setPendingDelete(null);
+    setBusy(true);
+    setActionError(null);
+    try {
+      await deleteEntry(entry.path);
+      // 删掉的正好是当前那一行，锚点退回它所在的目录
+      if (activeRow && isPathInside(activeRow, entry.path)) setActiveRow(parentOf(entry.path));
+      onDeleted(entry.path);
+      await refreshDir(parentOf(entry.path));
+      if (filtering) closeSearch();
+    } catch (reason) {
+      setActionError(String(reason));
+    } finally {
+      setBusy(false);
+    }
+  }, [pendingDelete, busy, activeRow, onDeleted, refreshDir, filtering, closeSearch]);
 
   /** 当前已经在树里、值得跟着磁盘刷新的目录（含工作区根） */
   const loadedDirs = useMemo(() => {
@@ -382,6 +531,16 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
     [filtering, hits, root],
   );
 
+  const changeRename = useCallback((value: string) => {
+    setRenaming((current) => (current ? { ...current, value } : current));
+    setRenameError(null);
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenaming(null);
+    setRenameError(null);
+  }, []);
+
   /** 过滤模式下祖先目录默认全展开 */
   const filterExpanded = useMemo(() => {
     if (!filtered) return EMPTY_SET;
@@ -408,6 +567,12 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
         onCreateChange: () => {},
         onCreateSubmit: () => {},
         onCreateCancel: () => {},
+        openMenu,
+        renaming,
+        renameError,
+        onRenameChange: changeRename,
+        onRenameSubmit: submitRename,
+        onRenameCancel: cancelRename,
       };
     }
     return {
@@ -430,6 +595,12 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
         setCreating(null);
         setCreateError(null);
       },
+      openMenu,
+      renaming,
+      renameError,
+      onRenameChange: changeRename,
+      onRenameSubmit: submitRename,
+      onRenameCancel: cancelRename,
     };
   }, [
     filtered,
@@ -446,6 +617,12 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
     createError,
     submitCreate,
     onSelect,
+    openMenu,
+    renaming,
+    renameError,
+    changeRename,
+    submitRename,
+    cancelRename,
   ]);
 
   const folderName = toDisplayPath(root).split("/").filter(Boolean).pop() ?? root;
@@ -542,6 +719,11 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
                 : `${hits.length} 个匹配`}
           </p>
         )}
+        {actionError && (
+          <p className="mx-1 my-1 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
+            {actionError}
+          </p>
+        )}
         {!filtering && rootError && (
           <p className="mx-1 my-1 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
             {rootError}
@@ -584,6 +766,77 @@ export function ExplorerPane({ root, selected, gitMarks, onSelect }: ExplorerPan
           ))}
         </ul>
       </div>
+
+      {/* 删除不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
+      {pendingDelete && (
+        <ConfirmDialog
+          message={
+            pendingDelete.isDir
+              ? `删除文件夹「${pendingDelete.name}」及其中全部内容？此操作不可撤销。`
+              : `删除文件「${pendingDelete.name}」？此操作不可撤销。`
+          }
+          confirmLabel="删除"
+          onConfirm={() => void confirmDelete()}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
+
+      {/* 右键菜单。用 fixed 定位而不是绝对定位：树本身是滚动容器，
+          绝对定位的菜单会被 overflow 裁掉，靠底部的行就看不到菜单了 */}
+      {menu && (
+        <>
+          {/* 铺一层透明遮罩接住外部点击；在别处再右键一次也当关掉 */}
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: MENU_W,
+              // 贴到窗口右边/下边时往回收，别把菜单顶出可视区
+              left: Math.min(menu.x, window.innerWidth - MENU_W - 4),
+              top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => void copyPath(menu.entry.path)}
+              className={MENU_ITEM}
+            >
+              复制路径
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyPath(relativePath(menu.entry.path))}
+              className={MENU_ITEM}
+            >
+              复制相对路径
+            </button>
+            <button
+              type="button"
+              onClick={() => startRename(menu.entry)}
+              className={MENU_ITEM}
+            >
+              重命名
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingDelete(menu.entry);
+                setMenu(null);
+              }}
+              className={MENU_ITEM}
+            >
+              删除
+            </button>
+          </div>
+        </>
+      )}
     </section>
   );
 }
