@@ -23,15 +23,12 @@ lerna-debug.log*
 *.local
 
 # 编辑器
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea/
+.codebuddy/
 *.sw?
 
 # 系统
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# CodeBuddy
-.codebuddy/
