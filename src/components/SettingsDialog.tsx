@@ -20,6 +20,7 @@ import {
   resolveTerminalTheme,
 } from "../lib/terminal-themes";
 import { useTheme, DEFAULT_THEME, type ResolvedTheme, type Theme } from "../lib/theme";
+import { listShells } from "../lib/pty";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -212,6 +213,42 @@ function Select<T extends string>({
       )}
     </div>
   );
+}
+
+/** 终端程序下拉：候选由后端探测，只列本机真实存在的 shell（第一项是「自动」）。 */
+function TerminalShellSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [options, setOptions] = useState<{ value: string; label: string }[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listShells()
+      .then((list) => {
+        if (!cancelled) {
+          setOptions(list.map((item) => ({ value: item.id, label: item.label })));
+        }
+      })
+      .catch(() => {
+        // 探测失败时至少留「自动」，别让下拉空着
+        if (!cancelled) setOptions([{ value: "", label: "自动" }]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 存了但本机已经没有的 id（换了机器或那个 shell 被卸了）：补一个项，
+  // 否则 Select 找不到会显示空白。后端 resolve 时同样回落到自动，标签跟着那个语义走。
+  const merged = options.some((item) => item.value === value)
+    ? options
+    : [...options, { value, label: "自动" }];
+
+  return <Select value={value} options={merged} onChange={onChange} />;
 }
 
 /**
@@ -680,6 +717,15 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
               {tab === "terminal" && (
                 <>
+                  <Field
+                    label="终端程序"
+                    hint="只对新建的终端生效；已在运行的会话不受影响"
+                  >
+                    <TerminalShellSelect
+                      value={settings.terminalShell}
+                      onChange={(terminalShell) => update({ terminalShell })}
+                    />
+                  </Field>
                   <Field
                     label="配色主题"
                     hint="默认跟界面的深/浅色走；选了具体主题就固定下来"

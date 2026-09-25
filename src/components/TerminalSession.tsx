@@ -26,6 +26,11 @@ interface TerminalSessionProps {
   active: boolean;
   /** shell 起来后自动敲进去的一条命令（resume 会话用）。只在建实例那一次生效 */
   initialCommand?: string;
+  /**
+   * 这个会话指定的 shell 候选 id。undefined = 用设置里的默认；空串 = 明确要「自动」
+   * （由后端按平台挑）。两者得分开，否则在下拉里点「自动」会被设置里的具体 shell 顶掉。
+   */
+  shell?: string;
 }
 
 /**
@@ -35,7 +40,7 @@ interface TerminalSessionProps {
 export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
->(function TerminalSession({ cwd, active, initialCommand }, ref) {
+>(function TerminalSession({ cwd, active, initialCommand, shell }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyRef = useRef<PtyHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -139,6 +144,9 @@ export const TerminalSession = forwardRef<
     const start = async () => {
       const handle = await spawnPty({
         cwd: cwd ?? undefined,
+        // 刻意读闭包里的值、且不放进下面的依赖数组：改了 shell 只该影响之后新建的
+        // 会话，不能把正在跑的终端重建掉（那会打断命令和 AI CLI）。
+        shell: (shell ?? settings.terminalShell) || undefined,
         cols: term.cols,
         rows: term.rows,
         // StrictMode 会挂载两次，第一轮的 channel 在 cleanup 之后才收到 exit。

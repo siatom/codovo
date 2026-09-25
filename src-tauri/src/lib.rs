@@ -7,6 +7,7 @@ mod fs_api;
 mod git;
 mod pty;
 mod shell_env;
+mod shells;
 mod watcher;
 
 use tauri::Manager;
@@ -26,6 +27,7 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            shells::shell_list,
             fs_api::fs_root,
             fs_api::fs_set_root,
             fs_api::fs_list_dir,

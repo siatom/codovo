@@ -8,8 +8,25 @@ export interface PtyHandle {
   kill(): void;
 }
 
+/** 终端可选的 shell；id 为空串的那项表示「自动」，由后端按平台挑 */
+export interface ShellInfo {
+  id: string;
+  label: string;
+  /** 终端标签页上的简洁名，如 pwsh / cmd / Git Bash / zsh */
+  name: string;
+  /** 挑图标用的键，见 icons.tsx 的 ShellIcon */
+  kind: string;
+}
+
+/** 本机真实存在的 shell 候选，由后端探测（含每个 shell 该带的启动参数） */
+export async function listShells(): Promise<ShellInfo[]> {
+  return invoke<ShellInfo[]>("shell_list");
+}
+
 export async function spawnPty(options: {
   cwd?: string;
+  /** 选中的 shell 候选 id；不传走自动 */
+  shell?: string;
   cols: number;
   rows: number;
   onData: (bytes: Uint8Array) => void;
@@ -26,6 +43,7 @@ export async function spawnPty(options: {
 
   const id = await invoke<number>("pty_spawn", {
     cwd: options.cwd ?? null,
+    shell: options.shell ?? null,
     cols: options.cols,
     rows: options.rows,
     onEvent: channel,

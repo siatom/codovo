@@ -13,7 +13,9 @@ import {
   siDeepseek,
   siDocker,
   siDotenv,
+  siFishshell,
   siGit,
+  siGitforwindows,
   siGithubcopilot,
   siGnubash,
   siGo,
@@ -30,6 +32,7 @@ import {
   siMarkdown,
   siMistralai,
   siNpm,
+  siNushell,
   siOllama,
   siOpenjdk,
   siOpencode,
@@ -51,6 +54,7 @@ import {
   siXml,
   siYaml,
   siYarn,
+  siZsh,
 } from "simple-icons";
 
 /**
@@ -542,5 +546,32 @@ export function AgentLogo({
 }) {
   const logo = AGENT_LOGOS[agentKey(command)] ?? AGENT_LOGOS[agentKey(name)];
   if (!logo) return <IconBot className={className} />;
+  return <BrandGlyph icon={logo} className={className} />;
+}
+
+/* ---------- 终端类型的品牌 logo ---------- */
+
+/**
+ * 终端标签页上的 shell 图标。有品牌 logo 的走品牌色（和文件类型图标一个路子），
+ * PowerShell / cmd / WSL 在 simple-icons 里没有对应条目，落回单色终端图标。
+ * kind 由后端给（见 shells.rs 的 describe），认不出的按 shell 处理。
+ */
+const SHELL_LOGOS: Record<string, BrandIcon> = {
+  zsh: siZsh,
+  bash: siGnubash,
+  fish: siFishshell,
+  nushell: siNushell,
+  "git-bash": siGitforwindows,
+};
+
+export function ShellIcon({
+  kind,
+  className = "h-3.5 w-3.5",
+}: {
+  kind: string;
+  className?: string;
+}) {
+  const logo = SHELL_LOGOS[kind];
+  if (!logo) return <IconTerminal className={className} />;
   return <BrandGlyph icon={logo} className={className} />;
 }

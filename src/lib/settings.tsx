@@ -30,6 +30,8 @@ export interface Settings {
   agentCommand: string;
   /** 智能体服务监听的端口；0 表示自动挑一个空闲的 */
   agentPort: number;
+  /** 终端启动的 shell 候选 id；空串表示自动（后端按平台挑） */
+  terminalShell: string;
   /** 终端字体（CSS font-family），留空用默认 */
   terminalFontFamily: string;
   /** 终端字号（px） */
@@ -91,6 +93,7 @@ const DEFAULTS: Settings = {
   agentEnabled: true,
   agentCommand: "opencode",
   agentPort: 0,
+  terminalShell: "",
   terminalFontFamily: "",
   terminalFontSize: 13,
   terminalFontBold: true,
@@ -169,6 +172,7 @@ function readSaved(): Settings {
     agentEnabled: asBoolean(raw.agentEnabled, DEFAULTS.agentEnabled),
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
+    terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
     terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),

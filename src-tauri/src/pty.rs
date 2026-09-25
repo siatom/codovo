@@ -57,36 +57,6 @@ impl PtyState {
     }
 }
 
-#[cfg(windows)]
-fn on_path(name: &str) -> bool {
-    match std::env::var_os("PATH") {
-        Some(path) => std::env::split_paths(&path).any(|dir| dir.join(name).is_file()),
-        None => false,
-    }
-}
-
-#[cfg(windows)]
-fn default_shell() -> (String, Vec<String>) {
-    for candidate in ["pwsh.exe", "powershell.exe"] {
-        if on_path(candidate) {
-            return (candidate.to_string(), vec!["-NoLogo".to_string()]);
-        }
-    }
-    let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-    (comspec, Vec::new())
-}
-
-#[cfg(unix)]
-fn default_shell() -> (String, Vec<String>) {
-    // 从 Finder/Dock 启动的 .app 继承的是 launchd 环境，里面没有 SHELL
-    // （实测 `launchctl getenv SHELL` 为空），所以打包后必然走 fallback，
-    // 只有从终端 `pnpm tauri dev` 起才拿得到。macOS 的默认 shell 是 zsh，
-    // /bin/bash 还停在 2007 年的 3.2，别把用户退到那儿去。
-    let shell = crate::shell_env::default_shell();
-    let args = crate::shell_env::login_args(&shell);
-    (shell, args)
-}
-
 /// 没选工作区时 shell 的落点。不设的话会继承应用进程的 cwd，
 /// 打包后从开始菜单启动时那往往是 System32 之类的地方。
 /// cli_sessions 也要用（会话记录在用户主目录下），所以放开到 crate 内。
@@ -109,7 +79,13 @@ struct SpawnedShell {
 }
 
 /// 起一个真实 shell。抽出来是为了能在单元测试里直接验证 PTY 通路。
-fn open_shell(cwd: Option<&str>, cols: u16, rows: u16) -> Result<SpawnedShell, String> {
+/// `shell` 是设置里选中的候选 id，空/None 表示走自动（见 shells::resolve_shell）。
+fn open_shell(
+    cwd: Option<&str>,
+    cols: u16,
+    rows: u16,
+    shell: Option<&str>,
+) -> Result<SpawnedShell, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -120,7 +96,7 @@ fn open_shell(cwd: Option<&str>, cols: u16, rows: u16) -> Result<SpawnedShell, S
         })
         .map_err(|e| format!("打开 PTY 失败: {e}"))?;
 
-    let (program, args) = default_shell();
+    let (program, args) = crate::shells::resolve_shell(shell);
     let mut cmd = CommandBuilder::new(&program);
     for arg in &args {
         cmd.arg(arg);
@@ -168,13 +144,15 @@ pub fn pty_spawn(
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    // 设置里选的 shell 候选 id；null 表示自动
+    shell: Option<String>,
 ) -> Result<u32, String> {
-    let shell = open_shell(cwd.as_deref(), cols, rows)?;
-    let killer = shell.child.clone_killer();
-    let master = shell.master;
-    let writer = shell.writer;
-    let mut reader = shell.reader;
-    let mut child = shell.child;
+    let spawned = open_shell(cwd.as_deref(), cols, rows, shell.as_deref())?;
+    let killer = spawned.child.clone_killer();
+    let master = spawned.master;
+    let writer = spawned.writer;
+    let mut reader = spawned.reader;
+    let mut child = spawned.child;
 
     let id = state.inner.next_id.fetch_add(1, Ordering::Relaxed);
 
@@ -276,8 +254,8 @@ mod tests {
     /// 所以在这里跑一次真实的 PTY 往返：起 shell -> 写命令 -> 读结果。
     #[test]
     fn shell_roundtrip_through_pty() {
-        let (program, _) = default_shell();
-        let mut shell = open_shell(None, 120, 30).expect("打开 PTY 失败");
+        let (program, _) = crate::shells::resolve_shell(None);
+        let mut shell = open_shell(None, 120, 30, None).expect("打开 PTY 失败");
         let lower = program.to_lowercase();
         let is_cmd = lower.ends_with("cmd.exe");
         let is_pwsh = lower.ends_with("pwsh")

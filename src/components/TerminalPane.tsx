@@ -12,8 +12,14 @@ import {
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
+import { listShells, type ShellInfo } from "../lib/pty";
 import { AgentPane } from "./AgentPane";
-import { IconClose, IconPlus } from "./icons";
+import { IconChevronDown, IconClose, IconPlus, ShellIcon } from "./icons";
+
+/** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
+const SHELL_MENU_W = 200;
+const SHELL_MENU_ITEM =
+  "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 export interface TerminalPaneHandle {
   /** 在当前活动的会话里敲一条命令。AI CLI 的入口在侧边栏，执行落在这儿 */
@@ -51,7 +57,22 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
   const { mode, setMode } = useAgentSession();
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
+  /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
+  const shellByIdRef = useRef(new Map<number, string>());
+  const addButtonRef = useRef<HTMLDivElement>(null);
+  const [shellMenuOpen, setShellMenuOpen] = useState(false);
+  const [shellOptions, setShellOptions] = useState<ShellInfo[]>([]);
+  const [shellMenuPos, setShellMenuPos] = useState<{ left: number; top: number } | null>(
+    null,
+  );
   const { settings } = useSettings();
+
+  // 标签页要显示每个会话的 shell 图标和名字，所以候选一挂载就拉，不用等到点开菜单
+  useEffect(() => {
+    listShells()
+      .then(setShellOptions)
+      .catch(() => setShellOptions([{ id: "", label: "自动", name: "终端", kind: "shell" }]));
+  }, []);
 
   const attachHandle = useCallback(
     (id: number) => (handle: TerminalSessionHandle | null) => {
@@ -61,11 +82,24 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
     [],
   );
 
-  const addSession = () => {
+  // shell 不传 = 用设置里的默认；传空串 = 明确点的是「自动」（后端自己挑）。
+  // 两者必须分开：用户在菜单里点「自动」时不该被设置里的具体 shell 顶掉。
+  const addSession = (shell?: string) => {
     const id = nextIdRef.current;
     nextIdRef.current += 1;
+    if (shell !== undefined) shellByIdRef.current.set(id, shell);
     setSessions((list) => [...list, id]);
     setActiveId(id);
+  };
+
+  const toggleShellMenu = () => {
+    if (shellMenuOpen) {
+      setShellMenuOpen(false);
+      return;
+    }
+    const rect = addButtonRef.current?.getBoundingClientRect();
+    if (rect) setShellMenuPos({ left: rect.left, top: rect.bottom + 4 });
+    setShellMenuOpen(true);
   };
 
   const closeSession = (id: number) => {
@@ -167,6 +201,13 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
           <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
             {sessions.map((id, index) => {
               const isActive = id === activeId;
+              // 会话自己在下拉里选过就用它，否则跟着设置走，都没有就是「自动」
+              const chosen = shellByIdRef.current.get(id);
+              const shell =
+                shellOptions.find(
+                  (item) =>
+                    item.id === (chosen !== undefined ? chosen : settings.terminalShell),
+                ) ?? shellOptions[0];
               return (
                 <div
                   key={id}
@@ -177,9 +218,11 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
                   <button
                     type="button"
                     onClick={() => setActiveId(id)}
-                    className="max-w-[140px] truncate py-0.5 pl-2 text-[11px]"
+                    title={shell?.label ?? `终端 ${index + 1}`}
+                    className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
                   >
-                    终端 {index + 1}
+                    <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
+                    <span className="truncate">{shell?.name ?? `终端 ${index + 1}`}</span>
                   </button>
                   <button
                     type="button"
@@ -192,14 +235,24 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
                 </div>
               );
             })}
-            <button
-              type="button"
-              onClick={addSession}
-              title="新建终端"
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-            >
-              <IconPlus className="h-3.5 w-3.5" />
-            </button>
+            <div ref={addButtonRef} className="flex shrink-0 items-center">
+              <button
+                type="button"
+                onClick={() => addSession()}
+                title="新建终端"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+              >
+                <IconPlus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={toggleShellMenu}
+                title="选择终端程序"
+                className="flex h-5 w-4 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+              >
+                <IconChevronDown className="h-3 w-3" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -209,6 +262,8 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
               key={id}
               ref={attachHandle(id)}
               cwd={cwd}
+              // undefined = 跟随设置里的默认；只有在下拉里明确选过 shell 的会话才有值
+              shell={shellByIdRef.current.get(id)}
               // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
               initialCommand={launchFor?.id === id ? launchFor.command : undefined}
               // 和 view 挂钩：切回终端时 TerminalSession 的 active effect 会补一次
@@ -222,6 +277,39 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
       <div className={view === "agent" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
         <AgentPane cwd={cwd} active={view === "agent"} />
       </div>
+
+      {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，
+          绝对定位的菜单会被 overflow 裁掉 */}
+      {shellMenuOpen && shellMenuPos && (
+        <>
+          {/* 铺一层透明遮罩接住外部点击 */}
+          <div className="fixed inset-0 z-30" onClick={() => setShellMenuOpen(false)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: SHELL_MENU_W,
+              // 贴到窗口右边就往回收，别把菜单顶出可视区
+              left: Math.min(shellMenuPos.left, window.innerWidth - SHELL_MENU_W - 4),
+              top: shellMenuPos.top,
+            }}
+          >
+            {shellOptions.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                title={item.label}
+                onClick={() => {
+                  setShellMenuOpen(false);
+                  addSession(item.id);
+                }}
+                className={SHELL_MENU_ITEM}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </section>
   );
 }
