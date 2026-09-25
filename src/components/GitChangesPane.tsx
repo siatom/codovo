@@ -45,6 +45,7 @@ import {
   IconPlus,
   IconRefresh,
   IconSparkle,
+  IconSync,
   IconUndo,
 } from "./icons";
 
@@ -169,12 +170,16 @@ function dirOf(relative: string): string {
 const TEXT_INPUT =
   "w-full rounded-md border border-line-strong bg-surface px-2 py-1 text-[12px] text-fg outline-none focus:border-accent";
 
-const COMMIT_BUTTON =
-  "shrink-0 rounded border border-accent-line px-2 py-0.5 text-[11px] text-accent-soft hover:bg-active disabled:opacity-50";
+/**
+ * 主操作（提交 / 同步更改）：面板里同一位置的按钮会在这两个动作间切换，
+ * 所以样式共用一套——实心整宽，和右栏其它主按钮一致。
+ */
+const PRIMARY_BUTTON =
+  "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
 
-/** AI 生成：比提交弱一档的次要按钮，别抢了主操作的颜色 */
-const GENERATE_BUTTON =
-  "flex shrink-0 items-center gap-1 rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-50";
+/** AI 生成：塞进提交框内部的纯图标按钮，平时淡、悬停才亮 */
+const GENERATE_ICON =
+  "absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
 const GROUP_ACTION =
   "shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent";
@@ -439,14 +444,23 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     });
   }, [message, run]);
 
-  /** 让 AI 按暂存区改动生成提交信息，填进框里由用户自己确认，不自动提交 */
+  /**
+   * 让 AI 生成提交信息填进框里由用户自己确认，不自动提交。
+   *
+   * 暂存区空着、但工作区有改动时，先把改动全部暂存再生成——否则 `diff --cached`
+   * 是空的，什么也生成不出来。只要有暂存（哪怕只是部分），就只按暂存区生成，
+   * 不擅自把剩下那些没暂存的改动也带上。
+   */
   const generate = useCallback(() => {
     const { aiBaseUrl, aiModel, aiApiKey } = settings;
     if (!aiBaseUrl.trim() || !aiModel.trim() || !aiApiKey.trim()) {
       setError("请先在「设置 → AI」里填写接口地址、模型和密钥");
       return;
     }
+    const stageAllFirst = staged.length === 0 && unstaged.length > 0;
     void run("generate", async () => {
+      // 暂存返回新状态，跟着一起落地，免得按钮还停在"未暂存"的旧状态上
+      const payload = stageAllFirst ? await gitStage() : undefined;
       setMessage(
         await generateCommitMessage({
           baseUrl: aiBaseUrl.trim(),
@@ -454,8 +468,9 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           model: aiModel.trim(),
         }),
       );
+      return payload;
     });
-  }, [settings, run]);
+  }, [settings, run, staged.length, unstaged.length]);
 
   /** 手动刷新：状态和历史一起重拉，省得再放一个按钮 */
   const reloadAll = useCallback(() => {
@@ -695,7 +710,10 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   if (!snapshot.isRepo) return null;
 
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
-  const canGenerate = staged.length > 0 && busy === null;
+  // 有暂存就按暂存生成；只有未暂存的改动也能生成（点下去会先全部暂存）
+  const canGenerate = (staged.length > 0 || unstaged.length > 0) && busy === null;
+  // 改动全都提交完了、本地还领先上游：主按钮从「提交」切成「同步更改」
+  const showSync = staged.length === 0 && unstaged.length === 0 && snapshot.ahead > 0;
   const notice =
     busy === "fetch" || busy === "pull" || busy === "push" ? SYNC_NOTICE[busy] : null;
 
@@ -772,19 +790,33 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 py-2">
-        <textarea
-          ref={messageRef}
-          rows={1}
-          value={message}
-          onChange={(event) => {
-            setMessage(event.target.value);
-            if (error) setError(null);
-          }}
-          onKeyDown={onMessageKeyDown}
-          placeholder="提交信息（Ctrl+Enter 提交）"
-          style={messageHeight === null ? undefined : { height: messageHeight }}
-          className={`${TEXT_INPUT} shrink-0 resize-none leading-4`}
-        />
+        {/* 生成按钮放进输入框内部右侧，外面那排整条让给主操作（提交 / 同步） */}
+        <div className="relative shrink-0">
+          <textarea
+            ref={messageRef}
+            rows={1}
+            value={message}
+            onChange={(event) => {
+              setMessage(event.target.value);
+              if (error) setError(null);
+            }}
+            onKeyDown={onMessageKeyDown}
+            placeholder="提交信息（Ctrl+Enter 提交）"
+            style={messageHeight === null ? undefined : { height: messageHeight }}
+            className={`${TEXT_INPUT} block resize-none pr-8 leading-4`}
+          />
+          <button
+            type="button"
+            onClick={generate}
+            disabled={!canGenerate}
+            title="用 AI 生成提交信息（没有暂存时会先全部暂存）"
+            className={GENERATE_ICON}
+          >
+            <IconSparkle
+              className={`h-3.5 w-3.5 ${busy === "generate" ? "animate-pulse" : ""}`}
+            />
+          </button>
+        </div>
 
         {/* 拖动条改提交框高度：拖过之后高度定死，内容多了框内自己滚动。
             手柄做成本身就有 6px 高、再用负边距把上下 gap-1.5 抵消掉，
@@ -803,20 +835,27 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
         />
 
         <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={commit} disabled={!canCommit} className={COMMIT_BUTTON}>
-            {busy === "commit" ? "提交中…" : "提交"}
-          </button>
-          <button
-            type="button"
-            onClick={generate}
-            disabled={!canGenerate}
-            title="用 AI 根据暂存区的改动生成提交信息"
-            className={GENERATE_BUTTON}
-          >
-            <IconSparkle className="h-3 w-3" />
-            {busy === "generate" ? "生成中…" : "生成"}
-          </button>
-          {staged.length === 0 && (
+          {staged.length > 0 ? (
+            <button type="button" onClick={commit} disabled={!canCommit} className={PRIMARY_BUTTON}>
+              {busy === "commit" ? "提交中…" : "提交"}
+            </button>
+          ) : showSync ? (
+            // 改动都提交完了、本地还领先上游：主操作顺势变成把提交推上去
+            <button
+              type="button"
+              onClick={push}
+              disabled={busy !== null}
+              className={PRIMARY_BUTTON}
+            >
+              <IconSync className={`h-3.5 w-3.5 ${busy === "push" ? "animate-spin" : ""}`} />
+              {busy === "push" ? "同步中…" : `同步更改 ${snapshot.ahead} 个`}
+            </button>
+          ) : (
+            <button type="button" disabled className={PRIMARY_BUTTON}>
+              提交
+            </button>
+          )}
+          {staged.length === 0 && !showSync && (
             <span className="min-w-0 truncate text-[11px] text-fg-faint">
               先暂存要提交的改动
             </span>
