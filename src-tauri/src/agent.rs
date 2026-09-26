@@ -19,6 +19,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::dev;
 use crate::fs_api::FsState;
 
 /// SSE 事件推给前端用的事件名。全局只有一个 agent 服务，固定名就够，
@@ -178,6 +179,22 @@ pub struct AgentConfig {
     /// 对话面板里选中的 primary agent；空则不下发 default_agent
     #[serde(default)]
     primary: String,
+}
+
+impl AgentConfig {
+    /// 同 `ai::AiConfig::apply`：开发调试时让 `src-tauri/.env` 优先。逐字段来，
+    /// 只写了一个键的 `.env` 不会把另外两个字段清空。
+    fn apply(&mut self, overrides: &dev::AiOverrides) {
+        if let Some(base_url) = &overrides.base_url {
+            self.base_url = base_url.clone();
+        }
+        if let Some(model) = &overrides.model {
+            self.model = model.clone();
+        }
+        if let Some(api_key) = &overrides.api_key {
+            self.api_key = api_key.clone();
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1054,11 +1071,18 @@ pub async fn agent_start(
     fs_state: tauri::State<'_, FsState>,
     config: AgentConfig,
 ) -> Result<AgentInfo, String> {
+    // 覆盖要赶在下面判空之前：面板留空、只写 .env 时也得能起
+    let mut config = config;
+    config.apply(&dev::read_overrides());
     let base_url = config.base_url.trim().trim_end_matches('/').to_string();
     let api_key = config.api_key.trim().to_string();
     let model = config.model.trim().to_string();
     if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
-        return Err("请先在「设置 → AI」里填写接口地址、模型和密钥".to_string());
+        return Err(if cfg!(debug_assertions) {
+            "请先在「设置 → AI」里填写接口地址、模型和密钥，或写进 src-tauri/.env".to_string()
+        } else {
+            "请先在「设置 → AI」里填写接口地址、模型和密钥".to_string()
+        });
     }
 
     // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await

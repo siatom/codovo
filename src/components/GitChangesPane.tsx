@@ -29,8 +29,7 @@ import {
   type GitController,
   type GitMark,
 } from "../lib/git";
-import { explainChange, generateCommitMessage } from "../lib/ai";
-import { useSettings } from "../lib/settings";
+import { explainChange, generateCommitMessage, useEffectiveAiConfig } from "../lib/ai";
 import type { DiffSource } from "../lib/tabs";
 import type { GitCommit, GitCommitFile, GitStatusPayload, DiscardSource } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
@@ -657,7 +656,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const explainSeq = useRef(0);
 
   const { snapshot, refresh, applyStatus } = git;
-  const { settings } = useSettings();
+  const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
   const { changes } = snapshot;
 
   const staged = useMemo(() => changes.filter(isStaged), [changes]);
@@ -712,8 +711,8 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
    * 不擅自把剩下那些没暂存的改动也带上。
    */
   const generate = useCallback(() => {
-    const { aiBaseUrl, aiModel, aiApiKey } = settings;
-    if (!aiBaseUrl.trim() || !aiModel.trim() || !aiApiKey.trim()) {
+    // 配置齐不齐由 useEffectiveAiConfig 判（.env 覆盖也算数），文案和原来一致
+    if (!aiReady) {
       setError("请先在「设置 → AI」里填写接口地址、模型和密钥");
       return;
     }
@@ -721,16 +720,10 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     void run("generate", async () => {
       // 暂存返回新状态，跟着一起落地，免得按钮还停在"未暂存"的旧状态上
       const payload = stageAllFirst ? await gitStage() : undefined;
-      setMessage(
-        await generateCommitMessage({
-          baseUrl: aiBaseUrl.trim(),
-          apiKey: aiApiKey.trim(),
-          model: aiModel.trim(),
-        }),
-      );
+      setMessage(await generateCommitMessage(aiConfig));
       return payload;
     });
-  }, [settings, run, staged.length, unstaged.length]);
+  }, [aiConfig, aiReady, run, staged.length, unstaged.length]);
 
   /** 右键一个改动行：开菜单。菜单由这里统一画（它才知道该贴哪、点完怎么解读） */
   const openMenu = useCallback((change: GitChange, staged: boolean, event: ReactMouseEvent) => {
@@ -747,12 +740,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     (change: GitChange, stagedRow: boolean) => {
       setMenu(null);
       const title = change.relative;
-      const config = {
-        baseUrl: settings.aiBaseUrl.trim(),
-        apiKey: settings.aiApiKey.trim(),
-        model: settings.aiModel.trim(),
-      };
-      if (!config.baseUrl || !config.apiKey || !config.model) {
+      if (!aiReady) {
         setExplain({
           title,
           text: null,
@@ -763,7 +751,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
       const seq = (explainSeq.current += 1);
       setExplain({ title, text: null, error: null });
-      void explainChange(config, change.path, stagedRow ? { mode: "staged" } : { mode: "unstaged" })
+      void explainChange(aiConfig, change.path, stagedRow ? { mode: "staged" } : { mode: "unstaged" })
         .then((text) => {
           if (explainSeq.current === seq) setExplain({ title, text, error: null });
         })
@@ -771,7 +759,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
           if (explainSeq.current === seq) setExplain({ title, text: null, error: String(reason) });
         });
     },
-    [settings],
+    [aiConfig, aiReady],
   );
 
   const closeExplain = useCallback(() => {

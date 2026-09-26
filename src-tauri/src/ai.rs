@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use crate::dev;
 use crate::fs_api::FsState;
 use crate::git::{self, DiffSource};
 
@@ -50,13 +51,32 @@ pub struct AiConfig {
 }
 
 impl AiConfig {
+    /// 开发调试时用 `src-tauri/.env` 里的值盖掉前端传来的值。逐字段来：只写了一个键
+    /// 的 `.env` 不会把另外两个字段清空。
+    fn apply(&mut self, overrides: &dev::AiOverrides) {
+        if let Some(base_url) = &overrides.base_url {
+            self.base_url = base_url.clone();
+        }
+        if let Some(model) = &overrides.model {
+            self.model = model.clone();
+        }
+        if let Some(api_key) = &overrides.api_key {
+            self.api_key = api_key.clone();
+        }
+    }
+
     /// 三个字段都填全了才去请求，缺一个就报同一句话——用户知道该去哪儿补。
     fn ready(&self) -> Result<(String, String, String), String> {
         let base_url = self.base_url.trim().trim_end_matches('/').to_string();
         let api_key = self.api_key.trim().to_string();
         let model = self.model.trim().to_string();
         if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
-            return Err("请先在「设置 → AI」里填写接口地址、模型和密钥".to_string());
+            // 开发调试版可以只写 src-tauri/.env，提示里带上这条，免得以为没救
+            return Err(if cfg!(debug_assertions) {
+                "请先在「设置 → AI」里填写接口地址、模型和密钥，或写进 src-tauri/.env".to_string()
+            } else {
+                "请先在「设置 → AI」里填写接口地址、模型和密钥".to_string()
+            });
         }
         Ok((base_url, api_key, model))
     }
@@ -134,6 +154,9 @@ pub async fn ai_generate_commit_message(
     state: tauri::State<'_, FsState>,
     config: AiConfig,
 ) -> Result<String, String> {
+    // 覆盖要赶在 ready() 之前：面板留空、只写 .env 时也得能跑
+    let mut config = config;
+    config.apply(&dev::read_overrides());
     // 先挡一道：配置不全时不必去读 diff
     config.ready()?;
 
@@ -163,6 +186,9 @@ pub async fn ai_explain_change(
     path: String,
     source: git::DiffSource,
 ) -> Result<String, String> {
+    // 同 ai_generate_commit_message：覆盖必须早于 ready()
+    let mut config = config;
+    config.apply(&dev::read_overrides());
     config.ready()?;
 
     // 同 ai_generate_commit_message：git 是同步阻塞的，先跑完再 await

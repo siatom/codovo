@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "../lib/settings";
+import { useEffectiveAiConfig } from "../lib/ai";
 import {
   EMPTY_CONVERSATION,
   abortAgentSession,
@@ -122,7 +123,9 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const { aiBaseUrl, aiModel, aiApiKey, agentCommand, agentPort } = settings;
+  const { agentCommand, agentPort } = settings;
+  // AI 三项走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
+  const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   // 生效层（全局 + 当前项目已合并）与 primary agent 候选。选择器存的是名字，
   // 可能已被删掉 / 改名，所以实际用的是「候选里还有没有它」的结果，没有就回落 build。
@@ -170,7 +173,7 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
       setPhase("error");
       return;
     }
-    if (!aiBaseUrl.trim() || !aiModel.trim() || !aiApiKey.trim()) {
+    if (!aiReady) {
       setFatal("请先在「设置 → AI」里填写接口地址、模型和密钥，智能体复用这份配置");
       setPhase("error");
       return;
@@ -183,9 +186,9 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
       const info = await startAgent({
         command: agentCommand,
         port: agentPort,
-        baseUrl: aiBaseUrl.trim(),
-        model: aiModel.trim(),
-        apiKey: aiApiKey.trim(),
+        baseUrl: aiConfig.baseUrl,
+        model: aiConfig.model,
+        apiKey: aiConfig.apiKey,
         rules: layer.rules,
         memory: layer.memory,
         skills: layer.skills,
@@ -217,9 +220,8 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
     setPhase("ready");
   }, [
     cwd,
-    aiBaseUrl,
-    aiModel,
-    aiApiKey,
+    aiConfig,
+    aiReady,
     agentCommand,
     agentPort,
     layer,
@@ -322,14 +324,14 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
       }
     }
 
-    void sendAgentMessage(sessionId, text, aiModel.trim(), primary).catch((reason) => {
+    void sendAgentMessage(sessionId, text, aiConfig.model, primary).catch((reason) => {
       setConversation((current) => ({
         ...current,
         streaming: false,
         error: String(reason),
       }));
     });
-  }, [input, conversation.streaming, aiModel, primary, cwd, setCurrentId, refreshSessions]);
+  }, [input, conversation.streaming, aiConfig, primary, cwd, setCurrentId, refreshSessions]);
 
   const stop = useCallback(() => {
     const sessionId = currentIdRef.current;
@@ -448,7 +450,7 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
           opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
-          {aiModel.trim() || "未配置模型"}
+          {aiConfig.model || "未配置模型"}
         </span>
         {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态与 agent 选择 */}
         <PrimaryAgentPicker

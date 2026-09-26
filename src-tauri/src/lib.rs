@@ -3,6 +3,7 @@
 mod agent;
 mod ai;
 mod cli_sessions;
+mod dev;
 mod fs_api;
 mod git;
 mod pty;
@@ -56,6 +57,7 @@ pub fn run() {
             git::git_add_to_ignore,
             ai::ai_generate_commit_message,
             ai::ai_explain_change,
+            dev::dev_ai_overrides,
             cli_sessions::cli_list_sessions,
             agent::agent_start,
             agent::agent_status,

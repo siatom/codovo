@@ -29,6 +29,7 @@ import {
 } from "../lib/terminal-themes";
 import { useTheme, DEFAULT_THEME, type ResolvedTheme, type Theme } from "../lib/theme";
 import { listShells } from "../lib/pty";
+import { useDevAiOverrides } from "../lib/ai";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -805,6 +806,13 @@ function LayerEditor({
 
 export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const { settings, update, reset } = useSettings();
+  // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
+  const devAi = useDevAiOverrides();
+  const overriddenAi = [
+    devAi.baseUrl ? "接口地址" : "",
+    devAi.model ? "模型" : "",
+    devAi.apiKeySet ? "API 密钥" : "",
+  ].filter((label) => label !== "");
   const { theme, preference, setPreference } = useTheme();
   const [tab, setTab] = useState<TabId>("appearance");
   /** 「智能体」分类的作用域：全局层还是当前项目的层 */
@@ -1361,6 +1369,12 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                         className={TEXT_INPUT}
                       />
                     </Field>
+                    {overriddenAi.length > 0 && (
+                      <p className="text-[11px] leading-relaxed text-fg-faint">
+                        开发调试：src-tauri/.env 覆盖了「{overriddenAi.join("、")}」，
+                        上面的输入框改不动这几项。改完重开应用生效；已在跑的智能体要停掉再起。
+                      </p>
+                    )}
                   </Section>
 
                   <Section
