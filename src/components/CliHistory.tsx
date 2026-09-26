@@ -1,4 +1,9 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { formatTime } from "../lib/agent";
 import {
   CLI_PROVIDERS,
@@ -35,6 +40,31 @@ const CLI_MENU_ITEM =
 
 const HINT = "px-2 py-1 text-[11px] text-fg-faint";
 
+const HEIGHT_KEY = "codedock.cliHistoryHeight";
+
+/** 自动刷新间隔。列表是 CLI 自己写在磁盘上的，界面不知道它什么时候变 */
+const POLL_MS = 20000;
+
+/** 列表区能拖到多高/多矮；默认值就是改动前写死的 max-h-56（224px） */
+const MIN_HEIGHT = 80;
+const MAX_HEIGHT = 600;
+const DEFAULT_HEIGHT = 224;
+
+/** 上面至少要留出来的高度：侧边栏标题 + 打开项目 + 项目列表两三行 */
+const RESERVED_ABOVE = 200;
+
+function readHeight(): number {
+  try {
+    const saved = Number(window.localStorage.getItem(HEIGHT_KEY));
+    if (Number.isFinite(saved) && saved >= MIN_HEIGHT && saved <= MAX_HEIGHT) {
+      return saved;
+    }
+  } catch {
+    // 读不到就用默认值
+  }
+  return DEFAULT_HEIGHT;
+}
+
 /**
  * 侧边栏底部的「当前 AI CLI 的会话历史」。
  *
@@ -55,17 +85,27 @@ export function CliHistory({
   const [error, setError] = useState<string | null>(null);
   /** 手动刷新用：加一就重跑下面的 effect */
   const [nonce, setNonce] = useState(0);
+  /** 本次刷新是不是自动触发的；是的话不显示加载态（见下面的 effect） */
+  const pollRef = useRef(false);
   /** 选择器菜单的位置，fixed 定位 */
   const [picker, setPicker] = useState<{ x: number; y: number } | null>(null);
+  /** 列表区高度，可拖上边缘改 */
+  const [height, setHeight] = useState(readHeight);
+  const [dragging, setDragging] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** 按下时的起点：拖动中每次移动都拿它算位移，避免依赖 state 的旧值 */
+  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   const current = commands.find((item) => item.command === value);
   const provider = cliProvider(value, current?.name ?? "");
   const providerKey = provider?.key ?? "";
 
-  // 切项目 / 换 CLI / 展开 / 手动刷新都走这里。不做轮询：codebuddy / claude 一次
-  // 刷新要翻一百多个记录文件，opencode 还要起个子进程，而列表只在真的跑过或
-  // resume 过 CLI 之后才变，那两种动作界面都知道
+  // 切项目 / 换 CLI / 展开 / 手动刷新 / 自动刷新都走这里
   useEffect(() => {
+    // 自动刷新不显示加载态：列表本来就有内容，每 20 秒让刷新按钮转一下太吵。
+    // 先消费掉标记，免得被折叠 / 切项目这些早退路径留在原地
+    const silent = pollRef.current;
+    pollRef.current = false;
     // 折叠着就别去读盘了
     if (!providerKey || !open) {
       setItems([]);
@@ -73,7 +113,7 @@ export function CliHistory({
       return;
     }
     let cancelled = false;
-    setLoading(true);
+    if (!silent) setLoading(true);
     // value 传的是命令本身：opencode 那一支要用它去起 CLI
     listCliSessions(providerKey, cwd, value)
       .then((list) => {
@@ -87,6 +127,8 @@ export function CliHistory({
         setError(String(reason));
       })
       .finally(() => {
+        // 这里不区分 silent：静默刷新时它本来就是 false，重置一次无副作用；
+        // 反倒是手动刷新被静默刷新顶掉时，得靠它把转圈收回来
         if (!cancelled) setLoading(false);
       });
     // 丢掉作废请求的迟到结果（换项目后旧的慢请求可能后回来）
@@ -94,6 +136,29 @@ export function CliHistory({
       cancelled = true;
     };
   }, [cwd, providerKey, value, open, nonce]);
+
+  /**
+   * 自动刷新。CLI 的会话记录由它自己写盘，界面无从得知何时变了，所以自己拉：
+   * 窗口可见时定时拉一次，切回窗口时立刻拉一次（用户多半刚在别处跑完 CLI）。
+   *
+   * 只在展开时跑，且定时那一支要求窗口可见——最小化后还每 20 秒翻一遍上百个
+   * 记录文件（opencode 那一支更是要起子进程）纯属白费。
+   */
+  useEffect(() => {
+    if (!providerKey || !open) return;
+    const pull = () => {
+      pollRef.current = true;
+      setNonce((n) => n + 1);
+    };
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") pull();
+    }, POLL_MS);
+    window.addEventListener("focus", pull);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", pull);
+    };
+  }, [providerKey, open]);
 
   const openPicker = (target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
@@ -103,6 +168,47 @@ export function CliHistory({
       x: Math.min(Math.max(8, rect.left), window.innerWidth - CLI_MENU_W - 8),
       y: rect.bottom,
     });
+  };
+
+  /**
+   * 拖动面板上边缘改高度。走指针捕获而不是监听 window：
+   * 指针移出这条 1px 的细线后照样收得到事件。
+   */
+  const onHandleDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // 收起时列表不在，拖了也看不出变化
+    if (!open) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = { startY: event.clientY, startHeight: height };
+    setDragging(true);
+    document.body.classList.add("codedock-dragging-row");
+  };
+
+  const onHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    // 上限还要看侧边栏本身有多高，否则能把上面的项目列表挤没
+    const room = (rootRef.current?.parentElement?.clientHeight ?? 0) - RESERVED_ABOVE;
+    const limit = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, room));
+    // 面板贴底，往上拖是变高，位移取反
+    const next = drag.startHeight - (event.clientY - drag.startY);
+    setHeight(Math.min(limit, Math.max(MIN_HEIGHT, next)));
+  };
+
+  const onHandleUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    dragRef.current = null;
+    setDragging(false);
+    document.body.classList.remove("codedock-dragging-row");
+    try {
+      // 用 state 里最新的值：拖动过程中它一直在变
+      window.localStorage.setItem(HEIGHT_KEY, String(height));
+    } catch {
+      // 记不住就下次还是默认高度
+    }
   };
 
   /** 列表区显示什么。优先级从高到低，只有一个能命中 */
@@ -154,7 +260,25 @@ export function CliHistory({
   };
 
   return (
-    <div className="flex shrink-0 flex-col border-t border-line">
+    <div ref={rootRef} className="flex shrink-0 flex-col">
+      {/* 上边缘兼作拖动条：面板贴在侧边栏底部，往上拖就是变高。
+          原来的 border-t 由这条 1px 的线接手，和编辑器分栏用同一套样式 */}
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        onPointerDown={onHandleDown}
+        onPointerMove={onHandleMove}
+        onPointerUp={onHandleUp}
+        onPointerCancel={onHandleUp}
+        title={open ? "拖动调整会话历史的高度" : undefined}
+        className={`relative h-px shrink-0 bg-line-strong transition-colors ${
+          dragging ? "bg-accent-strong" : open ? "cursor-row-resize hover:bg-line-hover" : ""
+        }`}
+      >
+        {/* 加宽命中区，视觉上仍是一条细线 */}
+        <span className="absolute inset-x-0 -top-1 -bottom-1" />
+      </div>
+
       <div className="flex h-8 shrink-0 items-center gap-1 px-2">
         <button
           type="button"
@@ -195,9 +319,9 @@ export function CliHistory({
       </div>
 
       {/* 自己管住高度：侧边栏根是 flex-col、上面的项目列表是 flex-1，
-          这里不封顶的话条目一多就把项目列表挤没了 */}
+          这里不封顶的话条目一多就把项目列表挤没了。高度可拖（见上边缘的拖动条） */}
       {open && (
-        <div className="max-h-56 min-h-0 shrink-0 overflow-auto px-2 pb-2">
+        <div className="min-h-0 shrink-0 overflow-auto px-2 pb-2" style={{ height }}>
           {body()}
         </div>
       )}
