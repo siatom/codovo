@@ -10,8 +10,12 @@
 use serde::Serialize;
 
 /// 只认这三个键，文件里写别的会被忽略。
+/// 只在解析路径存在的构建里需要，否则正式版会报 dead_code。
+#[cfg(any(debug_assertions, test))]
 const KEY_BASE_URL: &str = "CODEDOCK_AI_BASE_URL";
+#[cfg(any(debug_assertions, test))]
 const KEY_MODEL: &str = "CODEDOCK_AI_MODEL";
+#[cfg(any(debug_assertions, test))]
 const KEY_API_KEY: &str = "CODEDOCK_AI_API_KEY";
 
 /// `.env` 里读到的覆盖值。`None` = 这个键没写（或写了空值），保持前端传来的值不动。
