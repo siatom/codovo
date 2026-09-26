@@ -14,15 +14,18 @@ export default defineConfig(() => ({
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
+  // 刻意不用 Tauri 模板默认的 1420：那个端口是所有 Tauri 项目共用的默认值，
+  // 本机同时跑第二个 Tauri 应用就会撞端口（strictPort 下直接起不来）。5273 只是
+  // 一个没人占的高位段，没有别处引用它；改这里要同步 tauri.conf.json 的 devUrl。
   server: {
-    port: 1420,
+    port: 5273,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 5274,
         }
       : undefined,
     watch: {
