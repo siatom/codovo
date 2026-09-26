@@ -10,7 +10,15 @@ import {
 import { monaco, DARK_THEME, LIGHT_THEME } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { renderMarkdown } from "../lib/markdown";
-import { gitFileDiff, isPathInside, pathKey, readFile, toDisplayPath, writeFile } from "../lib/fs";
+import {
+  gitFileDiff,
+  isPathInside,
+  pathKey,
+  readFile,
+  readImage,
+  toDisplayPath,
+  writeFile,
+} from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { useSettings, resolveFont } from "../lib/settings";
 import { tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
@@ -85,7 +93,20 @@ type Status =
   | { kind: "binary" }
   | { kind: "tooLarge" }
   | { kind: "emptyDiff" }
+  | { kind: "image"; src: string }
   | { kind: "error"; message: string };
+
+/**
+ * 当图片预览的扩展名，和后端 `image_mime` 一一对应。`svg` 不在列里——
+ * 它是文本，编辑器里当 xml 打开能改能高亮，挪去预览是倒退。
+ */
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"]);
+
+function isImagePath(path: string): boolean {
+  const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1));
+}
 
 function baseName(path: string): string {
   return toDisplayPath(path).split("/").pop() ?? path;
@@ -547,6 +568,33 @@ export function EditorPane({
     setDiffStatus({ kind: "idle" });
 
     const key = tabKey(active);
+
+    // 图片整张读回来当 data URL 渲染，不进 Monaco——二进制没有 model 可言。
+    // 放在缓存查找之前：图片永远不进 modelsRef，缓存里不可能有它
+    if (isImagePath(active.path)) {
+      let cancelled = false;
+      setStatus({ kind: "loading" });
+      editor.setModel(null);
+
+      void readImage(active.path)
+        .then((content) => {
+          if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
+          if (content.tooLarge) {
+            setStatus({ kind: "tooLarge" });
+            return;
+          }
+          setStatus({ kind: "image", src: content.data });
+        })
+        .catch((reason) => {
+          if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
+          setStatus({ kind: "error", message: String(reason) });
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const cached = modelsRef.current.get(key);
     if (cached) {
       editor.setModel(cached.model);
@@ -656,6 +704,10 @@ export function EditorPane({
   const isDiffTab = active?.kind === "diff";
   const activeKey = active ? tabKey(active) : null;
 
+  // 图片没有"编辑/预览"两个模式，打开就是预览。判据用 active 而不是 status：
+  // 加载中和加载失败时也得把 Monaco 那块藏住，否则会露出上一次的残留内容
+  const isImageTab = active?.kind === "file" && isImagePath(active.path);
+
   // 只有加载完成的 markdown 文件才有预览可切
   const canPreview =
     status.kind === "ready" &&
@@ -680,7 +732,7 @@ export function EditorPane({
       diffRef.current?.layout();
     });
     return () => cancelAnimationFrame(frame);
-  }, [isPreview, isDiffTab]);
+  }, [isPreview, isDiffTab, isImageTab]);
 
   const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
@@ -767,7 +819,7 @@ export function EditorPane({
       <div className="relative min-h-0 flex-1">
         <div
           ref={containerRef}
-          className={isPreview || isDiffTab ? "hidden" : "absolute inset-0"}
+          className={isPreview || isDiffTab || isImageTab ? "hidden" : "absolute inset-0"}
         />
         <div
           ref={diffContainerRef}
@@ -776,7 +828,18 @@ export function EditorPane({
 
         {isPreview && <MarkdownPreview html={previewHtml} />}
 
-        {overlay.kind !== "ready" && (
+        {/* 图片按原比例整体放进可视区，不放大也不让横竖滚动条出场 */}
+        {status.kind === "image" && (
+          <div className="absolute inset-0 flex items-center justify-center overflow-hidden p-4">
+            <img
+              src={status.src}
+              alt={active ? baseName(active.path) : ""}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+        )}
+
+        {overlay.kind !== "ready" && overlay.kind !== "image" && (
           <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
             {overlay.kind === "idle" && (
               <p className="text-[12px] text-fg-faint">
@@ -795,7 +858,11 @@ export function EditorPane({
             )}
             {overlay.kind === "tooLarge" && (
               <p className="text-[12px] text-warn">
-                {isDiffTab ? "文件超过 2MB，已跳过差异加载" : "文件超过 2MB，已跳过加载"}
+                {isDiffTab
+                  ? "文件超过 2MB，已跳过差异加载"
+                  : isImageTab
+                    ? "图片超过 10MB，已跳过预览"
+                    : "文件超过 2MB，已跳过加载"}
               </p>
             )}
             {overlay.kind === "emptyDiff" && (

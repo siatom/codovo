@@ -10,6 +10,12 @@ export interface FileContent {
   tooLarge: boolean;
 }
 
+/** 图片预览的内容：`data` 是能直接喂给 `<img src>` 的 data URL，超限时为空串 */
+export interface ImageContent {
+  data: string;
+  tooLarge: boolean;
+}
+
 export type PtyEvent =
   | { type: "data"; data: string }
   | { type: "exit"; code: number };

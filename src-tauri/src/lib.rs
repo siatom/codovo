@@ -37,6 +37,7 @@ pub fn run() {
             fs_api::fs_replace_one,
             fs_api::fs_replace_all,
             fs_api::fs_read_file,
+            fs_api::fs_read_image,
             fs_api::fs_write_file,
             fs_api::fs_create_file,
             fs_api::fs_create_directory,

@@ -3,11 +3,16 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
+use base64::Engine;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
 /// 文本类操作（读文件、看差异）的大小上限，两个模块共用
 pub(crate) const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
+
+/// 图片预览的体积上限。比文本宽松得多——图片只能整张加载，没有"读一段"的说法；
+/// 但 base64 还要再涨三分之一，再大就别让 IPC 扛了。
+const MAX_IMAGE_SIZE: u64 = 10 * 1024 * 1024;
 
 /// 二进制判定：只看前 8192 字节里有没有 NUL。
 /// 完整读一遍大文件再判断不值得，这个启发式对源码仓库够准。
@@ -145,6 +150,14 @@ pub struct Entry {
 pub struct FileContent {
     text: String,
     is_binary: bool,
+    too_large: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageContent {
+    /// 能直接喂给 `<img src>` 的 data URL；超限时是空串
+    data: String,
     too_large: bool,
 }
 
@@ -341,6 +354,56 @@ pub fn fs_read_file(state: tauri::State<'_, FsState>, path: String) -> Result<Fi
         is_binary: false,
         too_large: false,
     })
+}
+
+/// 能直接渲染的图片扩展名 → MIME。**`svg` 故意不在列**：它是文本，编辑器里已经当
+/// xml 打开、能编辑能高亮，挪去图片预览反而是倒退；`tif` 这类浏览器不认。
+fn image_mime(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        _ => return None,
+    })
+}
+
+/// 读一张图片当预览。返回 data URL 而不是文件路径：走 asset 协议得在
+/// tauri.conf 里另开一份 scope，而这里的路径本来就要过工作区沙箱这一关。
+/// 抽出来是为了单测能直接跑（`tauri::State` 在测试里造不出来）。
+fn read_image_at(state: &FsState, path: &str) -> Result<ImageContent, String> {
+    let file = resolve(state, path)?;
+    // 先按扩展名挡一道：不然任何二进制文件都能借这个命令把内容读出去
+    let mime =
+        image_mime(&file).ok_or_else(|| format!("不是可预览的图片格式: {}", display(&file)))?;
+    let meta = fs::metadata(&file).map_err(|e| format!("读取图片失败 {}: {e}", display(&file)))?;
+
+    if meta.len() > MAX_IMAGE_SIZE {
+        return Ok(ImageContent {
+            data: String::new(),
+            too_large: true,
+        });
+    }
+
+    let bytes = fs::read(&file).map_err(|e| format!("读取图片失败 {}: {e}", display(&file)))?;
+    Ok(ImageContent {
+        data: format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ),
+        too_large: false,
+    })
+}
+
+#[tauri::command]
+pub fn fs_read_image(
+    state: tauri::State<'_, FsState>,
+    path: String,
+) -> Result<ImageContent, String> {
+    read_image_at(&state, &path)
 }
 
 #[tauri::command]
@@ -1366,6 +1429,45 @@ mod tests {
         let error = replace_one(&file, 1, 1, 1, "a", &opts(false, false, false), "b").unwrap_err();
         assert!(error.contains("UTF-8"), "{error}");
         assert_eq!(fs::read(&file).unwrap(), original, "原文件一个字节都不该动");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reads_images_as_data_urls_and_rejects_other_files() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        // 内容不重要，验的是 MIME 推断和 base64 编码；扩展名故意大写
+        let raw = [0x89u8, b'P', b'N', b'G'];
+        let image_path = workspace.join("shot.PNG");
+        fs::write(&image_path, raw).unwrap();
+        fs::write(workspace.join("a.txt"), "hi").unwrap();
+
+        let image = read_image_at(&state, image_path.to_str().unwrap()).unwrap();
+        assert!(image.data.starts_with("data:image/png;base64,"), "{}", image.data);
+        assert!(!image.too_large);
+        let encoded = image.data.split_once(',').unwrap().1;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(),
+            raw,
+            "base64 不能丢字节"
+        );
+
+        // 文本文件不给预览：否则借这个命令能绕开 fs_read_file 的上限把二进制读出去
+        let error = read_image_at(&state, workspace.join("a.txt").to_str().unwrap()).unwrap_err();
+        assert!(error.contains("不是可预览的图片格式"), "{error}");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn skips_oversized_images() {
+        let (state, root) = temp_state();
+        let workspace = state.root().unwrap();
+        let big = workspace.join("big.png");
+        fs::write(&big, vec![0u8; MAX_IMAGE_SIZE as usize + 1]).unwrap();
+
+        let image = read_image_at(&state, big.to_str().unwrap()).unwrap();
+        assert!(image.too_large);
+        assert!(image.data.is_empty(), "超限就别把内容编码出来");
         fs::remove_dir_all(&root).ok();
     }
 }
