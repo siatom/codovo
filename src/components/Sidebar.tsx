@@ -290,12 +290,14 @@ export function Sidebar({
 
   return (
     <div className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-panel">
-      {/* 副标题放在 CodeDock 右侧，保持标题栏单行，收起/展开时顶部高度一致。
-          两个字号不同，用 items-baseline 让副标题与大标题底部对齐（居中会显得副标题飘高）。 */}
+      {/* 标题栏只放 CodeDock，顶部高度与右侧保持一致 */}
       <header className="flex h-11 shrink-0 items-center px-2">
-        <span className="flex min-w-0 items-baseline gap-2 px-2">
-          <span className="shrink-0 text-[16px] font-semibold text-fg">CodeDock</span>
-          <span className="truncate text-[11px] text-fg-faint">AI 编程驾驶舱</span>
+        {/* Beta 当上标用：内联元素照常占位，靠相对位移浮到 CodeDock 右上角 */}
+        <span className="shrink-0 px-2 text-[16px] font-semibold text-fg">
+          CodeDock
+          <span className="relative -top-2 ml-1 rounded border border-accent-line px-1 text-[9px] font-medium leading-[13px] text-accent">
+            Beta
+          </span>
         </span>
       </header>
 
