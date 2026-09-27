@@ -25,8 +25,13 @@ lerna-debug.log*
 # 编辑器
 .vscode/
 .idea/
-.codebuddy/
 *.sw?
+
+# CodeBuddy：只放行随仓库共享的项目级技能（.codebuddy/skills/），
+# 其余（本地配置、会话数据）照旧忽略。
+# 必须先写 .codebuddy/* 而不是整个目录，否则下面的 ! 例外不生效
+.codebuddy/*
+!.codebuddy/skills/
 
 # 系统
 .DS_Store
