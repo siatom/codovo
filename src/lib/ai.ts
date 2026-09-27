@@ -34,6 +34,26 @@ export function testProviderConnection(config: AiConfig, apiKey?: string): Promi
   });
 }
 
+/** 从提供商接口拉回来的一条模型。`name` 多数兼容实现不给，留空按 id 显示 */
+export interface RemoteModel {
+  id: string;
+  name: string;
+}
+
+/**
+ * 拉一份提供商那边可用的模型列表，给设置面板的「从接口拉取」用。
+ *
+ * 走 `GET /models`；不是所有 OpenAI 兼容实现都有这条路由，没有会直接报错
+ * （不猜模型名）。`apiKey` 同 `testProviderConnection`：传了就用界面上的草稿。
+ */
+export function listProviderModels(config: AiConfig, apiKey?: string): Promise<RemoteModel[]> {
+  return invoke<RemoteModel[]>("ai_list_provider_models", {
+    baseUrl: config.baseUrl,
+    providerId: config.providerId,
+    apiKey: apiKey ?? null,
+  });
+}
+
 /**
  * 让后端取暂存区改动 + 分支 + 近期提交主题，调大模型生成一条提交信息。
  * 走 Rust 侧的 HTTP，密钥不进 WebView；字段没配全时后端会直接报错。

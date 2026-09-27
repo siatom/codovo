@@ -60,6 +60,7 @@ pub fn run() {
             ai::ai_generate_commit_message,
             ai::ai_explain_change,
             ai::ai_test_provider,
+            ai::ai_list_provider_models,
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,

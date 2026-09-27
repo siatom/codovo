@@ -40,12 +40,17 @@ import {
 } from "../lib/terminal-themes";
 import { useTheme, DEFAULT_THEME, type ResolvedTheme, type Theme } from "../lib/theme";
 import { listShells } from "../lib/pty";
-import { testProviderConnection, useDevAiOverrides } from "../lib/ai";
+import {
+  listProviderModels,
+  testProviderConnection,
+  useDevAiOverrides,
+  type RemoteModel,
+} from "../lib/ai";
 import { deleteSecret, setSecret } from "../lib/secrets";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconChevronDown, IconClose, IconCopy, IconPlus } from "./icons";
+import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -548,6 +553,132 @@ function ModelRow({
   );
 }
 
+/**
+ * 「从接口拉取」之后的选择面板：把拉回来的模型列出来勾选。
+ *
+ * 为什么不直接全量并进列表：OpenRouter、SiliconFlow 这类动辄几百个模型，
+ * 一次塞进去会把设置里这一节和 opencode.json 都撑爆。所以先看、再挑。
+ * 已经添加过的条目也在列表里（标成「已添加」且不可勾选），免得用户以为是漏了。
+ */
+function ModelPicker({
+  models,
+  existing,
+  picked,
+  filter,
+  onFilter,
+  onToggle,
+  onSelectAll,
+  onCancel,
+  onConfirm,
+}: {
+  models: RemoteModel[];
+  /** 已经在提供商里的模型 id */
+  existing: Set<string>;
+  picked: Set<string>;
+  filter: string;
+  onFilter: (next: string) => void;
+  onToggle: (id: string) => void;
+  /** 全选 / 全不选，只作用在传进来的这批（即当前筛选结果） */
+  onSelectAll: (ids: string[]) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const keyword = filter.trim().toLowerCase();
+  const shown = keyword
+    ? models.filter(
+        (model) =>
+          model.id.toLowerCase().includes(keyword) || model.name.toLowerCase().includes(keyword),
+      )
+    : models;
+  const selectable = shown.filter((model) => !existing.has(model.id)).map((model) => model.id);
+
+  return (
+    <div className="flex w-full flex-col gap-2 rounded-md border border-line-strong bg-surface p-2">
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={filter}
+          spellCheck={false}
+          placeholder={`筛选（共 ${models.length} 个）`}
+          onChange={(event) => onFilter(event.target.value)}
+          className={`${TEXT_INPUT} min-w-0 flex-1`}
+        />
+        <button
+          type="button"
+          onClick={() => onSelectAll(selectable)}
+          disabled={selectable.length === 0}
+          className={`shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg ${
+            selectable.length === 0 ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""
+          }`}
+        >
+          {selectable.length > 0 && selectable.every((id) => picked.has(id))
+            ? "全不选"
+            : "全选"}
+        </button>
+      </div>
+
+      <div className="flex max-h-56 min-h-0 flex-col overflow-y-auto rounded border border-line">
+        {shown.length === 0 ? (
+          <p className="px-2 py-3 text-center text-[11px] text-fg-faint">没有匹配的模型</p>
+        ) : (
+          shown.map((model) => {
+            const added = existing.has(model.id);
+            const on = picked.has(model.id);
+            return (
+              <button
+                key={model.id}
+                type="button"
+                disabled={added}
+                onClick={() => onToggle(model.id)}
+                className={`flex items-center gap-2 px-2 py-1 text-left ${
+                  added ? "cursor-not-allowed opacity-50" : "hover:bg-hover"
+                }`}
+              >
+                <span
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                    on ? "border-accent bg-accent text-app" : "border-line-strong"
+                  }`}
+                >
+                  {on && <IconCheck className="h-2.5 w-2.5" />}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg">
+                  {model.id}
+                </span>
+                {model.name && (
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-fg-dim">
+                    {model.name}
+                  </span>
+                )}
+                {added && <span className="shrink-0 text-[11px] text-fg-faint">已添加</span>}
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 text-[11px] text-fg-faint">
+          已选 {picked.size} 个
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          className="rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+        >
+          添加选中的
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 一个提供商：折叠时只占一行（名字 + 模型数 + 开关），展开才编辑全部字段 */
 function ProviderEditor({
   provider,
@@ -577,9 +708,15 @@ function ProviderEditor({
   const [draftKey, setDraftKey] = useState("");
   /** 密钥默认打码，点一下才明文——设置面板经常有人在旁边看着 */
   const [revealKey, setRevealKey] = useState(false);
-  /** 保存 / 清除 / 连接测试的结果，显示在按钮下面 */
+  /** 保存 / 清除 / 连接测试 / 拉列表的结果，显示在按钮下面 */
   const [probe, setProbe] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 拉回来的模型列表；非空时展开选择面板 */
+  const [remote, setRemote] = useState<RemoteModel[] | null>(null);
+  /** 选择面板里勾中的模型 id */
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  /** 选择面板的筛选词。OpenRouter 这类动辄几百个模型，不筛选没法看 */
+  const [filter, setFilter] = useState("");
 
   const enabledModelCount = provider.models.filter(
     (model) => model.enabled && model.id.trim() !== "",
@@ -614,6 +751,41 @@ function ProviderEditor({
     } finally {
       setBusy(false);
     }
+  };
+
+  /** 已经在下发列表里的模型 id：选择面板里标成「已添加」并禁掉，避免重复 */
+  const existingIds = new Set(
+    provider.models.map((model) => model.id.trim()).filter((id) => id !== ""),
+  );
+
+  const fetchModels = async () => {
+    setBusy(true);
+    setProbe(null);
+    try {
+      const models = await listProviderModels(
+        { baseUrl: provider.baseUrl, providerId: provider.id, model: "" },
+        draftKey.trim() || undefined,
+      );
+      setRemote(models);
+      setPicked(new Set());
+      setFilter("");
+    } catch (reason) {
+      setRemote(null);
+      setProbe({ ok: false, text: String(reason) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** 把勾中的模型并进列表：已有的不动（保住手填的显示名和启停状态），只追加新的 */
+  const confirmPick = () => {
+    if (!remote) return;
+    const additions = remote
+      .filter((model) => picked.has(model.id) && !existingIds.has(model.id))
+      .map((model) => ({ id: model.id, name: model.name, enabled: true }));
+    if (additions.length > 0) patch({ models: [...provider.models, ...additions] });
+    setRemote(null);
+    setPicked(new Set());
   };
 
   const test = async () => {
@@ -759,16 +931,31 @@ function ProviderEditor({
 
           <Field
             label="模型"
-            hint="ID 按接口文档填，接口不会自动拉取；停用或没填 ID 的不会下发"
+            hint="可以手动填 ID，也可以「从接口拉取」勾选；停用或没填 ID 的不会下发"
             action={
-              <button
-                type="button"
-                title="新增模型"
-                onClick={() => patch({ models: [...provider.models, emptyModel()] })}
-                className={HEAD_ACTION}
-              >
-                <IconPlus className="h-3.5 w-3.5" />
-              </button>
+              <>
+                <button
+                  type="button"
+                  title="从接口拉取可用模型"
+                  onClick={() => void fetchModels()}
+                  disabled={provider.baseUrl.trim() === "" || busy}
+                  className={`${HEAD_ACTION} ${
+                    provider.baseUrl.trim() === "" || busy
+                      ? "cursor-not-allowed opacity-40 hover:bg-transparent"
+                      : ""
+                  }`}
+                >
+                  <IconDownload className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="手动新增模型"
+                  onClick={() => patch({ models: [...provider.models, emptyModel()] })}
+                  className={HEAD_ACTION}
+                >
+                  <IconPlus className="h-3.5 w-3.5" />
+                </button>
+              </>
             }
           >
             <div className="flex w-full flex-col gap-2">
@@ -792,6 +979,41 @@ function ProviderEditor({
               )}
             </div>
           </Field>
+
+          {remote && (
+            <ModelPicker
+              models={remote}
+              existing={existingIds}
+              picked={picked}
+              filter={filter}
+              onFilter={setFilter}
+              onToggle={(id) =>
+                setPicked((current) => {
+                  const next = new Set(current);
+                  if (next.has(id)) next.delete(id);
+                  else next.add(id);
+                  return next;
+                })
+              }
+              onSelectAll={(ids) =>
+                setPicked((current) => {
+                  // 只影响传进来的这批（即当前筛选结果）；全不选也该只作用在它们身上
+                  const next = new Set(current);
+                  const allPicked = ids.every((id) => next.has(id));
+                  for (const id of ids) {
+                    if (allPicked) next.delete(id);
+                    else next.add(id);
+                  }
+                  return next;
+                })
+              }
+              onCancel={() => {
+                setRemote(null);
+                setPicked(new Set());
+              }}
+              onConfirm={confirmPick}
+            />
+          )}
 
           <div className="flex items-center gap-2">
             <button
