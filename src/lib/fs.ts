@@ -29,11 +29,26 @@ export function setRoot(path: string): Promise<string> {
   return invoke<string>("fs_set_root", { path });
 }
 
-/** 弹目录选择框并设为工作区；用户取消时返回 null */
-export async function pickWorkspaceFolder(): Promise<string | null> {
+/** 弹目录选择框，只返回选中的路径，不动当前窗口的工作区；用户取消时返回 null */
+export async function pickFolder(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title: "选择工作目录" });
-  if (typeof picked !== "string") return null;
+  return typeof picked === "string" ? picked : null;
+}
+
+/** 弹目录选择框并设为当前窗口的工作区；用户取消时返回 null */
+export async function pickWorkspaceFolder(): Promise<string | null> {
+  const picked = await pickFolder();
+  if (!picked) return null;
   return setRoot(picked);
+}
+
+/**
+ * 新开一个窗口打开这个项目，当前窗口不受影响，返回新窗口的 label。
+ * 窗口由后端创建：label 分配、工作区根、目录监听一起安排，前端起来时
+ * `fs_root` 已经能拿到自己的目录。
+ */
+export function openProjectWindow(path: string): Promise<string> {
+  return invoke<string>("project_window_open", { path });
 }
 
 export function readSavedWorkspace(): string | null {
@@ -82,6 +97,28 @@ export function saveWorkspaces(paths: string[]) {
 }
 
 /**
+ * 把一个目录提到历史最前并写回，返回新的列表。
+ *
+ * 写之前先读一遍最新的：多窗口共享同一份 localStorage，直接拿本窗口记的列表
+ * 覆盖，会把别的窗口刚打开的项目抹掉。Windows 上大小写、分隔符不同也算同一个
+ * 目录，只比字符串会把同一个目录存成两条。
+ */
+export function addSavedWorkspace(path: string): string[] {
+  const list = [path, ...readSavedWorkspaces()].filter(
+    (item, index, all) => all.findIndex((other) => samePath(other, item)) === index,
+  );
+  saveWorkspaces(list);
+  return list;
+}
+
+/** 从历史里去掉一个目录，同样先读最新再写，返回新的列表 */
+export function dropSavedWorkspace(path: string): string[] {
+  const list = readSavedWorkspaces().filter((item) => !samePath(item, path));
+  saveWorkspaces(list);
+  return list;
+}
+
+/**
  * 项目在 CodeDock 里的显示名（别名），按目录路径存。
  * 只是界面上的名字，**不改磁盘上的文件夹名**；没有别名的目录直接用目录名。
  */
@@ -107,6 +144,31 @@ export function saveWorkspaceNames(names: Record<string, string>) {
   } catch {
     // 同 saveWorkspace
   }
+}
+
+/**
+ * 订阅「工作区列表被别的窗口改了」。返回取消订阅的函数。
+ * storage 事件只在别的 document 触发，正好用来做跨窗口同步，不会自己回灌自己。
+ */
+export function onWorkspacesChanged(handler: (list: string[]) => void): () => void {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== WORKSPACES_KEY) return;
+    handler(readSavedWorkspaces());
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
+/** 订阅「项目别名被别的窗口改了」。返回取消订阅的函数 */
+export function onWorkspaceNamesChanged(
+  handler: (names: Record<string, string>) => void,
+): () => void {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== WORKSPACE_NAMES_KEY) return;
+    handler(readWorkspaceNames());
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
 }
 
 export function listDir(path: string): Promise<FileEntry[]> {

@@ -14,10 +14,13 @@ const TOOLS: ToolId[] = ["files", "changes", "search", "browser"];
 /**
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
  * 不给终端让位就白搭），所以这里只存模块名，不存展开状态。
+ *
+ * 用 sessionStorage：这是窗口级偏好，多窗口下各开各的模块互不影响
+ * （localStorage 是同源共享的，两个窗口会互相改）。
  */
 export function readTool(): ToolId {
   try {
-    const saved = window.localStorage.getItem(TOOL_KEY);
+    const saved = window.sessionStorage.getItem(TOOL_KEY);
     return TOOLS.find((tool) => tool === saved) ?? "files";
   } catch {
     return "files";
@@ -26,7 +29,7 @@ export function readTool(): ToolId {
 
 export function saveTool(tool: ToolId) {
   try {
-    window.localStorage.setItem(TOOL_KEY, tool);
+    window.sessionStorage.setItem(TOOL_KEY, tool);
   } catch {
     // 记不住就每次启动回到「文件」，不影响使用
   }

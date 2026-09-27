@@ -92,6 +92,7 @@ function messageMetrics(el: HTMLTextAreaElement) {
   return { line, border, padding, oneRow: line + padding + border };
 }
 
+// 提交历史这摊都是窗口级偏好，存 sessionStorage：多窗口下各收各的、各拖各的
 const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed";
 const LOG_HEIGHT_KEY = "codedock.commitLogHeight";
 
@@ -105,7 +106,7 @@ const RESERVED_ABOVE = 200;
 
 function readLogCollapsed(): boolean {
   try {
-    return window.localStorage.getItem(LOG_COLLAPSED_KEY) === "1";
+    return window.sessionStorage.getItem(LOG_COLLAPSED_KEY) === "1";
   } catch {
     return false;
   }
@@ -113,7 +114,7 @@ function readLogCollapsed(): boolean {
 
 function readLogHeight(): number {
   try {
-    const saved = Number(window.localStorage.getItem(LOG_HEIGHT_KEY));
+    const saved = Number(window.sessionStorage.getItem(LOG_HEIGHT_KEY));
     if (Number.isFinite(saved) && saved >= MIN_LOG_HEIGHT && saved <= MAX_LOG_HEIGHT) {
       return saved;
     }
@@ -134,7 +135,7 @@ const INDENT = 12;
 function readChangeView(): ChangeView {
   try {
     // 只有明确存过 "tree" 才认，读坏了、存了怪值都回落列表
-    return window.localStorage.getItem(VIEW_KEY) === "tree" ? "tree" : "list";
+    return window.sessionStorage.getItem(VIEW_KEY) === "tree" ? "tree" : "list";
   } catch {
     return "list";
   }
@@ -827,7 +828,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const setLogCollapsedPersisted = (next: boolean) => {
     setLogCollapsed(next);
     try {
-      window.localStorage.setItem(LOG_COLLAPSED_KEY, next ? "1" : "0");
+      window.sessionStorage.setItem(LOG_COLLAPSED_KEY, next ? "1" : "0");
     } catch {
       // 记不住就按展开算，不影响使用
     }
@@ -836,7 +837,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const setViewPersisted = (next: ChangeView) => {
     setView(next);
     try {
-      window.localStorage.setItem(VIEW_KEY, next);
+      window.sessionStorage.setItem(VIEW_KEY, next);
     } catch {
       // 记不住就下次回到列表，不影响使用
     }
@@ -884,7 +885,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     document.body.classList.remove("codedock-dragging-row");
     try {
       // 用 state 里最新的值：拖动过程中它一直在变
-      window.localStorage.setItem(LOG_HEIGHT_KEY, String(logHeight));
+      window.sessionStorage.setItem(LOG_HEIGHT_KEY, String(logHeight));
     } catch {
       // 记不住就下次还是默认高度
     }

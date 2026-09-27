@@ -5,10 +5,13 @@ import { IconExternalLink, IconRefresh } from "./icons";
 
 const URL_KEY = "codedock.browserUrl";
 
-/** 记住上次的地址：右栏会记住停在哪个模块，回来时地址栏空着很别扭 */
+/**
+ * 记住上次的地址：右栏会记住停在哪个模块，回来时地址栏空着很别扭。
+ * 用 sessionStorage：地址是窗口级的，两个窗口各预览各的本地服务。
+ */
 function readSavedUrl(): string {
   try {
-    return window.localStorage.getItem(URL_KEY) ?? "";
+    return window.sessionStorage.getItem(URL_KEY) ?? "";
   } catch {
     return "";
   }
@@ -55,7 +58,7 @@ export function BrowserPane({
     setDraft(next);
     setNonce((count) => count + 1);
     try {
-      window.localStorage.setItem(URL_KEY, next);
+      window.sessionStorage.setItem(URL_KEY, next);
     } catch {
       // 记不住不影响用
     }

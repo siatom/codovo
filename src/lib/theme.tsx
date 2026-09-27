@@ -76,6 +76,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }
   }, [preference, theme]);
 
+  // 另一个窗口切了主题就跟着走。storage 事件只在别的 document 触发，
+  // 不会自己回灌自己
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== THEME_KEY) return;
+      setPreference(readSavedTheme());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const toggle = useCallback(() => {
     setPreference(theme === "dark" ? "light" : "dark");
   }, [theme]);

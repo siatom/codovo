@@ -4,6 +4,7 @@ import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import {
+  onWorkspaceNamesChanged,
   readWorkspaceNames,
   saveWorkspaceNames,
   toDisplayPath,
@@ -44,6 +45,7 @@ interface SidebarProps {
   onResumeSession: (command: string) => void;
 }
 
+/** 窗口级偏好，存 sessionStorage：多窗口下各收各的侧边栏 */
 const COLLAPSED_KEY = "codedock.sidebarCollapsed";
 
 /** 导航行的固定高度：展开态和收起态共用，来回切换时图标不会上下跳 */
@@ -70,7 +72,7 @@ const AI_MENU_W = 150;
 
 function readCollapsed(): boolean {
   try {
-    return window.localStorage.getItem(COLLAPSED_KEY) === "1";
+    return window.sessionStorage.getItem(COLLAPSED_KEY) === "1";
   } catch {
     return false;
   }
@@ -120,6 +122,9 @@ export function Sidebar({
   const [cliChoice, setCliChoice] = useState(() => readCliChoice(current));
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
+
+  // 别的窗口改了项目别名，本窗口的列表跟着更新
+  useEffect(() => onWorkspaceNamesChanged(setNames), []);
   const {
     mode,
     sessions,
@@ -156,7 +161,7 @@ export function Sidebar({
   const setCollapsedPersisted = (next: boolean) => {
     setCollapsed(next);
     try {
-      window.localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
+      window.sessionStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
     } catch {
       // 记不住就每次启动按展开算，不影响使用
     }
@@ -172,7 +177,8 @@ export function Sidebar({
    */
   const renameWorkspace = (path: string, value: string) => {
     const name = value.trim();
-    const next = { ...names };
+    // 先读一遍最新的：别的窗口可能刚改过，拿本窗口的 state 覆盖会丢改动
+    const next = readWorkspaceNames();
     if (!name || name === baseName(path)) delete next[path];
     else next[path] = name;
     setNames(next);
@@ -184,8 +190,7 @@ export function Sidebar({
   const removeWorkspace = (path: string) => {
     setMenu(null);
     onRemove(path);
-    if (!(path in names)) return;
-    const next = { ...names };
+    const next = readWorkspaceNames();
     delete next[path];
     setNames(next);
     saveWorkspaceNames(next);

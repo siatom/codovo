@@ -448,6 +448,16 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, [settings]);
 
+  // 另一个窗口改了设置就跟着走。storage 事件只在别的 document 触发，不会自回流
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== SETTINGS_KEY) return;
+      setSettings(readSaved());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   const update = useCallback((patch: Partial<Settings>) => {
     setSettings((current) => ({ ...current, ...patch }));
   }, []);

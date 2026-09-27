@@ -65,7 +65,10 @@ interface AgentPaneProps {
 
 type Phase = "idle" | "starting" | "ready" | "error";
 
-/** 当前选中的会话 id 按工作区记，换工作区就是另一套历史 */
+/**
+ * 当前选中的会话 id 按工作区记，换工作区就是另一套历史。
+ * 存 sessionStorage：多窗口下同一个项目可以各看各的会话，互不影响。
+ */
 const SESSION_KEY_PREFIX = "codedock.agentSession.";
 
 /** 发送键是这一屏唯一的主操作，做成实心圆钮；圆底上的字色复用角标那套 text-app */
@@ -300,7 +303,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
       try {
         const history = await fetchAgentMessages(id);
         setCurrentId(id);
-        window.localStorage.setItem(SESSION_KEY_PREFIX + cwd, id);
+        window.sessionStorage.setItem(SESSION_KEY_PREFIX + cwd, id);
         setConversation(conversationFromHistory(history));
         setPhase("ready");
       } catch (reason) {
@@ -352,7 +355,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     // 会话列表才是真相：本地存的那个 id 可能已经被删了，也可能清过缓存。
     // 所以先问列表——本地那条还在就接着它，否则退一步接最近的一条。
     const list = await refreshSessions();
-    const saved = window.localStorage.getItem(SESSION_KEY_PREFIX + cwd);
+    const saved = window.sessionStorage.getItem(SESSION_KEY_PREFIX + cwd);
     const target = list.find((item) => item.id === saved) ?? list[0];
     if (target) {
       await openSession(target.id);
@@ -514,7 +517,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
         const session = await createAgentSession();
         sessionId = session.id;
         setCurrentId(sessionId);
-        if (cwd) window.localStorage.setItem(SESSION_KEY_PREFIX + cwd, sessionId);
+        if (cwd) window.sessionStorage.setItem(SESSION_KEY_PREFIX + cwd, sessionId);
         void refreshSessions();
       } catch (reason) {
         setConversation((current) => ({ ...current, streaming: false, error: String(reason) }));

@@ -40,6 +40,7 @@ const CLI_MENU_ITEM =
 
 const HINT = "px-2 py-1 text-[11px] text-fg-faint";
 
+/** 列表高度是窗口级偏好，存 sessionStorage：多窗口下各拖各的 */
 const HEIGHT_KEY = "codedock.cliHistoryHeight";
 
 /** 自动刷新间隔。列表是 CLI 自己写在磁盘上的，界面不知道它什么时候变 */
@@ -55,7 +56,7 @@ const RESERVED_ABOVE = 200;
 
 function readHeight(): number {
   try {
-    const saved = Number(window.localStorage.getItem(HEIGHT_KEY));
+    const saved = Number(window.sessionStorage.getItem(HEIGHT_KEY));
     if (Number.isFinite(saved) && saved >= MIN_HEIGHT && saved <= MAX_HEIGHT) {
       return saved;
     }
@@ -205,7 +206,7 @@ export function CliHistory({
     document.body.classList.remove("codedock-dragging-row");
     try {
       // 用 state 里最新的值：拖动过程中它一直在变
-      window.localStorage.setItem(HEIGHT_KEY, String(height));
+      window.sessionStorage.setItem(HEIGHT_KEY, String(height));
     } catch {
       // 记不住就下次还是默认高度
     }

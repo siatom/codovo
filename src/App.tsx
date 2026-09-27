@@ -15,26 +15,26 @@ import { useSettings } from "./lib/settings";
 import { sameTab, type DiffSource, type Tab } from "./lib/tabs";
 import type { EditorLocation } from "./lib/types";
 import {
+  addSavedWorkspace,
   clearSavedWorkspace,
+  dropSavedWorkspace,
+  getRoot,
   isPathInside,
   onFilesChanged,
+  onWorkspacesChanged,
+  openProjectWindow,
+  pickFolder,
   pickWorkspaceFolder,
   readSavedWorkspace,
   readSavedWorkspaces,
   samePath,
   saveWorkspace,
-  saveWorkspaces,
   setRoot,
 } from "./lib/fs";
 
-/**
- * 把 next 提到历史最前并去重。
- * Windows 上大小写、分隔符不同也算同一个目录，只比字符串会把同一个目录存成两条。
- */
-function promoteWorkspace(list: string[], next: string): string[] {
-  return [next, ...list].filter(
-    (item, index, all) => all.findIndex((other) => samePath(other, item)) === index,
-  );
+/** 取路径最后一段当显示名；盘符根这类取不到就退回原串 */
+function baseName(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
 
 export default function App() {
@@ -151,35 +151,47 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [fullscreen]);
 
-  // 启动时恢复上次的工作区；没记录就停在空态，让用户自己选
+  // 启动时确定本窗口的工作区：
+  // - 后端建的新窗口：建窗时已经把根播好了，直接用它。**不读 localStorage 的
+  //   「上次工作区」**——那是主窗口的恢复项，新窗口读了会串到别的项目上
+  // - 主窗口：恢复上次的工作区；没记录就停在空态，让用户自己选
   useEffect(() => {
-    const saved = readSavedWorkspace();
+    let cancelled = false;
     const savedList = readSavedWorkspaces();
     setWorkspaces(savedList);
 
-    if (!saved) {
-      setBooting(false);
-      return;
-    }
-
-    let cancelled = false;
-    setRoot(saved)
-      .then((resolved) => {
+    void getRoot()
+      .then((backendRoot) => {
         if (cancelled) return;
-        saveWorkspace(resolved);
-        // 上次用的目录补进历史最前面（顺带清掉历史里同一个目录的其它写法）
-        const list = promoteWorkspace(savedList, resolved);
-        saveWorkspaces(list);
-        setWorkspaces(list);
-        setRootState(resolved);
+        if (backendRoot) {
+          setRootState(backendRoot);
+          setBooting(false);
+          return;
+        }
+        const saved = readSavedWorkspace();
+        if (!saved) {
+          setBooting(false);
+          return;
+        }
+        return setRoot(saved)
+          .then((resolved) => {
+            if (cancelled) return;
+            saveWorkspace(resolved);
+            // 上次用的目录补进历史最前面（顺带清掉历史里同一个目录的其它写法）
+            setWorkspaces(addSavedWorkspace(resolved));
+            setRootState(resolved);
+          })
+          .catch((reason) => {
+            if (cancelled) return;
+            // 目录被删了/换盘了，清掉记录回到空态，别让用户每次启动都撞同一个错
+            clearSavedWorkspace();
+            setNotice(`上次的工作目录打不开了：${reason}`);
+          })
+          .finally(() => {
+            if (!cancelled) setBooting(false);
+          });
       })
-      .catch((reason) => {
-        if (cancelled) return;
-        // 目录被删了/换盘了，清掉记录回到空态，别让用户每次启动都撞同一个错
-        clearSavedWorkspace();
-        setNotice(`上次的工作目录打不开了：${reason}`);
-      })
-      .finally(() => {
+      .catch(() => {
         if (!cancelled) setBooting(false);
       });
 
@@ -188,18 +200,27 @@ export default function App() {
     };
   }, []);
 
-  // 切工作区必须两头都换：后端 root 决定文件读写的沙箱边界，前端 root 决定界面
+  // 窗口标题跟着当前项目走。多窗口下用户和调试脚本都靠它分辨哪个窗口是哪个项目
+  useEffect(() => {
+    document.title = root ? `CodeDock — ${baseName(root)}` : "CodeDock";
+  }, [root]);
+
+  // 别的窗口打开了项目 / 删了项目，本窗口的侧栏列表跟着更新。
+  // 只动列表，本窗口自己的工作区不受影响
+  useEffect(() => onWorkspacesChanged(setWorkspaces), []);
+
+  /**
+   * 在**本窗口**设置工作区。只用于两处：主窗口启动恢复、本窗口还是空态时的首次打开。
+   * 平时点侧边栏的项目走 `openProject`——新开窗口，不动当前这个。
+   */
   const applyWorkspace = useCallback(
     async (next: string) => {
       try {
-        // 智能体是跑在旧工作区里的常驻进程，换目录前先收掉；
-        // 下次切到智能体 tab 会按新目录重新拉起来（没起过就是空操作）
+        // 保险：万一本窗口之前起过智能体，换目录前先收掉（空态/启动时是空操作）
         void stopAgent().catch(() => {});
         const resolved = await setRoot(next);
         saveWorkspace(resolved);
-        const list = promoteWorkspace(workspaces, resolved);
-        saveWorkspaces(list);
-        setWorkspaces(list);
+        setWorkspaces(addSavedWorkspace(resolved));
         setNotice(null);
         // 旧工作区打开的标签全部作废
         setOpenTabs([]);
@@ -209,7 +230,27 @@ export default function App() {
         setNotice(`这个目录打不开了：${reason}`);
       }
     },
-    [workspaces],
+    [],
+  );
+
+  /**
+   * 侧边栏点项目：新开一个窗口打开，当前窗口不切走。
+   * 本窗口还是空态时（主窗口首次使用）原地打开，免得开局就多出一个空窗口。
+   * 同一个项目允许开多个窗口，后端按窗口分状态，互不干扰。
+   */
+  const openProject = useCallback(
+    async (path: string) => {
+      try {
+        if (root === null) {
+          await applyWorkspace(path);
+          return;
+        }
+        await openProjectWindow(path);
+      } catch (reason) {
+        setNotice(`这个目录打不开了：${reason}`);
+      }
+    },
+    [root, applyWorkspace],
   );
 
   /**
@@ -219,12 +260,10 @@ export default function App() {
    */
   const removeWorkspace = useCallback(
     (path: string) => {
-      const list = workspaces.filter((item) => !samePath(item, path));
-      setWorkspaces(list);
-      saveWorkspaces(list);
+      setWorkspaces(dropSavedWorkspace(path));
       if (root && samePath(root, path)) clearSavedWorkspace();
     },
-    [workspaces, root],
+    [root],
   );
 
   /** 已经开着的标签只切过去，不重复开——连点同一个改动项就是这个路径 */
@@ -352,14 +391,20 @@ export default function App() {
     setOpenTabs([activeTab]);
   }, [activeTab]);
 
+  /** 「打开项目」：空态时原地打开；已经有项目时新开一个窗口 */
   const pickWorkspace = useCallback(async () => {
     try {
-      const picked = await pickWorkspaceFolder();
-      if (picked) await applyWorkspace(picked);
+      if (root === null) {
+        const picked = await pickWorkspaceFolder();
+        if (picked) await applyWorkspace(picked);
+        return;
+      }
+      const picked = await pickFolder();
+      if (picked) await openProjectWindow(picked);
     } catch (reason) {
       setNotice(String(reason));
     }
-  }, [applyWorkspace]);
+  }, [root, applyWorkspace]);
 
   if (booting) {
     return (
@@ -377,7 +422,7 @@ export default function App() {
           <Sidebar
             workspaces={workspaces}
             current={root}
-            onSelect={applyWorkspace}
+            onSelect={openProject}
             onAdd={pickWorkspace}
             onRemove={removeWorkspace}
             onRunAiCommand={runAiCommand}
