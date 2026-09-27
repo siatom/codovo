@@ -34,6 +34,9 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # 智能体后端读 opencode 的 SSE 时要做退避重连，只需要 time 这一个特性。
 # tauri 本来就依赖 tokio，这里只是显式声明版本、打开要用的特性。
 tokio = { version = "1", features = ["time"] }
+# API 密钥落存储：借操作系统的凭据库。默认特性 v1 = Windows 凭据管理器 /
+# macOS 钥匙串 / Linux Secret Service（zbus），三端开箱可用，别关掉。
+keyring = "4.2.0"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

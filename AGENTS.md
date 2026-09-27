@@ -39,6 +39,10 @@ cd src-tauri && cargo clippy
   `--literal-pathspecs`、「全部暂存」给 `.`。
 - AI / 智能体：HTTP 与 SSE 全走 Rust 代理，前端不直连 opencode；规则 / 记忆 / 技能 / Agents
   存 localStorage、启动时才物化；兼容两代接口、按接口探测（判据是响应里有 `version` 字段）。
+- API 密钥进**操作系统凭据库**（`secrets.rs` + keyring），localStorage 只留 `apiKeySet` 布尔位，
+  前端全程拿不到明文；opencode 配置里只有 `{env:CODEDOCK_AI_KEY_<ID>}` 占位符。旧版明文在启动时
+  自动搬迁，搬不动就原样留着重试（绝不丢用户的密钥）。读钥匙串是同步阻塞调用，必须放在第一个
+  `await` 之前；Linux 无 Secret Service 时报明原因，不静默降级成「没密钥」。
 - 破坏性确认框自研（WKWebView 不支持 `window.confirm`）；右边栏内容面板 `hidden` 藏着不卸载；
   调试用 AI 参数覆盖只在 debug 构建（`dev.rs`），别用 `dotenvy`（`set_var` 会泄密钥进 PTY）。
 

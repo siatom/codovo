@@ -4,11 +4,17 @@ import { useSettings } from "./settings";
 import { resolveDefaultModel } from "./providers";
 import type { DiffSource } from "./tabs";
 
-/** OpenAI 兼容接口的配置。开发调试版里可能被 `src-tauri/.env` 盖掉，见 useEffectiveAiConfig */
+/**
+ * OpenAI 兼容接口的配置。开发调试版里可能被 `src-tauri/.env` 盖掉，
+ * 见 useEffectiveAiConfig。
+ *
+ * 没有密钥字段：密钥在系统钥匙串里，后端按 `providerId` 自己取。
+ */
 export interface AiConfig {
   /** 基地址，结尾带不带 `/` 都行 */
   baseUrl: string;
-  apiKey: string;
+  /** 这个提供商在钥匙串里的条目名 */
+  providerId: string;
   model: string;
 }
 
@@ -16,13 +22,14 @@ export interface AiConfig {
  * 测一个提供商的连通性：后端打一次很轻的探针请求，返回一句给用户看的结果
  * （成功时说明发现了多少模型，失败时说明是鉴权、限流、超时还是网络问题）。
  *
- * 测的是传进来的这份配置，不套 `.env` 覆盖——用户点「测试连接」想知道的是
- * 输入框里填的对不对。
+ * `apiKey` 是「刚在输入框里敲完、还没保存」的那份，传了就优先用它，否则后端按
+ * `providerId` 去钥匙串取。测的是界面上的这份配置，不套 `.env` 覆盖。
  */
-export function testProviderConnection(config: AiConfig): Promise<string> {
+export function testProviderConnection(config: AiConfig, apiKey?: string): Promise<string> {
   return invoke<string>("ai_test_provider", {
     baseUrl: config.baseUrl,
-    apiKey: config.apiKey,
+    providerId: config.providerId,
+    apiKey: apiKey ?? null,
     model: config.model,
   });
 }
@@ -98,8 +105,8 @@ export function useDevAiOverrides(): DevAiOverrides {
  * 回落不到 `ready` 就是 false。
  *
  * 前端在 invoke 之前就要判空，所以必须先知道覆盖值——否则「面板留空、只写 .env」
- * 会被守卫直接拦掉，根本传不到后端。密钥那份 `.env` 由后端自己盖，前端只按
- * `apiKeySet` 判断后端手上有没有。
+ * 会被守卫直接拦掉，根本传不到后端。密钥正文压根不回前端，所以这里只能用
+ * 提供商的 `apiKeySet` 标记（或 `.env` 的 `apiKeySet`）判断后端手上有没有。
  */
 export function useEffectiveAiConfig(): { config: AiConfig; ready: boolean } {
   const { settings } = useSettings();
@@ -112,11 +119,13 @@ export function useEffectiveAiConfig(): { config: AiConfig; ready: boolean } {
       : undefined;
     const config: AiConfig = {
       baseUrl: overrides.baseUrl || (provider?.baseUrl.trim() ?? ""),
+      providerId: resolved?.providerId ?? "",
       model: overrides.model || (resolved?.modelId ?? ""),
-      apiKey: provider?.apiKey.trim() ?? "",
     };
     const ready =
-      !!config.baseUrl && !!config.model && (!!config.apiKey || overrides.apiKeySet);
+      !!config.baseUrl &&
+      !!config.model &&
+      (!!provider?.apiKeySet || overrides.apiKeySet);
     return { config, ready };
   }, [overrides, settings]);
 }

@@ -41,6 +41,7 @@ import {
 import { useTheme, DEFAULT_THEME, type ResolvedTheme, type Theme } from "../lib/theme";
 import { listShells } from "../lib/pty";
 import { testProviderConnection, useDevAiOverrides } from "../lib/ai";
+import { deleteSecret, setSecret } from "../lib/secrets";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -552,6 +553,7 @@ function ProviderEditor({
   provider,
   open,
   isDefault,
+  secretStoreError,
   onToggle,
   onChange,
   onSetDefault,
@@ -561,6 +563,8 @@ function ProviderEditor({
   provider: AiProvider;
   open: boolean;
   isDefault: boolean;
+  /** 系统钥匙串不可用时的原因；非空时密钥存不上，得如实说 */
+  secretStoreError: string;
   onToggle: () => void;
   onChange: (next: AiProvider) => void;
   onSetDefault: () => void;
@@ -569,33 +573,69 @@ function ProviderEditor({
 }) {
   const patch = (part: Partial<AiProvider>) => onChange({ ...provider, ...part });
 
+  /** 刚敲进去、还没落钥匙串的密钥。存进去就清空——明文不在设置面板里过夜 */
+  const [draftKey, setDraftKey] = useState("");
   /** 密钥默认打码，点一下才明文——设置面板经常有人在旁边看着 */
   const [revealKey, setRevealKey] = useState(false);
-  /** 连接测试的结果，非空时显示在按钮下面 */
+  /** 保存 / 清除 / 连接测试的结果，显示在按钮下面 */
   const [probe, setProbe] = useState<{ ok: boolean; text: string } | null>(null);
-  const [testing, setTesting] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const enabledModelCount = provider.models.filter(
     (model) => model.enabled && model.id.trim() !== "",
   ).length;
   const missing = provider.baseUrl.trim() === "" || enabledModelCount === 0;
 
+  const saveKey = async () => {
+    if (draftKey.trim() === "") return;
+    setBusy(true);
+    setProbe(null);
+    try {
+      await setSecret(provider.id, draftKey);
+      setDraftKey("");
+      patch({ apiKeySet: true });
+      setProbe({ ok: true, text: "密钥已保存到系统钥匙串" });
+    } catch (reason) {
+      setProbe({ ok: false, text: String(reason) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearKey = async () => {
+    setBusy(true);
+    setProbe(null);
+    try {
+      await deleteSecret(provider.id);
+      patch({ apiKeySet: false });
+      setProbe({ ok: true, text: "已从系统钥匙串删除" });
+    } catch (reason) {
+      setProbe({ ok: false, text: String(reason) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const test = async () => {
-    setTesting(true);
+    setBusy(true);
     setProbe(null);
     try {
       // 探针优先拿第一个启用模型去试：接口不支持 GET /models 时后端靠它退化
       const first = provider.models.find((model) => model.enabled && model.id.trim() !== "");
-      const text = await testProviderConnection({
-        baseUrl: provider.baseUrl,
-        apiKey: provider.apiKey,
-        model: first?.id.trim() ?? "",
-      });
+      const text = await testProviderConnection(
+        {
+          baseUrl: provider.baseUrl,
+          providerId: provider.id,
+          model: first?.id.trim() ?? "",
+        },
+        // 刚敲的还没保存，直接让后端拿这份去测，不必先存一遍
+        draftKey.trim() || undefined,
+      );
       setProbe({ ok: true, text });
     } catch (reason) {
       setProbe({ ok: false, text: String(reason) });
     } finally {
-      setTesting(false);
+      setBusy(false);
     }
   };
 
@@ -659,14 +699,15 @@ function ProviderEditor({
           </Field>
           <Field
             label="API 密钥"
-            hint="只存在本机 localStorage，不写进 opencode 配置文件；本地模型可以留空"
+            hint="存进操作系统的凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service），
+              明文不写进设置、也不写进 opencode 配置文件；本地模型可以留空"
           >
             <input
               type={revealKey ? "text" : "password"}
-              value={provider.apiKey}
+              value={draftKey}
               spellCheck={false}
-              placeholder={provider.apiKey ? "" : "sk-…"}
-              onChange={(event) => patch({ apiKey: event.target.value })}
+              placeholder={provider.apiKeySet ? "已保存，填新的可覆盖" : "sk-…"}
+              onChange={(event) => setDraftKey(event.target.value)}
               className={TEXT_INPUT}
             />
             <button
@@ -676,7 +717,45 @@ function ProviderEditor({
             >
               {revealKey ? "隐藏" : "显示"}
             </button>
+            <button
+              type="button"
+              onClick={() => void saveKey()}
+              disabled={busy || draftKey.trim() === "" || secretStoreError !== ""}
+              title={secretStoreError !== "" ? secretStoreError : "写进系统钥匙串"}
+              className={`shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg ${
+                busy || draftKey.trim() === "" || secretStoreError !== ""
+                  ? "cursor-not-allowed opacity-40 hover:bg-transparent"
+                  : ""
+              }`}
+            >
+              保存
+            </button>
+            {provider.apiKeySet && (
+              <button
+                type="button"
+                onClick={() => void clearKey()}
+                disabled={busy}
+                title="从系统钥匙串删掉这个提供商的密钥"
+                className={`shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:border-danger-line hover:bg-danger-bg hover:text-danger ${
+                  busy ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""
+                }`}
+              >
+                清除
+              </button>
+            )}
           </Field>
+
+          <p
+            className={`text-[11px] leading-relaxed ${
+              secretStoreError !== "" ? "text-danger" : "text-fg-faint"
+            }`}
+          >
+            {secretStoreError !== ""
+              ? secretStoreError
+              : provider.apiKeySet
+                ? "密钥已保存在系统钥匙串，这里不会再回显。"
+                : "还没有保存密钥。点「保存」后写进系统钥匙串，之后不回显。"}
+          </p>
 
           <Field
             label="模型"
@@ -718,14 +797,14 @@ function ProviderEditor({
             <button
               type="button"
               onClick={() => void test()}
-              disabled={provider.baseUrl.trim() === "" || testing}
+              disabled={provider.baseUrl.trim() === "" || busy}
               className={`rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg ${
-                provider.baseUrl.trim() === "" || testing
+                provider.baseUrl.trim() === "" || busy
                   ? "cursor-not-allowed opacity-40 hover:bg-transparent"
                   : ""
               }`}
             >
-              {testing ? "测试中…" : "测试连接"}
+              {busy ? "测试中…" : "测试连接"}
             </button>
             {!isDefault && (
               <button
@@ -1115,7 +1194,7 @@ function LayerEditor({
 }
 
 export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
-  const { settings, update, reset } = useSettings();
+  const { settings, update, reset, secretNotice } = useSettings();
   // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
   const devAi = useDevAiOverrides();
   const overriddenAi = [
@@ -1202,6 +1281,10 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const removeProvider = (provider: AiProvider) => {
     setOpenProvider(null);
     applyProviders(settings.aiProviders.filter((item) => item.id !== provider.id));
+    // 钥匙串里的条目跟着一起清：留着就是个永远不会再被用到的死条目，
+    // 用户在系统凭据管理器里看到会以为还在用。删不掉也不拦——设置已经改完了，
+    // 这里只是尽力收尾
+    void deleteSecret(provider.id).catch(() => {});
   };
 
   const setDefaultProvider = (provider: AiProvider) => {
@@ -1745,6 +1828,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                             isDefault={
                               resolveDefaultModel(settings)?.providerId === provider.id
                             }
+                            secretStoreError={secretNotice}
                             onToggle={() =>
                               setOpenProvider(openProvider === index ? null : index)
                             }
@@ -1758,8 +1842,8 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       {overriddenAi.length > 0 && (
                         <p className="text-[11px] leading-relaxed text-fg-faint">
                           开发调试：src-tauri/.env 覆盖了「{overriddenAi.join("、")}」，
-                          这会盖住「默认提供商」的对应字段，输入框改不动它们。
-                          改完重开应用生效；已在跑的智能体要停掉再起。
+                          它们会顶掉「默认提供商」的接口地址、模型和密钥（密钥不再走钥匙串，
+                          直接注入子进程环境）。改完重开应用生效；已在跑的智能体要停掉再起。
                         </p>
                       )}
                     </div>

@@ -40,14 +40,20 @@ const SYSTEM_PROMPT: &str = "\
 7. 语言跟「最近提交」保持一致；没有历史提交时用中文。
 8. 不要编造改动里没有的内容。";
 
-/// 前端传来的接口配置。三个字段都由用户填，空的话直接拒绝，不去打扰接口。
+/// 前端传来的接口配置。密钥不在这里——前端只知道「哪家提供商」，正文由后端按
+/// provider id 去系统钥匙串取（见 `secrets.rs`）。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfig {
     /// OpenAI 兼容接口的基地址，例如 https://api.deepseek.com/v1
     base_url: String,
-    api_key: String,
+    /// 默认模型所在的提供商 id，密钥按它去钥匙串里查
+    provider_id: String,
     model: String,
+    /// 开发调试用：`src-tauri/.env` 里那个密钥。前端传不进来，只在 debug 构建里
+    /// 由 `apply` 填上；它优先于钥匙串——`.env` 本来就该盖住界面上的配置。
+    #[serde(skip)]
+    dev_api_key: Option<String>,
 }
 
 impl AiConfig {
@@ -61,24 +67,38 @@ impl AiConfig {
             self.model = model.clone();
         }
         if let Some(api_key) = &overrides.api_key {
-            self.api_key = api_key.clone();
+            self.dev_api_key = Some(api_key.clone());
         }
     }
 
-    /// 三个字段都填全了才去请求，缺一个就报同一句话——用户知道该去哪儿补。
-    fn ready(&self) -> Result<(String, String, String), String> {
+    /// 拼出生效的 (基地址, 密钥, 模型)。缺哪样就报哪样——用户知道该去哪儿补。
+    ///
+    /// 读钥匙串是同步阻塞的，所以这个方法**必须在第一个 await 之前调用**，
+    /// 别把系统调用夹在异步中间（和 git 那边一个道理）。
+    fn resolve(&self) -> Result<(String, String, String), String> {
         let base_url = self.base_url.trim().trim_end_matches('/').to_string();
-        let api_key = self.api_key.trim().to_string();
         let model = self.model.trim().to_string();
-        if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
+        if base_url.is_empty() || model.is_empty() {
             // 开发调试版可以只写 src-tauri/.env，提示里带上这条，免得以为没救
             return Err(if cfg!(debug_assertions) {
-                "请先在「设置 → AI」里填写接口地址、模型和密钥，或写进 src-tauri/.env".to_string()
+                "请先在「设置 → 智能体 → 模型提供商」里填写接口地址和模型，或写进 src-tauri/.env"
+                    .to_string()
             } else {
-                "请先在「设置 → AI」里填写接口地址、模型和密钥".to_string()
+                "请先在「设置 → 智能体 → 模型提供商」里填写接口地址和模型".to_string()
             });
         }
-        Ok((base_url, api_key, model))
+
+        let api_key = match &self.dev_api_key {
+            Some(key) => key.clone(),
+            None => crate::secrets::get(&self.provider_id)?.unwrap_or_default(),
+        };
+        if api_key.trim().is_empty() {
+            return Err(format!(
+                "提供商「{}」还没保存 API 密钥，请在「设置 → 智能体 → 模型提供商」里填一个",
+                self.provider_id
+            ));
+        }
+        Ok((base_url, api_key.trim().to_string(), model))
     }
 }
 
@@ -87,7 +107,7 @@ impl AiConfig {
 /// 只走 Rust 侧的 HTTP：密钥不进 WebView，也不受各厂商的跨域限制。
 /// 两个功能（生成提交信息 / 解读改动）共用，调用方自己拼提示词、自己清理输出。
 async fn chat(config: &AiConfig, system: &str, user: &str, temperature: f32) -> Result<String, String> {
-    let (base_url, api_key, model) = config.ready()?;
+    let (base_url, api_key, model) = config.resolve()?;
 
     let body = serde_json::json!({
         "model": model,
@@ -154,11 +174,12 @@ pub async fn ai_generate_commit_message(
     state: tauri::State<'_, FsState>,
     config: AiConfig,
 ) -> Result<String, String> {
-    // 覆盖要赶在 ready() 之前：面板留空、只写 .env 时也得能跑
+    // 覆盖要赶在 resolve() 之前：面板留空、只写 .env 时也得能跑
     let mut config = config;
     config.apply(&dev::read_overrides());
-    // 先挡一道：配置不全时不必去读 diff
-    config.ready()?;
+    // 先挡一道：配置不全时不必去读 diff。顺带把钥匙串那一次读也挪到
+    // 第一个 await 之前——它是同步阻塞的
+    config.resolve()?;
 
     // git 是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await 点
     let context = git::commit_context(&state)?;
@@ -186,10 +207,10 @@ pub async fn ai_explain_change(
     path: String,
     source: git::DiffSource,
 ) -> Result<String, String> {
-    // 同 ai_generate_commit_message：覆盖必须早于 ready()
+    // 同 ai_generate_commit_message：覆盖必须早于 resolve()
     let mut config = config;
     config.apply(&dev::read_overrides());
-    config.ready()?;
+    config.resolve()?;
 
     // 同 ai_generate_commit_message：git 是同步阻塞的，先跑完再 await
     let root = state.root()?;
@@ -398,19 +419,28 @@ async fn probe_with_chat(
 /// 先打 `GET /models`——便宜、且能同时验证鉴权与网络；有些 OpenAI 兼容实现
 /// 不提供这条路由（回 404/405），那就退化成一次极小的对话请求。
 ///
-/// 这里**不套** `dev::AiOverrides`：测的是用户在输入框里填的那份配置。
+/// 密钥优先用 `api_key`（用户在输入框里刚敲、还没保存的那份），为空则按
+/// `provider_id` 去系统钥匙串取。本地模型两边都空是正常情况，直接不带鉴权头。
+///
+/// 这里**不套** `dev::AiOverrides`：测的是用户在界面上填的那份配置。
 #[tauri::command]
 pub async fn ai_test_provider(
     base_url: String,
-    api_key: String,
+    provider_id: String,
+    api_key: Option<String>,
     model: String,
 ) -> Result<String, String> {
     let base_url = base_url.trim().trim_end_matches('/').to_string();
     if base_url.is_empty() {
         return Err("请先填写接口地址".to_string());
     }
-    let api_key = api_key.trim().to_string();
     let model = model.trim().to_string();
+    // 同步阻塞的系统调用，放在第一个 await 之前
+    let api_key = match api_key.map(|key| key.trim().to_string()) {
+        Some(key) if !key.is_empty() => key,
+        _ if provider_id.trim().is_empty() => String::new(),
+        _ => crate::secrets::get(provider_id.trim())?.unwrap_or_default(),
+    };
 
     let client = reqwest::Client::builder()
         .timeout(PROBE_TIMEOUT)

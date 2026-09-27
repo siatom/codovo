@@ -17,13 +17,14 @@ const EVENT_NAME = "agent-event";
 /** opencode 子进程自己退出时后端补发的事件 */
 const EXIT_EVENT = "agent-exit";
 
-/** 一个提供商喂给 opencode 的形状：models 只要模型 id，密钥不进配置文件 */
+/** 一个提供商喂给 opencode 的形状：只给模型 id 和一个「有没有密钥」的标记 */
 export interface AgentProviderConfig {
   /** opencode 的 provider key，也是 `provider/model` 引用的前缀 */
   id: string;
   name: string;
   baseUrl: string;
-  apiKey: string;
+  /** 有没有配密钥。前端不传密钥正文，后端按 id 去系统钥匙串取 */
+  hasKey: boolean;
   models: string[];
 }
 

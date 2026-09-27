@@ -7,6 +7,7 @@ mod dev;
 mod fs_api;
 mod git;
 mod pty;
+mod secrets;
 mod shell_env;
 mod shells;
 mod watcher;
@@ -59,6 +60,9 @@ pub fn run() {
             ai::ai_generate_commit_message,
             ai::ai_explain_change,
             ai::ai_test_provider,
+            secrets::secret_set,
+            secrets::secret_delete,
+            secrets::secret_status,
             dev::dev_ai_overrides,
             cli_sessions::cli_list_sessions,
             agent::agent_start,

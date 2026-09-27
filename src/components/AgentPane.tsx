@@ -251,14 +251,14 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
     ? settings.agentPrimary
     : "build";
 
-  /** 喂给 opencode 的提供商。只给启用的、地址填了的；模型只留 id */
+  /** 喂给 opencode 的提供商。只给启用的、地址填了的；密钥只说有没有，正文留后端取 */
   const providers = useMemo(
     () =>
       enabledProviders(settings).map((provider) => ({
         id: provider.id,
         name: provider.name,
         baseUrl: provider.baseUrl.trim(),
-        apiKey: provider.apiKey,
+        hasKey: provider.apiKeySet,
         models: enabledModels(provider).map((model) => model.id),
       })),
     [settings],

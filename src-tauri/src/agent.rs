@@ -165,9 +165,10 @@ pub struct ProviderSpec {
     name: String,
     /// OpenAI 兼容基地址；空的话这条提供商直接作废
     base_url: String,
-    /// 密钥；本地模型（Ollama 之类）不需要，留空则不下发
+    /// 这家有没有配密钥。只是个「该去系统钥匙串取一条」的标记，密钥正文不走这里；
+    /// 本地模型（Ollama 之类）不需要密钥，为 false。
     #[serde(default)]
-    api_key: String,
+    has_key: bool,
     #[serde(default)]
     models: Vec<String>,
 }
@@ -208,6 +209,11 @@ pub struct AgentConfig {
     /// 全局默认模型，形如 `provider/model`；空则取第一个提供商的第一个模型
     #[serde(default)]
     default_model: String,
+    /// 开发调试用：`src-tauri/.env` 里那个密钥，连它属于哪个提供商一起记。
+    /// 前端传不进来（`skip`），只在 debug 构建里由 `apply` 填上；不进配置文件，
+    /// 直接进子进程环境变量，和钥匙串里那条走同一条路。
+    #[serde(skip)]
+    dev_api_key: Option<(String, String)>,
     /// 规则正文，注入每次对话
     #[serde(default)]
     rules: String,
@@ -259,20 +265,40 @@ impl AgentConfig {
         Some(format!("{}/{model}", provider.id))
     }
 
-    /// 要注入子进程的密钥环境变量。没有密钥的提供商（本地模型）跳过。
-    fn secrets(&self) -> Vec<(String, String)> {
-        self.usable_providers()
-            .iter()
-            .filter(|provider| !provider.api_key.trim().is_empty())
-            .map(|provider| (provider.api_key_env(), provider.api_key.trim().to_string()))
-            .collect()
+    /// 要注入子进程的密钥环境变量。
+    ///
+    /// 密钥从系统钥匙串按 provider id 取——前端从头到尾经手不了明文。没有密钥的
+    /// 提供商（本地模型）不去碰钥匙串；钥匙串整条读不了（Linux 缺 Secret Service）
+    /// 时报错，而不是静默降级成「没密钥」，免得界面上一路 401 却不知道该看哪儿。
+    fn secrets(&self) -> Result<Vec<(String, String)>, String> {
+        let mut out = Vec::new();
+        for provider in self.usable_providers() {
+            // .env 的覆盖优先：它本来就该盖住界面上的配置，也不该被钥匙串里的旧值顶掉
+            if let Some((id, key)) = &self.dev_api_key {
+                if id == &provider.id {
+                    out.push((provider.api_key_env(), key.clone()));
+                    continue;
+                }
+            }
+            if !provider.has_key {
+                continue;
+            }
+            // 标记说有、钥匙串里却没有：多半是用户在系统设置里删过。不拦启动，
+            // opencode 那边会以鉴权失败的样子暴露出来，比这里猜更准
+            if let Some(key) = crate::secrets::get(&provider.id)? {
+                if !key.trim().is_empty() {
+                    out.push((provider.api_key_env(), key));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// 同 `ai::AiConfig::apply`：开发调试时让 `src-tauri/.env` 优先。逐字段来，
     /// 只写了一个键的 `.env` 不会把另外两个字段清空。
     ///
-    /// 覆盖打在**默认提供商**上：`base_url` / `api_key` 改它的地址和密钥，
-    /// `model` 只换模型段、保留提供商前缀。
+    /// 覆盖打在**默认提供商**上：`base_url` 改它的地址，`api_key` 只记进
+    /// `dev_api_key`（不进钥匙串、不落配置文件），`model` 只换模型段、保留提供商前缀。
     fn apply(&mut self, overrides: &dev::AiOverrides) {
         if overrides.base_url.is_none() && overrides.model.is_none() && overrides.api_key.is_none() {
             return;
@@ -284,7 +310,7 @@ impl AgentConfig {
             self.providers.push(ProviderSpec {
                 name: "CodeDock (.env)".to_string(),
                 base_url: overrides.base_url.clone().unwrap_or_default(),
-                api_key: overrides.api_key.clone().unwrap_or_default(),
+                has_key: overrides.api_key.is_some(),
                 models: overrides.model.clone().into_iter().collect(),
                 id: id.clone(),
             });
@@ -293,6 +319,7 @@ impl AgentConfig {
                 .clone()
                 .map(|model| format!("{id}/{model}"))
                 .unwrap_or_default();
+            self.dev_api_key = overrides.api_key.clone().map(|key| (id, key));
             return;
         }
 
@@ -304,8 +331,9 @@ impl AgentConfig {
         }
         if let (Some(api_key), Some(id)) = (&overrides.api_key, &target) {
             if let Some(provider) = self.providers.iter_mut().find(|item| item.id == *id) {
-                provider.api_key = api_key.clone();
+                provider.has_key = true;
             }
+            self.dev_api_key = Some((id.clone(), api_key.clone()));
         }
         if let Some(model) = &overrides.model {
             self.default_model = match &target {
@@ -731,9 +759,10 @@ fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
 
         let mut options = serde_json::Map::new();
         options.insert("baseURL".to_string(), serde_json::json!(provider.base_url.trim()));
-        // 密钥不落盘：只留环境变量占位符。本地模型（Ollama 之类）没有密钥，
-        // 这时干脆不下发这个字段，塞个空占位符反而会让 opencode 拿空串去鉴权
-        if !provider.api_key.trim().is_empty() {
+        // 密钥不落盘：只留环境变量占位符，正文由 spawn 时从系统钥匙串取出来注入。
+        // 本地模型（Ollama 之类）没有密钥，这时干脆不下发这个字段，塞个空占位符
+        // 反而会让 opencode 拿空串去鉴权
+        if provider.has_key {
             options.insert(
                 "apiKey".to_string(),
                 serde_json::json!(format!("{{env:{}}}", provider.api_key_env())),
@@ -1256,7 +1285,7 @@ pub async fn agent_start(
     if config.resolved_default_model().is_none() {
         return Err(format!("默认模型不可用。{}", provider_hint()));
     }
-    let secrets = config.secrets();
+    let secrets = config.secrets()?;
 
     // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await
     let cwd = fs_state.root()?;
@@ -1669,7 +1698,7 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             base_url: format!("https://{id}.example.com/v1"),
-            api_key: "sk-test".to_string(),
+            has_key: true,
             models: models.iter().map(|model| model.to_string()).collect(),
         }
     }
@@ -1681,6 +1710,9 @@ mod tests {
             port: 0,
             providers: vec![provider("codedock", &["some-model"])],
             default_model: "codedock/some-model".to_string(),
+            // 单测别去碰真实钥匙串：要密钥的用例一律走 .env 覆盖这条路，
+            // 它不落盘、也不查凭据库
+            dev_api_key: None,
             rules: String::new(),
             memory: String::new(),
             skills: Vec::new(),
@@ -1915,7 +1947,7 @@ mod tests {
             provider("deepseek", &["deepseek-chat", "deepseek-reasoner"]),
             // 本地模型没有密钥，不下发 apiKey 字段
             ProviderSpec {
-                api_key: String::new(),
+                has_key: false,
                 ..provider("ollama", &["qwen3:8b"])
             },
             // 地址为空 → 不可用，整条丢掉
@@ -1942,6 +1974,10 @@ mod tests {
         assert!(value["provider"].get("nomodels").is_none());
         // 没有密钥的提供商不该出现 apiKey——空占位符会让 opencode 拿空串去鉴权
         assert!(value["provider"]["ollama"]["options"].get("apiKey").is_none());
+        assert_eq!(
+            value["provider"]["deepseek"]["options"]["apiKey"],
+            "{env:CODEDOCK_AI_KEY_DEEPSEEK}"
+        );
         // id 里有连字符时环境变量名要能兜住
         let cfg = AgentConfig {
             providers: vec![provider("my-vendor", &["m"])],
@@ -2028,21 +2064,27 @@ mod tests {
 
     #[test]
     fn secrets_skip_providers_without_keys() {
+        // 没有密钥的提供商（本地模型）连钥匙串都不该去碰：这里只给 .env 覆盖值，
+        // 一旦实现改成无条件查凭据库，这条用例会去动真实的系统钥匙串
         let cfg = AgentConfig {
             providers: vec![
-                provider("deepseek", &["m"]),
                 ProviderSpec {
-                    api_key: "  ".to_string(),
+                    has_key: false,
+                    ..provider("deepseek", &["m"])
+                },
+                ProviderSpec {
+                    has_key: false,
                     ..provider("ollama", &["m"])
                 },
             ],
+            dev_api_key: Some(("deepseek".to_string(), "sk-dev".to_string())),
             ..bare_config()
         };
         assert_eq!(
-            cfg.secrets(),
+            cfg.secrets().unwrap(),
             vec![(
                 "CODEDOCK_AI_KEY_DEEPSEEK".to_string(),
-                "sk-test".to_string()
+                "sk-dev".to_string()
             )]
         );
     }
@@ -2064,7 +2106,11 @@ mod tests {
         cfg.apply(&overrides);
         assert_eq!(cfg.default_model, "codedock/dev-model");
         assert_eq!(cfg.providers[0].base_url, "https://dev.example.com/v1");
-        assert_eq!(cfg.secrets(), vec![("CODEDOCK_AI_KEY_CODEDOCK".to_string(), "sk-dev".to_string())]);
+        assert!(cfg.providers[0].has_key);
+        assert_eq!(
+            cfg.secrets().unwrap(),
+            vec![("CODEDOCK_AI_KEY_CODEDOCK".to_string(), "sk-dev".to_string())]
+        );
 
         // 配了提供商：覆盖打在默认那家上，模型只换模型段
         let mut cfg = bare_config();
@@ -2076,6 +2122,28 @@ mod tests {
             cfg.providers[1].base_url,
             "https://deepseek.example.com/v1"
         );
+        // .env 的密钥只落在默认那家，别家不受影响（它们得各查各的钥匙串条目）
+        assert_eq!(
+            cfg.secrets().unwrap(),
+            vec![("CODEDOCK_AI_KEY_CODEDOCK".to_string(), "sk-dev".to_string())]
+        );
+    }
+
+    #[test]
+    fn default_provider_id_prefers_the_reference_prefix() {
+        // 默认模型的提供商前缀为准，认不出来才退到第一个可用项
+        let cfg = AgentConfig {
+            providers: vec![provider("codedock", &["m"]), provider("deepseek", &["d"])],
+            default_model: "deepseek/d".to_string(),
+            ..bare_config()
+        };
+        assert_eq!(cfg.default_provider_id().as_deref(), Some("deepseek"));
+
+        let cfg = AgentConfig {
+            default_model: "gone/m".to_string(),
+            ..cfg
+        };
+        assert_eq!(cfg.default_provider_id().as_deref(), Some("codedock"));
     }
 
     #[test]

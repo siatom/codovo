@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { secretStatus, setSecret } from "./secrets";
 
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
@@ -62,7 +63,16 @@ export interface AiProvider {
   name: string;
   /** OpenAI 兼容基地址，结尾带不带 `/` 都行 */
   baseUrl: string;
-  apiKey: string;
+  /** 密钥是否已存进系统钥匙串。明文永远不会落在这个字段上 */
+  apiKeySet: boolean;
+  /**
+   * 待搬迁的明文密钥。**只在一种情况下有值**：旧版本把明文存在 localStorage 里，
+   * 而这次启动还没把它写进系统钥匙串。
+   *
+   * 搬迁成功立刻抹掉；失败就原样留着（下次启动重试），绝不主动丢掉用户填过的密钥。
+   * 新数据不会有这个字段。
+   */
+  apiKey?: string;
   models: ProviderModel[];
   enabled: boolean;
 }
@@ -240,6 +250,9 @@ function asModelList(value: unknown): ProviderModel[] {
 /**
  * 逐条校验提供商。id 要能当 opencode 的 provider key 和 `provider/model` 的前缀用，
  * 含 `/` 会把引用切错，缺了则整条作废——都没法补救，直接丢。
+ *
+ * 密钥那一栏兼容两种来源：新数据只有 `apiKeySet` 布尔位；老数据是明文 `apiKey`，
+ * 读出来挂成待搬迁值（见 `AiProvider.apiKey`），启动时写进系统钥匙串。
  */
 function asProviderList(value: unknown): AiProvider[] {
   if (!Array.isArray(value)) return [];
@@ -250,16 +263,18 @@ function asProviderList(value: unknown): AiProvider[] {
     if (typeof record.id !== "string" || !record.id || record.id.includes("/")) return [];
     if (seen.has(record.id)) return [];
     seen.add(record.id);
-    return [
-      {
-        id: record.id,
-        name: asString(record.name, record.id),
-        baseUrl: asString(record.baseUrl, ""),
-        apiKey: asString(record.apiKey, ""),
-        models: asModelList(record.models),
-        enabled: asBoolean(record.enabled, true),
-      },
-    ];
+    // 老版本的明文字段；空串等于没填过，不挂上去
+    const legacy = asString(record.apiKey, "");
+    const provider: AiProvider = {
+      id: record.id,
+      name: asString(record.name, record.id),
+      baseUrl: asString(record.baseUrl, ""),
+      apiKeySet: asBoolean(record.apiKeySet, false) || legacy !== "",
+      models: asModelList(record.models),
+      enabled: asBoolean(record.enabled, true),
+    };
+    if (legacy !== "") provider.apiKey = legacy;
+    return [provider];
   });
 }
 
@@ -274,16 +289,17 @@ function migrateLegacyProvider(raw: Record<string, unknown>): AiProvider[] {
   const model = asString(raw.aiModel, "").trim();
   const apiKey = asString(raw.aiApiKey, "");
   if (!baseUrl && !model && !apiKey) return [];
-  return [
-    {
-      id: "codedock",
-      name: "CodeDock",
-      baseUrl,
-      apiKey,
-      models: model ? [{ id: model, name: model, enabled: true }] : [],
-      enabled: true,
-    },
-  ];
+  const provider: AiProvider = {
+    id: "codedock",
+    name: "CodeDock",
+    baseUrl,
+    apiKeySet: apiKey !== "",
+    models: model ? [{ id: model, name: model, enabled: true }] : [],
+    enabled: true,
+  };
+  // 老版本的明文密钥挂成待搬迁值，启动时进系统钥匙串
+  if (apiKey !== "") provider.apiKey = apiKey;
+  return [provider];
 }
 
 function asAgentMode(value: unknown): AgentProfile["mode"] {
@@ -413,12 +429,16 @@ interface SettingsValue {
   update: (patch: Partial<Settings>) => void;
   /** 整块回到出厂默认，设置面板上的每一项都算在内 */
   reset: () => void;
+  /** 系统钥匙串相关的提示，空串表示一切正常。有值时设置面板要如实显示 */
+  secretNotice: string;
 }
 
 const SettingsContext = createContext<SettingsValue | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(readSaved);
+  /** 钥匙串读不了 / 明文没搬成功时的原因，界面据此提示 */
+  const [secretNotice, setSecretNotice] = useState("");
 
   useEffect(() => {
     try {
@@ -430,6 +450,63 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   const update = useCallback((patch: Partial<Settings>) => {
     setSettings((current) => ({ ...current, ...patch }));
+  }, []);
+
+  /**
+   * 启动时一次性把密钥收进系统钥匙串，并用钥匙串里的实情校正 `apiKeySet`。
+   *
+   * 只跑一次，所以刻意锁首次渲染的 `settings`：之后再变都是用户自己改的，不该被
+   * 这里覆盖回去。两件事：
+   * 1. 旧版本存在 localStorage 里的明文密钥（`aiKey`）写进钥匙串，成功即抹掉；
+   *    失败就把明文留在原处等下次重试，并把原因顶到界面上——密钥是用户填的，
+   *    宁可留着也不能悄悄丢掉。
+   * 2. 拿钥匙串的真实条目校正标记。那个布尔位可能和实际对不上（用户在系统设置里
+   *    删过条目、或换了机器）。钥匙串整个不可用时跳过这步，免得把标记全清成「未保存」。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const initial = settings;
+    void (async () => {
+      let writeError = "";
+      const migrated = initial.aiProviders.filter(
+        (provider) => (provider.apiKey ?? "") !== "",
+      );
+      for (const provider of migrated) {
+        try {
+          await setSecret(provider.id, provider.apiKey ?? "");
+        } catch (reason) {
+          writeError ||= String(reason);
+        }
+      }
+
+      const status = await secretStatus(initial.aiProviders.map((provider) => provider.id));
+      if (cancelled) return;
+
+      // 搬迁成功的：抹掉明文、标记已存。有一个写失败就一个都不抹，宁可下次
+      // 整批重来（写进钥匙串是覆盖，重来无害），也不留下一半明文一半半没搬的状态
+      const cleared =
+        writeError === "" ? new Set(migrated.map((provider) => provider.id)) : null;
+      // 钥匙串的实情。读不了时为 null，表示这步跳过——否则会把标记全清成「未保存」
+      const known = status.storeError === "" ? new Set(status.available) : null;
+
+      setSettings((current) => ({
+        ...current,
+        aiProviders: current.aiProviders.map((provider) => {
+          const next = { ...provider };
+          if (cleared?.has(provider.id)) {
+            delete next.apiKey;
+            next.apiKeySet = true;
+          }
+          if (known) next.apiKeySet = known.has(provider.id);
+          return next;
+        }),
+      }));
+      setSecretNotice(status.storeError || writeError);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // 一次性的 bootstrap，只认挂载时那份设置
   }, []);
 
   // aiCommands 要拷一份：DEFAULTS 是模块级常量，直接把它的数组当成实时状态挂上去，
@@ -447,7 +524,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SettingsContext.Provider value={{ settings, update, reset }}>
+    <SettingsContext.Provider value={{ settings, update, reset, secretNotice }}>
       {children}
     </SettingsContext.Provider>
   );

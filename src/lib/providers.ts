@@ -13,7 +13,7 @@ export function modelRef(providerId: string, modelId: string): string {
 }
 
 export function emptyProvider(id: string, name = ""): AiProvider {
-  return { id, name: name || id, baseUrl: "", apiKey: "", models: [], enabled: true };
+  return { id, name: name || id, baseUrl: "", apiKeySet: false, models: [], enabled: true };
 }
 
 export function emptyModel(): ProviderModel {
