@@ -175,6 +175,8 @@ export function EditorPane({
   const diffContainerRef = useRef<HTMLDivElement>(null);
   const diffRef = useRef<monaco.editor.IStandaloneDiffEditor | null>(null);
   const diffModelsRef = useRef(new Map<string, CachedDiff>());
+  /** 「滚到第一处改动」还欠着：model 挂上时差异往往还没算完，等 onDidUpdateDiff 再滚 */
+  const diffRevealPendingRef = useRef(false);
 
   const activeRef = useRef<Tab | null>(active);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
@@ -478,6 +480,23 @@ export function EditorPane({
     [disposeModels, forgetKeys],
   );
 
+  /**
+   * 把差异视图滚到第一处改动（在「变更」里点开一个文件时用）。
+   * 差异是 Monaco 异步算出来的：model 刚挂上时 getLineChanges() 还是 null，得等
+   * onDidUpdateDiff 再滚；复用缓存 model 时通常已经算好，当场就能滚。容器可能刚
+   * 从 hidden 切到可见，等一帧让 Monaco 量到尺寸，否则滚不动。
+   */
+  const revealFirstDiffChange = useCallback(() => {
+    const diff = diffRef.current;
+    if (!diff) return;
+    const changes = diff.getLineChanges();
+    if (!changes || changes.length === 0) return;
+    diffRevealPendingRef.current = false;
+    // 纯删除的改动块里 modifiedStartLineNumber 可能落到区块前一行的位置，兜到 1
+    const line = Math.max(1, changes[0].modifiedStartLineNumber);
+    requestAnimationFrame(() => diffRef.current?.getModifiedEditor().revealLineInCenter(line));
+  }, []);
+
   // 差异编辑器只在第一次真的要看差异时才建：省一份初始化，
   // 也避免在 hidden（0 尺寸）的容器上建实例
   const ensureDiffEditor = useCallback(() => {
@@ -500,7 +519,11 @@ export function EditorPane({
       renderOverviewRuler: false,
       padding: { top: 8 },
     });
-  }, []);
+    // 差异算完的那一刻才知道第一处改动在哪
+    diffRef.current.onDidUpdateDiff(() => {
+      if (diffRevealPendingRef.current) revealFirstDiffChange();
+    });
+  }, [revealFirstDiffChange]);
 
   const showDiff = useCallback(
     async (tab: Extract<Tab, { kind: "diff" }>) => {
@@ -510,6 +533,8 @@ export function EditorPane({
         ensureDiffEditor();
         diffRef.current?.setModel(cached);
         setDiffStatus({ kind: "ready" });
+        diffRevealPendingRef.current = true;
+        revealFirstDiffChange();
         return;
       }
 
@@ -558,8 +583,10 @@ export function EditorPane({
       ensureDiffEditor();
       diffRef.current?.setModel(pair);
       setDiffStatus({ kind: "ready" });
+      diffRevealPendingRef.current = true;
+      revealFirstDiffChange();
     },
-    [ensureDiffEditor],
+    [ensureDiffEditor, revealFirstDiffChange],
   );
 
   // editor 只建一次，切标签时换 model

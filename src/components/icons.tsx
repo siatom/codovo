@@ -415,7 +415,7 @@ export const IconRefresh = icon(
 );
 
 /**
- * 同步更改：一个顺时针的环形箭头（提交完还有本地领先的提交要推时用）。
+ * 推送变更：一个顺时针的环形箭头（提交完还有本地领先的提交要推时用）。
  * 刻意和 IconRefresh 的双向回转箭头区分开——那个是"刷新"，这个是"推上去"。
  */
 export const IconSync = icon(

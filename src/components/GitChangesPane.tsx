@@ -242,7 +242,7 @@ const TEXT_INPUT =
   "w-full rounded-md border border-line-strong bg-surface px-2 py-1 text-[12px] text-fg outline-none focus:border-accent";
 
 /**
- * 主操作（提交 / 同步更改）：面板里同一位置的按钮会在这两个动作间切换，
+ * 主操作（提交 / 推送变更）：面板里同一位置的按钮会在这两个动作间切换，
  * 所以样式共用一套——实心整宽，和右栏其它主按钮一致。
  */
 const PRIMARY_BUTTON =
@@ -1021,7 +1021,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
   // 有暂存就按暂存生成；只有未暂存的改动也能生成（点下去会先全部暂存）
   const canGenerate = (staged.length > 0 || unstaged.length > 0) && busy === null;
-  // 改动全都提交完了、本地还领先上游：主按钮从「提交」切成「同步更改」
+  // 改动全都提交完了、本地还领先上游：主按钮从「提交」切成「推送变更」
   const showSync = staged.length === 0 && unstaged.length === 0 && snapshot.ahead > 0;
   const notice =
     busy === "fetch" || busy === "pull" || busy === "push" ? SYNC_NOTICE[busy] : null;
@@ -1171,7 +1171,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
               className={PRIMARY_BUTTON}
             >
               <IconSync className={`h-3.5 w-3.5 ${busy === "push" ? "animate-spin" : ""}`} />
-              {busy === "push" ? "同步中…" : `同步更改 ${snapshot.ahead} 个`}
+              {busy === "push" ? "推送中…" : `推送变更 ${snapshot.ahead} 个`}
             </button>
           ) : (
             <button type="button" disabled className={PRIMARY_BUTTON}>
