@@ -24,6 +24,8 @@ struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    /// 开这个会话的窗口 label。关窗要按它收摊，否则 shell 会在后台留下。
+    owner: String,
 }
 
 struct Inner {
@@ -54,6 +56,28 @@ impl PtyState {
         for (_, mut session) in sessions.drain() {
             let _ = session.killer.kill();
         }
+    }
+
+    /// 关窗时调用：只收这个窗口开的 shell。PTY 池是全局的（会话按 id 区分），
+    /// 但归属窗口记在 `owner` 上，不然关掉窗口后 shell 还挂在后台。
+    pub fn kill_window(&self, label: &str) -> usize {
+        let mut sessions = match self.inner.sessions.lock() {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+        let ids: Vec<u32> = sessions
+            .iter()
+            .filter(|(_, session)| session.owner == label)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &ids {
+            if let Some(mut session) = sessions.remove(id) {
+                let _ = session.killer.kill();
+                // drop 掉 master 才会关闭 ConPTY，否则子进程可能残留
+                drop(session);
+            }
+        }
+        ids.len()
     }
 }
 
@@ -139,6 +163,7 @@ fn open_shell(
 
 #[tauri::command]
 pub fn pty_spawn(
+    window: tauri::Window,
     state: tauri::State<'_, PtyState>,
     on_event: Channel<PtyEvent>,
     cwd: Option<String>,
@@ -147,6 +172,7 @@ pub fn pty_spawn(
     // 设置里选的 shell 候选 id；null 表示自动
     shell: Option<String>,
 ) -> Result<u32, String> {
+    let owner = window.label().to_string();
     let spawned = open_shell(cwd.as_deref(), cols, rows, shell.as_deref())?;
     let killer = spawned.child.clone_killer();
     let master = spawned.master;
@@ -196,6 +222,7 @@ pub fn pty_spawn(
                 master,
                 writer,
                 killer,
+                owner,
             },
         );
 

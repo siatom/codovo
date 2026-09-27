@@ -3,10 +3,11 @@
 //! 为什么不让前端直接连 opencode：它监听在 localhost 的动态端口上，不会给 WebView 回
 //! CORS 头，直连必被拦；而且密钥和网络调用留在 Rust 侧，和 `ai.rs` 的既定做法一致。
 //!
-//! 进程模型：一个工作区一个 opencode 进程，cwd 就是工作区根。懒启动（用户第一次切到
-//! 智能体 tab 才起），换工作区或退出应用时杀掉。
+//! 进程模型：一个窗口一个 opencode 进程，cwd 就是该窗口的工作区根。懒启动（用户第一次
+//! 切到智能体 tab 才起），关窗或退出应用时杀掉。同项目开两个窗口会起两个进程，
+//! 各自监听端口、各自一份配置目录，互不干扰。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -22,8 +23,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::dev;
 use crate::fs_api::FsState;
 
-/// SSE 事件推给前端用的事件名。全局只有一个 agent 服务，固定名就够，
-/// 不像 PTY 那样每个会话一个 Channel。
+/// SSE 事件推给前端用的事件名。按窗口定向发送（`emit_to`），名字固定、
+/// 每个窗口收自己那份，不像 PTY 那样每个会话一个 Channel。
 pub const EVENT_NAME: &str = "agent-event";
 /// 子进程自己退出（崩溃、被杀）时推的事件，前端据此提示重启。
 pub const EXIT_EVENT: &str = "agent-exit";
@@ -529,30 +530,75 @@ fn unwrap_data(value: serde_json::Value) -> serde_json::Value {
 }
 
 
-pub struct AgentState {
+/// 一个窗口的智能体运行槽位。克隆给 SSE 任务和退出轮询线程持有——
+/// 它俩要独立于命令调用存活，不能借用 `AgentState`。
+#[derive(Clone)]
+struct Slot {
     inner: Arc<Mutex<Option<Running>>>,
     generation: Arc<AtomicU64>,
+}
+
+/// 进程池，**按窗口 label 分片**：一个窗口一份。
+pub struct AgentState {
+    slots: Mutex<HashMap<String, Slot>>,
 }
 
 impl AgentState {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(None)),
-            generation: Arc::new(AtomicU64::new(1)),
+            slots: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 取（必要时创建）某窗口的槽位。锁被毒掉也照常用内部值——
+    /// 这里没有跨字段的不变式，一次 panic 不该让整个智能体功能瘫掉。
+    fn slot(&self, label: &str) -> Slot {
+        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        slots
+            .entry(label.to_string())
+            .or_insert_with(|| Slot {
+                inner: Arc::new(Mutex::new(None)),
+                generation: Arc::new(AtomicU64::new(1)),
+            })
+            .clone()
+    }
+
+    /// 收掉某个窗口的 opencode 进程并删掉它的配置目录。
+    /// 关窗、换工作区（该窗口内）都走这里。
+    pub fn kill_window(&self, label: &str) {
+        let removed = self
+            .slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(label);
+        if let Some(slot) = removed {
+            kill_slot(&slot);
         }
     }
 
     /// 应用退出时调用，别留下游离的 opencode 进程。
-    pub fn kill(&self) {
-        let mut guard = match self.inner.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        if let Some(mut running) = guard.take() {
-            kill_child(&mut running.child);
-            let _ = std::fs::remove_dir_all(&running.config_dir);
+    pub fn kill_all(&self) {
+        // 先取出 label 列表再逐个收，别持着锁去调 kill_window（它会再取一次锁）
+        let labels: Vec<String> = self
+            .slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        for label in labels {
+            self.kill_window(&label);
         }
+    }
+}
+
+/// 换掉这一代实例：代次 +1 让 SSE / 退出轮询自然收摊，再杀进程、删配置目录。
+fn kill_slot(slot: &Slot) {
+    slot.generation.fetch_add(1, Ordering::SeqCst);
+    let running = slot.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(mut running) = running {
+        kill_child(&mut running.child);
+        let _ = std::fs::remove_dir_all(&running.config_dir);
     }
 }
 
@@ -979,8 +1025,8 @@ fn truncate(text: &str, max_chars: usize) -> String {
 
 /// 拿当前实例的端口、口令、接口代次。每个命令都要这三样：
 /// 端口拼 URL、口令做认证（只有 v2 用得上）、协议决定走哪条路由。
-fn current_endpoint(state: &AgentState) -> Result<(Protocol, u16, String), String> {
-    let guard = state.inner.lock().map_err(|e| e.to_string())?;
+fn current_endpoint(slot: &Slot) -> Result<(Protocol, u16, String), String> {
+    let guard = slot.inner.lock().map_err(|e| e.to_string())?;
     guard
         .as_ref()
         .map(|running| (running.protocol, running.port, running.password.clone()))
@@ -1170,6 +1216,7 @@ fn frame_data(frame: &str) -> Option<&str> {
 fn spawn_sse(
     app: AppHandle,
     inner: Arc<Mutex<Option<Running>>>,
+    label: String,
     protocol: Protocol,
     port: u16,
     password: String,
@@ -1198,7 +1245,7 @@ fn spawn_sse(
                                 let Some(data) = frame_data(&frame) else { continue };
                                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
                                 {
-                                    let _ = app.emit(EVENT_NAME, value);
+                                    let _ = app.emit_to(&label, EVENT_NAME, value);
                                 }
                             }
                         }
@@ -1224,6 +1271,7 @@ fn spawn_exit_watcher(
     app: AppHandle,
     inner: Arc<Mutex<Option<Running>>>,
     generation: Arc<AtomicU64>,
+    label: String,
     port: u16,
 ) {
     std::thread::spawn(move || loop {
@@ -1247,7 +1295,7 @@ fn spawn_exit_watcher(
             guard.take();
             generation.fetch_add(1, Ordering::SeqCst);
             drop(guard);
-            let _ = app.emit(EXIT_EVENT, code);
+            let _ = app.emit_to(&label, EXIT_EVENT, code);
             return;
         }
     });
@@ -1269,6 +1317,7 @@ fn is_current(inner: &Arc<Mutex<Option<Running>>>, generation: u64) -> bool {
 /// 启动智能体服务。幂等：同一个工作区已经在跑就直接返回现有信息。
 #[tauri::command]
 pub async fn agent_start(
+    window: tauri::Window,
     app: AppHandle,
     state: tauri::State<'_, AgentState>,
     fs_state: tauri::State<'_, FsState>,
@@ -1288,10 +1337,12 @@ pub async fn agent_start(
     let secrets = config.secrets()?;
 
     // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await
-    let cwd = fs_state.root()?;
+    let label = window.label().to_string();
+    let cwd = fs_state.root(&label)?;
+    let slot = state.slot(&label);
 
     let (port, generation) = {
-        let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+        let mut guard = slot.inner.lock().map_err(|e| e.to_string())?;
 
         // 同一个工作区已经在跑：直接复用，不重启
         if let Some(running) = guard.as_ref() {
@@ -1305,7 +1356,7 @@ pub async fn agent_start(
         }
 
         // 工作区变了（或之前跑挂了），先收掉旧的
-        state.generation.fetch_add(1, Ordering::SeqCst);
+        slot.generation.fetch_add(1, Ordering::SeqCst);
         if let Some(mut old) = guard.take() {
             kill_child(&mut old.child);
             let _ = std::fs::remove_dir_all(&old.config_dir);
@@ -1317,17 +1368,20 @@ pub async fn agent_start(
             check_port(config.port)?
         };
 
+        // 配置目录按窗口分开：共用一份会让两个 opencode 进程争用同一批文件，
+        // 而且关窗时的 remove_dir_all 会把另一个窗口还在用的目录一起删掉
         let config_dir = app
             .path()
             .app_config_dir()
             .map_err(|e| format!("拿不到配置目录: {e}"))?
-            .join("opencode");
+            .join("opencode")
+            .join(&label);
         write_config(&config_dir, &config)?;
 
         let password = random_password();
         let (child, log) =
             spawn_opencode(&config.command, port, &cwd, &config_dir, &secrets, &password)?;
-        let generation = state.generation.load(Ordering::SeqCst);
+        let generation = slot.generation.load(Ordering::SeqCst);
 
         *guard = Some(Running {
             child,
@@ -1346,7 +1400,7 @@ pub async fn agent_start(
 
     // 探测是异步的，放在锁外面
     let (password, log) = {
-        let guard = state.inner.lock().map_err(|e| e.to_string())?;
+        let guard = slot.inner.lock().map_err(|e| e.to_string())?;
         match guard.as_ref() {
             Some(running) => (running.password.clone(), Arc::clone(&running.log)),
             None => return Err("智能体服务没起来".to_string()),
@@ -1357,14 +1411,15 @@ pub async fn agent_start(
         match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
             Ok(found) => found,
             Err(reason) => {
-                state.kill();
+                // 只收本窗口这一份：探测失败的责任不该由别的窗口的智能体承担
+                state.kill_window(&label);
                 return Err(reason);
             }
         };
 
     // 探测结果落回状态里：后面每个命令都按它选路由
     {
-        let mut guard = state.inner.lock().map_err(|e| e.to_string())?;
+        let mut guard = slot.inner.lock().map_err(|e| e.to_string())?;
         match guard.as_mut() {
             Some(running) => running.protocol = protocol,
             None => return Err("智能体服务没起来".to_string()),
@@ -1373,18 +1428,14 @@ pub async fn agent_start(
 
     spawn_sse(
         app.clone(),
-        state.inner.clone(),
+        slot.inner.clone(),
+        label.clone(),
         protocol,
         port,
         password,
         generation,
     );
-    spawn_exit_watcher(
-        app,
-        state.inner.clone(),
-        state.generation.clone(),
-        port,
-    );
+    spawn_exit_watcher(app, slot.inner.clone(), slot.generation.clone(), label, port);
 
     Ok(AgentInfo {
         port,
@@ -1394,8 +1445,9 @@ pub async fn agent_start(
 }
 
 #[tauri::command]
-pub fn agent_status(state: tauri::State<'_, AgentState>) -> AgentStatus {
-    let port = state
+pub fn agent_status(window: tauri::Window, state: tauri::State<'_, AgentState>) -> AgentStatus {
+    let slot = state.slot(window.label());
+    let port = slot
         .inner
         .lock()
         .ok()
@@ -1406,20 +1458,22 @@ pub fn agent_status(state: tauri::State<'_, AgentState>) -> AgentStatus {
     }
 }
 
-/// 停掉服务。换工作区和退出应用时都要调。
+/// 停掉本窗口的服务。换工作区和关窗时都要调。
 #[tauri::command]
-pub fn agent_stop(state: tauri::State<'_, AgentState>) {
-    state.kill();
+pub fn agent_stop(window: tauri::Window, state: tauri::State<'_, AgentState>) {
+    state.kill_window(window.label());
 }
 
 /// 建一个会话。v2 把返回包在 `{data: ...}` 里，拆掉再给前端——
 /// 前端只认 `{id}` 这一层。
 #[tauri::command]
 pub async fn agent_create_session(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
     title: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
 
     let mut body = serde_json::Map::new();
@@ -1442,10 +1496,12 @@ pub async fn agent_create_session(
 /// 拉某个会话的历史消息。v2 返回 `{data: [...], cursor}`，拆成裸数组给前端。
 #[tauri::command]
 pub async fn agent_messages(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
     let messages = request_json(
         &client,
@@ -1465,9 +1521,11 @@ pub async fn agent_messages(
 /// 只列最近一批，为此引入分页状态不划算。
 #[tauri::command]
 pub async fn agent_list_sessions(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
 ) -> Result<serde_json::Value, String> {
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
     let sessions = request_json(
         &client,
@@ -1487,6 +1545,7 @@ pub async fn agent_list_sessions(
 /// 分别由 `Protocol::prompt_path` 和 `prompt_body` 兜住。
 #[tauri::command]
 pub async fn agent_send(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
     session_id: String,
     text: String,
@@ -1497,7 +1556,8 @@ pub async fn agent_send(
         return Err("消息不能为空".to_string());
     }
 
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
     let agent = agent.filter(|a| !a.trim().is_empty());
 
@@ -1529,10 +1589,12 @@ pub async fn agent_send(
 /// 打断当前这一轮。这个名字两代不同（v1 叫 abort、v2 叫 interrupt）。
 #[tauri::command]
 pub async fn agent_abort(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
     session_id: String,
 ) -> Result<(), String> {
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
     request_json(
         &client,
@@ -1553,10 +1615,12 @@ pub async fn agent_abort(
 /// 删掉一个会话（连同它的消息）。opencode 那边不可撤销，调用方要先确认。
 #[tauri::command]
 pub async fn agent_delete_session(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
     session_id: String,
 ) -> Result<(), String> {
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
     request_json(
         &client,
@@ -1573,6 +1637,7 @@ pub async fn agent_delete_session(
 /// 改会话标题。两代都是 `PATCH /session/:id`，只动 title、不动消息。
 #[tauri::command]
 pub async fn agent_rename_session(
+    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
     session_id: String,
     title: String,
@@ -1581,7 +1646,8 @@ pub async fn agent_rename_session(
         return Err("会话标题不能为空".to_string());
     }
 
-    let (protocol, port, password) = current_endpoint(&state)?;
+    let slot = state.slot(window.label());
+    let (protocol, port, password) = current_endpoint(&slot)?;
     let client = http_client()?;
     request_json(
         &client,

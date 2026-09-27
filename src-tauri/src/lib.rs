@@ -84,9 +84,13 @@ pub fn run() {
                 if let Some(state) = app.try_state::<pty::PtyState>() {
                     state.kill_all();
                 }
-                // 智能体是个常驻的 opencode 子进程，退出时必须带走
+                // 智能体是常驻的 opencode 子进程，退出时必须带走（每个窗口一个）
                 if let Some(state) = app.try_state::<agent::AgentState>() {
-                    state.kill();
+                    state.kill_all();
+                }
+                // 目录监听的防抖线程也跟着收摊，别留游离线程
+                if let Some(state) = app.try_state::<watcher::WatchState>() {
+                    state.stop_all();
                 }
             }
             _ => {}
