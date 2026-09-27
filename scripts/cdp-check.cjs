@@ -1,5 +1,7 @@
 // 通过 CDP 连到 WebView2，做截图 / 求值 / 模拟按键，用于验证界面真的能用。
 // 用法: node scripts/cdp-check.cjs '{"wait":1500,"keys":"git status\r","shot":"a.png","eval":"..."}'
+// 多窗口：加 "target":"项目名" 按窗口标题挑一个（App 把标题设成 `CodeDock — <项目名>`）；
+// 不传就取第一个 page。
 const http = require("node:http");
 const fs = require("node:fs");
 
@@ -36,9 +38,27 @@ function keyFor(ch) {
 async function main() {
   const options = JSON.parse(process.argv[2] ?? "{}");
   const port = options.port ?? process.env.CDP_PORT ?? 9222;
+  // 多窗口下会有多个 page 目标：按标题 / URL 挑一个，不传就取第一个
+  const target = options.target ?? "";
   const targets = await getJson(`http://127.0.0.1:${port}/json`);
-  const page = targets.find((t) => t.type === "page");
-  if (!page) throw new Error("没有找到 page 目标");
+  const pages = targets.filter((t) => t.type === "page");
+  // WebView2 会挂一个 about:blank 的内部 target，别让它在默认位抢了真实窗口
+  const usable = pages.filter((t) => (t.url ?? "") !== "about:blank");
+  const pool = usable.length > 0 ? usable : pages;
+  const page = target
+    ? pool.find(
+        (t) => (t.title ?? "").includes(target) || (t.url ?? "").includes(target),
+      )
+    : pool[0];
+  if (!page) {
+    throw new Error(
+      target
+        ? `没有匹配 target=${JSON.stringify(target)} 的窗口，当前有：${pages
+            .map((t) => t.title)
+            .join(" / ")}`
+        : "没有找到 page 目标",
+    );
+  }
 
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   let nextId = 1;

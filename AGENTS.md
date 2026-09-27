@@ -29,6 +29,22 @@ cd src-tauri && cargo clippy
 
 - 终端输出传**原始字节**、后端不解码（`read()` 会截断多字节 UTF-8）；非当前会话 `display:none` 藏而不卸载
   （卸载会杀 shell）；换工作区靠重开 shell、前后端根目录一起换；容器不设 padding 且 `overflow-clip`。
+- 多窗口：一个窗口一个项目，**后端状态一律按 window label 分片**（`FsState` / `WatchState` /
+  `AgentState` / `PtyState`）。同项目允许开多窗，所以**不能按 root 分片**；命令统一收 `tauri::Window`
+  取 label，不信前端传的任何标识。事件走 `emit_to(label)`——用全局 `emit` 会串到别的窗口。agent 的
+  `config_dir` 必须带 label 段：共用一份会让两个 opencode 争用，而且关窗的 `remove_dir_all` 会删掉
+  别窗的目录；探测失败只 `kill_window`，别 `kill_all`。窗口由后端 `WebviewWindowBuilder` 建
+  （`windows.rs`，label `win-N` 单调自增永不复用），新窗口的根在建窗时就播进 `FsState` + 启动监听，
+  前端起来先 `fs_root` 判断自己是主窗口（空 → 恢复 localStorage）还是项目窗口。**新窗口的前端地址
+  不能自己拼**：dev 下 `WebviewUrl::App("index.html")` 会让窗口停在 about:blank，要照抄已有窗口的
+  URL——是 http(s) 说明在 dev，用 `WebviewUrl::External` 并再 `navigate` 一次兜底；否则用
+  `App("index.html")`。`capabilities/default.json` 的 `windows` 必须含 `win-*`，不匹配的话新窗口连
+  `core:default` 都拿不到。关窗由 `on_window_event(Destroyed)` 收本窗口那几份状态，
+  `RunEvent::Exit` 的 `kill_all` 兜底。
+- 多窗口下的前端持久化：**窗口级偏好存 sessionStorage**（侧栏折叠、右栏模块、面板高度、提交历史展开、
+  浏览器地址、agent 当前会话、git 变更视图）；**跨窗口共享的留 localStorage**（设置、主题、工作区列表、
+  别名、CLI 选择）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；列表类一律
+  「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别的窗口刚写进去的。
 - 文件路径一律词法归一化 + 前缀校验，已存在的再 `canonicalize` 挡软链接逃逸；文件树改名 / 删除
   要带着编辑器标签一起换或关，改名前先落盘；工作区根禁改禁删。
 - 目录监听只推「哪个父目录变了」，编辑器重读另走 `fs-file-changed`；防抖 300ms 并跳过 `SKIP_DIRS`。
@@ -49,6 +65,8 @@ cd src-tauri && cargo clippy
 ## 验证
 
 前端改完至少跑 `pnpm build`（Vite dev 不做类型检查）；界面改动走 `scripts/cdp-check.cjs`（WebView2 的
-CDP 端口做截图 / 求值 / 输入）。注意：`localStorage` 是用户真实状态、验证后要还原；拖动必须走 `drag`
+CDP 端口做截图 / 求值 / 输入），多窗口下传 `"target":"<项目名>"` 挑窗口——脚本会跳过 WebView2 那个
+内部的 about:blank target，**别拿 `pages[0]` 当目标窗口**，否则命令全打在空白页上。注意：`localStorage`
+是用户真实状态、验证后要还原；拖动必须走 `drag`
 而非合成 PointerEvent（应用用 `setPointerCapture`）；应用起没起来看 9222 端口。dev 下改工作区内任意
 文件会触发 HMR 重载（终端重置、编辑器清空），是 dev server 产物，用 CodeDock 开发 CodeDock 时换工作区。
