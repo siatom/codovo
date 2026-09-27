@@ -157,11 +157,12 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
   }, []);
 
   // 编辑器浮窗送来的位置引用：终端只认文本，在这儿拼成「路径:起[-止]」再写进活动会话。
-  // 不带 \r——左侧终端常跑着 AI CLI，写完让它读文件，什么时候回车由用户决定
+  // 末尾补一个空格，和用户接着敲的内容隔开。不带 \r——左侧终端常跑着 AI CLI，
+  // 写完让它读文件，什么时候回车由用户决定
   const insertToTerminal = useCallback(
     (location: EditorLocation) => {
       const handle = handlesRef.current.get(activeId);
-      handle?.write(formatLocation(location));
+      handle?.write(`${formatLocation(location)} `);
       handle?.focus();
     },
     [activeId],
