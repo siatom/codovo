@@ -101,6 +101,15 @@ export default function App() {
     terminalRef.current?.runInNewSession(command);
   }, []);
 
+  /** 编辑器浮窗：把选中的文本送到终端会话 / 智能体输入框，两者都在 TerminalPane 里 */
+  const insertToTerminal = useCallback((text: string) => {
+    terminalRef.current?.insertToTerminal(text);
+  }, []);
+
+  const insertToAgent = useCallback((text: string) => {
+    terminalRef.current?.insertToAgent(text);
+  }, []);
+
   /**
    * 收起右边栏时全屏必须一起退出：那个全屏按钮在面板里，面板收起来就点不到了。
    * 展开时重置也无所谓——能点到这个按钮就说明面板是开着的。
@@ -384,6 +393,8 @@ export default function App() {
                         onClose={closeTab}
                         fullscreen={fullscreen}
                         onToggleFullscreen={toggleFullscreen}
+                        onSendToTerminal={insertToTerminal}
+                        onSendToAgent={insertToAgent}
                       />
                     }
                   />

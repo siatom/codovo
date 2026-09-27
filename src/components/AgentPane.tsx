@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { useSettings } from "../lib/settings";
 import { useEffectiveAiConfig } from "../lib/ai";
 import {
@@ -23,10 +31,17 @@ import type { AgentConversation, AgentSessionSummary } from "../lib/types";
 import { AgentMessageView } from "./AgentMessageView";
 import { IconBot, IconChevronDown, IconSend, IconStop } from "./icons";
 
+export interface AgentPaneHandle {
+  /** 把一段文本追加到输入框并聚焦；服务还没就绪就先挂着，就绪后补上 */
+  insertText: (text: string) => void;
+}
+
 interface AgentPaneProps {
   cwd: string | null;
   /** 当前是不是停在智能体 tab；第一次变 true 时才去拉服务 */
   active: boolean;
+  /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
+  ref?: Ref<AgentPaneHandle>;
 }
 
 type Phase = "idle" | "starting" | "ready" | "error";
@@ -96,7 +111,7 @@ function PrimaryAgentPicker({
  * 智能体对话面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
  * 这里只负责发消息、把 SSE 事件渲染成对话。
  */
-export function AgentPane({ cwd, active }: AgentPaneProps) {
+export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
   const { settings, update } = useSettings();
   // 会话列表和当前会话跟侧边栏共用：那边要按项目列出历史、并高亮正在聊的那条
   const {
@@ -116,6 +131,8 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
   const [fatal, setFatal] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
   const [input, setInput] = useState("");
+  /** 从编辑器浮窗送过来的待插入文本；服务没就绪时先挂起，ready 后落进输入框 */
+  const [pendingInsert, setPendingInsert] = useState<string | null>(null);
   /** 探测出来的 opencode 版本，只为在状态行显示（v1 / v2 装在不同机器上时一眼可辨） */
   const [agentVersion, setAgentVersion] = useState("");
 
@@ -346,6 +363,22 @@ export function AgentPane({ cwd, active }: AgentPaneProps) {
     setCurrentId(null);
     setConversation(EMPTY_CONVERSATION);
   }, [setCurrentId]);
+
+  // 编辑器浮窗「复制到智能体输入框」送进来的文本：先挂起，等面板就绪后再落进输入框。
+  // 面板没就绪时（还在 starting / error）body 里根本没有输入框，直接写会丢
+  const insertText = useCallback((text: string) => {
+    setPendingInsert(text);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingInsert || phase !== "ready") return;
+    setPendingInsert(null);
+    // 已有草稿就另起一行接上，别把用户正在写的内容顶掉
+    setInput((current) => (current ? `${current}\n${pendingInsert}` : pendingInsert));
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [pendingInsert, phase]);
+
+  useImperativeHandle(ref, () => ({ insertText }), [insertText]);
 
   /** 侧边栏确认删了一条历史会话：删掉后刷新列表；删的正好是当前这条就退到最近的一条 */
   const deleteSession = useCallback(

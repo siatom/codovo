@@ -26,7 +26,14 @@ import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { IconClose, IconEye, IconPencil } from "./icons";
+import { IconBot, IconClose, IconEye, IconPencil, IconTerminal } from "./icons";
+
+/** 选中浮窗的估算宽度，用来把它收进窗口右边缘 */
+const FLOAT_BAR_W = 76;
+
+/** 浮窗按钮：两个动作同款，禁用态（智能体没开）不给 hover 反馈 */
+const FLOAT_BAR_BUTTON =
+  "flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
 interface EditorPaneProps {
   /** 已打开的标签，按打开顺序 */
@@ -40,6 +47,9 @@ interface EditorPaneProps {
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  /** 选中浮窗的两个动作：把选中的文本送到终端 / 智能体输入框 */
+  onSendToTerminal: (text: string) => void;
+  onSendToAgent: (text: string) => void;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<EditorPaneHandle>;
 }
@@ -134,6 +144,8 @@ export function EditorPane({
   onClose,
   fullscreen,
   onToggleFullscreen,
+  onSendToTerminal,
+  onSendToAgent,
   ref,
 }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -153,6 +165,11 @@ export function EditorPane({
   /** 正处在预览模式的 markdown 标签（存 tabKey）；不在集合里就是编辑模式 */
   const [previewPaths, setPreviewPaths] = useState<ReadonlySet<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  /** 选中文本浮窗的视口坐标；null = 不显示 */
+  const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
+  /** 浮窗对应的选中文本快照：点按钮那一刻编辑器可能已经失焦，现取不可靠 */
+  const floatTextRef = useRef("");
+  const floatRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const { settings } = useSettings();
 
@@ -230,6 +247,53 @@ export function EditorPane({
     setDirtyPaths(prune);
     setPreviewPaths(prune);
   }, []);
+
+  /**
+   * 鼠标松开后决定浮窗的去向：有非空选区就摆到选区末端下方，否则收起。
+   * 用视口坐标（和项目里其它弹出菜单一致），因为编辑器会随分栏拖动而移动。
+   */
+  const showFloatBar = useCallback(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const selection = editor?.getSelection();
+    const dom = editor?.getDomNode();
+    if (!editor || !model || !selection || selection.isEmpty() || !dom) {
+      setFloatBar(null);
+      return;
+    }
+    const text = model.getValueInRange(selection);
+    // 全是空白（比如拖过一片缩进）没有送出去的意义
+    if (!text.trim()) {
+      setFloatBar(null);
+      return;
+    }
+    const pos = editor.getScrolledVisiblePosition(selection.getEndPosition());
+    if (!pos) {
+      setFloatBar(null);
+      return;
+    }
+    floatTextRef.current = text;
+    const rect = dom.getBoundingClientRect();
+    setFloatBar({ top: rect.top + pos.top + pos.height + 6, left: rect.left + pos.left });
+  }, []);
+
+  /** 点浮窗按钮：把快照里的文本交出去，然后收起浮窗 */
+  const sendSelection = useCallback((send: (text: string) => void) => {
+    const text = floatTextRef.current;
+    setFloatBar(null);
+    if (text) send(text);
+  }, []);
+
+  // 浮窗开着时点别处就收起。用 window 监听而不是透明遮罩——遮罩会把编辑器也挡住，
+  // 选完还想接着编辑就点不动了
+  useEffect(() => {
+    if (!floatBar) return;
+    const onDown = (event: MouseEvent) => {
+      if (!floatRef.current?.contains(event.target as Node)) setFloatBar(null);
+    };
+    window.addEventListener("mousedown", onDown, true);
+    return () => window.removeEventListener("mousedown", onDown, true);
+  }, [floatBar]);
 
   /**
    * 把有未保存改动的文件写回磁盘；传 only（tabKey）就只存那一个。
@@ -456,6 +520,18 @@ export function EditorPane({
     editorRef.current = editor;
 
     const contentSub = editor.onDidChangeModelContent(() => syncDirty());
+
+    // 只有鼠标左键选完（拖拽 / 双击抬起）才弹浮窗，键盘 Shift 选择不弹，免得干扰打字；
+    // 右键自带上下文菜单，这时不叠第二个
+    const mouseUpSub = editor.onMouseUp((event) => {
+      if (event.event.browserEvent.button !== 0) return;
+      showFloatBar();
+    });
+    // 选区被清空、或内容滚动了，浮窗的位置立刻失真，直接收起
+    const selectionSub = editor.onDidChangeCursorSelection((event) => {
+      if (event.selection.isEmpty()) setFloatBar(null);
+    });
+    const scrollSub = editor.onDidScrollChange(() => setFloatBar(null));
     const saveAction = editor.addAction({
       id: "codedock.save",
       label: "保存文件",
@@ -468,6 +544,9 @@ export function EditorPane({
     return () => {
       saveAction.dispose();
       contentSub.dispose();
+      mouseUpSub.dispose();
+      selectionSub.dispose();
+      scrollSub.dispose();
       editor.dispose();
       editorRef.current = null;
       for (const cached of modelsRef.current.values()) cached.model.dispose();
@@ -482,7 +561,7 @@ export function EditorPane({
       }
       diffModelsRef.current.clear();
     };
-  }, [syncDirty]);
+  }, [syncDirty, showFloatBar]);
 
   // 切主题不重建 editor，只换配色（差分编辑器共用全局主题）
   useEffect(() => {
@@ -545,6 +624,8 @@ export function EditorPane({
   // 切标签：文件走一套（换成文件 model），差异走另一套（跟 git 要两侧内容）
   useEffect(() => {
     activeRef.current = active;
+    // 换了标签，上一次的浮窗不再对应任何文本
+    setFloatBar(null);
     const editor = editorRef.current;
     if (!editor) return;
 
@@ -874,6 +955,39 @@ export function EditorPane({
           </div>
         )}
       </div>
+
+      {/* 选中文本后的小浮窗：位置在选中那一刻算好就不再跟，滚动或换标签会把它收掉 */}
+      {floatBar && (
+        <div
+          ref={floatRef}
+          className="fixed z-40 flex items-center gap-0.5 rounded border border-line-strong bg-raised p-0.5 shadow-lg"
+          style={{
+            top: floatBar.top,
+            // 靠右边缘时往回收，别把浮窗顶出可视区
+            left: Math.min(floatBar.left, window.innerWidth - FLOAT_BAR_W - 4),
+          }}
+          // 别让编辑器在这里失焦、把选区丢掉；click 照样会派发
+          onMouseDown={(event) => event.preventDefault()}
+        >
+          <button
+            type="button"
+            title="复制到终端"
+            onClick={() => sendSelection(onSendToTerminal)}
+            className={FLOAT_BAR_BUTTON}
+          >
+            <IconTerminal className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            title="复制到智能体输入框"
+            disabled={!settings.agentEnabled}
+            onClick={() => sendSelection(onSendToAgent)}
+            className={FLOAT_BAR_BUTTON}
+          >
+            <IconBot className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
     </section>
   );
 }

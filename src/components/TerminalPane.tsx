@@ -13,7 +13,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
 import { listShells, type ShellInfo } from "../lib/pty";
-import { AgentPane } from "./AgentPane";
+import { AgentPane, type AgentPaneHandle } from "./AgentPane";
 import { IconChevronDown, IconClose, IconPlus, ShellIcon } from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
@@ -29,6 +29,10 @@ export interface TerminalPaneHandle {
    * 不能写进当前活动会话——那儿多半正跑着一个 AI CLI，命令会被当成它的输入。
    */
   runInNewSession: (command: string) => void;
+  /** 把文本送进当前活动的终端会话，相当于粘贴，不带回车（用户自己按回车执行） */
+  insertToTerminal: (text: string) => void;
+  /** 把文本送进智能体输入框，顺带切到 GUI 模式 */
+  insertToAgent: (text: string) => void;
 }
 
 interface TerminalPaneProps {
@@ -57,6 +61,8 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
   const { mode, setMode } = useAgentSession();
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
+  /** 智能体面板的句柄：编辑器浮窗要把文本塞进它的输入框 */
+  const agentRef = useRef<AgentPaneHandle>(null);
   /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
   const shellByIdRef = useRef(new Map<number, string>());
   const addButtonRef = useRef<HTMLDivElement>(null);
@@ -144,10 +150,31 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
     setActiveId(id);
   }, []);
 
+  // 编辑器浮窗送来的文本：写进活动会话，和用户直接敲键盘走同一条 PTY 通道。
+  // 不带 \r——多行文本原样下去就是多行，但不会自动执行
+  const insertToTerminal = useCallback(
+    (text: string) => {
+      const handle = handlesRef.current.get(activeId);
+      handle?.write(text);
+      handle?.focus();
+    },
+    [activeId],
+  );
+
+  // 智能体那侧同理：先切到 GUI，再把文本交给面板的输入框。
+  // 面板可能还没就绪（刚切过来还在 starting），由它的 pendingInsert 兜住
+  const insertToAgent = useCallback(
+    (text: string) => {
+      setMode("agent");
+      agentRef.current?.insertText(text);
+    },
+    [setMode],
+  );
+
   useImperativeHandle(
     ref,
-    () => ({ runAiCommand, runInNewSession }),
-    [runAiCommand, runInNewSession],
+    () => ({ runAiCommand, runInNewSession, insertToTerminal, insertToAgent }),
+    [runAiCommand, runInNewSession, insertToTerminal, insertToAgent],
   );
 
   // 开关是在设置里随时能关的，而 mode 是共享状态：关掉之后分段控件不画了，
@@ -275,7 +302,7 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
       </div>
 
       <div className={view === "agent" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <AgentPane cwd={cwd} active={view === "agent"} />
+        <AgentPane ref={agentRef} cwd={cwd} active={view === "agent"} />
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，
