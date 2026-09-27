@@ -94,12 +94,28 @@ export const IconFolderPlus = icon(
   </>,
 );
 
+/**
+ * 通用文件图标的两条 path。单独提出来是因为 contenteditable 里插 chip 时只能
+ * 拼 HTML 字符串，图标得有个字符串形态（见下面的 fileIconHtml）——
+ * 提出常量是为了两条 path 只写一遍。
+ */
+const FILE_PATHS = [
+  "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z",
+  "M14 2v5h5",
+];
+
 export const IconFile = icon(
   <>
-    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
-    <path d="M14 2v5h5" />
+    <path d={FILE_PATHS[0]} />
+    <path d={FILE_PATHS[1]} />
   </>,
 );
+
+/** 同一份文件图标的字符串形态，给拼 HTML 的地方用（如智能体输入框里的位置引用 chip） */
+export function fileIconHtml(className = "h-3.5 w-3.5"): string {
+  const paths = FILE_PATHS.map((d) => `<path d="${d}"/>`).join("");
+  return `<svg viewBox="0 0 24 24" class="${className}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+}
 
 /* ---------- 文件类型图标 ---------- */
 

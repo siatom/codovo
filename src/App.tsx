@@ -12,6 +12,7 @@ import { stopAgent } from "./lib/agent";
 import { AgentSessionProvider } from "./lib/agent-session";
 import { useSettings } from "./lib/settings";
 import { sameTab, type DiffSource, type Tab } from "./lib/tabs";
+import type { EditorLocation } from "./lib/types";
 import {
   clearSavedWorkspace,
   isPathInside,
@@ -102,11 +103,11 @@ export default function App() {
   }, []);
 
   /** 编辑器浮窗：把位置引用送到终端会话 / 智能体输入框，两者都在 TerminalPane 里 */
-  const insertToTerminal = useCallback((location: string) => {
+  const insertToTerminal = useCallback((location: EditorLocation) => {
     terminalRef.current?.insertToTerminal(location);
   }, []);
 
-  const insertToAgent = useCallback((location: string) => {
+  const insertToAgent = useCallback((location: EditorLocation) => {
     terminalRef.current?.insertToAgent(location);
   }, []);
 

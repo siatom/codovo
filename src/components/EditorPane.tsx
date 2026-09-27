@@ -22,6 +22,7 @@ import {
 import type { GitMark } from "../lib/git";
 import { useSettings, resolveFont } from "../lib/settings";
 import { tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
+import type { EditorLocation } from "../lib/types";
 import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
@@ -48,8 +49,8 @@ interface EditorPaneProps {
   fullscreen: boolean;
   onToggleFullscreen: () => void;
   /** 选中浮窗的两个动作：把位置引用送到终端 / 智能体输入框 */
-  onSendToTerminal: (location: string) => void;
-  onSendToAgent: (location: string) => void;
+  onSendToTerminal: (location: EditorLocation) => void;
+  onSendToAgent: (location: EditorLocation) => void;
   /** 工作区根目录：把绝对路径收敛成相对路径，给智能体标位置用 */
   root: string;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
@@ -181,10 +182,9 @@ export function EditorPane({
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
   /**
-   * 浮窗对应的位置引用（工作区相对路径:起-止行）。点按钮那一刻编辑器可能已经失焦，
-   * 现取不可靠，所以在选中那一刻就存下来
+   * 浮窗对应的选中位置。点按钮那一刻编辑器可能已经失焦，现取不可靠，所以在选中那一刻就存下来
    */
-  const floatRefTextRef = useRef("");
+  const floatLocationRef = useRef<EditorLocation | null>(null);
   const floatRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const { settings } = useSettings();
@@ -291,23 +291,25 @@ export function EditorPane({
       setFloatBar(null);
       return;
     }
-    // 两个动作发的都是这个位置引用：整段贴过去对 AI CLI / 智能体都没用，位置才是指代。
-    // 跨行才带结束行号，单行只写一个数（跟编辑器里常见的 file:line 一个写法）
+    // 两个动作发的都是这个位置：整段贴过去对 AI CLI / 智能体都没用，位置的指代才是要的。
+    // 只认普通文件标签——差异视图和预览不弹浮窗，这里再兜一层
     const current = activeRef.current;
-    const start = selection.startLineNumber;
-    const end = selection.endLineNumber;
-    floatRefTextRef.current =
+    floatLocationRef.current =
       current && current.kind === "file"
-        ? `${relativeToRoot(current.path, rootRef.current)}:${start}${end > start ? `-${end}` : ""}`
-        : "";
+        ? {
+            path: relativeToRoot(current.path, rootRef.current),
+            start: selection.startLineNumber,
+            end: selection.endLineNumber,
+          }
+        : null;
     const rect = dom.getBoundingClientRect();
     setFloatBar({ top: rect.top + pos.top + pos.height + 6, left: rect.left + pos.left });
   }, []);
 
-  /** 点浮窗按钮：把快照里的位置引用交出去，然后收起浮窗 */
+  /** 点浮窗按钮：把快照里的位置交出去，然后收起浮窗 */
   const sendSelection = useCallback(
     (target: "terminal" | "agent") => {
-      const location = floatRefTextRef.current;
+      const location = floatLocationRef.current;
       setFloatBar(null);
       if (!location) return;
       if (target === "terminal") onSendToTerminal(location);

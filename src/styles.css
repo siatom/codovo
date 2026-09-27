@@ -362,3 +362,10 @@ body.codedock-dragging-row * {
   background: var(--c-selected);
   color: var(--c-fg);
 }
+
+/* 智能体输入框是 contenteditable，没有原生 placeholder，空的时候用伪元素顶上 */
+.agent-composer:empty::before {
+  content: attr(data-placeholder);
+  color: var(--c-fg-faint);
+  pointer-events: none;
+}

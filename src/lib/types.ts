@@ -16,6 +16,16 @@ export interface ImageContent {
   tooLarge: boolean;
 }
 
+/**
+ * 编辑器里选中的一段位置，浮窗把它送去终端 / 智能体输入框。
+ * path 是工作区内的相对路径，行号 1 起算；只选了一行时 start === end。
+ */
+export interface EditorLocation {
+  path: string;
+  start: number;
+  end: number;
+}
+
 export type PtyEvent =
   | { type: "data"; data: string }
   | { type: "exit"; code: number };

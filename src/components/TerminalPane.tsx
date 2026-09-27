@@ -13,6 +13,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
 import { listShells, type ShellInfo } from "../lib/pty";
+import type { EditorLocation } from "../lib/types";
 import { AgentPane, type AgentPaneHandle } from "./AgentPane";
 import { IconChevronDown, IconClose, IconPlus, ShellIcon } from "./icons";
 
@@ -20,6 +21,11 @@ import { IconChevronDown, IconClose, IconPlus, ShellIcon } from "./icons";
 const SHELL_MENU_W = 200;
 const SHELL_MENU_ITEM =
   "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+
+/** 「路径:起[-止]」——单行只写一个行号，跨行才带结束行号 */
+function formatLocation({ path, start, end }: EditorLocation): string {
+  return `${path}:${start}${end > start ? `-${end}` : ""}`;
+}
 
 export interface TerminalPaneHandle {
   /** 在当前活动的会话里敲一条命令。AI CLI 的入口在侧边栏，执行落在这儿 */
@@ -30,9 +36,9 @@ export interface TerminalPaneHandle {
    */
   runInNewSession: (command: string) => void;
   /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
-  insertToTerminal: (location: string) => void;
-  /** 把位置引用送进智能体输入框，顺带切到 GUI 模式 */
-  insertToAgent: (location: string) => void;
+  insertToTerminal: (location: EditorLocation) => void;
+  /** 把位置引用送进智能体输入框（插成一个可整体删除的 chip），顺带切到 GUI 模式 */
+  insertToAgent: (location: EditorLocation) => void;
 }
 
 interface TerminalPaneProps {
@@ -150,23 +156,23 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
     setActiveId(id);
   }, []);
 
-  // 编辑器浮窗送来的位置引用：写进活动会话，和用户直接敲键盘走同一条 PTY 通道。
+  // 编辑器浮窗送来的位置引用：终端只认文本，在这儿拼成「路径:起[-止]」再写进活动会话。
   // 不带 \r——左侧终端常跑着 AI CLI，写完让它读文件，什么时候回车由用户决定
   const insertToTerminal = useCallback(
-    (location: string) => {
+    (location: EditorLocation) => {
       const handle = handlesRef.current.get(activeId);
-      handle?.write(location);
+      handle?.write(formatLocation(location));
       handle?.focus();
     },
     [activeId],
   );
 
-  // 智能体那侧同理：先切到 GUI，再把位置引用交给面板的输入框。
-  // 面板可能还没就绪（刚切过来还在 starting），由它的 pendingInsert 兜住
+  // 智能体那侧同理：先切到 GUI，再把位置交给输入框（那边会插成一个 chip）。
+  // 面板可能还没就绪（刚切过来还在 starting），由它自己的 pending 兜住
   const insertToAgent = useCallback(
-    (location: string) => {
+    (location: EditorLocation) => {
       setMode("agent");
-      agentRef.current?.insertText(location);
+      agentRef.current?.insertRef(location);
     },
     [setMode],
   );

@@ -27,13 +27,13 @@ import {
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
-import type { AgentConversation, AgentSessionSummary } from "../lib/types";
+import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentMessageView } from "./AgentMessageView";
-import { IconBot, IconChevronDown, IconSend, IconStop } from "./icons";
+import { IconBot, IconChevronDown, IconSend, IconStop, fileIconHtml } from "./icons";
 
 export interface AgentPaneHandle {
-  /** 把一段位置引用追加到输入框并聚焦；服务还没就绪就先挂着，就绪后补上 */
-  insertText: (location: string) => void;
+  /** 把一段位置引用插成一个可整体删除的 chip；服务还没就绪就先挂着，就绪后补上 */
+  insertRef: (location: EditorLocation) => void;
 }
 
 interface AgentPaneProps {
@@ -56,6 +56,81 @@ const SEND_BUTTON =
 /** 停止键和发送键同尺寸同位置，但保持中性色，免得被当成"再发一次" */
 const STOP_BUTTON =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
+
+/* ---------- 输入框里的位置引用 chip ---------- */
+
+/** chip 的样式：圆角小块 + 选中色底，和普通文字一眼分得开 */
+const CHIP_CLASS =
+  "inline-flex items-center gap-1 rounded bg-selected px-1.5 py-0.5 align-middle text-[12px] text-fg";
+
+/** 「路径:起[-止]」——单行只写一个行号，跨行才带结束行号 */
+function formatLocation({ path, start, end }: EditorLocation): string {
+  return `${path}:${start}${end > start ? `-${end}` : ""}`;
+}
+
+/** chip 的内容要拼 HTML 字符串，路径和文本都得转义（路径里可能有 & " 这类字符） */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * 造一个 chip 节点。contentEditable=false 让它对光标是个原子：退格一次删整块，
+ * 光标也进不到里面去编辑。
+ */
+function createChip(location: EditorLocation): HTMLElement {
+  const text = formatLocation(location);
+  const chip = document.createElement("span");
+  chip.contentEditable = "false";
+  chip.dataset.location = text;
+  chip.className = CHIP_CLASS;
+  chip.innerHTML = `${fileIconHtml("h-3 w-3 shrink-0")}<span>${escapeHtml(text)}</span>`;
+  return chip;
+}
+
+/** 把输入框的 DOM 序列化成要发出去的文本：普通文字取原文，chip 换回它的引用串 */
+function serializeComposer(root: HTMLElement): string {
+  let out = "";
+  for (const node of Array.from(root.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out += node.textContent ?? "";
+    } else if (node.nodeName === "BR") {
+      // 浏览器删到只剩一行时可能留个 <br>，它没有文本，得当成换行
+      out += "\n";
+    } else if (node instanceof HTMLElement) {
+      out += node.dataset.location ?? serializeComposer(node);
+    }
+  }
+  return out;
+}
+
+/** 在光标处插入一个节点，光标落到它后面。返回 false 表示当前没有可用的光标位置 */
+function insertAtCaret(node: Node): boolean {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return false;
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
+/** 把光标放到输入框末尾（插完 chip 后接着打字用） */
+function focusComposerEnd(root: HTMLElement): void {
+  root.focus();
+  const range = document.createRange();
+  range.selectNodeContents(root);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
 
 /** 状态行右端的 primary agent 选择器：内置 build / plan + 设置里定义的自定义 agent */
 function PrimaryAgentPicker({
@@ -130,15 +205,16 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [fatal, setFatal] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
-  const [input, setInput] = useState("");
-  /** 从编辑器浮窗送过来的待插入文本；服务没就绪时先挂起，ready 后落进输入框 */
-  const [pendingInsert, setPendingInsert] = useState<string | null>(null);
+  /** 输入框内容的纯文本形态（chip 已序列化成引用串），只用来判断能不能发、发什么 */
+  const [draft, setDraft] = useState("");
+  /** 从编辑器浮窗送来、还没插进去的位置引用；服务没就绪时先挂起，ready 后补上 */
+  const [pendingRef, setPendingRef] = useState<EditorLocation | null>(null);
   /** 探测出来的 opencode 版本，只为在状态行显示（v1 / v2 装在不同机器上时一眼可辨） */
   const [agentVersion, setAgentVersion] = useState("");
 
   const startedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
 
   const { agentCommand, agentPort } = settings;
   // AI 三项走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
@@ -311,17 +387,68 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
 
   // 输入框跟着内容长高，超过上限就内部滚动
   useEffect(() => {
-    const element = textareaRef.current;
+    const element = composerRef.current;
     if (!element) return;
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 160)}px`;
-  }, [input]);
+  }, [draft]);
+
+  /** 把输入框的 DOM 重新序列化一遍，同步到 draft */
+  const syncDraft = useCallback(() => {
+    const root = composerRef.current;
+    setDraft(root ? serializeComposer(root) : "");
+  }, []);
+
+  /** 清空输入框（发送后用） */
+  const clearComposer = useCallback(() => {
+    const root = composerRef.current;
+    if (root) root.innerHTML = "";
+    setDraft("");
+  }, []);
+
+  /**
+   * 把一个位置引用插成 chip：光标在输入框里就插到光标处，否则追加到末尾。
+   * chip 是 contentEditable=false 的原子节点，退格一次删整块。
+   */
+  const insertRefAt = useCallback(
+    (location: EditorLocation) => {
+      const root = composerRef.current;
+      if (!root) return;
+
+      const chip = createChip(location);
+      const selection = window.getSelection();
+      const atCaret = Boolean(
+        selection && selection.rangeCount > 0 && root.contains(selection.anchorNode),
+      );
+
+      if (atCaret) {
+        insertAtCaret(chip);
+        root.focus();
+      } else {
+        // 末尾是普通文字就先补个空格，免得和 chip 粘成一串
+        const last = root.lastChild;
+        if (last?.nodeType === Node.TEXT_NODE && !/\s$/.test(last.textContent ?? "")) {
+          root.appendChild(document.createTextNode(" "));
+        }
+        root.appendChild(chip);
+        focusComposerEnd(root);
+      }
+      syncDraft();
+    },
+    [syncDraft],
+  );
+
+  // 编辑器浮窗「复制到智能体输入框」送进来的位置引用：先挂起，等面板就绪后再插进去。
+  // 面板没就绪时（还在 starting / error）body 里根本没有输入框，直接插会丢
+  const insertRef = useCallback((location: EditorLocation) => {
+    setPendingRef(location);
+  }, []);
 
   const send = useCallback(async () => {
-    const text = input.trim();
+    const text = draft.trim();
     if (!text || conversation.streaming) return;
 
-    setInput("");
+    clearComposer();
     // 用户消息不本地插：等 SSE 的 message.updated 回来，省得和真实消息对不上
     setConversation((current) => ({ ...current, streaming: true, error: null }));
 
@@ -348,7 +475,7 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
         error: String(reason),
       }));
     });
-  }, [input, conversation.streaming, aiConfig, primary, cwd, setCurrentId, refreshSessions]);
+  }, [draft, conversation.streaming, aiConfig, primary, cwd, setCurrentId, refreshSessions, clearComposer]);
 
   const stop = useCallback(() => {
     const sessionId = currentIdRef.current;
@@ -364,21 +491,13 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
     setConversation(EMPTY_CONVERSATION);
   }, [setCurrentId]);
 
-  // 编辑器浮窗「复制到智能体输入框」送进来的文本：先挂起，等面板就绪后再落进输入框。
-  // 面板没就绪时（还在 starting / error）body 里根本没有输入框，直接写会丢
-  const insertText = useCallback((text: string) => {
-    setPendingInsert(text);
-  }, []);
-
   useEffect(() => {
-    if (!pendingInsert || phase !== "ready") return;
-    setPendingInsert(null);
-    // 已有草稿就另起一行接上，别把用户正在写的内容顶掉
-    setInput((current) => (current ? `${current}\n${pendingInsert}` : pendingInsert));
-    requestAnimationFrame(() => textareaRef.current?.focus());
-  }, [pendingInsert, phase]);
+    if (!pendingRef || phase !== "ready") return;
+    setPendingRef(null);
+    insertRefAt(pendingRef);
+  }, [pendingRef, phase, insertRefAt]);
 
-  useImperativeHandle(ref, () => ({ insertText }), [insertText]);
+  useImperativeHandle(ref, () => ({ insertRef }), [insertRef]);
 
   /** 侧边栏确认删了一条历史会话：删掉后刷新列表；删的正好是当前这条就退到最近的一条 */
   const deleteSession = useCallback(
@@ -445,12 +564,30 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
     return null;
   }, [conversation]);
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter") return;
     // 输入法组合中的回车是在选字，不能当发送
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      send();
+    if (event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    if (event.shiftKey) {
+      // 换行直接往光标处塞一个 \n 文本节点（容器上是 pre-wrap），不能用 execCommand——
+      // 后者被浏览器当成段落级换行，生成 <div><br></div>，序列化时换行就丢了
+      const root = composerRef.current;
+      const selection = window.getSelection();
+      if (root && selection && root.contains(selection.anchorNode)) {
+        insertAtCaret(document.createTextNode("\n"));
+        syncDraft();
+      }
+      return;
     }
+    send();
+  };
+
+  // 富文本粘进来会带一堆标签，序列化和视觉都不可控；只收纯文本
+  const onPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const text = event.clipboardData.getData("text/plain");
+    if (text) document.execCommand("insertText", false, text);
   };
 
   if (phase === "error") {
@@ -526,15 +663,18 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
           边界交给边框而不是分隔线，看着更像现代的对话输入框 */}
       <div className="shrink-0 px-3 pt-1 pb-3">
         <div className="rounded-2xl border border-line bg-app px-3 pt-3 pb-2 transition-colors focus-within:border-line-hover">
-          {/* textarea 自己不留内边距：自动长高量的是它的 scrollHeight，留了会把高度算虚 */}
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
+          {/* 输入框自己不留内边距：自动长高量的是它的 scrollHeight，留了会把高度算虚。
+              用 contenteditable 而不是 textarea，位置引用才能插成一个可整体删除的 chip */}
+          <div
+            ref={composerRef}
+            contentEditable
+            role="textbox"
+            aria-multiline="true"
+            onInput={syncDraft}
             onKeyDown={onKeyDown}
-            rows={1}
-            placeholder="让智能体改点什么…"
-            className="min-h-6 max-h-40 w-full resize-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-faint"
+            onPaste={onPaste}
+            data-placeholder="让智能体改点什么…"
+            className="agent-composer min-h-6 max-h-40 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-fg outline-none"
           />
           <div className="mt-1 flex items-center gap-2">
             {/* 键盘提示常驻在底行，占位文案就能只留一句人话 */}
@@ -549,7 +689,7 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
               <button
                 type="button"
                 onClick={send}
-                disabled={!input.trim()}
+                disabled={!draft.trim()}
                 title="发送"
                 className={SEND_BUTTON}
               >
