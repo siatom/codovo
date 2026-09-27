@@ -36,6 +36,7 @@ import { useAgentSession } from "../lib/agent-session";
 import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentMessageView } from "./AgentMessageView";
+import { FullscreenButton } from "./FullscreenButton";
 import {
   IconBot,
   IconChevronDown,
@@ -54,6 +55,10 @@ interface AgentPaneProps {
   cwd: string | null;
   /** 当前是不是停在智能体 tab；第一次变 true 时才去拉服务 */
   active: boolean;
+  /** 左侧这一列（终端与智能体）是否已全屏展示 */
+  fullscreen: boolean;
+  /** 切换左侧全屏。按钮画在标题栏右端 */
+  onToggleFullscreen: () => void;
   /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<AgentPaneHandle>;
 }
@@ -209,7 +214,7 @@ function PrimaryAgentPicker({
  * 智能体对话面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
  * 这里只负责发消息、把 SSE 事件渲染成对话。
  */
-export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
+export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: AgentPaneProps) {
   const { settings, update } = useSettings();
   // 会话列表和当前会话跟侧边栏共用：那边要按项目列出历史、并高亮正在聊的那条
   const {
@@ -707,6 +712,8 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
           options={agentOptions}
           onChange={(next) => update({ agentPrimary: next })}
         />
+        {/* 全屏开关和终端标签栏右端那个是同一个（都在左侧这一列），只是各 view 各画一个 */}
+        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">

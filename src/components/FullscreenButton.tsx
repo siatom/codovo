@@ -7,8 +7,8 @@ interface FullscreenButtonProps {
 }
 
 /**
- * 三个模块（文件/变更/浏览器）标题栏右端共用的全屏开关。
- * 全屏 = 整个右边栏铺满窗口，侧边栏和终端让位；该模块内部的分栏照旧。
+ * 各区域标题栏右端共用的全屏开关：右边栏（编辑器 / 浏览器），以及左侧的终端 / 智能体。
+ * 全屏 = 对应那一块铺满窗口，其余让位；该区域内部自己的分栏照旧。
  */
 export function FullscreenButton({ fullscreen, onToggle }: FullscreenButtonProps) {
   return (

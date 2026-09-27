@@ -15,6 +15,7 @@ import { useAgentSession } from "../lib/agent-session";
 import { listShells, type ShellInfo } from "../lib/pty";
 import type { EditorLocation } from "../lib/types";
 import { AgentPane, type AgentPaneHandle } from "./AgentPane";
+import { FullscreenButton } from "./FullscreenButton";
 import { IconBot, IconChevronDown, IconClose, IconPlus, IconTerminal, ShellIcon } from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
@@ -49,6 +50,10 @@ export interface TerminalPaneHandle {
 interface TerminalPaneProps {
   /** 当前工作目录；null 表示用户还没选工作区，shell 落在用户主目录 */
   cwd: string | null;
+  /** 左侧这一列（终端与智能体）是否已全屏展示 */
+  fullscreen: boolean;
+  /** 切换左侧全屏。按钮画在下面各 view 自己的标题栏右端 */
+  onToggleFullscreen: () => void;
   /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<TerminalPaneHandle>;
 }
@@ -60,7 +65,7 @@ interface TerminalPaneProps {
  * 开了智能体之后顶栏多出 TUI / GUI 两个入口，各自是一套完整界面（标签栏、状态条各管各的）。
  * 两套内容都挂在 DOM 上只切显隐，切回 TUI 时 shell 和滚动历史都还在。
  */
-export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
+export function TerminalPane({ cwd, fullscreen, onToggleFullscreen, ref }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
   /**
@@ -295,6 +300,8 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
               </button>
             </div>
           </div>
+          {/* 全屏开关放在标签滚动区之外：标签横向滚动时它不跟着滑走 */}
+          <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
         </div>
 
         <div className="relative min-h-0 flex-1">
@@ -316,7 +323,13 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
       </div>
 
       <div className={view === "agent" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <AgentPane ref={agentRef} cwd={cwd} active={view === "agent"} />
+        <AgentPane
+          ref={agentRef}
+          cwd={cwd}
+          active={view === "agent"}
+          fullscreen={fullscreen}
+          onToggleFullscreen={onToggleFullscreen}
+        />
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，

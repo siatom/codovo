@@ -51,8 +51,11 @@ export default function App() {
   const [tool, setTool] = useState<ToolId>(readTool);
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(false);
-  /** 全屏展示：整个右边栏铺满窗口，侧边栏和终端让位 */
-  const [fullscreen, setFullscreen] = useState(false);
+  /**
+   * 全屏展示的区域，三者互斥：右栏铺满窗口 / 左侧的终端与智能体铺满窗口 / 都不。
+   * 用一个状态而不是两个布尔，是让「一次只能全屏一个区域」由类型本身兜住。
+   */
+  const [fullscreen, setFullscreen] = useState<"none" | "right" | "left">("none");
 
   // 当前工作区的 git 状态，只读轮询；不是仓库或没选目录时全是空标记
   const git = useGitStatus(root);
@@ -76,12 +79,18 @@ export default function App() {
     toolVisible[tool] && (tool !== "changes" || gitReady) ? tool : firstVisible;
   // 还没选工作区时右边栏里是「选择文件夹」提示，这时不收——而且图标条本来也要有工作区才画
   const rightCollapsed = root !== null && !rightOpen;
+  // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
+  const rightFullscreen = fullscreen === "right";
+  const leftFullscreen = fullscreen === "left";
 
   const pickTool = useCallback(
     (id: ToolId) => {
       // 图标条常驻，所以再点一次当前模块就是收起内容面板（照 VS Code 那套）
       if (rightOpen && id === activeTool) {
         setRightOpen(false);
+        // 和 toggleRight 一个道理：收起右栏就得退出右栏全屏，否则两列同时收起，
+        // 会剩一条点不动的图标条和 0 宽的终端
+        setFullscreen("none");
         return;
       }
       setTool(id);
@@ -91,7 +100,17 @@ export default function App() {
     [rightOpen, activeTool],
   );
 
-  const toggleFullscreen = useCallback(() => setFullscreen((on) => !on), []);
+  /** 右栏（编辑器 / 浏览器）全屏，按钮挂在这两个面板的标题栏上 */
+  const toggleRightFullscreen = useCallback(
+    () => setFullscreen((area) => (area === "right" ? "none" : "right")),
+    [],
+  );
+
+  /** 左侧终端 / 智能体全屏。两者是同一列，共用这一个开关 */
+  const toggleLeftFullscreen = useCallback(
+    () => setFullscreen((area) => (area === "left" ? "none" : "left")),
+    [],
+  );
 
   /** AI CLI 的入口挂在侧边栏的项目行上，命令要落到终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
@@ -119,14 +138,14 @@ export default function App() {
    */
   const toggleRight = useCallback(() => {
     setRightOpen((open) => !open);
-    setFullscreen(false);
+    setFullscreen("none");
   }, []);
 
   // Esc 退出全屏。拿不到焦点在 iframe 里敲的 Esc（跨域事件不会冒出来），那种情况只能用按钮
   useEffect(() => {
-    if (!fullscreen) return;
+    if (fullscreen === "none") return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setFullscreen(false);
+      if (event.key === "Escape") setFullscreen("none");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -354,7 +373,7 @@ export default function App() {
     <AgentSessionProvider cwd={root}>
       <div className="flex h-full w-full overflow-hidden bg-app">
         {/* 全屏时侧边栏整块藏起来。用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
-        <div className={fullscreen ? "hidden" : "contents"}>
+        <div className={fullscreen !== "none" ? "hidden" : "contents"}>
           <Sidebar
             workspaces={workspaces}
             current={root}
@@ -369,90 +388,102 @@ export default function App() {
           initial={52}
           min={20}
           max={78}
-          secondCollapsed={rightCollapsed}
-          firstCollapsed={fullscreen}
+          // 左栏全屏时右栏整列让位（连图标条一起）；平时收起右栏仍是原来的窄条状态
+          secondCollapsed={rightCollapsed || leftFullscreen}
+          firstCollapsed={rightFullscreen}
           first={
             // 换工作区时整个终端区重建：每个会话的 shell 都落在旧目录里，留着反而是误导
-            <TerminalPane key={root ?? ""} cwd={root} ref={terminalRef} />
+            <TerminalPane
+              key={root ?? ""}
+              cwd={root}
+              ref={terminalRef}
+              fullscreen={leftFullscreen}
+              onToggleFullscreen={toggleLeftFullscreen}
+            />
           }
           second={
-            root ? (
-              <div className="flex min-h-0 min-w-0 flex-1">
-                <ToolRail
-                  active={activeTool}
-                  gitReady={gitReady}
-                  changed={git.snapshot.changed}
-                  visible={toolVisible}
-                  onPick={pickTool}
-                  rightOpen={rightOpen}
-                  onToggleRight={toggleRight}
-                />
-                {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
-                    Monaco 的撤销历史和文件树的展开态都留得住。
-                    收起面板时整块内容一起藏起来，图标条单独留着。
-                    全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
-                <div
-                  className={
-                    rightOpen && activeTool !== "browser"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <SplitPane
-                    initial={28}
-                    min={12}
-                    max={45}
-                    first={
-                      <ToolPane
-                        tool={activeTool}
-                        root={root}
-                        selected={activeTab?.kind === "file" ? activeTab.path : null}
-                        git={git}
-                        onSelectFile={openFile}
-                        onOpenDiff={openDiff}
-                        onOpenMatch={openMatch}
-                        onBeforeReplace={saveAllEdits}
-                        onAfterReplace={reloadAfterReplace}
-                        onBeforeRename={saveAllEdits}
-                        onEntryRenamed={renameOpenTabs}
-                        onEntryDeleted={dropOpenTabs}
-                      />
-                    }
-                    second={
-                      <EditorPane
-                        ref={editorRef}
-                        root={root}
-                        tabs={openTabs}
-                        active={activeTab}
-                        gitMarks={git.snapshot.marks}
-                        onActivate={setActiveTab}
-                        onClose={closeTab}
-                        onCloseAll={closeAllTabs}
-                        onCloseOthers={closeOtherTabs}
-                        fullscreen={fullscreen}
-                        onToggleFullscreen={toggleFullscreen}
-                        onSendToTerminal={insertToTerminal}
-                        onSendToAgent={insertToAgent}
-                      />
-                    }
+            // 左栏全屏时整块右栏藏起来（连图标条一起）。套在外层是为了把 root 为空时的
+            // WorkspaceEmpty 也覆盖到；contents 让这层壳不参与布局，内容只是藏起来、
+            // 不卸载，Monaco 的撤销历史和 iframe 都留得住
+            <div className={leftFullscreen ? "hidden" : "contents"}>
+              {root ? (
+                <div className="flex min-h-0 min-w-0 flex-1">
+                  <ToolRail
+                    active={activeTool}
+                    gitReady={gitReady}
+                    changed={git.snapshot.changed}
+                    visible={toolVisible}
+                    onPick={pickTool}
+                    rightOpen={rightOpen}
+                    onToggleRight={toggleRight}
                   />
+                  {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
+                      Monaco 的撤销历史和文件树的展开态都留得住。
+                      收起面板时整块内容一起藏起来，图标条单独留着。
+                      全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
+                  <div
+                    className={
+                      rightOpen && activeTool !== "browser"
+                        ? "flex min-h-0 min-w-0 flex-1"
+                        : "hidden"
+                    }
+                  >
+                    <SplitPane
+                      initial={28}
+                      min={12}
+                      max={45}
+                      first={
+                        <ToolPane
+                          tool={activeTool}
+                          root={root}
+                          selected={activeTab?.kind === "file" ? activeTab.path : null}
+                          git={git}
+                          onSelectFile={openFile}
+                          onOpenDiff={openDiff}
+                          onOpenMatch={openMatch}
+                          onBeforeReplace={saveAllEdits}
+                          onAfterReplace={reloadAfterReplace}
+                          onBeforeRename={saveAllEdits}
+                          onEntryRenamed={renameOpenTabs}
+                          onEntryDeleted={dropOpenTabs}
+                        />
+                      }
+                      second={
+                        <EditorPane
+                          ref={editorRef}
+                          root={root}
+                          tabs={openTabs}
+                          active={activeTab}
+                          gitMarks={git.snapshot.marks}
+                          onActivate={setActiveTab}
+                          onClose={closeTab}
+                          onCloseAll={closeAllTabs}
+                          onCloseOthers={closeOtherTabs}
+                          fullscreen={rightFullscreen}
+                          onToggleFullscreen={toggleRightFullscreen}
+                          onSendToTerminal={insertToTerminal}
+                          onSendToAgent={insertToAgent}
+                        />
+                      }
+                    />
+                  </div>
+                  <div
+                    className={
+                      rightOpen && activeTool === "browser"
+                        ? "flex min-h-0 min-w-0 flex-1"
+                        : "hidden"
+                    }
+                  >
+                    <BrowserPane
+                      fullscreen={rightFullscreen}
+                      onToggleFullscreen={toggleRightFullscreen}
+                    />
+                  </div>
                 </div>
-                <div
-                  className={
-                    rightOpen && activeTool === "browser"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <BrowserPane
-                    fullscreen={fullscreen}
-                    onToggleFullscreen={toggleFullscreen}
-                  />
-                </div>
-              </div>
-            ) : (
-              <WorkspaceEmpty error={notice} onPick={pickWorkspace} />
-            )
+              ) : (
+                <WorkspaceEmpty error={notice} onPick={pickWorkspace} />
+              )}
+            </div>
           }
         />
       </div>
