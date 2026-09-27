@@ -386,6 +386,7 @@ export default function App() {
                     second={
                       <EditorPane
                         ref={editorRef}
+                        root={root}
                         tabs={openTabs}
                         active={activeTab}
                         gitMarks={git.snapshot.marks}

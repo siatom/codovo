@@ -50,6 +50,8 @@ interface EditorPaneProps {
   /** 选中浮窗的两个动作：把选中的文本送到终端 / 智能体输入框 */
   onSendToTerminal: (text: string) => void;
   onSendToAgent: (text: string) => void;
+  /** 工作区根目录：把绝对路径收敛成相对路径，给智能体标位置用 */
+  root: string;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<EditorPaneHandle>;
 }
@@ -123,6 +125,16 @@ function baseName(path: string): string {
 }
 
 /**
+ * 工作区内的相对路径，一律用 `/`。给智能体标「文件:行号」用——
+ * 绝对路径又长又带机器信息，相对路径才是仓库里的说法。
+ */
+function relativeToRoot(path: string, root: string): string {
+  const full = toDisplayPath(path);
+  const base = toDisplayPath(root).replace(/\/+$/, "");
+  return full.startsWith(`${base}/`) ? full.slice(base.length + 1) : full;
+}
+
+/**
  * 差异标签的 model URI 必须和普通文件的 `file://` 分开，否则同一个路径两个
  * model 会撞在一起（同一个文件既可能被当文件打开、又被当差异打开，差异本身
  * 还分未暂存/暂存/某个提交三种）。
@@ -146,6 +158,7 @@ export function EditorPane({
   onToggleFullscreen,
   onSendToTerminal,
   onSendToAgent,
+  root,
   ref,
 }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -167,8 +180,11 @@ export function EditorPane({
   const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
-  /** 浮窗对应的选中文本快照：点按钮那一刻编辑器可能已经失焦，现取不可靠 */
-  const floatTextRef = useRef("");
+  /**
+   * 浮窗对应的快照：选中原文（给终端）、工作区相对路径:起始行号（给智能体）。
+   * 点按钮那一刻编辑器可能已经失焦，现取不可靠，所以在选中那一刻就存下来
+   */
+  const floatPayloadRef = useRef<{ text: string; agentRef: string } | null>(null);
   const floatRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const { settings } = useSettings();
@@ -176,6 +192,9 @@ export function EditorPane({
   // 建 editor 的 effect 只认挂载那一刻的主题，切换主题走下面的 effect 单独更新
   const themeRef = useRef(theme);
   themeRef.current = theme;
+  // 浮窗的鼠标回调也建在「只跑一次」的建 editor effect 里，读 root 同样得走 ref
+  const rootRef = useRef(root);
+  rootRef.current = root;
   const fontSizeRef = useRef(settings.editorFontSize);
   fontSizeRef.current = settings.editorFontSize;
   const fontFamilyRef = useRef(settings.editorFontFamily);
@@ -272,17 +291,28 @@ export function EditorPane({
       setFloatBar(null);
       return;
     }
-    floatTextRef.current = text;
+    // 终端要原文；智能体只要「文件:起始行号」——选了上百行的话整段贴过去没意义
+    const current = activeRef.current;
+    const agentRef =
+      current && current.kind === "file"
+        ? `${relativeToRoot(current.path, rootRef.current)}:${selection.getStartPosition().lineNumber}`
+        : "";
+    floatPayloadRef.current = { text, agentRef };
     const rect = dom.getBoundingClientRect();
     setFloatBar({ top: rect.top + pos.top + pos.height + 6, left: rect.left + pos.left });
   }, []);
 
-  /** 点浮窗按钮：把快照里的文本交出去，然后收起浮窗 */
-  const sendSelection = useCallback((send: (text: string) => void) => {
-    const text = floatTextRef.current;
-    setFloatBar(null);
-    if (text) send(text);
-  }, []);
+  /** 点浮窗按钮：把快照里的内容交出去，然后收起浮窗 */
+  const sendSelection = useCallback(
+    (target: "terminal" | "agent") => {
+      const payload = floatPayloadRef.current;
+      setFloatBar(null);
+      if (!payload) return;
+      if (target === "terminal") onSendToTerminal(payload.text);
+      else if (payload.agentRef) onSendToAgent(payload.agentRef);
+    },
+    [onSendToTerminal, onSendToAgent],
+  );
 
   // 浮窗开着时点别处就收起。用 window 监听而不是透明遮罩——遮罩会把编辑器也挡住，
   // 选完还想接着编辑就点不动了
@@ -972,7 +1002,7 @@ export function EditorPane({
           <button
             type="button"
             title="复制到终端"
-            onClick={() => sendSelection(onSendToTerminal)}
+            onClick={() => sendSelection("terminal")}
             className={FLOAT_BAR_BUTTON}
           >
             <IconTerminal className="h-3.5 w-3.5" />
@@ -981,7 +1011,7 @@ export function EditorPane({
             type="button"
             title="复制到智能体输入框"
             disabled={!settings.agentEnabled}
-            onClick={() => sendSelection(onSendToAgent)}
+            onClick={() => sendSelection("agent")}
             className={FLOAT_BAR_BUTTON}
           >
             <IconBot className="h-3.5 w-3.5" />
