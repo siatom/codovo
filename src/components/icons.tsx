@@ -111,10 +111,23 @@ export const IconFile = icon(
   </>,
 );
 
-/** 同一份文件图标的字符串形态，给拼 HTML 的地方用（如智能体输入框里的位置引用 chip） */
+/**
+ * 图标的字符串形态：contenteditable 里的 chip 只能拼 HTML，图标得有个字符串版本。
+ * 参数和上面的 Svg 完全一致（同样的描边、圆头），path 只从常量来，不会两处各写一遍。
+ */
+function svgHtml(paths: string[], className: string): string {
+  const body = paths.map((d) => `<path d="${d}"/>`).join("");
+  return `<svg viewBox="0 0 24 24" class="${className}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+}
+
+/** 文件图标的字符串形态，给拼 HTML 的地方用（如智能体输入框里的位置引用 chip） */
 export function fileIconHtml(className = "h-3.5 w-3.5"): string {
-  const paths = FILE_PATHS.map((d) => `<path d="${d}"/>`).join("");
-  return `<svg viewBox="0 0 24 24" class="${className}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  return svgHtml(FILE_PATHS, className);
+}
+
+/** 叉号的字符串形态，给 chip 上的删除按钮用 */
+export function closeIconHtml(className = "h-3 w-3"): string {
+  return svgHtml([CLOSE_PATH], className);
 }
 
 /* ---------- 文件类型图标 ---------- */
@@ -478,7 +491,9 @@ export const IconFullscreenExit = icon(
   </>,
 );
 
-export const IconClose = icon(<path d="M18 6 6 18M6 6l12 12" />);
+const CLOSE_PATH = "M18 6 6 18M6 6l12 12";
+
+export const IconClose = icon(<path d={CLOSE_PATH} />);
 
 export const IconSearch = icon(
   <>

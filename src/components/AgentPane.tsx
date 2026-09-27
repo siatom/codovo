@@ -29,7 +29,14 @@ import { useAgentSession } from "../lib/agent-session";
 import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentMessageView } from "./AgentMessageView";
-import { IconBot, IconChevronDown, IconSend, IconStop, fileIconHtml } from "./icons";
+import {
+  IconBot,
+  IconChevronDown,
+  IconSend,
+  IconStop,
+  closeIconHtml,
+  fileIconHtml,
+} from "./icons";
 
 export interface AgentPaneHandle {
   /** 把一段位置引用插成一个可整体删除的 chip；服务还没就绪就先挂着，就绪后补上 */
@@ -61,7 +68,14 @@ const STOP_BUTTON =
 
 /** chip 的样式：圆角小块 + 选中色底，和普通文字一眼分得开 */
 const CHIP_CLASS =
-  "inline-flex items-center gap-1 rounded bg-selected px-1.5 py-0.5 align-middle text-[12px] text-fg";
+  "group inline-flex items-center gap-1 rounded bg-selected py-0.5 pl-1.5 pr-1 align-middle text-[12px] text-fg";
+
+/**
+ * chip 上的删除按钮：平时透明但占着位置——悬浮时才显示，改宽度会让 chip 跳一下。
+ * 点击走 composer 上的事件委托，见 onComposerClick。
+ */
+const CHIP_DEL_CLASS =
+  "flex h-3.5 w-3.5 shrink-0 cursor-pointer items-center justify-center rounded opacity-0 transition-opacity group-hover:opacity-100 hover:text-danger";
 
 /** 「路径:起[-止]」——单行只写一个行号，跨行才带结束行号 */
 function formatLocation({ path, start, end }: EditorLocation): string {
@@ -87,7 +101,9 @@ function createChip(location: EditorLocation): HTMLElement {
   chip.contentEditable = "false";
   chip.dataset.location = text;
   chip.className = CHIP_CLASS;
-  chip.innerHTML = `${fileIconHtml("h-3 w-3 shrink-0")}<span>${escapeHtml(text)}</span>`;
+  chip.innerHTML =
+    `${fileIconHtml("h-3 w-3 shrink-0")}<span>${escapeHtml(text)}</span>` +
+    `<span data-chip-del title="移除" class="${CHIP_DEL_CLASS}">${closeIconHtml("h-2.5 w-2.5")}</span>`;
   return chip;
 }
 
@@ -590,6 +606,32 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
     if (text) document.execCommand("insertText", false, text);
   };
 
+  // chip 上那个删除按钮：整块移除，光标落到原来那块的位置，接着打字不会跳到开头。
+  // 用委托而不是给每个 chip 挂监听——chip 是拼出来的 DOM，还可能被复制粘贴
+  const onComposerClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (!target.closest("[data-chip-del]")) return;
+    const root = composerRef.current;
+    const chip = target.closest("[data-location]");
+    if (!root || !chip) return;
+
+    const next = chip.nextSibling;
+    const prev = chip.previousSibling;
+    chip.remove();
+    root.focus();
+
+    const range = document.createRange();
+    if (next) range.setStartBefore(next);
+    else if (prev) range.setStartAfter(prev);
+    else range.selectNodeContents(root);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+
+    syncDraft();
+  };
+
   if (phase === "error") {
     return (
       <div className="flex h-full items-center justify-center p-6">
@@ -673,6 +715,7 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
             onInput={syncDraft}
             onKeyDown={onKeyDown}
             onPaste={onPaste}
+            onClick={onComposerClick}
             data-placeholder="让智能体改点什么…"
             className="agent-composer min-h-6 max-h-40 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-fg outline-none"
           />
