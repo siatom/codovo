@@ -192,6 +192,8 @@ export function EditorPane({
    */
   const floatLocationRef = useRef<EditorLocation | null>(null);
   const floatRef = useRef<HTMLDivElement>(null);
+  /** 标签栏的横向滚动容器，用来在切换标签时把激活标签滚进可视区 */
+  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
   const { theme } = useTheme();
   const { settings } = useSettings();
 
@@ -907,13 +909,31 @@ export function EditorPane({
     return () => cancelAnimationFrame(frame);
   }, [isPreview, isDiffTab, isImageTab]);
 
+  // 标签过多、栏溢出时，激活标签可能落在可视区外，需要滚进来。
+  // 用两边的 rect 差算滚动量、只挪横向，避免 scrollIntoView 连祖先的纵向滚动一起动。
+  useEffect(() => {
+    const scroller = tabsScrollRef.current;
+    const el = scroller?.querySelector<HTMLElement>("[data-tab-active]");
+    if (!scroller || !el) return;
+    const view = scroller.getBoundingClientRect();
+    const tab = el.getBoundingClientRect();
+    if (tab.left < view.left) {
+      scroller.scrollLeft -= view.left - tab.left;
+    } else if (tab.right > view.right) {
+      scroller.scrollLeft += tab.right - view.right;
+    }
+  }, [activeKey]);
+
   const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-        <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+        <div
+          ref={tabsScrollRef}
+          className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+        >
           {tabs.length === 0 && (
             <span className="px-1 text-[11px] text-fg-faint">未打开文件</span>
           )}
@@ -926,6 +946,7 @@ export function EditorPane({
             return (
               <div
                 key={key}
+                data-tab-active={isActive ? "" : undefined}
                 className={`flex shrink-0 items-center rounded ${
                   isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
                 }`}
