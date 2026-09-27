@@ -32,8 +32,6 @@ lerna-debug.log*
 # 必须先写 .codebuddy/* 而不是整个目录，否则下面的 ! 例外不生效
 .codebuddy/*
 !.codebuddy/skills/
-# 技能目录里放本地凭据（如 gitee-api 的令牌），不进仓库
-.codebuddy/skills/**/.env
 
 # 系统
 .DS_Store
