@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { SplitPane } from "./components/SplitPane";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalPane, type TerminalPaneHandle } from "./components/TerminalPane";
@@ -16,6 +17,7 @@ import type { EditorLocation } from "./lib/types";
 import {
   clearSavedWorkspace,
   isPathInside,
+  onFilesChanged,
   pickWorkspaceFolder,
   readSavedWorkspace,
   readSavedWorkspaces,
@@ -252,6 +254,26 @@ export default function App() {
   /** 替换之后让编辑器丢掉旧内容、重新读磁盘 */
   const reloadAfterReplace = useCallback((paths: string[]) => {
     void editorRef.current?.reload(paths);
+  }, []);
+
+  /**
+   * 打开着的文件被外部改了（终端、git、别的编辑器、智能体写的）就重读回最新的，
+   * 省得用户手动关掉再打开。有未保存改动的不覆盖——那是用户正在编辑的内容，
+   * 见 `EditorPane.reload`。
+   */
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void onFilesChanged((paths) => {
+      void editorRef.current?.reload(paths);
+    }).then((stop) => {
+      if (cancelled) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   /**

@@ -195,6 +195,17 @@ export function onDirsChanged(handler: (dirs: string[]) => void): Promise<Unlist
   return listen<string[]>("fs-changed", (event) => handler(event.payload));
 }
 
+/**
+ * 工作区里有文件的内容变了（终端、git、别的编辑器、智能体写的）。载荷是这些
+ * 文件的绝对路径，编辑器按它重读。
+ *
+ * 和 `onDirsChanged` 分开是有意的：目录变化要重列整棵树，文件变化只影响编辑器，
+ * 混成一条的话编辑器每存一次盘都得把树刷一遍。
+ */
+export function onFilesChanged(handler: (paths: string[]) => void): Promise<UnlistenFn> {
+  return listen<string[]>("fs-file-changed", (event) => handler(event.payload));
+}
+
 /** 当前工作区的 git 状态；目录不是仓库时 isRepo 为 false */
 export function gitStatus(): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_status");

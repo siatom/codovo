@@ -87,7 +87,11 @@ export interface RevealTarget {
 export interface EditorPaneHandle {
   /** 把编辑器里所有未保存的改动落盘；返回 false 表示有文件没存成功 */
   saveAll: () => Promise<boolean>;
-  /** 替换之后重新从磁盘加载这些文件，扔掉编辑器里的旧内容 */
+  /**
+   * 重新从磁盘加载这些文件，扔掉编辑器里的旧内容。两个场景共用：搜索替换之后，
+   * 以及外部（终端 / git / 别的编辑器 / 智能体）改了打开着的文件。
+   * 有未保存改动的文件不覆盖——用户的编辑优先。
+   */
   reload: (paths: string[]) => Promise<void>;
   /** 打开文件并定位到指定位置 */
   revealAt: (target: RevealTarget) => void;
@@ -402,6 +406,11 @@ export function EditorPane({
           try {
             const content = await readFile(cached.path);
             if (content.isBinary || content.tooLarge) continue;
+            // 读文件这一下用户可能又敲进了改动，再查一次，编辑优先
+            if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
+            // 磁盘上和 model 里一模一样就别 setValue——这一般是编辑器自己刚保存
+            // 触发的回声，重设一遍会白白清掉撤销栈、还会把光标弹回开头
+            if (cached.model.getValue() === content.text) continue;
             cached.model.setValue(content.text);
             cached.savedVersionId = cached.model.getAlternativeVersionId();
             done.push(key);
@@ -434,6 +443,28 @@ export function EditorPane({
           });
         }
         if (touched) setPreviewNonce((count) => count + 1);
+
+        // 图片不进 modelsRef（缓存里不可能有它），正在看的那张单独重读一遍
+        const current = activeRef.current;
+        if (
+          current &&
+          current.kind === "file" &&
+          isImagePath(current.path) &&
+          paths.some((item) => pathKey(item) === pathKey(current.path))
+        ) {
+          try {
+            const content = await readImage(current.path);
+            // 等这一下的时候用户可能已经切走了，别把结果盖到别的标签上
+            const now = activeRef.current;
+            if (now && now.kind === "file" && pathKey(now.path) === pathKey(current.path)) {
+              setStatus(
+                content.tooLarge ? { kind: "tooLarge" } : { kind: "image", src: content.data },
+              );
+            }
+          } catch {
+            // 读不回来的保持原样，界面上还有旧图可用
+          }
+        }
       },
 
       revealAt: (target) => setReveal(target),

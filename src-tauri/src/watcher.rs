@@ -13,9 +13,22 @@ use crate::fs_api::{is_skipped_dir, simplify};
 /// 前端监听的事件名。载荷是「内容变了、需要重新列一遍」的目录绝对路径。
 pub const CHANGED_EVENT: &str = "fs-changed";
 
+/// 文件内容变了（终端、git、别的编辑器、智能体写的），载荷是这些文件的绝对路径。
+/// 和 `CHANGED_EVENT` 分开：那个是给文件树重列用的，这个是给编辑器重读用的；
+/// 合成一条的话，编辑器每存一次盘都要把整棵树刷一遍。
+pub const FILE_CHANGED_EVENT: &str = "fs-file-changed";
+
 /// 攒多久才发一次。解包/切换分支会连着打出几百个事件，逐个发会把 IPC 打爆，
 /// 而文件树要的只是"最终长什么样"，中间态没有意义。
 const DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// 防抖通道里跑的东西：要么是「这个目录要重列」，要么是「这个文件内容变了」。
+enum Signal {
+    Dir(PathBuf),
+    File(PathBuf),
+    /// 换工作区，让防抖线程收摊
+    Stop,
+}
 
 /// 当前工作区的目录监听。换工作区时整体换掉。
 pub struct WatchState {
@@ -25,8 +38,8 @@ pub struct WatchState {
 struct Watch {
     /// 持有它才在监听，丢了监听就停了
     _watcher: RecommendedWatcher,
-    /// 给防抖线程发信号，`None` 表示让它退出
-    stop: Sender<Option<PathBuf>>,
+    /// 给防抖线程发信号，`Stop` 表示让它退出
+    stop: Sender<Signal>,
 }
 
 impl WatchState {
@@ -39,7 +52,7 @@ impl WatchState {
     /// 监听 `root` 下的目录结构变化。调用方拿不到监听器也不该影响正常使用，
     /// 所以出错只返回 Err 让上面忽略。
     pub fn watch(&self, app: AppHandle, root: &Path) -> Result<(), String> {
-        let (tx, rx) = mpsc::channel::<Option<PathBuf>>();
+        let (tx, rx) = mpsc::channel::<Signal>();
         let event_tx = tx.clone();
         let event_root = root.to_path_buf();
 
@@ -48,11 +61,18 @@ impl WatchState {
                 // 监听本身出问题（缓冲溢出等）不该把界面搞崩，丢一轮即可
                 return;
             };
-            if !should_refresh(&event.kind, &event.paths) {
-                return;
+            if should_refresh(&event.kind, &event.paths) {
+                for dir in changed_dirs(&event_root, &event.paths) {
+                    let _ = event_tx.send(Signal::Dir(dir));
+                }
             }
-            for dir in changed_dirs(&event_root, &event.paths) {
-                let _ = event_tx.send(Some(dir));
+            // 内容变了的文件：不挑事件类型，靠"现在是不是一个真实文件"兜底。
+            // 各平台的保存姿势不一样（直接写、原子替换、inotify 的 CLOSE_WRITE），
+            // 按事件类型逐个枚举迟早会漏，代价只是多几次 is_file。
+            for file in changed_files(&event_root, &event.paths) {
+                if file.is_file() {
+                    let _ = event_tx.send(Signal::File(file));
+                }
             }
         })
         .map_err(|e| format!("启动目录监听失败: {e}"))?;
@@ -65,34 +85,43 @@ impl WatchState {
         std::thread::spawn(move || {
             // 攒批：收到第一个事件后，一直吃到静默满 DEBOUNCE 为止再发
             while let Ok(first) = rx.recv() {
-                let Some(first) = first else { return };
+                if matches!(first, Signal::Stop) {
+                    return;
+                }
                 let mut dirs: HashSet<PathBuf> = HashSet::new();
-                dirs.insert(first);
+                let mut files: HashSet<PathBuf> = HashSet::new();
+                // 第一个事件也要算进去，所以先存下来、进循环再归位
+                let mut pending = first;
                 loop {
-                    match rx.recv_timeout(DEBOUNCE) {
-                        Ok(Some(dir)) => {
+                    match pending {
+                        Signal::Stop => return,
+                        Signal::Dir(dir) => {
                             dirs.insert(dir);
                         }
-                        Ok(None) => return,
+                        Signal::File(file) => {
+                            files.insert(file);
+                        }
+                    }
+                    match rx.recv_timeout(DEBOUNCE) {
+                        Ok(next) => pending = next,
                         Err(RecvTimeoutError::Timeout) => break,
                         Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
-                let mut list: Vec<String> = dirs
-                    .into_iter()
-                    .map(|dir| dir.to_string_lossy().to_string())
-                    .collect();
-                // 排序只为让同样的变更给出同样的载荷，方便日志和测试比对
-                list.sort();
-                let _ = emitter.emit(CHANGED_EVENT, list);
+                if !dirs.is_empty() {
+                    let _ = emitter.emit(CHANGED_EVENT, sorted_paths(dirs));
+                }
+                if !files.is_empty() {
+                    let _ = emitter.emit(FILE_CHANGED_EVENT, sorted_paths(files));
+                }
             }
         });
 
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        // 换工作区：先停旧的——丢掉 watcher 就停了，再让防抖线程收到 None 退出，
+        // 换工作区：先停旧的——丢掉 watcher 就停了，再让防抖线程收到 Stop 退出，
         // 否则旧根目录上的事件会继续发给已经切换过去的界面
         if let Some(old) = inner.take() {
-            let _ = old.stop.send(None);
+            let _ = old.stop.send(Signal::Stop);
         }
         *inner = Some(Watch {
             _watcher: watcher,
@@ -100,6 +129,16 @@ impl WatchState {
         });
         Ok(())
     }
+}
+
+/// 排序只为让同样的变更给出同样的载荷，方便日志和测试比对
+fn sorted_paths(paths: HashSet<PathBuf>) -> Vec<String> {
+    let mut list: Vec<String> = paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    list.sort();
+    list
 }
 
 /// 这次事件该不该让文件树重列。
@@ -122,28 +161,11 @@ fn should_refresh(kind: &EventKind, paths: &[PathBuf]) -> bool {
 }
 
 /// 事件路径 -> 需要重新列一遍的目录（也就是它的父目录）。
-///
-/// 跳过 `node_modules` / `target` 这类重目录**里面**的任何变化：那些目录动辄
-/// 几万个文件，构建一次就能把界面刷爆，而且它们本来也不是用户手动组织的结构。
-/// 但重目录**自己**被建出来时要放行，否则新建一个 `dist` 会在文件树里消失。
 fn changed_dirs(root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for raw in paths {
         let path = simplify(raw.clone());
-        if path == root {
-            continue;
-        }
-        let Ok(relative) = path.strip_prefix(root) else {
-            // 事件落在工作区外（根目录被改名/删掉时会这样），不关文件树的事
-            continue;
-        };
-        let mut parts: Vec<String> = relative
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy().to_string())
-            .collect();
-        // 最后一段是变化目标本身，不算"在重目录里面"
-        parts.pop();
-        if parts.iter().any(|part| is_skipped_dir(part)) {
+        if !is_relevant(root, &path) {
             continue;
         }
         if let Some(parent) = path.parent() {
@@ -151,6 +173,40 @@ fn changed_dirs(root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// 事件路径 -> 内容可能变了的文件（就是它自己）。这里只做"该不该关心"的清洗，
+/// 是不是真的文件由调用方现查磁盘——事件到达时它可能已经被删了。
+fn changed_files(root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for raw in paths {
+        let path = simplify(raw.clone());
+        if is_relevant(root, &path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// 这个事件路径值不值得关心：在 root 里，且不落在 `node_modules` / `target` 这类
+/// 重目录**里面**。那些目录动辄几万个文件，构建一次就能把界面刷爆，而且它们本来
+/// 也不是用户手动组织的结构。重目录**自己**算关心（新建一个 `dist` 得能在树里
+/// 出现、内容也得能读），所以判据是"除去最后一段之后"还有没有重目录名。
+fn is_relevant(root: &Path, path: &Path) -> bool {
+    if path == root {
+        return false;
+    }
+    let Ok(relative) = path.strip_prefix(root) else {
+        // 事件落在工作区外（根目录被改名/删掉时会这样），不关我们的事
+        return false;
+    };
+    let mut parts: Vec<String> = relative
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().to_string())
+        .collect();
+    // 最后一段是变化目标本身，不算"在重目录里面"
+    parts.pop();
+    !parts.iter().any(|part| is_skipped_dir(part))
 }
 
 #[cfg(test)]
@@ -184,6 +240,27 @@ mod tests {
         assert!(changed_dirs(&root(), &[under(&["node_modules", "pkg", "index.js"])]).is_empty());
         // 大小写不敏感
         assert!(changed_dirs(&root(), &[under(&["TARGET", "a"])]).is_empty());
+    }
+
+    #[test]
+    fn maps_a_content_change_to_the_file_itself() {
+        let file = under(&["src", "main.rs"]);
+        assert_eq!(
+            changed_files(&root(), std::slice::from_ref(&file)),
+            vec![file]
+        );
+    }
+
+    #[test]
+    fn skips_content_changes_inside_heavy_directories() {
+        // 构建一次会往 target 里写几千个文件，全发给编辑器等于每次都重读一遍
+        assert!(changed_files(&root(), &[under(&["target", "debug", "app.exe"])]).is_empty());
+        assert!(changed_files(&root(), &[under(&["node_modules", "pkg", "index.js"])]).is_empty());
+        // 重目录自己不是文件，交给调用方的 is_file 挡掉
+        assert_eq!(
+            changed_files(&root(), &[under(&["dist"])]),
+            vec![under(&["dist"])]
+        );
     }
 
     #[test]
