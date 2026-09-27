@@ -47,9 +47,9 @@ interface EditorPaneProps {
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
-  /** 选中浮窗的两个动作：把选中的文本送到终端 / 智能体输入框 */
-  onSendToTerminal: (text: string) => void;
-  onSendToAgent: (text: string) => void;
+  /** 选中浮窗的两个动作：把位置引用送到终端 / 智能体输入框 */
+  onSendToTerminal: (location: string) => void;
+  onSendToAgent: (location: string) => void;
   /** 工作区根目录：把绝对路径收敛成相对路径，给智能体标位置用 */
   root: string;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
@@ -181,10 +181,10 @@ export function EditorPane({
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
   /**
-   * 浮窗对应的快照：选中原文（给终端）、工作区相对路径:起始行号（给智能体）。
-   * 点按钮那一刻编辑器可能已经失焦，现取不可靠，所以在选中那一刻就存下来
+   * 浮窗对应的位置引用（工作区相对路径:起-止行）。点按钮那一刻编辑器可能已经失焦，
+   * 现取不可靠，所以在选中那一刻就存下来
    */
-  const floatPayloadRef = useRef<{ text: string; agentRef: string } | null>(null);
+  const floatRefTextRef = useRef("");
   const floatRef = useRef<HTMLDivElement>(null);
   const { theme } = useTheme();
   const { settings } = useSettings();
@@ -291,25 +291,27 @@ export function EditorPane({
       setFloatBar(null);
       return;
     }
-    // 终端要原文；智能体只要「文件:起始行号」——选了上百行的话整段贴过去没意义
+    // 两个动作发的都是这个位置引用：整段贴过去对 AI CLI / 智能体都没用，位置才是指代。
+    // 跨行才带结束行号，单行只写一个数（跟编辑器里常见的 file:line 一个写法）
     const current = activeRef.current;
-    const agentRef =
+    const start = selection.startLineNumber;
+    const end = selection.endLineNumber;
+    floatRefTextRef.current =
       current && current.kind === "file"
-        ? `${relativeToRoot(current.path, rootRef.current)}:${selection.getStartPosition().lineNumber}`
+        ? `${relativeToRoot(current.path, rootRef.current)}:${start}${end > start ? `-${end}` : ""}`
         : "";
-    floatPayloadRef.current = { text, agentRef };
     const rect = dom.getBoundingClientRect();
     setFloatBar({ top: rect.top + pos.top + pos.height + 6, left: rect.left + pos.left });
   }, []);
 
-  /** 点浮窗按钮：把快照里的内容交出去，然后收起浮窗 */
+  /** 点浮窗按钮：把快照里的位置引用交出去，然后收起浮窗 */
   const sendSelection = useCallback(
     (target: "terminal" | "agent") => {
-      const payload = floatPayloadRef.current;
+      const location = floatRefTextRef.current;
       setFloatBar(null);
-      if (!payload) return;
-      if (target === "terminal") onSendToTerminal(payload.text);
-      else if (payload.agentRef) onSendToAgent(payload.agentRef);
+      if (!location) return;
+      if (target === "terminal") onSendToTerminal(location);
+      else onSendToAgent(location);
     },
     [onSendToTerminal, onSendToAgent],
   );

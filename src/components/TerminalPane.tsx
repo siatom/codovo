@@ -29,10 +29,10 @@ export interface TerminalPaneHandle {
    * 不能写进当前活动会话——那儿多半正跑着一个 AI CLI，命令会被当成它的输入。
    */
   runInNewSession: (command: string) => void;
-  /** 把文本送进当前活动的终端会话，相当于粘贴，不带回车（用户自己按回车执行） */
-  insertToTerminal: (text: string) => void;
-  /** 把文本送进智能体输入框，顺带切到 GUI 模式 */
-  insertToAgent: (text: string) => void;
+  /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
+  insertToTerminal: (location: string) => void;
+  /** 把位置引用送进智能体输入框，顺带切到 GUI 模式 */
+  insertToAgent: (location: string) => void;
 }
 
 interface TerminalPaneProps {
@@ -150,23 +150,23 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
     setActiveId(id);
   }, []);
 
-  // 编辑器浮窗送来的文本：写进活动会话，和用户直接敲键盘走同一条 PTY 通道。
-  // 不带 \r——多行文本原样下去就是多行，但不会自动执行
+  // 编辑器浮窗送来的位置引用：写进活动会话，和用户直接敲键盘走同一条 PTY 通道。
+  // 不带 \r——左侧终端常跑着 AI CLI，写完让它读文件，什么时候回车由用户决定
   const insertToTerminal = useCallback(
-    (text: string) => {
+    (location: string) => {
       const handle = handlesRef.current.get(activeId);
-      handle?.write(text);
+      handle?.write(location);
       handle?.focus();
     },
     [activeId],
   );
 
-  // 智能体那侧同理：先切到 GUI，再把文本交给面板的输入框。
+  // 智能体那侧同理：先切到 GUI，再把位置引用交给面板的输入框。
   // 面板可能还没就绪（刚切过来还在 starting），由它的 pendingInsert 兜住
   const insertToAgent = useCallback(
-    (text: string) => {
+    (location: string) => {
       setMode("agent");
-      agentRef.current?.insertText(text);
+      agentRef.current?.insertText(location);
     },
     [setMode],
   );

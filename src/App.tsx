@@ -101,13 +101,13 @@ export default function App() {
     terminalRef.current?.runInNewSession(command);
   }, []);
 
-  /** 编辑器浮窗：把选中的文本送到终端会话 / 智能体输入框，两者都在 TerminalPane 里 */
-  const insertToTerminal = useCallback((text: string) => {
-    terminalRef.current?.insertToTerminal(text);
+  /** 编辑器浮窗：把位置引用送到终端会话 / 智能体输入框，两者都在 TerminalPane 里 */
+  const insertToTerminal = useCallback((location: string) => {
+    terminalRef.current?.insertToTerminal(location);
   }, []);
 
-  const insertToAgent = useCallback((text: string) => {
-    terminalRef.current?.insertToAgent(text);
+  const insertToAgent = useCallback((location: string) => {
+    terminalRef.current?.insertToAgent(location);
   }, []);
 
   /**

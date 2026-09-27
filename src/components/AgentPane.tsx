@@ -32,8 +32,8 @@ import { AgentMessageView } from "./AgentMessageView";
 import { IconBot, IconChevronDown, IconSend, IconStop } from "./icons";
 
 export interface AgentPaneHandle {
-  /** 把一段文本追加到输入框并聚焦；服务还没就绪就先挂着，就绪后补上 */
-  insertText: (text: string) => void;
+  /** 把一段位置引用追加到输入框并聚焦；服务还没就绪就先挂着，就绪后补上 */
+  insertText: (location: string) => void;
 }
 
 interface AgentPaneProps {
