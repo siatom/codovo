@@ -25,11 +25,13 @@ swagger 是 JS 渲染的，WebFetch 通常只能拿到参数表；拿不到细�
 
 ## 令牌
 
-存在**项目根 `.env` 的 `GITEE_TOKEN`**（已被 `.gitignore` 忽略：不要提交，也不要写进命令或对话）。每次用之前读进来：
+存在**本技能目录下的 `.env`**（与 `SKILL.md` 同级，`.gitignore` 已忽略：不要提交，也不要写进命令或对话）。每次用之前读进来：
 
 ```bash
-cd <项目根> && set -a && . ./.env && set +a
+set -a && . "${CODEBUDDY_SKILL_DIR}/.env" && set +a
 ```
+
+`${CODEBUDDY_SKILL_DIR}` 会替换成这个 SKILL.md 所在目录的绝对路径，所以技能整体可以随仓库搬走，凭据只留在本地。
 
 token 的 scope 决定能干什么：读 issue 要 `issues`，**发评论要 `notes`**（缺了回 `401 Unauthorized: no 'notes' scope'`），改 issue 状态要 `issues`。权限不够就让用户去 https://gitee.com/profile/personal_access_tokens 补勾，别自己试。
 
