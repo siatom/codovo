@@ -22,9 +22,14 @@ const SHELL_MENU_W = 200;
 const SHELL_MENU_ITEM =
   "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
-/** 「路径:起[-止]」——单行只写一个行号，跨行才带结束行号 */
+/**
+ * 「路径:起[-止]」——单行只写一个行号，跨行才带结束行号。
+ * 路径带空格时整串加引号：不加的话 shell 会把它拆成两个词，引用就废了。
+ * 只在这一侧加——智能体那边给的是 API 的纯文本，不经过 shell。
+ */
 function formatLocation({ path, start, end }: EditorLocation): string {
-  return `${path}:${start}${end > start ? `-${end}` : ""}`;
+  const text = `${path}:${start}${end > start ? `-${end}` : ""}`;
+  return /\s/.test(path) ? `"${text}"` : text;
 }
 
 export interface TerminalPaneHandle {
