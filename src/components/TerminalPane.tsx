@@ -15,7 +15,7 @@ import { useAgentSession } from "../lib/agent-session";
 import { listShells, type ShellInfo } from "../lib/pty";
 import type { EditorLocation } from "../lib/types";
 import { AgentPane, type AgentPaneHandle } from "./AgentPane";
-import { IconChevronDown, IconClose, IconPlus, ShellIcon } from "./icons";
+import { IconBot, IconChevronDown, IconClose, IconPlus, IconTerminal, ShellIcon } from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
 const SHELL_MENU_W = 200;
@@ -209,24 +209,26 @@ export function TerminalPane({ cwd, ref }: TerminalPaneProps) {
               type="button"
               onClick={() => setMode("terminal")}
               title="终端（TUI）"
-              className={`flex h-6 items-center justify-center rounded-full px-4 text-[12px] ${
+              className={`flex h-6 items-center justify-center gap-1 rounded-full px-4 text-[12px] ${
                 view === "terminal"
                   ? "bg-selected text-fg shadow-sm"
                   : "text-fg-dim hover:text-fg"
               }`}
             >
+              <IconTerminal className="h-3.5 w-3.5" />
               终端
             </button>
             <button
               type="button"
               onClick={() => setMode("agent")}
               title="智能体（GUI）"
-              className={`flex h-6 items-center justify-center rounded-full px-4 text-[12px] ${
+              className={`flex h-6 items-center justify-center gap-1 rounded-full px-4 text-[12px] ${
                 view === "agent"
                   ? "bg-selected text-fg shadow-sm"
                   : "text-fg-dim hover:text-fg"
               }`}
             >
+              <IconBot className="h-3.5 w-3.5" />
               智能体
             </button>
           </div>
