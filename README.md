@@ -33,7 +33,7 @@ pnpm tauri build                     # 打包安装包
 
 ### 终端
 
-真实 shell（`portable-pty` + ConPTY，xterm.js 渲染，WebGL 加速）。多标签、每个标签一个独立 PTY、切走的会话仍在后台跑；可指定终端程序（pwsh / cmd / WSL / Git Bash 等）并显示品牌图标。
+真实 shell（`portable-pty` + ConPTY，xterm.js 渲染，WebGL 加速）。多标签、每个标签一个独立 PTY、切走的会话仍在后台跑；可指定终端程序（pwsh / cmd / WSL / Git Bash 等）并显示品牌图标。支持 `Ctrl+C` / 右键复制选区、`Ctrl+V` / 右键粘贴，多行内容按 bracketed paste 送进 shell。
 
 ### 文件树
 
@@ -94,3 +94,5 @@ src-tauri/src/        Rust 后端
 | --- | --- |
 | `Ctrl+S` | 保存当前文件 |
 | `Ctrl+Enter` | 在提交信息框里提交 |
+| `Ctrl+C` / `Ctrl+V` | 终端：有选区复制，无选区 `Ctrl+C` 仍是中断；粘贴走 `Ctrl+V` |
+| 鼠标右键 | 终端：有选区复制，无选区粘贴 |

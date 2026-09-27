@@ -8,10 +8,37 @@ import {
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
+
+/**
+ * 只看 UA 就够：这里的用途仅仅是决定复制/粘贴认 Cmd 还是 Ctrl。
+ * mac 上 Ctrl+C 必须留给 shell 发 SIGINT，所以不能一律按 Ctrl 认。
+ */
+const IS_MAC = /mac/i.test(navigator.userAgent);
+
+/**
+ * 走 Tauri 的 clipboard 插件读写系统剪贴板，不用 `navigator.clipboard`：
+ * WebView 那套要文档有焦点、WebView2 还会弹系统授权框，插件从 Rust 侧直接读写，三端都不问人。
+ */
+async function copyText(text: string): Promise<void> {
+  try {
+    await writeText(text);
+  } catch {
+    // 复制失败没有可补救的动作，静默丢弃，别打断终端里的操作
+  }
+}
+
+async function readClipboard(): Promise<string | null> {
+  try {
+    return await readText();
+  } catch {
+    return null;
+  }
+}
 
 export interface TerminalSessionHandle {
   /** 往这个会话的 shell 里写命令 */
@@ -95,6 +122,8 @@ export const TerminalSession = forwardRef<
       fontWeight: fontBoldRef.current ? "bold" : "normal",
       lineHeight: 1.25,
       scrollback: 5000,
+      // 右键在我们这儿是复制/粘贴，别让它顺带按词选中，不然会先把选区改掉再复制
+      rightClickSelectsWord: false,
       theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current),
     });
 
@@ -182,6 +211,45 @@ export const TerminalSession = forwardRef<
 
     const dataDisposable = term.onData((data) => ptyRef.current?.write(data));
 
+    // 粘贴走 term.paste()：它会按当前是否开启 bracketed paste 决定包不包 ESC[200~，
+    // 多行内容才不会被 shell 逐行当命令执行。
+    const pasteFromClipboard = () => {
+      void readClipboard().then((text) => {
+        if (!cancelled && text) term.paste(text);
+      });
+    };
+
+    /**
+     * 复制/粘贴的按键认领。用捕获阶段 + stopPropagation 抢在 xterm 自己的 textarea
+     * 监听之前处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被发成 \x03（中断）。
+     * 认领条件都带前缀键，普通输入不受影响。
+     */
+    const onKeyDown = (event: KeyboardEvent) => {
+      const primary = IS_MAC ? event.metaKey : event.ctrlKey;
+      if (!primary || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "c") {
+        // 没选区时不认领，让它落到 shell 上发 SIGINT —— 这是终端的肌肉记忆
+        if (!term.hasSelection()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void copyText(term.getSelection());
+      } else if (key === "v") {
+        event.preventDefault();
+        event.stopPropagation();
+        pasteFromClipboard();
+      }
+    };
+    container.addEventListener("keydown", onKeyDown, true);
+
+    // 右键：有选中就复制，没有就粘贴（和 VS Code / Windows Terminal 一致）
+    const onContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+      if (term.hasSelection()) void copyText(term.getSelection());
+      else pasteFromClipboard();
+    };
+    container.addEventListener("contextmenu", onContextMenu);
+
     let resizeTimer: number | undefined;
     const observer = new ResizeObserver(() => {
       window.clearTimeout(resizeTimer);
@@ -202,6 +270,8 @@ export const TerminalSession = forwardRef<
       window.clearTimeout(resizeTimer);
       observer.disconnect();
       dataDisposable.dispose();
+      container.removeEventListener("keydown", onKeyDown, true);
+      container.removeEventListener("contextmenu", onContextMenu);
       ptyRef.current?.kill();
       ptyRef.current = null;
       term.dispose();
