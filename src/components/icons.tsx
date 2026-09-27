@@ -502,7 +502,20 @@ export const IconSearch = icon(
   </>,
 );
 
-export const IconPlus = icon(<path d="M12 5v14M5 12h14" />);
+export const IconPlus = icon(<path d="M12 5v14M5 12h14" />);export const IconCheck = icon(<path d="M20 6 9 17l-5-5" />);/** 从接口拉取列表：向下打进托盘里的箭头 */
+export const IconDownload = icon(
+  <>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M12 15V3" />
+  </>,
+);/** 复制一份配置（提供商列表里用）：后面那张纸叠在前面那张上 */
+export const IconCopy = icon(
+  <>
+    <rect x="8" y="8" width="13" height="13" rx="2" />
+    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </>,
+);
 
 /** 搜索面板的「全部替换」：上下两条反向箭头，表示整体换掉 */
 export const IconReplaceAll = icon(

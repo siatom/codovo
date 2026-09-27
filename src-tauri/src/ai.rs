@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::dev;
 use crate::fs_api::FsState;
@@ -40,14 +40,20 @@ const SYSTEM_PROMPT: &str = "\
 7. 语言跟「最近提交」保持一致；没有历史提交时用中文。
 8. 不要编造改动里没有的内容。";
 
-/// 前端传来的接口配置。三个字段都由用户填，空的话直接拒绝，不去打扰接口。
+/// 前端传来的接口配置。密钥不在这里——前端只知道「哪家提供商」，正文由后端按
+/// provider id 去系统钥匙串取（见 `secrets.rs`）。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfig {
     /// OpenAI 兼容接口的基地址，例如 https://api.deepseek.com/v1
     base_url: String,
-    api_key: String,
+    /// 默认模型所在的提供商 id，密钥按它去钥匙串里查
+    provider_id: String,
     model: String,
+    /// 开发调试用：`src-tauri/.env` 里那个密钥。前端传不进来，只在 debug 构建里
+    /// 由 `apply` 填上；它优先于钥匙串——`.env` 本来就该盖住界面上的配置。
+    #[serde(skip)]
+    dev_api_key: Option<String>,
 }
 
 impl AiConfig {
@@ -61,24 +67,38 @@ impl AiConfig {
             self.model = model.clone();
         }
         if let Some(api_key) = &overrides.api_key {
-            self.api_key = api_key.clone();
+            self.dev_api_key = Some(api_key.clone());
         }
     }
 
-    /// 三个字段都填全了才去请求，缺一个就报同一句话——用户知道该去哪儿补。
-    fn ready(&self) -> Result<(String, String, String), String> {
+    /// 拼出生效的 (基地址, 密钥, 模型)。缺哪样就报哪样——用户知道该去哪儿补。
+    ///
+    /// 读钥匙串是同步阻塞的，所以这个方法**必须在第一个 await 之前调用**，
+    /// 别把系统调用夹在异步中间（和 git 那边一个道理）。
+    fn resolve(&self) -> Result<(String, String, String), String> {
         let base_url = self.base_url.trim().trim_end_matches('/').to_string();
-        let api_key = self.api_key.trim().to_string();
         let model = self.model.trim().to_string();
-        if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
+        if base_url.is_empty() || model.is_empty() {
             // 开发调试版可以只写 src-tauri/.env，提示里带上这条，免得以为没救
             return Err(if cfg!(debug_assertions) {
-                "请先在「设置 → AI」里填写接口地址、模型和密钥，或写进 src-tauri/.env".to_string()
+                "请先在「设置 → 智能体 → 模型提供商」里填写接口地址和模型，或写进 src-tauri/.env"
+                    .to_string()
             } else {
-                "请先在「设置 → AI」里填写接口地址、模型和密钥".to_string()
+                "请先在「设置 → 智能体 → 模型提供商」里填写接口地址和模型".to_string()
             });
         }
-        Ok((base_url, api_key, model))
+
+        let api_key = match &self.dev_api_key {
+            Some(key) => key.clone(),
+            None => crate::secrets::get(&self.provider_id)?.unwrap_or_default(),
+        };
+        if api_key.trim().is_empty() {
+            return Err(format!(
+                "提供商「{}」还没保存 API 密钥，请在「设置 → 智能体 → 模型提供商」里填一个",
+                self.provider_id
+            ));
+        }
+        Ok((base_url, api_key.trim().to_string(), model))
     }
 }
 
@@ -87,7 +107,7 @@ impl AiConfig {
 /// 只走 Rust 侧的 HTTP：密钥不进 WebView，也不受各厂商的跨域限制。
 /// 两个功能（生成提交信息 / 解读改动）共用，调用方自己拼提示词、自己清理输出。
 async fn chat(config: &AiConfig, system: &str, user: &str, temperature: f32) -> Result<String, String> {
-    let (base_url, api_key, model) = config.ready()?;
+    let (base_url, api_key, model) = config.resolve()?;
 
     let body = serde_json::json!({
         "model": model,
@@ -154,11 +174,12 @@ pub async fn ai_generate_commit_message(
     state: tauri::State<'_, FsState>,
     config: AiConfig,
 ) -> Result<String, String> {
-    // 覆盖要赶在 ready() 之前：面板留空、只写 .env 时也得能跑
+    // 覆盖要赶在 resolve() 之前：面板留空、只写 .env 时也得能跑
     let mut config = config;
     config.apply(&dev::read_overrides());
-    // 先挡一道：配置不全时不必去读 diff
-    config.ready()?;
+    // 先挡一道：配置不全时不必去读 diff。顺带把钥匙串那一次读也挪到
+    // 第一个 await 之前——它是同步阻塞的
+    config.resolve()?;
 
     // git 是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await 点
     let context = git::commit_context(&state)?;
@@ -186,10 +207,10 @@ pub async fn ai_explain_change(
     path: String,
     source: git::DiffSource,
 ) -> Result<String, String> {
-    // 同 ai_generate_commit_message：覆盖必须早于 ready()
+    // 同 ai_generate_commit_message：覆盖必须早于 resolve()
     let mut config = config;
     config.apply(&dev::read_overrides());
-    config.ready()?;
+    config.resolve()?;
 
     // 同 ai_generate_commit_message：git 是同步阻塞的，先跑完再 await
     let root = state.root()?;
@@ -317,6 +338,245 @@ fn clean_message(raw: &str) -> String {
     text.trim().to_string()
 }
 
+/// 连接测试的探针超时。比正式生成短：用户点一下就在等结果，不该干等一分钟。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 把请求阶段的失败翻译成人话。厂商的报错在有响应时走 `describe_status`，
+/// 这里只管根本没拿到响应那几种。
+fn describe_request_error(reason: reqwest::Error) -> String {
+    if reason.is_timeout() {
+        return "连接超时：接口没在预期时间内响应，检查地址是否正确、是否需要代理".to_string();
+    }
+    if reason.is_connect() {
+        return format!("网络错误：连不上这个地址（{reason}）");
+    }
+    format!("请求失败：{reason}")
+}
+
+/// 把非 2xx 响应翻译成「用户能照着修」的提示，顺带带上厂商原文。
+fn describe_status(status: reqwest::StatusCode, text: &str) -> String {
+    let code = status.as_u16();
+    let detail = truncate(text, MAX_ERROR_CHARS);
+    match code {
+        401 | 403 => format!("鉴权失败（{code}）：API 密钥可能不对或已过期。{detail}"),
+        404 => format!("接口返回 404：地址可能写错了，OpenAI 兼容基地址通常以 /v1 结尾。{detail}"),
+        429 => format!("被限流（{code}）：稍后再试，或检查配额。{detail}"),
+        500..=599 => format!("服务端错误（{code}）：{detail}"),
+        _ => format!("接口返回 {code}：{detail}"),
+    }
+}
+
+/// `GET /models` 里的一条模型。只取前端用得上的两个字段，
+/// 各家的 `owned_by` / `created` 之类一律不管。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteModel {
+    /// 接口认的模型 ID，直接当 ProviderModel.id 用
+    pub id: String,
+    /// 接口给的显示名。多数 OpenAI 兼容实现只回 id，那就留空、前端回落成 id
+    pub name: String,
+}
+
+/// 解析 `GET /models` 的响应。抽成纯函数是为了能单测——这条路径不值得为它起网络。
+///
+/// 结构不对（不是 JSON、没有 `data` 数组）算错误；`data` 是空数组不算，
+/// 那是「接口能用但这个账号看不到模型」，报错反而误导。
+/// 解析出来的按 id 排序：接口给的顺序各家不同，排一下界面才稳定。
+fn parse_models(text: &str) -> Result<Vec<RemoteModel>, String> {
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| format!("无法解析模型列表: {}", truncate(text, MAX_ERROR_CHARS)))?;
+    let list = value
+        .get("data")
+        .and_then(|data| data.as_array())
+        .ok_or_else(|| {
+            format!(
+                "响应里没有模型列表（期望 data 数组）: {}",
+                truncate(text, MAX_ERROR_CHARS)
+            )
+        })?;
+
+    let mut models: Vec<RemoteModel> = Vec::new();
+    for item in list {
+        let Some(id) = item.get("id").and_then(|id| id.as_str()) else {
+            continue;
+        };
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        // 有的实现会给重名条目，去重免得在界面上出现两行一样的
+        if models.iter().any(|model| model.id == id) {
+            continue;
+        }
+        let name = item
+            .get("name")
+            .and_then(|name| name.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        models.push(RemoteModel { id: id.to_string(), name });
+    }
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(models)
+}
+
+/// 探针和拉列表共用的密钥解析：优先用界面上刚敲、还没保存的那份，
+/// 否则按 provider id 去系统钥匙串取。本地模型两边都空是正常情况，返回空串。
+///
+/// 读钥匙串是同步阻塞调用，所以调用方要保证它在第一个 `await` 之前跑完。
+fn resolve_probe_key(provider_id: &str, api_key: Option<String>) -> Result<String, String> {
+    match api_key.map(|key| key.trim().to_string()) {
+        Some(key) if !key.is_empty() => Ok(key),
+        _ if provider_id.trim().is_empty() => Ok(String::new()),
+        _ => Ok(crate::secrets::get(provider_id.trim())?.unwrap_or_default()),
+    }
+}
+
+/// 退化的探针：一次只要 1 个 token，同样能验证鉴权和模型名，几乎不花钱。
+/// 给那些不实现 `GET /models` 的兼容服务用。
+async fn probe_with_chat(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_tokens": 1,
+        "stream": false,
+    });
+
+    let mut request = client
+        .post(format!("{base_url}/chat/completions"))
+        .json(&body);
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let response = request.send().await.map_err(describe_request_error)?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        return Ok("连接成功（该接口不支持列出模型，已用一次极小的对话请求验证）".to_string());
+    }
+    if status.as_u16() == 404 {
+        return Err(format!(
+            "模型「{model}」不存在，或接口地址有误（404）：{}",
+            truncate(&text, MAX_ERROR_CHARS)
+        ));
+    }
+    Err(describe_status(status, &text))
+}
+
+/// 测试一个提供商的连通性：鉴权、网络、地址是否写对。
+///
+/// 先打 `GET /models`——便宜、且能同时验证鉴权与网络；有些 OpenAI 兼容实现
+/// 不提供这条路由（回 404/405），那就退化成一次极小的对话请求。
+///
+/// 密钥优先用 `api_key`（用户在输入框里刚敲、还没保存的那份），为空则按
+/// `provider_id` 去系统钥匙串取。本地模型两边都空是正常情况，直接不带鉴权头。
+///
+/// 这里**不套** `dev::AiOverrides`：测的是用户在界面上填的那份配置。
+#[tauri::command]
+pub async fn ai_test_provider(
+    base_url: String,
+    provider_id: String,
+    api_key: Option<String>,
+    model: String,
+) -> Result<String, String> {
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请先填写接口地址".to_string());
+    }
+    let model = model.trim().to_string();
+    // 同步阻塞的系统调用，放在第一个 await 之前
+    let api_key = resolve_probe_key(&provider_id, api_key)?;
+
+    let client = reqwest::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .build()
+        .map_err(|reason| format!("无法创建 HTTP 客户端: {reason}"))?;
+
+    let mut request = client.get(format!("{base_url}/models"));
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let response = request.send().await.map_err(describe_request_error)?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        return Ok(match parse_models(&text) {
+            Ok(models) => format!("连接成功，接口报告 {} 个可用模型", models.len()),
+            Err(_) => "连接成功，但响应里没有模型列表".to_string(),
+        });
+    }
+
+    if matches!(status.as_u16(), 404 | 405) {
+        if model.is_empty() {
+            return Err(format!(
+                "接口不支持 GET /models（{}）。请先填一个模型名，再测试连接",
+                status.as_u16()
+            ));
+        }
+        return probe_with_chat(&client, &base_url, &api_key, &model).await;
+    }
+
+    Err(describe_status(status, &text))
+}
+
+/// 从提供商拉一份可用模型列表，给设置面板的「从接口拉取」用。
+///
+/// 走的是和连接测试同一条 `GET /models`，密钥来源也一样（优先界面上刚敲的那份）。
+/// 这条路由不是所有 OpenAI 兼容实现都有，没有的话直接报错——这里**不**退化成
+/// 对话请求：拉列表本来就是可选操作，猜不出来模型名。
+#[tauri::command]
+pub async fn ai_list_provider_models(
+    base_url: String,
+    provider_id: String,
+    api_key: Option<String>,
+) -> Result<Vec<RemoteModel>, String> {
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请先填写接口地址".to_string());
+    }
+    // 同步阻塞的系统调用，放在第一个 await 之前
+    let api_key = resolve_probe_key(&provider_id, api_key)?;
+
+    let client = reqwest::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .build()
+        .map_err(|reason| format!("无法创建 HTTP 客户端: {reason}"))?;
+
+    let mut request = client.get(format!("{base_url}/models"));
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let response = request.send().await.map_err(describe_request_error)?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        return Err(match status.as_u16() {
+            404 | 405 => format!(
+                "这个接口没有 GET /models 路由（{}），模型只能手动填",
+                status.as_u16()
+            ),
+            _ => describe_status(status, &text),
+        });
+    }
+
+    let models = parse_models(&text)?;
+    if models.is_empty() {
+        return Err("接口能连上，但没返回任何模型；模型只能手动填".to_string());
+    }
+    Ok(models)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -329,6 +589,84 @@ mod tests {
             branch: Some("main".to_string()),
             recent_subjects: vec!["feat: 上一件事".to_string()],
         }
+    }
+
+    #[test]
+    fn parse_models_reads_ids_and_names() {
+        let models = parse_models(
+            r#"{"object":"list","data":[
+                {"id":"deepseek-reasoner","object":"model","owned_by":"deepseek"},
+                {"id":"deepseek-chat","name":"DeepSeek Chat"}
+            ]}"#,
+        )
+        .unwrap();
+        // 按 id 排序：接口给的顺序各家不同，排一下界面才稳定
+        assert_eq!(
+            models,
+            vec![
+                RemoteModel { id: "deepseek-chat".to_string(), name: "DeepSeek Chat".to_string() },
+                RemoteModel { id: "deepseek-reasoner".to_string(), name: String::new() },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_models_skips_junk_entries() {
+        let models = parse_models(
+            r#"{"data":[{"id":"ok"},{"id":"  "},{},{"id":123},{"id":"ok"},{"name":"no id"}]}"#,
+        )
+        .unwrap();
+        // 没 id / 空 id / 重名的条目都要丢掉，不然界面上会出现空白行和重复行
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "ok");
+    }
+
+    #[test]
+    fn parse_models_distinguishes_empty_from_broken() {
+        // 空数组是「接口能用但账号看不到模型」，不算错误
+        assert_eq!(parse_models(r#"{"data":[]}"#).unwrap(), Vec::new());
+        // 结构不对才算错误
+        assert!(parse_models("{}").is_err());
+        assert!(parse_models("<html>502</html>").is_err());
+    }
+
+    #[test]
+    fn resolve_probe_key_prefers_the_unsaved_draft() {
+        // 传了草稿就用草稿，不去碰钥匙串
+        assert_eq!(
+            resolve_probe_key("deepseek", Some("  sk-draft  ".to_string())).unwrap(),
+            "sk-draft"
+        );
+        // 没有 provider id 时无从查起，返回空串（本地模型不带鉴权头）
+        assert_eq!(resolve_probe_key("", None).unwrap(), "");
+        assert_eq!(resolve_probe_key("  ", Some("   ".to_string())).unwrap(), "");
+    }
+
+    #[test]
+    fn describe_status_keeps_vendor_detail() {
+        let text = r#"{"error":{"message":"invalid api key"}}"#;
+        let unauthorized = describe_status(reqwest::StatusCode::UNAUTHORIZED, text);
+        assert!(unauthorized.contains("鉴权失败"));
+        assert!(unauthorized.contains("invalid api key"));
+
+        let limited = describe_status(reqwest::StatusCode::TOO_MANY_REQUESTS, text);
+        assert!(limited.contains("限流"));
+
+        let not_found = describe_status(reqwest::StatusCode::NOT_FOUND, text);
+        assert!(not_found.contains("/v1"));
+
+        // 没归类的状态码也要带上码和原文，别给一句光秃秃的失败
+        let weird = describe_status(reqwest::StatusCode::IM_A_TEAPOT, text);
+        assert!(weird.contains("418"));
+        assert!(weird.contains("invalid api key"));
+    }
+
+    #[test]
+    fn describe_status_truncates_long_bodies() {
+        // 厂商有时回整页 HTML，别把它全塞进设置面板
+        let long = "x".repeat(MAX_ERROR_CHARS + 500);
+        let message = describe_status(reqwest::StatusCode::BAD_REQUEST, &long);
+        assert!(message.chars().count() < MAX_ERROR_CHARS + 100);
     }
 
     #[test]

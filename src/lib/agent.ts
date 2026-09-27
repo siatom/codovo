@@ -17,14 +17,26 @@ const EVENT_NAME = "agent-event";
 /** opencode 子进程自己退出时后端补发的事件 */
 const EXIT_EVENT = "agent-exit";
 
-/** 拉起 opencode 需要的全部配置；三个接口字段复用「设置 → AI」里那份 */
+/** 一个提供商喂给 opencode 的形状：只给模型 id 和一个「有没有密钥」的标记 */
+export interface AgentProviderConfig {
+  /** opencode 的 provider key，也是 `provider/model` 引用的前缀 */
+  id: string;
+  name: string;
+  baseUrl: string;
+  /** 有没有配密钥。前端不传密钥正文，后端按 id 去系统钥匙串取 */
+  hasKey: boolean;
+  models: string[];
+}
+
+/** 拉起 opencode 需要的全部配置；提供商和默认模型复用「设置 → 智能体」里那份 */
 export interface AgentLaunchConfig {
   command: string;
   /** 0 表示让后端挑一个空闲端口 */
   port: number;
-  baseUrl: string;
-  model: string;
-  apiKey: string;
+  /** 只传启用的提供商；空的话后端直接拒绝启动 */
+  providers: AgentProviderConfig[];
+  /** 全局默认模型，形如 `provider/model`；空则后端取第一个可用项 */
+  defaultModel: string;
   /** 生效的规则 / 记忆正文（全局 + 项目已合并），见 lib/agent-profiles.ts */
   rules: string;
   memory: string;
@@ -67,8 +79,8 @@ export function listAgentSessions(): Promise<unknown> {
 
 /**
  * 发一条消息。后端走 prompt_async，立刻返回，正文靠事件流推回来。
- * `model` 必须显式给：不给的话 opencode 会用用户全局配置里的默认模型，
- * 那多半不是 CodeDock 里配的那个。
+ * `model` 是 `provider/model` 引用，必须显式给：不给的话 opencode 会用用户全局
+ * 配置里的默认模型，那多半不是 CodeDock 里配的那个。
  */
 export function sendAgentMessage(
   sessionId: string,

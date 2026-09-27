@@ -10,6 +10,13 @@ import {
 import { useSettings } from "../lib/settings";
 import { useEffectiveAiConfig } from "../lib/ai";
 import {
+  boundModelRef,
+  enabledModels,
+  enabledProviders,
+  modelRefLabel,
+  resolveDefaultModel,
+} from "../lib/providers";
+import {
   EMPTY_CONVERSATION,
   abortAgentSession,
   conversationFromHistory,
@@ -233,7 +240,7 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
   const composerRef = useRef<HTMLDivElement | null>(null);
 
   const { agentCommand, agentPort } = settings;
-  // AI 三项走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
+  // 默认模型那家提供商走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   // 生效层（全局 + 当前项目已合并）与 primary agent 候选。选择器存的是名字，
@@ -243,6 +250,30 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
   const primary = agentOptions.some((option) => option.value === settings.agentPrimary)
     ? settings.agentPrimary
     : "build";
+
+  /** 喂给 opencode 的提供商。只给启用的、地址填了的；密钥只说有没有，正文留后端取 */
+  const providers = useMemo(
+    () =>
+      enabledProviders(settings).map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl.trim(),
+        hasKey: provider.apiKeySet,
+        models: enabledModels(provider).map((model) => model.id),
+      })),
+    [settings],
+  );
+
+  // 写进 opencode 配置的全局默认模型。提供商为空但 aiReady（开发调试只写 .env）
+  // 时，后端会合成一个 id 为 codedock 的提供商，引用得跟它对上，
+  // 见 src-tauri/src/agent.rs 的 apply()
+  const fallbackRef = aiConfig.model ? `codedock/${aiConfig.model}` : "";
+  const defaultModelRef = resolveDefaultModel(settings)?.ref ?? fallbackRef;
+
+  // 这一轮对话用哪个模型：primary agent 自己绑了就用绑的，否则跟随全局默认。
+  // 必须显式指定——不给的话 opencode 会用它自己的默认模型，多半不是这里配的那个。
+  const boundAgent = layer.agents.find((agent) => agent.name === primary);
+  const sendModel = boundModelRef(settings, boundAgent?.model ?? "") ?? fallbackRef;
 
   /** 拉一次会话列表。失败不抛，返回空数组让调用方兜底 */
   const refreshSessions = useCallback(async (): Promise<AgentSessionSummary[]> => {
@@ -283,7 +314,9 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
       return;
     }
     if (!aiReady) {
-      setFatal("请先在「设置 → AI」里填写接口地址、模型和密钥，智能体复用这份配置");
+      setFatal(
+        "请先在「设置 → 智能体 → 模型提供商」里加一个提供商，并把它下面的模型设为默认",
+      );
       setPhase("error");
       return;
     }
@@ -295,9 +328,8 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
       const info = await startAgent({
         command: agentCommand,
         port: agentPort,
-        baseUrl: aiConfig.baseUrl,
-        model: aiConfig.model,
-        apiKey: aiConfig.apiKey,
+        providers,
+        defaultModel: defaultModelRef,
         rules: layer.rules,
         memory: layer.memory,
         skills: layer.skills,
@@ -329,10 +361,11 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
     setPhase("ready");
   }, [
     cwd,
-    aiConfig,
     aiReady,
     agentCommand,
     agentPort,
+    providers,
+    defaultModelRef,
     layer,
     primary,
     refreshSessions,
@@ -484,14 +517,14 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
       }
     }
 
-    void sendAgentMessage(sessionId, text, aiConfig.model, primary).catch((reason) => {
+    void sendAgentMessage(sessionId, text, sendModel, primary).catch((reason) => {
       setConversation((current) => ({
         ...current,
         streaming: false,
         error: String(reason),
       }));
     });
-  }, [draft, conversation.streaming, aiConfig, primary, cwd, setCurrentId, refreshSessions, clearComposer]);
+  }, [draft, conversation.streaming, sendModel, primary, cwd, setCurrentId, refreshSessions, clearComposer]);
 
   const stop = useCallback(() => {
     const sessionId = currentIdRef.current;
@@ -662,7 +695,11 @@ export function AgentPane({ cwd, active, ref }: AgentPaneProps) {
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
           opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
-          {aiConfig.model || "未配置模型"}
+          {/* 只在真配了提供商时才把引用译成名字：开发调试下提供商是后端合成的，
+              译出来会是 `codedock/xxx`，不如直接显示 .env 里的模型名 */}
+          {(settings.aiProviders.length > 0 && sendModel
+            ? modelRefLabel(settings, sendModel)
+            : aiConfig.model) || "未配置模型"}
         </span>
         {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态与 agent 选择 */}
         <PrimaryAgentPicker
