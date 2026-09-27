@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "./settings";
+import { resolveDefaultModel } from "./providers";
 import type { DiffSource } from "./tabs";
 
 /** OpenAI 兼容接口的配置。开发调试版里可能被 `src-tauri/.env` 盖掉，见 useEffectiveAiConfig */
@@ -9,6 +10,21 @@ export interface AiConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+}
+
+/**
+ * 测一个提供商的连通性：后端打一次很轻的探针请求，返回一句给用户看的结果
+ * （成功时说明发现了多少模型，失败时说明是鉴权、限流、超时还是网络问题）。
+ *
+ * 测的是传进来的这份配置，不套 `.env` 覆盖——用户点「测试连接」想知道的是
+ * 输入框里填的对不对。
+ */
+export function testProviderConnection(config: AiConfig): Promise<string> {
+  return invoke<string>("ai_test_provider", {
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+  });
 }
 
 /**
@@ -76,7 +92,10 @@ export function useDevAiOverrides(): DevAiOverrides {
 }
 
 /**
- * 设置里的 AI 三项与 `.env` 覆盖值合并后的生效配置。
+ * 设置里「默认模型」所在提供商的配置，与 `.env` 覆盖值合并后的生效配置。
+ *
+ * 默认指向被删 / 停用 / 清空时由 `resolveDefaultModel` 回落到第一个可用项，
+ * 回落不到 `ready` 就是 false。
  *
  * 前端在 invoke 之前就要判空，所以必须先知道覆盖值——否则「面板留空、只写 .env」
  * 会被守卫直接拦掉，根本传不到后端。密钥那份 `.env` 由后端自己盖，前端只按
@@ -85,16 +104,19 @@ export function useDevAiOverrides(): DevAiOverrides {
 export function useEffectiveAiConfig(): { config: AiConfig; ready: boolean } {
   const { settings } = useSettings();
   const overrides = useDevAiOverrides();
-  const { aiBaseUrl, aiModel, aiApiKey } = settings;
 
   return useMemo(() => {
+    const resolved = resolveDefaultModel(settings);
+    const provider = resolved
+      ? settings.aiProviders.find((item) => item.id === resolved.providerId)
+      : undefined;
     const config: AiConfig = {
-      baseUrl: overrides.baseUrl || aiBaseUrl.trim(),
-      model: overrides.model || aiModel.trim(),
-      apiKey: aiApiKey.trim(),
+      baseUrl: overrides.baseUrl || (provider?.baseUrl.trim() ?? ""),
+      model: overrides.model || (resolved?.modelId ?? ""),
+      apiKey: provider?.apiKey.trim() ?? "",
     };
     const ready =
       !!config.baseUrl && !!config.model && (!!config.apiKey || overrides.apiKeySet);
     return { config, ready };
-  }, [overrides, aiBaseUrl, aiModel, aiApiKey]);
+  }, [overrides, settings]);
 }

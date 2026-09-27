@@ -38,13 +38,12 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 const EXIT_POLL: Duration = Duration::from_secs(1);
 /// 报错时回传的响应体上限，别把整页 HTML 塞给用户。
 const MAX_ERROR_CHARS: usize = 500;
-/// 注入给 opencode 的密钥环境变量名。密钥不写进配置文件，只走环境变量。
-const API_KEY_ENV: &str = "CODEDOCK_AI_API_KEY";
+/// 注入给 opencode 的密钥环境变量前缀。每个提供商一个变量
+/// （`CODEDOCK_AI_KEY_<PROVIDER_ID>`），密钥不写进配置文件，只走环境变量。
+const API_KEY_ENV_PREFIX: &str = "CODEDOCK_AI_KEY_";
 /// opencode v2 要求服务口令，我们自己定一个并通过这个环境变量注入。
 /// 不定的话它会随机生成、打到 stdout，我们还得去解析那行输出。
 const PASSWORD_ENV: &str = "OPENCODE_PASSWORD";
-/// CodeDock 注册给 opencode 的 provider id，配置和发消息时的 model 都要对上。
-const PROVIDER_ID: &str = "codedock";
 
 /// Basic 认证的用户名。v2 把它写死了，只有密码是可配的。
 const AUTH_USER: &str = "opencode";
@@ -154,7 +153,47 @@ pub struct AgentSpec {
     prompt: String,
 }
 
-/// 前端传进来的配置。三个接口字段复用「设置 → AI」里已有的那份；
+/// 一个 LLM 提供商，对应 opencode.json 里的一条 provider。
+///
+/// 本次只支持 OpenAI 兼容协议，所以没有协议字段——换协议意味着换 AI SDK 包。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSpec {
+    /// opencode 的 provider key，同时也是模型引用的前缀和密钥环境变量名来源。
+    /// 前端保证它非空且不含 `/`（含 `/` 会把 `provider/model` 切错）。
+    id: String,
+    name: String,
+    /// OpenAI 兼容基地址；空的话这条提供商直接作废
+    base_url: String,
+    /// 密钥；本地模型（Ollama 之类）不需要，留空则不下发
+    #[serde(default)]
+    api_key: String,
+    #[serde(default)]
+    models: Vec<String>,
+}
+
+impl ProviderSpec {
+    /// 这条提供商能不能拿去建连：得有 id、地址和至少一个模型
+    fn usable(&self) -> bool {
+        !self.id.trim().is_empty()
+            && !self.id.contains('/')
+            && !self.base_url.trim().is_empty()
+            && self.models.iter().any(|model| !model.trim().is_empty())
+    }
+
+    /// 注入密钥用的环境变量名。id 只含 ASCII 字母数字连字符（前端保证），
+    /// 但仍统一做一遍替换：环境变量名不能有 `-`。
+    fn api_key_env(&self) -> String {
+        let sanitized: String = self
+            .id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .collect();
+        format!("{API_KEY_ENV_PREFIX}{sanitized}")
+    }
+}
+
+/// 前端传进来的配置。提供商列表和默认模型来自「设置 → 智能体 → 模型提供商」；
 /// 规则 / 记忆 / 技能 / Agents 是前端把「全局 + 当前项目」两层合并后的生效值。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,9 +202,12 @@ pub struct AgentConfig {
     command: String,
     /// 固定端口；0 表示自动挑一个空闲的
     port: u16,
-    base_url: String,
-    model: String,
-    api_key: String,
+    /// 已启用的提供商；空或全不可用则拒绝启动
+    #[serde(default)]
+    providers: Vec<ProviderSpec>,
+    /// 全局默认模型，形如 `provider/model`；空则取第一个提供商的第一个模型
+    #[serde(default)]
+    default_model: String,
     /// 规则正文，注入每次对话
     #[serde(default)]
     rules: String,
@@ -182,17 +224,94 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
+    /// 真正能拿去建连的提供商：id / 地址 / 模型齐全
+    fn usable_providers(&self) -> Vec<&ProviderSpec> {
+        self.providers.iter().filter(|provider| provider.usable()).collect()
+    }
+
+    /// 默认模型引用的 `provider/model` 前缀，认不出来就退到第一个可用提供商。
+    /// 都不认不出来返回 None（调用方据此报「没配提供商」）。
+    fn default_provider_id(&self) -> Option<String> {
+        let prefix = self.default_model.split('/').next().filter(|part| !part.is_empty());
+        if let Some(prefix) = prefix {
+            if self.providers.iter().any(|provider| provider.usable() && provider.id == prefix) {
+                return Some(prefix.to_string());
+            }
+        }
+        self.usable_providers().first().map(|provider| provider.id.clone())
+    }
+
+    /// 生效的默认模型引用。设置里没填或指向的提供商已经没了时，取第一个可用
+    /// 提供商的第一个模型——和前端 `resolveDefaultModel` 一个意思，两边都算命。
+    fn resolved_default_model(&self) -> Option<String> {
+        let id = self.default_provider_id()?;
+        let provider = self.providers.iter().find(|item| item.id == id)?;
+        let wanted = self.default_model.split_once('/').map(|(_, model)| model);
+        let model = wanted
+            .filter(|model| provider.models.iter().any(|item| item.trim() == *model))
+            .or_else(|| {
+                provider
+                    .models
+                    .iter()
+                    .map(|item| item.trim())
+                    .find(|item| !item.is_empty())
+            })?;
+        Some(format!("{}/{model}", provider.id))
+    }
+
+    /// 要注入子进程的密钥环境变量。没有密钥的提供商（本地模型）跳过。
+    fn secrets(&self) -> Vec<(String, String)> {
+        self.usable_providers()
+            .iter()
+            .filter(|provider| !provider.api_key.trim().is_empty())
+            .map(|provider| (provider.api_key_env(), provider.api_key.trim().to_string()))
+            .collect()
+    }
+
     /// 同 `ai::AiConfig::apply`：开发调试时让 `src-tauri/.env` 优先。逐字段来，
     /// 只写了一个键的 `.env` 不会把另外两个字段清空。
+    ///
+    /// 覆盖打在**默认提供商**上：`base_url` / `api_key` 改它的地址和密钥，
+    /// `model` 只换模型段、保留提供商前缀。
     fn apply(&mut self, overrides: &dev::AiOverrides) {
-        if let Some(base_url) = &overrides.base_url {
-            self.base_url = base_url.clone();
+        if overrides.base_url.is_none() && overrides.model.is_none() && overrides.api_key.is_none() {
+            return;
+        }
+
+        // 界面上一个提供商都没配、全靠 .env：合成一个，保留「面板留空也能跑」的调试路径
+        if self.providers.is_empty() {
+            let id = "codedock".to_string();
+            self.providers.push(ProviderSpec {
+                name: "CodeDock (.env)".to_string(),
+                base_url: overrides.base_url.clone().unwrap_or_default(),
+                api_key: overrides.api_key.clone().unwrap_or_default(),
+                models: overrides.model.clone().into_iter().collect(),
+                id: id.clone(),
+            });
+            self.default_model = overrides
+                .model
+                .clone()
+                .map(|model| format!("{id}/{model}"))
+                .unwrap_or_default();
+            return;
+        }
+
+        let target = self.default_provider_id();
+        if let (Some(base_url), Some(id)) = (&overrides.base_url, &target) {
+            if let Some(provider) = self.providers.iter_mut().find(|item| item.id == *id) {
+                provider.base_url = base_url.clone();
+            }
+        }
+        if let (Some(api_key), Some(id)) = (&overrides.api_key, &target) {
+            if let Some(provider) = self.providers.iter_mut().find(|item| item.id == *id) {
+                provider.api_key = api_key.clone();
+            }
         }
         if let Some(model) = &overrides.model {
-            self.model = model.clone();
-        }
-        if let Some(api_key) = &overrides.api_key {
-            self.api_key = api_key.clone();
+            self.default_model = match &target {
+                Some(id) => format!("{id}/{model}"),
+                None => model.clone(),
+            };
         }
     }
 }
@@ -254,11 +373,26 @@ fn endpoint(protocol: Protocol, port: u16, path: &str) -> String {
     format!("http://127.0.0.1:{port}{}{path}", protocol.prefix())
 }
 
+/// 把 `provider/model` 引用按**首个** `/` 切成两半。
+///
+/// provider id 由前端生成、保证不含 `/`，所以首个 `/` 之后的一定是模型名
+/// （有些厂商的模型 id 自己带斜杠，比如 `meta-llama/Llama-3-8B`）。
+/// 切不出两段时返回 None——调用方据此不下发 model，交给 opencode 用配置里的默认模型。
+fn split_model_ref(reference: &str) -> Option<(&str, &str)> {
+    let (provider, model) = reference.trim().split_once('/')?;
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    Some((provider, model))
+}
+
 /// 发消息的请求体。两代形状不同：
 /// v1 把文本塞进 `parts: [{type:"text"}]`，v2 直接放顶层 `text`。
 ///
-/// `model` 必须显式给：不给的话 opencode 会用用户全局配置里的默认模型
-/// （本机实测会落到没跑起来的 ollama，然后一路重试到超时）。
+/// `model` 传的是 `provider/model` 引用，必须显式给：不给的话 opencode 会用
+/// 用户全局配置里的默认模型（本机实测会落到没跑起来的 ollama，然后一路重试到超时）。
 ///
 /// `agent` 只在 v1 侧放进 body。v2 的 prompt 体（`additionalProperties: false`，
 /// 实测 2.0.16）不收 `agent` / `model`——即使塞进去也会被静默忽略，切 agent 得走
@@ -269,15 +403,15 @@ fn prompt_body(
     model: Option<&str>,
     agent: Option<&str>,
 ) -> serde_json::Value {
-    let model = model.filter(|m| !m.trim().is_empty());
+    let model = model.and_then(split_model_ref);
     let agent = agent.filter(|a| !a.trim().is_empty());
     match protocol {
         Protocol::V1 => {
             let mut body = serde_json::json!({
                 "parts": [{ "type": "text", "text": text }],
             });
-            if let Some(model) = model {
-                body["model"] = serde_json::json!({ "providerID": PROVIDER_ID, "modelID": model });
+            if let Some((provider, model)) = model {
+                body["model"] = serde_json::json!({ "providerID": provider, "modelID": model });
             }
             if let Some(agent) = agent {
                 body["agent"] = serde_json::json!(agent);
@@ -286,8 +420,8 @@ fn prompt_body(
         }
         Protocol::V2 => {
             let mut body = serde_json::json!({ "text": text });
-            if let Some(model) = model {
-                body["model"] = serde_json::json!({ "providerID": PROVIDER_ID, "modelID": model });
+            if let Some((provider, model)) = model {
+                body["model"] = serde_json::json!({ "providerID": provider, "modelID": model });
             }
             body
         }
@@ -422,7 +556,7 @@ pub(crate) fn resolve_launch(configured: &str, path: Option<&OsStr>) -> Result<L
         path
     } else {
         find_on_path(trimmed, path).ok_or_else(|| {
-            format!("在 PATH 里找不到 {trimmed}，请先安装，或在「设置 → AI」里填写完整路径")
+            format!("在 PATH 里找不到 {trimmed}，请先安装，或在「设置 → 智能体」里填写完整路径")
         })?
     };
 
@@ -529,6 +663,17 @@ fn render_skill(skill: &SkillSpec) -> String {
     )
 }
 
+/// 提供商没配齐时的提示。开发调试版可以只写 `src-tauri/.env`，提示里带上这条，
+/// 免得以为没救。
+fn provider_hint() -> String {
+    let base = "请先在「设置 → 智能体 → 模型提供商」里添加一个提供商（填接口地址和至少一个模型）";
+    if cfg!(debug_assertions) {
+        format!("{base}，或写进 src-tauri/.env")
+    } else {
+        base.to_string()
+    }
+}
+
 /// 生成 CodeDock 专用的 opencode 配置，写在自己的配置目录里。
 ///
 /// 用 `OPENCODE_CONFIG_DIR` 把它指过去，完全不碰用户的 `~/.config/opencode/`；
@@ -542,12 +687,7 @@ fn render_skill(skill: &SkillSpec) -> String {
 /// - 选中的 primary agent → `default_agent`。
 ///
 /// 配置目录整体是「每次启动重新生成」的产物，所以 `kill()` 里删掉它没关系。
-fn write_config(
-    dir: &Path,
-    base_url: &str,
-    model: &str,
-    cfg: &AgentConfig,
-) -> Result<(), String> {
+fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
 
     let mut instructions: Vec<String> = Vec::new();
@@ -571,6 +711,46 @@ fn write_config(
         wrote_skill = true;
     }
 
+    let default_model = cfg
+        .resolved_default_model()
+        .ok_or_else(|| format!("没有可用的模型提供商。{}", provider_hint()))?;
+    let default_provider = cfg.default_provider_id();
+
+    // 模型名和 provider id 都是用户填的，得当动态 key 用，所以走 Map 而不是 json! 的字面量语法
+    let mut providers = serde_json::Map::new();
+    for provider in cfg.usable_providers() {
+        let mut models = serde_json::Map::new();
+        for model in provider
+            .models
+            .iter()
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty())
+        {
+            models.insert(model.to_string(), serde_json::json!({ "name": model }));
+        }
+
+        let mut options = serde_json::Map::new();
+        options.insert("baseURL".to_string(), serde_json::json!(provider.base_url.trim()));
+        // 密钥不落盘：只留环境变量占位符。本地模型（Ollama 之类）没有密钥，
+        // 这时干脆不下发这个字段，塞个空占位符反而会让 opencode 拿空串去鉴权
+        if !provider.api_key.trim().is_empty() {
+            options.insert(
+                "apiKey".to_string(),
+                serde_json::json!(format!("{{env:{}}}", provider.api_key_env())),
+            );
+        }
+
+        providers.insert(
+            provider.id.clone(),
+            serde_json::json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "name": provider.name.trim(),
+                "options": serde_json::Value::Object(options),
+                "models": serde_json::Value::Object(models),
+            }),
+        );
+    }
+
     let mut agents = serde_json::Map::new();
     for agent in &cfg.agents {
         let name = validate_name(&agent.name)?;
@@ -584,29 +764,20 @@ fn write_config(
             "prompt": agent.prompt,
         });
         if !agent.model.trim().is_empty() {
-            entry["model"] = serde_json::json!(agent.model.trim());
+            // opencode 的 agent.model 要 `provider/model` 全名。历史数据里可能只存了
+            // 一个裸模型名，补上默认提供商前缀——不补的话 opencode 解不出来，静默回落。
+            let model = agent.model.trim();
+            entry["model"] = serde_json::json!(match (model.contains('/'), &default_provider) {
+                (false, Some(provider)) => format!("{provider}/{model}"),
+                _ => model.to_string(),
+            });
         }
         agents.insert(name.to_string(), entry);
     }
 
-    // 模型名是用户填的，得当动态 key 用，所以走 Map 而不是 json! 的字面量语法
-    let mut models = serde_json::Map::new();
-    models.insert(model.to_string(), serde_json::json!({ "name": model }));
-
     let mut config = serde_json::json!({
-        "provider": {
-            PROVIDER_ID: {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "CodeDock",
-                "options": {
-                    "baseURL": base_url,
-                    // 密钥不落盘：这里只留占位符，spawn 时用环境变量注入
-                    "apiKey": format!("{{env:{API_KEY_ENV}}}"),
-                },
-                "models": models,
-            }
-        },
-        "model": format!("{PROVIDER_ID}/{model}"),
+        "provider": serde_json::Value::Object(providers),
+        "model": default_model,
         // v1 没有审批 UI，不放行的话 doom_loop / external_directory 这类默认 ask 的
         // 规则会让会话卡在那儿等人点确认。这是有意的取舍，等审批 UI 做出来再收紧。
         "permission": "allow",
@@ -639,7 +810,7 @@ fn spawn_opencode(
     port: u16,
     cwd: &Path,
     config_dir: &Path,
-    api_key: &str,
+    secrets: &[(String, String)],
     password: &str,
 ) -> Result<(Child, ChildLog), String> {
     let port_text = port.to_string();
@@ -661,9 +832,12 @@ fn spawn_opencode(
     if let Some(path) = path {
         cmd.env("PATH", path);
     }
-    cmd.current_dir(cwd)
-        .env("OPENCODE_CONFIG_DIR", config_dir)
-        .env(API_KEY_ENV, api_key)
+    cmd.current_dir(cwd).env("OPENCODE_CONFIG_DIR", config_dir);
+    // 密钥只走环境变量：配置文件里只有 `{env:...}` 占位符
+    for (name, value) in secrets {
+        cmd.env(name, value);
+    }
+    cmd
         // 自己定口令，省得去解析它打到 stdout 的那行随机密码
         .env(PASSWORD_ENV, password)
         .stdin(Stdio::null())
@@ -681,7 +855,7 @@ fn spawn_opencode(
     }
 
     let mut child = cmd.spawn().map_err(|e| {
-        format!("启动 opencode 失败: {e}。请确认已安装，或在「设置 → AI」里填写完整路径")
+        format!("启动 opencode 失败: {e}。请确认已安装，或在「设置 → 智能体」里填写完整路径")
     })?;
 
     let log = Arc::new(Mutex::new(VecDeque::new()));
@@ -1074,16 +1248,15 @@ pub async fn agent_start(
     // 覆盖要赶在下面判空之前：面板留空、只写 .env 时也得能起
     let mut config = config;
     config.apply(&dev::read_overrides());
-    let base_url = config.base_url.trim().trim_end_matches('/').to_string();
-    let api_key = config.api_key.trim().to_string();
-    let model = config.model.trim().to_string();
-    if base_url.is_empty() || api_key.is_empty() || model.is_empty() {
-        return Err(if cfg!(debug_assertions) {
-            "请先在「设置 → AI」里填写接口地址、模型和密钥，或写进 src-tauri/.env".to_string()
-        } else {
-            "请先在「设置 → AI」里填写接口地址、模型和密钥".to_string()
-        });
+    // 判空一律用可用的提供商：地址或模型缺一个，opencode 那边只会静默回落，界面上
+    // 却看不出问题，不如在这里拦下来把话说清楚
+    if config.usable_providers().is_empty() {
+        return Err(format!("没有可用的模型提供商。{}", provider_hint()));
     }
+    if config.resolved_default_model().is_none() {
+        return Err(format!("默认模型不可用。{}", provider_hint()));
+    }
+    let secrets = config.secrets();
 
     // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await
     let cwd = fs_state.root()?;
@@ -1120,17 +1293,11 @@ pub async fn agent_start(
             .app_config_dir()
             .map_err(|e| format!("拿不到配置目录: {e}"))?
             .join("opencode");
-        write_config(&config_dir, &base_url, &model, &config)?;
+        write_config(&config_dir, &config)?;
 
         let password = random_password();
-        let (child, log) = spawn_opencode(
-            &config.command,
-            port,
-            &cwd,
-            &config_dir,
-            &api_key,
-            &password,
-        )?;
+        let (child, log) =
+            spawn_opencode(&config.command, port, &cwd, &config_dir, &secrets, &password)?;
         let generation = state.generation.load(Ordering::SeqCst);
 
         *guard = Some(Running {
@@ -1449,18 +1616,34 @@ mod tests {
     }
 
     #[test]
+    fn split_model_ref_cuts_on_the_first_slash() {
+        assert_eq!(split_model_ref("codedock/some-model"), Some(("codedock", "some-model")));
+        // 模型 id 自己带斜杠时，后半段整段都是模型名
+        assert_eq!(
+            split_model_ref("ollama/meta-llama/Llama-3-8B"),
+            Some(("ollama", "meta-llama/Llama-3-8B"))
+        );
+        assert_eq!(split_model_ref("  codedock / m  "), Some(("codedock", "m")));
+        // 切不出两段的一律当没有：宁可不下发，也别把引用的两半搞错
+        assert_eq!(split_model_ref("some-model"), None);
+        assert_eq!(split_model_ref("/m"), None);
+        assert_eq!(split_model_ref("codedock/"), None);
+        assert_eq!(split_model_ref("   "), None);
+    }
+
+    #[test]
     fn prompt_body_matches_each_generation() {
         // v1 把文本放进 parts[]，v2 直接放顶层 text
-        let v1 = prompt_body(Protocol::V1, "你好", Some("m"), Some("plan"));
+        let v1 = prompt_body(Protocol::V1, "你好", Some("codedock/m"), Some("plan"));
         assert_eq!(v1["parts"][0]["type"], "text");
         assert_eq!(v1["parts"][0]["text"], "你好");
         assert!(v1.get("text").is_none());
+        assert_eq!(v1["model"]["providerID"], "codedock");
         assert_eq!(v1["model"]["modelID"], "m");
-        assert_eq!(v1["model"]["providerID"], PROVIDER_ID);
         // v1 靠 body 里的 agent 切 primary agent
         assert_eq!(v1["agent"], "plan");
 
-        let v2 = prompt_body(Protocol::V2, "你好", Some("m"), Some("plan"));
+        let v2 = prompt_body(Protocol::V2, "你好", Some("codedock/m"), Some("plan"));
         assert_eq!(v2["text"], "你好");
         assert!(v2.get("parts").is_none());
         assert_eq!(v2["model"]["modelID"], "m");
@@ -1475,16 +1658,29 @@ mod tests {
         assert!(prompt_body(Protocol::V2, "x", Some("   "), None)
             .get("model")
             .is_none());
+        // 只有裸模型名（切不出 provider）时也不下发，免得解错提供商
+        assert!(prompt_body(Protocol::V2, "x", Some("some-model"), None)
+            .get("model")
+            .is_none());
     }
 
-    /// 单测用的最小 AgentConfig：默认不带任何扩展内容。
+    fn provider(id: &str, models: &[&str]) -> ProviderSpec {
+        ProviderSpec {
+            id: id.to_string(),
+            name: id.to_string(),
+            base_url: format!("https://{id}.example.com/v1"),
+            api_key: "sk-test".to_string(),
+            models: models.iter().map(|model| model.to_string()).collect(),
+        }
+    }
+
+    /// 单测用的最小 AgentConfig：一个提供商一个模型，不带任何扩展内容。
     fn bare_config() -> AgentConfig {
         AgentConfig {
             command: "opencode".to_string(),
             port: 0,
-            base_url: "https://api.example.com/v1".to_string(),
-            model: "some-model".to_string(),
-            api_key: "sk-test".to_string(),
+            providers: vec![provider("codedock", &["some-model"])],
+            default_model: "codedock/some-model".to_string(),
             rules: String::new(),
             memory: String::new(),
             skills: Vec::new(),
@@ -1518,7 +1714,7 @@ mod tests {
         }];
         cfg.primary = "reviewer".to_string();
 
-        write_config(&dir, &cfg.base_url, &cfg.model, &cfg).unwrap();
+        write_config(&dir, &cfg).unwrap();
 
         // 规则 / 记忆落成文件，并在 instructions 里用绝对路径引用
         assert!(dir.join("rules.md").exists());
@@ -1560,7 +1756,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg.base_url, &cfg.model, &cfg).unwrap();
+        write_config(&dir, &cfg).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1685,7 +1881,7 @@ mod tests {
         let dir = std::env::temp_dir().join("codedock-agent-test-config");
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, "https://api.example.com/v1", "some-model", &cfg).unwrap();
+        write_config(&dir, &cfg).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1695,15 +1891,191 @@ mod tests {
         assert_eq!(value["model"], "codedock/some-model");
         assert_eq!(
             value["provider"]["codedock"]["options"]["baseURL"],
-            "https://api.example.com/v1"
+            "https://codedock.example.com/v1"
         );
-        // 密钥只能留占位符，绝不能出现在文件里
+        // 密钥只能留占位符，绝不能出现在文件里；变量名按 provider id 派生
         assert_eq!(
             value["provider"]["codedock"]["options"]["apiKey"],
-            "{env:CODEDOCK_AI_API_KEY}"
+            "{env:CODEDOCK_AI_KEY_CODEDOCK}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_writes_every_usable_provider() {
+        let dir = std::env::temp_dir().join(format!(
+            "codedock-agent-multi-provider-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut cfg = bare_config();
+        cfg.providers = vec![
+            provider("deepseek", &["deepseek-chat", "deepseek-reasoner"]),
+            // 本地模型没有密钥，不下发 apiKey 字段
+            ProviderSpec {
+                api_key: String::new(),
+                ..provider("ollama", &["qwen3:8b"])
+            },
+            // 地址为空 → 不可用，整条丢掉
+            ProviderSpec {
+                base_url: "  ".to_string(),
+                ..provider("broken", &["m"])
+            },
+            // 模型列表为空 → 同样不可用
+            ProviderSpec {
+                models: Vec::new(),
+                ..provider("nomodels", &[])
+            },
+        ];
+        cfg.default_model = "deepseek/deepseek-reasoner".to_string();
+        write_config(&dir, &cfg).unwrap();
+
+        let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(value["model"], "deepseek/deepseek-reasoner");
+        assert!(value["provider"]["deepseek"]["models"]["deepseek-reasoner"].is_object());
+        assert!(value["provider"]["ollama"]["models"]["qwen3:8b"].is_object());
+        assert!(value["provider"].get("broken").is_none());
+        assert!(value["provider"].get("nomodels").is_none());
+        // 没有密钥的提供商不该出现 apiKey——空占位符会让 opencode 拿空串去鉴权
+        assert!(value["provider"]["ollama"]["options"].get("apiKey").is_none());
+        // id 里有连字符时环境变量名要能兜住
+        let cfg = AgentConfig {
+            providers: vec![provider("my-vendor", &["m"])],
+            default_model: "my-vendor/m".to_string(),
+            ..cfg
+        };
+        write_config(&dir, &cfg).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            value["provider"]["my-vendor"]["options"]["apiKey"],
+            "{env:CODEDOCK_AI_KEY_MY_VENDOR}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_model_gets_the_default_provider_prefix() {
+        let dir = std::env::temp_dir().join(format!(
+            "codedock-agent-model-prefix-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut cfg = bare_config();
+        cfg.agents = vec![
+            // 历史值：裸模型名，要补上默认提供商前缀
+            AgentSpec {
+                name: "legacy".to_string(),
+                description: "d".to_string(),
+                mode: "subagent".to_string(),
+                model: "some-model".to_string(),
+                prompt: String::new(),
+            },
+            // 已经是全名，原样下发
+            AgentSpec {
+                name: "explicit".to_string(),
+                description: "d".to_string(),
+                mode: "subagent".to_string(),
+                model: "other/their-model".to_string(),
+                prompt: String::new(),
+            },
+        ];
+        write_config(&dir, &cfg).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        assert_eq!(value["agent"]["legacy"]["model"], "codedock/some-model");
+        assert_eq!(value["agent"]["explicit"]["model"], "other/their-model");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn default_model_falls_back_within_configured_providers() {
+        // 指向的提供商还在，模型名过时了 → 退到该提供商的第一个模型
+        let cfg = AgentConfig {
+            default_model: "deepseek/gone".to_string(),
+            ..bare_config()
+        };
+        assert_eq!(cfg.resolved_default_model().as_deref(), Some("codedock/some-model"));
+
+        // 指向的提供商整个没了 → 退到第一个可用提供商
+        let cfg = AgentConfig {
+            default_model: "gone/m".to_string(),
+            providers: vec![provider("codedock", &["m"]), provider("deepseek", &["d"])],
+            ..bare_config()
+        };
+        assert_eq!(cfg.resolved_default_model().as_deref(), Some("codedock/m"));
+
+        // 一个可用提供商都没有 → None，调用方据此报「没配提供商」
+        let cfg = AgentConfig {
+            providers: vec![ProviderSpec {
+                base_url: String::new(),
+                ..provider("broken", &["m"])
+            }],
+            ..bare_config()
+        };
+        assert!(cfg.resolved_default_model().is_none());
+    }
+
+    #[test]
+    fn secrets_skip_providers_without_keys() {
+        let cfg = AgentConfig {
+            providers: vec![
+                provider("deepseek", &["m"]),
+                ProviderSpec {
+                    api_key: "  ".to_string(),
+                    ..provider("ollama", &["m"])
+                },
+            ],
+            ..bare_config()
+        };
+        assert_eq!(
+            cfg.secrets(),
+            vec![(
+                "CODEDOCK_AI_KEY_DEEPSEEK".to_string(),
+                "sk-test".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn dev_overrides_synthesize_a_provider_only_when_none_configured() {
+        let overrides = dev::AiOverrides {
+            base_url: Some("https://dev.example.com/v1".to_string()),
+            model: Some("dev-model".to_string()),
+            api_key: Some("sk-dev".to_string()),
+        };
+
+        // 界面上一个都没配：合成一个，保住「面板留空、只写 .env」的调试路径
+        let mut cfg = AgentConfig {
+            providers: Vec::new(),
+            default_model: String::new(),
+            ..bare_config()
+        };
+        cfg.apply(&overrides);
+        assert_eq!(cfg.default_model, "codedock/dev-model");
+        assert_eq!(cfg.providers[0].base_url, "https://dev.example.com/v1");
+        assert_eq!(cfg.secrets(), vec![("CODEDOCK_AI_KEY_CODEDOCK".to_string(), "sk-dev".to_string())]);
+
+        // 配了提供商：覆盖打在默认那家上，模型只换模型段
+        let mut cfg = bare_config();
+        cfg.providers.push(provider("deepseek", &["deepseek-chat"]));
+        cfg.apply(&overrides);
+        assert_eq!(cfg.default_model, "codedock/dev-model");
+        assert_eq!(cfg.providers[0].base_url, "https://dev.example.com/v1");
+        assert_eq!(
+            cfg.providers[1].base_url,
+            "https://deepseek.example.com/v1"
+        );
     }
 
     #[test]

@@ -502,7 +502,13 @@ export const IconSearch = icon(
   </>,
 );
 
-export const IconPlus = icon(<path d="M12 5v14M5 12h14" />);
+export const IconPlus = icon(<path d="M12 5v14M5 12h14" />);/** 复制一份配置（提供商列表里用）：后面那张纸叠在前面那张上 */
+export const IconCopy = icon(
+  <>
+    <rect x="8" y="8" width="13" height="13" rx="2" />
+    <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+  </>,
+);
 
 /** 搜索面板的「全部替换」：上下两条反向箭头，表示整体换掉 */
 export const IconReplaceAll = icon(

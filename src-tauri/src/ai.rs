@@ -317,6 +317,135 @@ fn clean_message(raw: &str) -> String {
     text.trim().to_string()
 }
 
+/// 连接测试的探针超时。比正式生成短：用户点一下就在等结果，不该干等一分钟。
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// 把请求阶段的失败翻译成人话。厂商的报错在有响应时走 `describe_status`，
+/// 这里只管根本没拿到响应那几种。
+fn describe_request_error(reason: reqwest::Error) -> String {
+    if reason.is_timeout() {
+        return "连接超时：接口没在预期时间内响应，检查地址是否正确、是否需要代理".to_string();
+    }
+    if reason.is_connect() {
+        return format!("网络错误：连不上这个地址（{reason}）");
+    }
+    format!("请求失败：{reason}")
+}
+
+/// 把非 2xx 响应翻译成「用户能照着修」的提示，顺带带上厂商原文。
+fn describe_status(status: reqwest::StatusCode, text: &str) -> String {
+    let code = status.as_u16();
+    let detail = truncate(text, MAX_ERROR_CHARS);
+    match code {
+        401 | 403 => format!("鉴权失败（{code}）：API 密钥可能不对或已过期。{detail}"),
+        404 => format!("接口返回 404：地址可能写错了，OpenAI 兼容基地址通常以 /v1 结尾。{detail}"),
+        429 => format!("被限流（{code}）：稍后再试，或检查配额。{detail}"),
+        500..=599 => format!("服务端错误（{code}）：{detail}"),
+        _ => format!("接口返回 {code}：{detail}"),
+    }
+}
+
+/// 从 `GET /models` 的响应里数出模型个数。拿不到结构就返回 None，
+/// 调用方据此说「连上了但没给列表」，而不是当成失败。
+fn count_models(text: &str) -> Option<usize> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()?
+        .get("data")?
+        .as_array()
+        .map(|list| list.len())
+}
+
+/// 退化的探针：一次只要 1 个 token，同样能验证鉴权和模型名，几乎不花钱。
+/// 给那些不实现 `GET /models` 的兼容服务用。
+async fn probe_with_chat(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> Result<String, String> {
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_tokens": 1,
+        "stream": false,
+    });
+
+    let mut request = client
+        .post(format!("{base_url}/chat/completions"))
+        .json(&body);
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let response = request.send().await.map_err(describe_request_error)?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        return Ok("连接成功（该接口不支持列出模型，已用一次极小的对话请求验证）".to_string());
+    }
+    if status.as_u16() == 404 {
+        return Err(format!(
+            "模型「{model}」不存在，或接口地址有误（404）：{}",
+            truncate(&text, MAX_ERROR_CHARS)
+        ));
+    }
+    Err(describe_status(status, &text))
+}
+
+/// 测试一个提供商的连通性：鉴权、网络、地址是否写对。
+///
+/// 先打 `GET /models`——便宜、且能同时验证鉴权与网络；有些 OpenAI 兼容实现
+/// 不提供这条路由（回 404/405），那就退化成一次极小的对话请求。
+///
+/// 这里**不套** `dev::AiOverrides`：测的是用户在输入框里填的那份配置。
+#[tauri::command]
+pub async fn ai_test_provider(
+    base_url: String,
+    api_key: String,
+    model: String,
+) -> Result<String, String> {
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("请先填写接口地址".to_string());
+    }
+    let api_key = api_key.trim().to_string();
+    let model = model.trim().to_string();
+
+    let client = reqwest::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .build()
+        .map_err(|reason| format!("无法创建 HTTP 客户端: {reason}"))?;
+
+    let mut request = client.get(format!("{base_url}/models"));
+    if !api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {api_key}"));
+    }
+
+    let response = request.send().await.map_err(describe_request_error)?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if status.is_success() {
+        return Ok(match count_models(&text) {
+            Some(count) => format!("连接成功，接口报告 {count} 个可用模型"),
+            None => "连接成功，但响应里没有模型列表".to_string(),
+        });
+    }
+
+    if matches!(status.as_u16(), 404 | 405) {
+        if model.is_empty() {
+            return Err(format!(
+                "接口不支持 GET /models（{}）。请先填一个模型名，再测试连接",
+                status.as_u16()
+            ));
+        }
+        return probe_with_chat(&client, &base_url, &api_key, &model).await;
+    }
+
+    Err(describe_status(status, &text))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -329,6 +458,42 @@ mod tests {
             branch: Some("main".to_string()),
             recent_subjects: vec!["feat: 上一件事".to_string()],
         }
+    }
+
+    #[test]
+    fn count_models_tolerates_odd_payloads() {
+        assert_eq!(count_models(r#"{"data":[{"id":"a"},{"id":"b"}]}"#), Some(2));
+        assert_eq!(count_models(r#"{"data":[]}"#), Some(0));
+        // 连上了但不是期望的结构：返回 None，界面说「没有模型列表」而不是报失败
+        assert_eq!(count_models("{}"), None);
+        assert_eq!(count_models("<html>502</html>"), None);
+    }
+
+    #[test]
+    fn describe_status_keeps_vendor_detail() {
+        let text = r#"{"error":{"message":"invalid api key"}}"#;
+        let unauthorized = describe_status(reqwest::StatusCode::UNAUTHORIZED, text);
+        assert!(unauthorized.contains("鉴权失败"));
+        assert!(unauthorized.contains("invalid api key"));
+
+        let limited = describe_status(reqwest::StatusCode::TOO_MANY_REQUESTS, text);
+        assert!(limited.contains("限流"));
+
+        let not_found = describe_status(reqwest::StatusCode::NOT_FOUND, text);
+        assert!(not_found.contains("/v1"));
+
+        // 没归类的状态码也要带上码和原文，别给一句光秃秃的失败
+        let weird = describe_status(reqwest::StatusCode::IM_A_TEAPOT, text);
+        assert!(weird.contains("418"));
+        assert!(weird.contains("invalid api key"));
+    }
+
+    #[test]
+    fn describe_status_truncates_long_bodies() {
+        // 厂商有时回整页 HTML，别把它全塞进设置面板
+        let long = "x".repeat(MAX_ERROR_CHARS + 500);
+        let message = describe_status(reqwest::StatusCode::BAD_REQUEST, &long);
+        assert!(message.chars().count() < MAX_ERROR_CHARS + 100);
     }
 
     #[test]

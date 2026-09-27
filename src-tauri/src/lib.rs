@@ -58,6 +58,7 @@ pub fn run() {
             git::git_add_to_ignore,
             ai::ai_generate_commit_message,
             ai::ai_explain_change,
+            ai::ai_test_provider,
             dev::dev_ai_overrides,
             cli_sessions::cli_list_sessions,
             agent::agent_start,

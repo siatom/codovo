@@ -16,7 +16,10 @@ import {
   type AgentLayer,
   type AgentProfile,
   type AgentSkill,
+  type AiProvider,
   type AutoSaveMode,
+  type ProviderModel,
+  type Settings,
 } from "../lib/settings";
 import {
   isValidAgentName,
@@ -24,16 +27,24 @@ import {
   withLayer,
 } from "../lib/agent-profiles";
 import {
+  emptyModel,
+  emptyProvider,
+  modelRef,
+  modelRefOptions,
+  newProviderId,
+  resolveDefaultModel,
+} from "../lib/providers";
+import {
   TERMINAL_THEME_OPTIONS,
   resolveTerminalTheme,
 } from "../lib/terminal-themes";
 import { useTheme, DEFAULT_THEME, type ResolvedTheme, type Theme } from "../lib/theme";
 import { listShells } from "../lib/pty";
-import { useDevAiOverrides } from "../lib/ai";
+import { testProviderConnection, useDevAiOverrides } from "../lib/ai";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconChevronDown, IconClose, IconPlus } from "./icons";
+import { IconChevronDown, IconClose, IconCopy, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -496,6 +507,256 @@ function CollapseHeader({
   );
 }
 
+/** 一个模型的编辑行：id 是接口认的名字，显示名留空就用 id */
+function ModelRow({
+  model,
+  onChange,
+  onRemove,
+}: {
+  model: ProviderModel;
+  onChange: (next: ProviderModel) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="text"
+        value={model.id}
+        spellCheck={false}
+        placeholder="模型 ID，如 deepseek-chat"
+        onChange={(event) => onChange({ ...model, id: event.target.value })}
+        className={`${TEXT_INPUT} min-w-0 flex-1 font-mono`}
+      />
+      <input
+        type="text"
+        value={model.name}
+        spellCheck={false}
+        placeholder="显示名（可选）"
+        onChange={(event) => onChange({ ...model, name: event.target.value })}
+        className={`${TEXT_INPUT} min-w-0 flex-1`}
+      />
+      <Toggle
+        checked={model.enabled}
+        title={model.enabled ? "已启用" : "已停用"}
+        onChange={(next) => onChange({ ...model, enabled: next })}
+      />
+      <button type="button" onClick={onRemove} title="删除模型" className={LIST_ACTION}>
+        <IconClose className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+/** 一个提供商：折叠时只占一行（名字 + 模型数 + 开关），展开才编辑全部字段 */
+function ProviderEditor({
+  provider,
+  open,
+  isDefault,
+  onToggle,
+  onChange,
+  onSetDefault,
+  onDuplicate,
+  onRemove,
+}: {
+  provider: AiProvider;
+  open: boolean;
+  isDefault: boolean;
+  onToggle: () => void;
+  onChange: (next: AiProvider) => void;
+  onSetDefault: () => void;
+  onDuplicate: () => void;
+  onRemove: () => void;
+}) {
+  const patch = (part: Partial<AiProvider>) => onChange({ ...provider, ...part });
+
+  /** 密钥默认打码，点一下才明文——设置面板经常有人在旁边看着 */
+  const [revealKey, setRevealKey] = useState(false);
+  /** 连接测试的结果，非空时显示在按钮下面 */
+  const [probe, setProbe] = useState<{ ok: boolean; text: string } | null>(null);
+  const [testing, setTesting] = useState(false);
+
+  const enabledModelCount = provider.models.filter(
+    (model) => model.enabled && model.id.trim() !== "",
+  ).length;
+  const missing = provider.baseUrl.trim() === "" || enabledModelCount === 0;
+
+  const test = async () => {
+    setTesting(true);
+    setProbe(null);
+    try {
+      // 探针优先拿第一个启用模型去试：接口不支持 GET /models 时后端靠它退化
+      const first = provider.models.find((model) => model.enabled && model.id.trim() !== "");
+      const text = await testProviderConnection({
+        baseUrl: provider.baseUrl,
+        apiKey: provider.apiKey,
+        model: first?.id.trim() ?? "",
+      });
+      setProbe({ ok: true, text });
+    } catch (reason) {
+      setProbe({ ok: false, text: String(reason) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div className="w-full overflow-hidden rounded-md border border-line-strong">
+      <div className="flex items-center gap-1.5 p-2">
+        <CollapseHeader
+          open={open}
+          onToggle={onToggle}
+          placeholder="未命名提供商"
+          label={provider.name}
+        />
+        {isDefault && (
+          <span className="shrink-0 rounded bg-selected px-1.5 py-0.5 text-[11px] text-fg-dim">
+            默认
+          </span>
+        )}
+        {!provider.enabled && (
+          <span className="shrink-0 text-[11px] text-fg-faint">已停用</span>
+        )}
+        <span className="shrink-0 text-[11px] text-fg-faint">
+          {enabledModelCount} 个模型
+        </span>
+        <Toggle
+          checked={provider.enabled}
+          title={provider.enabled ? "已启用" : "已停用"}
+          onChange={(next) => patch({ enabled: next })}
+        />
+        <button type="button" onClick={onDuplicate} title="复制提供商" className={HEAD_ACTION}>
+          <IconCopy className="h-3.5 w-3.5" />
+        </button>
+        <button type="button" onClick={onRemove} title="删除提供商" className={LIST_ACTION}>
+          <IconClose className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {open && (
+        <div className="flex flex-col gap-3 border-t border-line p-2">
+          <Field label="名称" hint="只用于界面展示，改名不会动 ID">
+            <input
+              type="text"
+              value={provider.name}
+              spellCheck={false}
+              placeholder="如 DeepSeek"
+              onChange={(event) => patch({ name: event.target.value })}
+              className={TEXT_INPUT}
+            />
+          </Field>
+          <Field
+            label="接口地址"
+            hint="OpenAI 兼容基地址，如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）"
+          >
+            <input
+              type="text"
+              value={provider.baseUrl}
+              spellCheck={false}
+              placeholder="https://api.openai.com/v1"
+              onChange={(event) => patch({ baseUrl: event.target.value })}
+              className={TEXT_INPUT}
+            />
+          </Field>
+          <Field
+            label="API 密钥"
+            hint="只存在本机 localStorage，不写进 opencode 配置文件；本地模型可以留空"
+          >
+            <input
+              type={revealKey ? "text" : "password"}
+              value={provider.apiKey}
+              spellCheck={false}
+              placeholder={provider.apiKey ? "" : "sk-…"}
+              onChange={(event) => patch({ apiKey: event.target.value })}
+              className={TEXT_INPUT}
+            />
+            <button
+              type="button"
+              onClick={() => setRevealKey((current) => !current)}
+              className="shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
+            >
+              {revealKey ? "隐藏" : "显示"}
+            </button>
+          </Field>
+
+          <Field
+            label="模型"
+            hint="ID 按接口文档填，接口不会自动拉取；停用或没填 ID 的不会下发"
+            action={
+              <button
+                type="button"
+                title="新增模型"
+                onClick={() => patch({ models: [...provider.models, emptyModel()] })}
+                className={HEAD_ACTION}
+              >
+                <IconPlus className="h-3.5 w-3.5" />
+              </button>
+            }
+          >
+            <div className="flex w-full flex-col gap-2">
+              {provider.models.length === 0 ? (
+                <p className="text-[11px] text-fg-faint">还没有模型</p>
+              ) : (
+                provider.models.map((model, index) => (
+                  <ModelRow
+                    key={index}
+                    model={model}
+                    onChange={(next) =>
+                      patch({
+                        models: provider.models.map((item, i) => (i === index ? next : item)),
+                      })
+                    }
+                    onRemove={() =>
+                      patch({ models: provider.models.filter((_, i) => i !== index) })
+                    }
+                  />
+                ))
+              )}
+            </div>
+          </Field>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void test()}
+              disabled={provider.baseUrl.trim() === "" || testing}
+              className={`rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg ${
+                provider.baseUrl.trim() === "" || testing
+                  ? "cursor-not-allowed opacity-40 hover:bg-transparent"
+                  : ""
+              }`}
+            >
+              {testing ? "测试中…" : "测试连接"}
+            </button>
+            {!isDefault && (
+              <button
+                type="button"
+                onClick={onSetDefault}
+                disabled={missing}
+                title={missing ? "先填接口地址、并至少启用一个模型" : "设为全局默认"}
+                className={`rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg ${
+                  missing ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""
+                }`}
+              >
+                设为默认
+              </button>
+            )}
+          </div>
+
+          {probe && (
+            <p
+              className={`text-[11px] leading-relaxed ${
+                probe.ok ? "text-fg-muted" : "text-danger"
+              }`}
+            >
+              {probe.text}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 一条技能：折叠时只占一行（名字 + 开关），展开才编辑描述和正文 */
 function SkillEditor({
   skill,
@@ -569,6 +830,38 @@ function SkillEditor({
   );
 }
 
+/**
+ * 默认模型存的那对指向可能刚被删掉、停用或清空。失效就把它写回落后的结果，
+ * 让「存着的」和「界面上显示的」是同一个——不然重开设置面板又会跳到别家。
+ */
+function defaultPatch(settings: Settings): Partial<Settings> {
+  const resolved = resolveDefaultModel(settings);
+  if (!resolved) {
+    return settings.aiDefaultProvider || settings.aiDefaultModel
+      ? { aiDefaultProvider: "", aiDefaultModel: "" }
+      : {};
+  }
+  if (
+    resolved.providerId === settings.aiDefaultProvider &&
+    resolved.modelId === settings.aiDefaultModel
+  ) {
+    return {};
+  }
+  return { aiDefaultProvider: resolved.providerId, aiDefaultModel: resolved.modelId };
+}
+
+/** 有多少个 Agent 绑在这个提供商的模型上（全局层 + 所有项目层） */
+function countAgentRefs(settings: Settings, providerId: string): number {
+  const prefix = modelRef(providerId, "");
+  const layers = [settings.agentGlobal, ...Object.values(settings.agentProjects)];
+  return layers.reduce(
+    (total, layer) =>
+      total +
+      layer.agents.filter((agent) => agent.model.trim().startsWith(prefix)).length,
+    0,
+  );
+}
+
 /** 模式在折叠行上的短标签 */
 const MODE_SHORT: Record<AgentProfile["mode"], string> = {
   primary: "主",
@@ -580,18 +873,32 @@ const MODE_SHORT: Record<AgentProfile["mode"], string> = {
 function AgentEditor({
   agent,
   open,
+  modelOptions,
   onToggle,
   onChange,
   onRemove,
 }: {
   agent: AgentProfile;
   open: boolean;
+  /** 可绑定的 `provider/model` 候选，来自「模型提供商」那一节 */
+  modelOptions: { value: string; label: string }[];
   onToggle: () => void;
   onChange: (next: AgentProfile) => void;
   onRemove: () => void;
 }) {
   const patch = (part: Partial<AgentProfile>) => onChange({ ...agent, ...part });
   const invalid = agent.name.trim() !== "" && !isValidAgentName(agent.name);
+
+  // 绑定值可能指向已被删掉的提供商/模型：补一条「不可用」的候选，
+  // 不然下拉会显示成空的，让人以为根本没绑
+  const bound = agent.model.trim();
+  const options = [
+    { value: "", label: "使用全局默认" },
+    ...modelOptions,
+    ...(bound && !modelOptions.some((option) => option.value === bound)
+      ? [{ value: bound, label: `${bound}（不可用）` }]
+      : []),
+  ];
   return (
     <div className="w-full overflow-hidden rounded-md border border-line-strong">
       <div className="flex items-center gap-1.5 p-2">
@@ -646,14 +953,13 @@ function AgentEditor({
                 onChange={(next) => patch({ mode: next })}
               />
             </div>
-            <input
-              type="text"
-              value={agent.model}
-              spellCheck={false}
-              placeholder="模型（留空用默认）"
-              onChange={(event) => patch({ model: event.target.value })}
-              className={`${TEXT_INPUT} min-w-0 flex-1 font-mono`}
-            />
+            <div className="min-w-0 flex-1">
+              <Select
+                value={bound}
+                options={options}
+                onChange={(next) => patch({ model: next })}
+              />
+            </div>
           </div>
           <textarea
             value={agent.prompt}
@@ -672,9 +978,12 @@ function AgentEditor({
 /** 一层智能体配置的编辑区：规则 / 记忆 / 技能 / Agents。全局层与项目层共用 */
 function LayerEditor({
   layer,
+  modelOptions,
   onChange,
 }: {
   layer: AgentLayer;
+  /** 透传给 AgentEditor 的模型候选；来源是「模型提供商」那一节 */
+  modelOptions: { value: string; label: string }[];
   onChange: (next: AgentLayer) => void;
 }) {
   const patch = (part: Partial<AgentLayer>) => onChange({ ...layer, ...part });
@@ -784,6 +1093,7 @@ function LayerEditor({
               <AgentEditor
                 key={index}
                 agent={agent}
+                modelOptions={modelOptions}
                 open={openAgent === index}
                 onToggle={() => setOpenAgent(openAgent === index ? null : index)}
                 onChange={(next) =>
@@ -819,6 +1129,13 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const [agentScope, setAgentScope] = useState<"global" | "project">("global");
   /** 等确认的「恢复默认」；非空时弹确认框 */
   const [confirmReset, setConfirmReset] = useState(false);
+  /** 提供商列表的手风琴：一次只展开一条，和技能 / Agent 一个交互 */
+  const [openProvider, setOpenProvider] = useState<number | null>(null);
+  /** 等确认的「删除提供商」；带上被引用的次数，确认框里说清影响面 */
+  const [pendingRemove, setPendingRemove] = useState<{
+    provider: AiProvider;
+    refs: number;
+  } | null>(null);
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
   const lastFlipRef = useRef(0);
   /** null = 还没拖过，按类名给的默认尺寸居中摆；拖过之后是具体像素 */
@@ -839,14 +1156,82 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
 
+  // ---- 模型提供商 ----
+
+  /** 下拉里存的是 `provider/model` 引用，不是哪一项；指向失效时由 resolveDefaultModel 兜底 */
+  const resolved = resolveDefaultModel(settings);
+  const defaultRef = resolved?.ref ?? "";
+  const modelOptions = modelRefOptions(settings);
+
+  /** 改一条提供商，顺带把失效的默认指向写回落后的结果 */
+  const applyProviders = (aiProviders: AiProvider[]) => {
+    update({ aiProviders, ...defaultPatch({ ...settings, aiProviders }) });
+  };
+
+  const updateProvider = (index: number, next: AiProvider) => {
+    applyProviders(settings.aiProviders.map((item, i) => (i === index ? next : item)));
+  };
+
+  const addProvider = () => {
+    const next = emptyProvider(newProviderId("", settings.aiProviders));
+    setOpenProvider(settings.aiProviders.length);
+    update({ aiProviders: [...settings.aiProviders, next] });
+  };
+
+  /** 复制一份：id 必须重新生成，配置内容和模型跟着拷 */
+  const duplicateProvider = (index: number) => {
+    const source = settings.aiProviders[index];
+    const id = newProviderId(`${source.id}-copy`, settings.aiProviders);
+    const copy: AiProvider = {
+      ...source,
+      id,
+      name: `${source.name || source.id} 副本`,
+      models: source.models.map((model) => ({ ...model })),
+    };
+    const aiProviders = [...settings.aiProviders];
+    aiProviders.splice(index + 1, 0, copy);
+    setOpenProvider(index + 1);
+    applyProviders(aiProviders);
+  };
+
+  /** 删之前先数一数有多少 Agent 绑在它身上：确认框得说清影响面 */
+  const askRemoveProvider = (provider: AiProvider) => {
+    setPendingRemove({ provider, refs: countAgentRefs(settings, provider.id) });
+  };
+
+  const removeProvider = (provider: AiProvider) => {
+    setOpenProvider(null);
+    applyProviders(settings.aiProviders.filter((item) => item.id !== provider.id));
+  };
+
+  const setDefaultProvider = (provider: AiProvider) => {
+    const model = provider.models.find(
+      (item) => item.enabled && item.id.trim() !== "",
+    );
+    if (!model) return;
+    update({ aiDefaultProvider: provider.id, aiDefaultModel: model.id.trim() });
+  };
+
+  const updateDefaultModel = (ref: string) => {
+    const cut = ref.indexOf("/");
+    if (cut <= 0) {
+      update({ aiDefaultProvider: "", aiDefaultModel: "" });
+      return;
+    }
+    update({
+      aiDefaultProvider: ref.slice(0, cut),
+      aiDefaultModel: ref.slice(cut + 1),
+    });
+  };
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // 确认框开着时 Esc 归它管（取消这一下），别顺手把整个设置面板也关了
-      if (event.key === "Escape" && !confirmReset) onClose();
+      if (event.key === "Escape" && !confirmReset && !pendingRemove) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, confirmReset]);
+  }, [onClose, confirmReset, pendingRemove]);
 
   const flipTab = (step: number) => {
     const next = TABS[TABS.findIndex((item) => item.id === tab) + step];
@@ -1333,48 +1718,74 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
               {tab === "agent" && (
                 <>
                   <Section
-                    title="模型接口"
-                    hint="任何 OpenAI 兼容的服务都能用；「变更」的提交信息生成也用它"
+                    title="模型提供商"
+                    hint="OpenAI 兼容的服务都能接入，一家一条；智能体和「变更」里的提交信息生成都读这里"
+                    action={
+                      <button
+                        type="button"
+                        title="新增提供商"
+                        onClick={addProvider}
+                        className={HEAD_ACTION}
+                      >
+                        <IconPlus className="h-3.5 w-3.5" />
+                      </button>
+                    }
+                  >
+                    <div className="flex w-full flex-col gap-2">
+                      {settings.aiProviders.length === 0 ? (
+                        <p className="text-[11px] text-fg-faint">
+                          还没有提供商。点右上角的加号加一条，填好接口地址和至少一个模型。
+                        </p>
+                      ) : (
+                        settings.aiProviders.map((provider, index) => (
+                          <ProviderEditor
+                            key={provider.id}
+                            provider={provider}
+                            open={openProvider === index}
+                            isDefault={
+                              resolveDefaultModel(settings)?.providerId === provider.id
+                            }
+                            onToggle={() =>
+                              setOpenProvider(openProvider === index ? null : index)
+                            }
+                            onChange={(next) => updateProvider(index, next)}
+                            onSetDefault={() => setDefaultProvider(provider)}
+                            onDuplicate={() => duplicateProvider(index)}
+                            onRemove={() => askRemoveProvider(provider)}
+                          />
+                        ))
+                      )}
+                      {overriddenAi.length > 0 && (
+                        <p className="text-[11px] leading-relaxed text-fg-faint">
+                          开发调试：src-tauri/.env 覆盖了「{overriddenAi.join("、")}」，
+                          这会盖住「默认提供商」的对应字段，输入框改不动它们。
+                          改完重开应用生效；已在跑的智能体要停掉再起。
+                        </p>
+                      )}
+                    </div>
+                  </Section>
+
+                  <Section
+                    title="默认模型"
+                    hint="新会话默认用它；单个 Agent 可以在下面单独绑定别的"
                   >
                     <Field
-                      label="接口地址"
-                      hint="例如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）"
+                      label="全局默认"
+                      hint={
+                        settings.aiProviders.length === 0
+                          ? "先去上面加一个提供商"
+                          : "选项来自已启用的提供商和模型"
+                      }
                     >
-                      <input
-                        type="text"
-                        value={settings.aiBaseUrl}
-                        spellCheck={false}
-                        placeholder="https://api.openai.com/v1"
-                        onChange={(event) => update({ aiBaseUrl: event.target.value })}
-                        className={TEXT_INPUT}
+                      <Select
+                        value={defaultRef}
+                        options={[
+                          { value: "", label: "未配置" },
+                          ...modelRefOptions(settings),
+                        ]}
+                        onChange={(next) => updateDefaultModel(next)}
                       />
                     </Field>
-                    <Field label="模型" hint="按接口文档填，例如 gpt-4o-mini、deepseek-chat">
-                      <input
-                        type="text"
-                        value={settings.aiModel}
-                        spellCheck={false}
-                        placeholder="gpt-4o-mini"
-                        onChange={(event) => update({ aiModel: event.target.value })}
-                        className={TEXT_INPUT}
-                      />
-                    </Field>
-                    <Field label="API 密钥" hint="只存在本机，不写进任何配置文件">
-                      <input
-                        type="password"
-                        value={settings.aiApiKey}
-                        spellCheck={false}
-                        placeholder="sk-…"
-                        onChange={(event) => update({ aiApiKey: event.target.value })}
-                        className={TEXT_INPUT}
-                      />
-                    </Field>
-                    {overriddenAi.length > 0 && (
-                      <p className="text-[11px] leading-relaxed text-fg-faint">
-                        开发调试：src-tauri/.env 覆盖了「{overriddenAi.join("、")}」，
-                        上面的输入框改不动这几项。改完重开应用生效；已在跑的智能体要停掉再起。
-                      </p>
-                    )}
                   </Section>
 
                   <Section
@@ -1459,6 +1870,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                           ? settings.agentGlobal
                           : projectLayer(settings, cwd)
                       }
+                      modelOptions={modelOptions}
                       onChange={(next) => update(withLayer(settings, agentScope, cwd, next))}
                     />
                   </Section>
@@ -1482,9 +1894,29 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
 
       {/* 挂在卡片外面、但仍在遮罩里：确认框的遮罩接住点击，冒到这一层时被上面的
           `confirmReset` 挡掉，不会连设置面板一起关 */}
+      {pendingRemove && (
+        <ConfirmDialog
+          message={
+            pendingRemove.refs > 0
+              ? `删除提供商「${pendingRemove.provider.name || pendingRemove.provider.id}」？${
+                  pendingRemove.refs
+                } 个 Agent 绑在它的模型上，删掉后那些 Agent 会回落成跟随全局默认。`
+              : `删除提供商「${
+                  pendingRemove.provider.name || pendingRemove.provider.id
+                }」？它的模型配置会一起去掉，无法撤销。`
+          }
+          confirmLabel="删除"
+          onConfirm={() => {
+            removeProvider(pendingRemove.provider);
+            setPendingRemove(null);
+          }}
+          onCancel={() => setPendingRemove(null)}
+        />
+      )}
+
       {confirmReset && (
         <ConfirmDialog
-          message="恢复默认设置？接口地址、密钥、AI CLI 列表、字体、主题和右栏模块都会回到初始值，无法撤销。"
+          message="恢复默认设置？模型提供商、密钥、AI CLI 列表、字体、主题和右栏模块都会回到初始值，无法撤销。"
           confirmLabel="恢复默认"
           onConfirm={() => {
             reset();
