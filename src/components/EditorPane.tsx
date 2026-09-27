@@ -27,10 +27,15 @@ import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { IconBot, IconClose, IconEye, IconPencil, IconTerminal } from "./icons";
+import { IconBot, IconClose, IconEye, IconMore, IconPencil, IconTerminal } from "./icons";
 
 /** 选中浮窗的估算宽度，用来把它收进窗口右边缘 */
 const FLOAT_BAR_W = 76;
+
+/** 标签「⋯」菜单：宽度和条目样式，跟 Sidebar 的同类菜单保持一致 */
+const TABS_MENU_W = 112;
+const TABS_MENU_ITEM =
+  "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
 
 /** 浮窗按钮：两个动作同款，禁用态（智能体没开）不给 hover 反馈 */
 const FLOAT_BAR_BUTTON =
@@ -45,6 +50,9 @@ interface EditorPaneProps {
   gitMarks: ReadonlyMap<string, GitMark>;
   onActivate: (tab: Tab) => void;
   onClose: (tab: Tab) => void;
+  /** 批量关闭：标题栏右侧「⋯」菜单用 */
+  onCloseAll: () => void;
+  onCloseOthers: () => void;
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -159,6 +167,8 @@ export function EditorPane({
   gitMarks,
   onActivate,
   onClose,
+  onCloseAll,
+  onCloseOthers,
   fullscreen,
   onToggleFullscreen,
   onSendToTerminal,
@@ -187,6 +197,8 @@ export function EditorPane({
   const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
+  /** 标题栏「⋯」菜单的视口坐标；null = 不显示 */
+  const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
   /**
    * 浮窗对应的选中位置。点按钮那一刻编辑器可能已经失焦，现取不可靠，所以在选中那一刻就存下来
    */
@@ -982,6 +994,20 @@ export function EditorPane({
             );
           })}
         </div>
+        {/* 批量关闭入口。紧贴 tab 栏右端，只在有标签时出现 */}
+        {tabs.length > 0 && (
+          <button
+            type="button"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setTabsMenu({ x: rect.right, y: rect.bottom });
+            }}
+            title="标签操作"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+          >
+            <IconMore className="h-3.5 w-3.5" />
+          </button>
+        )}
         {canPreview && (
           <button
             type="button"
@@ -1009,6 +1035,43 @@ export function EditorPane({
         {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
+
+      {/* 标签「⋯」菜单。fixed 定位：标题栏是横向滚动容器，绝对定位会被 overflow 裁掉 */}
+      {tabsMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setTabsMenu(null)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: TABS_MENU_W,
+              left: tabsMenu.x - TABS_MENU_W,
+              top: Math.min(tabsMenu.y + 4, window.innerHeight - 72),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setTabsMenu(null);
+                onCloseOthers();
+              }}
+              disabled={tabs.length <= 1}
+              className={TABS_MENU_ITEM}
+            >
+              关闭其他
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setTabsMenu(null);
+                onCloseAll();
+              }}
+              className={TABS_MENU_ITEM}
+            >
+              关闭全部
+            </button>
+          </div>
+        </>
+      )}
 
       <div className="relative min-h-0 flex-1">
         <div

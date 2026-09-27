@@ -321,6 +321,18 @@ export default function App() {
     [openTabs, activeTab],
   );
 
+  /** 标题栏「⋯」菜单：一次关掉全部标签 */
+  const closeAllTabs = useCallback(() => {
+    setOpenTabs([]);
+    setActiveTab(null);
+  }, []);
+
+  /** 标题栏「⋯」菜单：只留当前标签 */
+  const closeOtherTabs = useCallback(() => {
+    if (!activeTab) return;
+    setOpenTabs([activeTab]);
+  }, [activeTab]);
+
   const pickWorkspace = useCallback(async () => {
     try {
       const picked = await pickWorkspaceFolder();
@@ -415,6 +427,8 @@ export default function App() {
                         gitMarks={git.snapshot.marks}
                         onActivate={setActiveTab}
                         onClose={closeTab}
+                        onCloseAll={closeAllTabs}
+                        onCloseOthers={closeOtherTabs}
                         fullscreen={fullscreen}
                         onToggleFullscreen={toggleFullscreen}
                         onSendToTerminal={insertToTerminal}
