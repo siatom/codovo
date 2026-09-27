@@ -11,6 +11,7 @@ mod secrets;
 mod shell_env;
 mod shells;
 mod watcher;
+mod windows;
 
 use tauri::Manager;
 
@@ -24,6 +25,7 @@ pub fn run() {
         .manage(fs_api::FsState::new())
         .manage(watcher::WatchState::new())
         .manage(agent::AgentState::new())
+        .manage(windows::WindowRegistry::new())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -76,7 +78,29 @@ pub fn run() {
             agent::agent_abort,
             agent::agent_delete_session,
             agent::agent_rename_session,
+            windows::project_window_open,
         ])
+        // 关窗时把该窗口的状态分片一起清掉：终端 shell、opencode 进程、目录监听
+        // 都是按 label 存的，不主动收就会一直挂在后台（前端卸载时的清理只管它自己
+        // 那点，进程侧的得由此处兜住）
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let label = window.label().to_string();
+                let app = window.app_handle();
+                if let Some(state) = app.try_state::<fs_api::FsState>() {
+                    state.remove(&label);
+                }
+                if let Some(state) = app.try_state::<watcher::WatchState>() {
+                    state.stop(&label);
+                }
+                if let Some(state) = app.try_state::<agent::AgentState>() {
+                    state.kill_window(&label);
+                }
+                if let Some(state) = app.try_state::<pty::PtyState>() {
+                    state.kill_window(&label);
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app, event| match event {
