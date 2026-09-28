@@ -1,11 +1,15 @@
 ---
 description: "本地发布：提交改动 → 构建 NSIS 安装包 → 装到本机（不 push）"
-allowed-tools: Bash, PowerShell, Read, Grep, Glob
+allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 ---
 
 按顺序执行下面三步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做提交 / 构建 / 安装，不改任何源代码。
 
+开工前先用 TaskCreate 建三条待办：`提交改动` / `构建安装包` / `装到本机`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
+
 ## 1. 提交改动（规则同 /commit）
+
+*（进入本节先把「提交改动」标为 `in_progress`，完成后再标 `completed`。）*
 
 先 `git status --short` 并通读完整 diff，然后**按主题拆成多个 commit**，不要 `git add -A` 合成一条：
 
@@ -17,6 +21,8 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob
 - 工作区本来就干净时跳过本节。
 
 ## 2. 构建安装包
+
+*（进入本节先把「构建安装包」标为 `in_progress`，完成后再标 `completed`。）*
 
 ### 2a. 构建前校验
 
@@ -56,6 +62,8 @@ echo "expected=$expected"; echo "actual=$actual"
 - 把通过校验的标识记下来，第 3 步报告时用。
 
 ## 3. 装到本机
+
+*（进入本节先把「装到本机」标为 `in_progress`，完成后再标 `completed`。）*
 
 产物：`src-tauri/target/release/bundle/nsis/CodeDock_<version>_x64-setup.exe`，`<version>` 取 `package.json` 的 `version`。
 先确认它的修改时间是本次构建，别装到上一次的旧包。
