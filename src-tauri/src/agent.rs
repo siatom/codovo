@@ -23,11 +23,17 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::dev;
 use crate::fs_api::FsState;
 
-/// SSE 事件推给前端用的事件名。按窗口定向发送（`emit_to`），名字固定、
-/// 每个窗口收自己那份，不像 PTY 那样每个会话一个 Channel。
+/// SSE 事件推给前端用的事件名。载荷里带着项目 root，前端据此路由到对应项目的界面。
 pub const EVENT_NAME: &str = "agent-event";
 /// 子进程自己退出（崩溃、被杀）时推的事件，前端据此提示重启。
 pub const EXIT_EVENT: &str = "agent-exit";
+
+/// 推给前端的事件载荷。单窗口下同时有多个项目在跑，不带 root 就分不清是谁的事件。
+#[derive(Serialize, Clone)]
+struct TaggedEvent {
+    root: String,
+    event: serde_json::Value,
+}
 
 /// 健康检查的等待上限。opencode 冷启动要装插件，慢机器上可能要十几秒。
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
@@ -530,7 +536,7 @@ fn unwrap_data(value: serde_json::Value) -> serde_json::Value {
 }
 
 
-/// 一个窗口的智能体运行槽位。克隆给 SSE 任务和退出轮询线程持有——
+/// 一个项目的智能体运行槽位。克隆给 SSE 任务和退出轮询线程持有——
 /// 它俩要独立于命令调用存活，不能借用 `AgentState`。
 #[derive(Clone)]
 struct Slot {
@@ -538,7 +544,7 @@ struct Slot {
     generation: Arc<AtomicU64>,
 }
 
-/// 进程池，**按窗口 label 分片**：一个窗口一份。
+/// 进程池，**按项目 root 分片**：一个项目一个 opencode 进程，切走的项目继续跑。
 pub struct AgentState {
     slots: Mutex<HashMap<String, Slot>>,
 }
@@ -550,12 +556,12 @@ impl AgentState {
         }
     }
 
-    /// 取（必要时创建）某窗口的槽位。锁被毒掉也照常用内部值——
+    /// 取（必要时创建）某项目的槽位。锁被毒掉也照常用内部值——
     /// 这里没有跨字段的不变式，一次 panic 不该让整个智能体功能瘫掉。
-    fn slot(&self, label: &str) -> Slot {
+    fn slot(&self, root: &str) -> Slot {
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         slots
-            .entry(label.to_string())
+            .entry(root.to_string())
             .or_insert_with(|| Slot {
                 inner: Arc::new(Mutex::new(None)),
                 generation: Arc::new(AtomicU64::new(1)),
@@ -563,14 +569,23 @@ impl AgentState {
             .clone()
     }
 
-    /// 收掉某个窗口的 opencode 进程并删掉它的配置目录。
-    /// 关窗、换工作区（该窗口内）都走这里。
-    pub fn kill_window(&self, label: &str) {
+    /// 只查已有槽位，不创建。给「操作已经在跑的服务」那批命令用——
+    /// 免得前端传来一个没登记过的目录就凭空多出一个空槽位。
+    fn peek(&self, root: &str) -> Option<Slot> {
+        self.slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(root)
+            .cloned()
+    }
+
+    /// 收掉某个项目的 opencode 进程并删掉它的配置目录。
+    pub fn kill_project(&self, root: &str) {
         let removed = self
             .slots
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(label);
+            .remove(root);
         if let Some(slot) = removed {
             kill_slot(&slot);
         }
@@ -578,16 +593,16 @@ impl AgentState {
 
     /// 应用退出时调用，别留下游离的 opencode 进程。
     pub fn kill_all(&self) {
-        // 先取出 label 列表再逐个收，别持着锁去调 kill_window（它会再取一次锁）
-        let labels: Vec<String> = self
+        // 先取出 root 列表再逐个收，别持着锁去调 kill_project（它会再取一次锁）
+        let roots: Vec<String> = self
             .slots
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .keys()
             .cloned()
             .collect();
-        for label in labels {
-            self.kill_window(&label);
+        for root in roots {
+            self.kill_project(&root);
         }
     }
 }
@@ -1025,7 +1040,11 @@ fn truncate(text: &str, max_chars: usize) -> String {
 
 /// 拿当前实例的端口、口令、接口代次。每个命令都要这三样：
 /// 端口拼 URL、口令做认证（只有 v2 用得上）、协议决定走哪条路由。
-fn current_endpoint(slot: &Slot) -> Result<(Protocol, u16, String), String> {
+fn current_endpoint(state: &AgentState, root: &str) -> Result<(Protocol, u16, String), String> {
+    // 只查已有槽位：没启动过的项目不在这里，也就不必凭空建一个
+    let slot = state
+        .peek(root)
+        .ok_or_else(|| "智能体服务还没启动".to_string())?;
     let guard = slot.inner.lock().map_err(|e| e.to_string())?;
     guard
         .as_ref()
@@ -1216,7 +1235,7 @@ fn frame_data(frame: &str) -> Option<&str> {
 fn spawn_sse(
     app: AppHandle,
     inner: Arc<Mutex<Option<Running>>>,
-    label: String,
+    root: String,
     protocol: Protocol,
     port: u16,
     password: String,
@@ -1245,7 +1264,13 @@ fn spawn_sse(
                                 let Some(data) = frame_data(&frame) else { continue };
                                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
                                 {
-                                    let _ = app.emit_to(&label, EVENT_NAME, value);
+                                    let _ = app.emit(
+                                        EVENT_NAME,
+                                        TaggedEvent {
+                                            root: root.clone(),
+                                            event: value,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -1271,7 +1296,7 @@ fn spawn_exit_watcher(
     app: AppHandle,
     inner: Arc<Mutex<Option<Running>>>,
     generation: Arc<AtomicU64>,
-    label: String,
+    root: String,
     port: u16,
 ) {
     std::thread::spawn(move || loop {
@@ -1295,7 +1320,13 @@ fn spawn_exit_watcher(
             guard.take();
             generation.fetch_add(1, Ordering::SeqCst);
             drop(guard);
-            let _ = app.emit_to(&label, EXIT_EVENT, code);
+            let _ = app.emit(
+                EXIT_EVENT,
+                TaggedEvent {
+                    root: root.clone(),
+                    event: serde_json::json!(code),
+                },
+            );
             return;
         }
     });
@@ -1314,13 +1345,39 @@ fn is_current(inner: &Arc<Mutex<Option<Running>>>, generation: u64) -> bool {
 
 // ---- 命令 ----
 
-/// 启动智能体服务。幂等：同一个工作区已经在跑就直接返回现有信息。
+/// 项目的配置目录名：root 是完整路径，不能直接当目录名——把非法字符换成 `_`，
+/// 再缀一段稳定 hash 保证唯一（截断之后也不会撞）。
+fn project_dir_name(root: &Path) -> String {
+    let mut safe: String = root
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    // 路径长了只留尾部，免得超文件名长度上限
+    if safe.len() > 60 {
+        safe = safe.split_off(safe.len() - 60);
+    }
+    format!("{safe}-{:016x}", stable_hash(root))
+}
+
+/// FNV-1a。不用 std 的 `DefaultHasher`：它的输出不保证跨 Rust 版本稳定，
+/// 换个版本编译就会把配置目录换掉，之前的 session 全丢。
+fn stable_hash(path: &Path) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 启动智能体服务。幂等：同一个项目已经在跑就直接返回现有信息。
 #[tauri::command]
 pub async fn agent_start(
-    window: tauri::Window,
     app: AppHandle,
     state: tauri::State<'_, AgentState>,
     fs_state: tauri::State<'_, FsState>,
+    root: String,
     config: AgentConfig,
 ) -> Result<AgentInfo, String> {
     // 覆盖要赶在下面判空之前：面板留空、只写 .env 时也得能起
@@ -1337,9 +1394,8 @@ pub async fn agent_start(
     let secrets = config.secrets()?;
 
     // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await
-    let label = window.label().to_string();
-    let cwd = fs_state.root(&label)?;
-    let slot = state.slot(&label);
+    let cwd = fs_state.checked_root(&root)?;
+    let slot = state.slot(&root);
 
     let (port, generation) = {
         let mut guard = slot.inner.lock().map_err(|e| e.to_string())?;
@@ -1368,14 +1424,14 @@ pub async fn agent_start(
             check_port(config.port)?
         };
 
-        // 配置目录按窗口分开：共用一份会让两个 opencode 进程争用同一批文件，
-        // 而且关窗时的 remove_dir_all 会把另一个窗口还在用的目录一起删掉
+        // 配置目录按项目分开：共用一份会让两个 opencode 进程争用同一批文件，
+        // 而且收掉某个项目时的 remove_dir_all 会把另一个还在用的目录一起删掉
         let config_dir = app
             .path()
             .app_config_dir()
             .map_err(|e| format!("拿不到配置目录: {e}"))?
             .join("opencode")
-            .join(&label);
+            .join(project_dir_name(&cwd));
         write_config(&config_dir, &config)?;
 
         let password = random_password();
@@ -1411,8 +1467,8 @@ pub async fn agent_start(
         match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
             Ok(found) => found,
             Err(reason) => {
-                // 只收本窗口这一份：探测失败的责任不该由别的窗口的智能体承担
-                state.kill_window(&label);
+                // 只收本项目这一份：探测失败的责任不该由别的项目的智能体承担
+                state.kill_project(&root);
                 return Err(reason);
             }
         };
@@ -1429,13 +1485,13 @@ pub async fn agent_start(
     spawn_sse(
         app.clone(),
         slot.inner.clone(),
-        label.clone(),
+        root.clone(),
         protocol,
         port,
         password,
         generation,
     );
-    spawn_exit_watcher(app, slot.inner.clone(), slot.generation.clone(), label, port);
+    spawn_exit_watcher(app, slot.inner.clone(), slot.generation.clone(), root, port);
 
     Ok(AgentInfo {
         port,
@@ -1445,35 +1501,34 @@ pub async fn agent_start(
 }
 
 #[tauri::command]
-pub fn agent_status(window: tauri::Window, state: tauri::State<'_, AgentState>) -> AgentStatus {
-    let slot = state.slot(window.label());
-    let port = slot
-        .inner
-        .lock()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(|running| running.port));
+pub fn agent_status(state: tauri::State<'_, AgentState>, root: String) -> AgentStatus {
+    let port = state.peek(&root).and_then(|slot| {
+        slot.inner
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|running| running.port))
+    });
     AgentStatus {
         running: port.is_some(),
         port,
     }
 }
 
-/// 停掉本窗口的服务。换工作区和关窗时都要调。
+/// 停掉某个项目的服务。关闭项目时调。
 #[tauri::command]
-pub fn agent_stop(window: tauri::Window, state: tauri::State<'_, AgentState>) {
-    state.kill_window(window.label());
+pub fn agent_stop(state: tauri::State<'_, AgentState>, root: String) {
+    state.kill_project(&root);
 }
 
 /// 建一个会话。v2 把返回包在 `{data: ...}` 里，拆掉再给前端——
 /// 前端只认 `{id}` 这一层。
 #[tauri::command]
 pub async fn agent_create_session(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
     title: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
 
     let mut body = serde_json::Map::new();
@@ -1496,12 +1551,11 @@ pub async fn agent_create_session(
 /// 拉某个会话的历史消息。v2 返回 `{data: [...], cursor}`，拆成裸数组给前端。
 #[tauri::command]
 pub async fn agent_messages(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
     session_id: String,
 ) -> Result<serde_json::Value, String> {
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
     let messages = request_json(
         &client,
@@ -1521,11 +1575,10 @@ pub async fn agent_messages(
 /// 只列最近一批，为此引入分页状态不划算。
 #[tauri::command]
 pub async fn agent_list_sessions(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
 ) -> Result<serde_json::Value, String> {
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
     let sessions = request_json(
         &client,
@@ -1545,8 +1598,8 @@ pub async fn agent_list_sessions(
 /// 分别由 `Protocol::prompt_path` 和 `prompt_body` 兜住。
 #[tauri::command]
 pub async fn agent_send(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
     session_id: String,
     text: String,
     model: Option<String>,
@@ -1556,8 +1609,7 @@ pub async fn agent_send(
         return Err("消息不能为空".to_string());
     }
 
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
     let agent = agent.filter(|a| !a.trim().is_empty());
 
@@ -1589,12 +1641,11 @@ pub async fn agent_send(
 /// 打断当前这一轮。这个名字两代不同（v1 叫 abort、v2 叫 interrupt）。
 #[tauri::command]
 pub async fn agent_abort(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
     session_id: String,
 ) -> Result<(), String> {
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
     request_json(
         &client,
@@ -1615,12 +1666,11 @@ pub async fn agent_abort(
 /// 删掉一个会话（连同它的消息）。opencode 那边不可撤销，调用方要先确认。
 #[tauri::command]
 pub async fn agent_delete_session(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
     session_id: String,
 ) -> Result<(), String> {
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
     request_json(
         &client,
@@ -1637,8 +1687,8 @@ pub async fn agent_delete_session(
 /// 改会话标题。两代都是 `PATCH /session/:id`，只动 title、不动消息。
 #[tauri::command]
 pub async fn agent_rename_session(
-    window: tauri::Window,
     state: tauri::State<'_, AgentState>,
+    root: String,
     session_id: String,
     title: String,
 ) -> Result<(), String> {
@@ -1646,8 +1696,7 @@ pub async fn agent_rename_session(
         return Err("会话标题不能为空".to_string());
     }
 
-    let slot = state.slot(window.label());
-    let (protocol, port, password) = current_endpoint(&slot)?;
+    let (protocol, port, password) = current_endpoint(&state, &root)?;
     let client = http_client()?;
     request_json(
         &client,

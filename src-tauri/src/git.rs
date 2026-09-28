@@ -415,12 +415,10 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
 
 /// 只读查询当前工作区的 git 状态。抽出来给写命令复用：写完之后直接回传新状态，
 /// 前端一次 IPC 就能把界面刷到位，不用干等下一个轮询周期。
-fn status_of(state: &FsState, label: &str) -> Result<GitStatus, String> {
-    let root = state.root(label)?;
-
+fn status_of(root: &Path) -> Result<GitStatus, String> {
     // --show-prefix 一次调用回答两件事：目录是不是仓库（不是则非 0 退出），
     // 以及工作区相对仓库根的位置（仓库根就是工作区时输出空行）
-    let prefix = match run_git(&root, &["rev-parse", "--show-prefix"])? {
+    let prefix = match run_git(root, &["rev-parse", "--show-prefix"])? {
         Some(bytes) => String::from_utf8_lossy(&bytes).trim().to_string(),
         None => return Ok(GitStatus::not_repo()),
     };
@@ -429,7 +427,7 @@ fn status_of(state: &FsState, label: &str) -> Result<GitStatus, String> {
     // --untracked-files=normal：未跟踪的目录整条折叠成一项，避免刚 clone
     // 下来的仓库把条目数撑爆（.gitignore 挡住的目录本来就不会出现）
     let raw = run_git(
-        &root,
+        root,
         &[
             "status",
             "--porcelain=v2",
@@ -440,20 +438,15 @@ fn status_of(state: &FsState, label: &str) -> Result<GitStatus, String> {
     )?
     .ok_or("git status 执行失败")?;
 
-    Ok(parse_status(&raw, &prefix, &root))
+    Ok(parse_status(&raw, &prefix, root))
 }
 
 /// 把前端传来的绝对路径折算成"工作区内的相对路径（正斜杠）"。
 ///
 /// 一律先过 `fs_api::resolve` 的沙箱校验。返回的第二个值是 resolve 之后
 /// 的绝对路径（看差异时要用它读工作区文件）。
-fn workspace_relative(
-    state: &FsState,
-    label: &str,
-    root: &Path,
-    raw: &str,
-) -> Result<(PathBuf, String), String> {
-    let target = fs_api::resolve(state, label, raw)?;
+fn workspace_relative(root: &Path, raw: &str) -> Result<(PathBuf, String), String> {
+    let target = fs_api::resolve(root, raw)?;
     let relative = target
         .strip_prefix(root)
         .map_err(|_| format!("路径越界（不在工作区内）: {raw}"))?;
@@ -469,14 +462,9 @@ fn workspace_relative(
 ///
 /// 命令是 `git -C <工作区>` 跑的，pathspec 天然相对工作区，所以 strip 掉工作区
 /// 前缀就够了，不用管仓库根在哪。
-fn pathspecs(
-    state: &FsState,
-    label: &str,
-    root: &Path,
-    raw: &[String],
-) -> Result<Vec<String>, String> {
+fn pathspecs(root: &Path, raw: &[String]) -> Result<Vec<String>, String> {
     raw.iter()
-        .map(|item| workspace_relative(state, label, root, item).map(|(_, spec)| spec))
+        .map(|item| workspace_relative(root, item).map(|(_, spec)| spec))
         .collect()
 }
 
@@ -484,44 +472,29 @@ fn pathspecs(
 ///
 /// 这里必须给出 pathspec `.`：工作区可能只是仓库的一个子目录，不带 pathspec 的
 /// `git add -A` 会把**整个仓库**都暂存了，用户在界面上根本看不出来。
-fn all_or_specs(
-    state: &FsState,
-    label: &str,
-    root: &Path,
-    paths: &Option<Vec<String>>,
-) -> Result<Vec<String>, String> {
+fn all_or_specs(root: &Path, paths: &Option<Vec<String>>) -> Result<Vec<String>, String> {
     match paths {
-        Some(list) if !list.is_empty() => pathspecs(state, label, root, list),
+        Some(list) if !list.is_empty() => pathspecs(root, list),
         _ => Ok(vec![".".to_string()]),
     }
 }
 
-fn stage_paths(
-    state: &FsState,
-    label: &str,
-    paths: &Option<Vec<String>>,
-) -> Result<GitStatus, String> {
-    let root = state.root(label)?;
-    let specs = all_or_specs(state, label, &root, paths)?;
+fn stage_paths(root: &Path, paths: &Option<Vec<String>>) -> Result<GitStatus, String> {
+    let specs = all_or_specs(root, paths)?;
     let mut args = vec!["add", "-A", "--"];
     args.extend(specs.iter().map(String::as_str));
-    run_git_checked(&root, &args)?;
-    status_of(state, label)
+    run_git_checked(root, &args)?;
+    status_of(root)
 }
 
-fn unstage_paths(
-    state: &FsState,
-    label: &str,
-    paths: &Option<Vec<String>>,
-) -> Result<GitStatus, String> {
-    let root = state.root(label)?;
-    let specs = all_or_specs(state, label, &root, paths)?;
+fn unstage_paths(root: &Path, paths: &Option<Vec<String>>) -> Result<GitStatus, String> {
+    let specs = all_or_specs(root, paths)?;
 
     // 还没有任何提交的仓库里 `restore --staged` 会 could not resolve HEAD，
     // 只能用 `rm --cached` 把条目从 index 里摘掉（不碰工作区文件）。
     // 反过来也不能一律用它：有 HEAD 时它会把"未暂存的修改"变成
     // "已暂存的删除 + 未跟踪"，语义完全错。
-    let has_head = run_git(&root, &["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some();
+    let has_head = run_git(root, &["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some();
     let mut args = if has_head {
         vec!["restore", "--staged", "--"]
     } else {
@@ -529,8 +502,8 @@ fn unstage_paths(
         vec!["rm", "--cached", "-r", "-f", "--ignore-unmatch", "--"]
     };
     args.extend(specs.iter().map(String::as_str));
-    run_git_checked(&root, &args)?;
-    status_of(state, label)
+    run_git_checked(root, &args)?;
+    status_of(root)
 }
 
 /// 放弃某些文件的改动。
@@ -546,35 +519,32 @@ fn unstage_paths(
 /// 新增的文件（HEAD 里没有、index 里是 `A`）不在支持范围内：还原到 HEAD 等于
 /// 把文件删掉。前端据此不给按钮，要删就去终端或文件管理器。
 fn discard_paths(
-    state: &FsState,
-    label: &str,
+    root: &Path,
     paths: &[String],
     source: &DiscardSource,
 ) -> Result<GitStatus, String> {
     if paths.is_empty() {
         return Err("没有指定要放弃的文件".to_string());
     }
-    let root = state.root(label)?;
-    let specs = pathspecs(state, label, &root, paths)?;
+    let specs = pathspecs(root, paths)?;
 
     let mut args: Vec<&str> = match source {
         DiscardSource::Unstaged => vec!["restore", "--worktree", "--"],
         DiscardSource::Staged => vec!["restore", "--source=HEAD", "--staged", "--worktree", "--"],
     };
     args.extend(specs.iter().map(String::as_str));
-    run_git_checked(&root, &args)?;
-    status_of(state, label)
+    run_git_checked(root, &args)?;
+    status_of(root)
 }
 
-fn commit_staged(state: &FsState, label: &str, message: &str) -> Result<GitStatus, String> {
+fn commit_staged(root: &Path, message: &str) -> Result<GitStatus, String> {
     if message.trim().is_empty() {
         return Err("提交信息不能为空".to_string());
     }
-    let root = state.root(label)?;
     // message 走 argv 直传（不起 shell），$、反引号、分号都只是普通字符；
     // 多行也原样接受，不用 --cleanup=verbatim，用 -m 的默认 whitespace 正好
-    run_git_checked(&root, &["commit", "-m", message])?;
-    status_of(state, label)
+    run_git_checked(root, &["commit", "-m", message])?;
+    status_of(root)
 }
 
 /// 工作区相对仓库根的前缀（仓库根就是工作区时是空串）。
@@ -646,27 +616,21 @@ fn worktree_side(path: &Path) -> Result<Side, String> {
 ///
 /// 基线照 VS Code：未暂存的改动比 `index ↔ 工作区`，暂存的改动比 `HEAD ↔ index`，
 /// 看某个提交则比 `<rev>^ ↔ <rev>`。
-fn file_diff(
-    state: &FsState,
-    label: &str,
-    path: &str,
-    source: &DiffSource,
-) -> Result<FileDiff, String> {
-    let root = state.root(label)?;
+fn file_diff(root: &Path, path: &str, source: &DiffSource) -> Result<FileDiff, String> {
     // --show-prefix 一次调用同时回答"是不是仓库"和"工作区在仓库里的哪一层"。
     // 工作区可能只是仓库的子目录，而 `cat-file` 的 `<path>` 是相对仓库根的，
     // 所以这里必须把 prefix 拼上（pathspecs 那个相对工作区的写法不能直接用）。
-    let prefix = repo_prefix(&root)?.ok_or("这个目录不是 git 仓库")?;
-    let (target, relative) = workspace_relative(state, label, &root, path)?;
+    let prefix = repo_prefix(root)?.ok_or("这个目录不是 git 仓库")?;
+    let (target, relative) = workspace_relative(root, path)?;
     let repo_path = format!("{prefix}{relative}");
 
     let (original, modified) = match source {
         DiffSource::Staged => (
-            blob_side(&root, &format!("HEAD:{repo_path}"))?,
-            blob_side(&root, &format!(":{repo_path}"))?,
+            blob_side(root, &format!("HEAD:{repo_path}"))?,
+            blob_side(root, &format!(":{repo_path}"))?,
         ),
         DiffSource::Unstaged => (
-            blob_side(&root, &format!(":{repo_path}"))?,
+            blob_side(root, &format!(":{repo_path}"))?,
             worktree_side(&target)?,
         ),
         DiffSource::Commit { rev } => {
@@ -674,8 +638,8 @@ fn file_diff(
             // 根提交没有父提交，`<rev>^` 解析不了 —— 正好落成空基线，
             // 语义上也对：根提交里的文件本来就都是新增的
             (
-                blob_side(&root, &format!("{rev}^:{repo_path}"))?,
-                blob_side(&root, &format!("{rev}:{repo_path}"))?,
+                blob_side(root, &format!("{rev}^:{repo_path}"))?,
+                blob_side(root, &format!("{rev}:{repo_path}"))?,
             )
         }
     };
@@ -691,13 +655,11 @@ fn file_diff(
 /// 未跟踪的文件没有基线，`git diff` 一行都不出，这时把工作区文件整个当成新增
 /// 内容——右键一个刚建的文件，总得有东西可讲。
 pub(crate) fn file_diff_text(
-    state: &FsState,
-    label: &str,
+    root: &Path,
     path: &str,
     source: &DiffSource,
 ) -> Result<String, String> {
-    let root = state.root(label)?;
-    let (target, spec) = workspace_relative(state, label, &root, path)?;
+    let (target, spec) = workspace_relative(root, path)?;
     // 提交号要活得比 args 久（args 里存的是借用），先在 match 外面拿到手
     let rev = match source {
         DiffSource::Commit { rev } => Some(checked_rev(rev)?),
@@ -712,7 +674,7 @@ pub(crate) fn file_diff_text(
         vec!["diff", "--no-color", "--", &spec]
     };
 
-    if let Some(raw) = run_git_literal(&root, &args)? {
+    if let Some(raw) = run_git_literal(root, &args)? {
         let text = String::from_utf8_lossy(&raw).trim_end().to_string();
         if !text.is_empty() {
             return Ok(text);
@@ -780,16 +742,15 @@ fn parse_log(raw: &[u8]) -> Vec<Commit> {
         .collect()
 }
 
-fn log_of(state: &FsState, label: &str, limit: u32) -> Result<Vec<Commit>, String> {
-    let root = state.root(label)?;
-    if repo_prefix(&root)?.is_none() {
+fn log_of(root: &Path, limit: u32) -> Result<Vec<Commit>, String> {
+    if repo_prefix(root)?.is_none() {
         return Ok(Vec::new());
     }
 
     let count = limit.clamp(1, LOG_MAX).to_string();
     let arg = format!("--max-count={count}");
     // 空仓库（还没有任何提交）时 git log 非 0 退出，那不是错误，给空列表
-    let raw = run_git(&root, &["log", &arg, LOG_FORMAT])?.unwrap_or_default();
+    let raw = run_git(root, &["log", &arg, LOG_FORMAT])?.unwrap_or_default();
     Ok(parse_log(&raw))
 }
 
@@ -830,13 +791,12 @@ fn parse_name_status(raw: &[u8], prefix: &str, root: &Path) -> Vec<CommitFile> {
     files
 }
 
-fn files_of(state: &FsState, label: &str, rev: &str) -> Result<Vec<CommitFile>, String> {
-    let root = state.root(label)?;
-    let prefix = repo_prefix(&root)?.ok_or("这个目录不是 git 仓库")?;
+fn files_of(root: &Path, rev: &str) -> Result<Vec<CommitFile>, String> {
+    let prefix = repo_prefix(root)?.ok_or("这个目录不是 git 仓库")?;
     let rev = checked_rev(rev)?;
-    let raw = run_git(&root, &["show", "--name-status", "-z", "--format=", &rev])?
+    let raw = run_git(root, &["show", "--name-status", "-z", "--format=", &rev])?
         .ok_or("git show 执行失败")?;
-    Ok(parse_name_status(&raw, &prefix, &root))
+    Ok(parse_name_status(&raw, &prefix, root))
 }
 
 /// 生成提交信息要喂给大模型的原料。放在 git 模块里取，是因为 `GitStatus`
@@ -852,14 +812,12 @@ pub struct CommitContext {
 
 /// 取暂存区 diff + 分支 + 近期提交主题。全走只读的 `run_git`，
 /// 非 0 退出（空仓库的 log、游离 HEAD 的 rev-parse）当"没有"处理，不算错误。
-pub(crate) fn commit_context(state: &FsState, label: &str) -> Result<CommitContext, String> {
-    let root = state.root(label)?;
-
+pub(crate) fn commit_context(root: &Path) -> Result<CommitContext, String> {
     // 游离 HEAD 时 `--abbrev-ref` 输出字面量 "HEAD"，等于没有分支名
-    let branch = current_branch(&root)?;
+    let branch = current_branch(root)?;
 
     // 空仓库里没有提交，git log 非 0 退出 → None → 空列表
-    let recent_subjects = run_git(&root, &["log", "-5", "--format=%s"])?
+    let recent_subjects = run_git(root, &["log", "-5", "--format=%s"])?
         .map(|bytes| {
             String::from_utf8_lossy(&bytes)
                 .lines()
@@ -870,7 +828,7 @@ pub(crate) fn commit_context(state: &FsState, label: &str) -> Result<CommitConte
 
     // --no-color 保证没有 ANSI 序列；二进制文件默认只出 "Binary files ... differ"。
     // 空仓库（还没有 HEAD）时 --cached 按空树比，照样能列出已暂存的新增。
-    let diff = run_git(&root, &["diff", "--cached", "--no-color"])?
+    let diff = run_git(root, &["diff", "--cached", "--no-color"])?
         .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
         .unwrap_or_default();
 
@@ -886,10 +844,9 @@ pub(crate) fn commit_context(state: &FsState, label: &str) -> Result<CommitConte
 /// 从远程取回引用，不动工作区，也不动当前分支。fetch 完 ahead/behind 就准了，
 /// 用户可以据此决定要不要拉。不带 remote 参数：按当前分支的上游走，
 /// 没有远程仓库时 git 自己会报错，原样透传比我们自己编一句更有用。
-fn fetch_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
-    let root = state.root(label)?;
-    run_git_network(&root, &["fetch"])?;
-    status_of(state, label)
+fn fetch_remote(root: &Path) -> Result<GitStatus, String> {
+    run_git_network(root, &["fetch"])?;
+    status_of(root)
 }
 
 /// 拉取。
@@ -898,13 +855,12 @@ fn fetch_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
 /// 带进冲突状态——冲突要靠终端解决，界面里给不出像样的处理方式。
 /// `--no-rebase`：把用户全局配置里的 `pull.rebase=true` 压掉，行为在哪儿都一样。
 /// ff-only 不会生成合并提交，所以不需要 `--no-edit`。
-fn pull_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
-    let root = state.root(label)?;
-    if current_branch(&root)?.is_none() {
+fn pull_remote(root: &Path) -> Result<GitStatus, String> {
+    if current_branch(root)?.is_none() {
         return Err("当前不在任何分支上（游离 HEAD），无法拉取".to_string());
     }
-    run_git_network(&root, &["pull", "--ff-only", "--no-rebase"])?;
-    status_of(state, label)
+    run_git_network(root, &["pull", "--ff-only", "--no-rebase"])?;
+    status_of(root)
 }
 
 /// 推送。
@@ -913,20 +869,19 @@ fn pull_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
 /// 用户看不出到底推成功没有，下次还得再推一次。
 /// 被拒时先快进拉取再重推一次；拉不动（本地已分叉，或网络/凭据有问题）就
 /// 原样报错，这里不做 force push、也不解决冲突。
-fn push_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
-    let root = state.root(label)?;
-    let branch = current_branch(&root)?
+fn push_remote(root: &Path) -> Result<GitStatus, String> {
+    let branch = current_branch(root)?
         .ok_or("当前不在任何分支上（游离 HEAD），无法推送")?;
 
     // 上游存在时 `@{u}` 能解析出 origin/main 这样的名字；非 0 退出即没有上游
     let has_upstream = run_git(
-        &root,
+        root,
         &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
     )?
     .is_some();
 
     if has_upstream {
-        if let Err(rejected) = run_git_network(&root, &["push"]) {
+        if let Err(rejected) = run_git_network(root, &["push"]) {
             // 落后于远程时 git 会拒绝推送。这里不去解析 stderr 认「non-fast-forward」
             // 那几个词——文案随 git 版本和语言环境变（见下面分叉那条测试的注释）。
             // 直接补一次快进拉取：能快进说明确实是纯落后，拉完重推一次就成；
@@ -935,14 +890,14 @@ fn push_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
             //
             // 也不能拿本地 status 的 behind 当闸门：push 被拒时 git 并不更新
             // refs/remotes/*，那会儿 behind 往往还是 0，重试就永远不会触发。
-            run_git_network(&root, &["pull", "--ff-only", "--no-rebase"])
+            run_git_network(root, &["pull", "--ff-only", "--no-rebase"])
                 .map_err(|blocked| format!("{rejected}\n{blocked}"))?;
-            run_git_network(&root, &["push"])?;
+            run_git_network(root, &["push"])?;
         }
     } else {
         // 没配上游就推到第一个远程。`git remote` 按字母序输出，常见仓库里
         // origin 天然排在最前；一个远程都没有时给一句能看懂的提示
-        let remote = run_git(&root, &["remote"])?
+        let remote = run_git(root, &["remote"])?
             .and_then(|bytes| {
                 String::from_utf8_lossy(&bytes)
                     .lines()
@@ -951,137 +906,137 @@ fn push_remote(state: &FsState, label: &str) -> Result<GitStatus, String> {
             })
             .filter(|name| !name.is_empty())
             .ok_or("没有配置远程仓库，先在终端里 git remote add")?;
-        run_git_network(&root, &["push", "-u", &remote, &branch])?;
+        run_git_network(root, &["push", "-u", &remote, &branch])?;
     }
 
-    status_of(state, label)
+    status_of(root)
 }
 
 #[tauri::command(async)]
 pub fn git_status(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
 ) -> Result<GitStatus, String> {
-    status_of(&state, window.label())
+    status_of(&state.checked_root(&root)?)
 }
 
 /// 暂存。`paths` 为空表示全部暂存。
 #[tauri::command(async)]
 pub fn git_stage(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     paths: Option<Vec<String>>,
 ) -> Result<GitStatus, String> {
-    stage_paths(&state, window.label(), &paths)
+    stage_paths(&state.checked_root(&root)?, &paths)
 }
 
 /// 取消暂存。`paths` 为空表示全部取消。
 #[tauri::command(async)]
 pub fn git_unstage(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     paths: Option<Vec<String>>,
 ) -> Result<GitStatus, String> {
-    unstage_paths(&state, window.label(), &paths)
+    unstage_paths(&state.checked_root(&root)?, &paths)
 }
 
 /// 放弃某些文件的改动，还原到 index（unstaged）或 HEAD（staged）。不可撤销。
 #[tauri::command(async)]
 pub fn git_discard(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     paths: Vec<String>,
     source: DiscardSource,
 ) -> Result<GitStatus, String> {
-    discard_paths(&state, window.label(), &paths, &source)
+    discard_paths(&state.checked_root(&root)?, &paths, &source)
 }
 
 /// 提交暂存区。
 #[tauri::command(async)]
 pub fn git_commit(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     message: String,
 ) -> Result<GitStatus, String> {
-    commit_staged(&state, window.label(), &message)
+    commit_staged(&state.checked_root(&root)?, &message)
 }
 
 /// 一个改动文件的两侧内容，给编辑器的差异视图用。
 #[tauri::command(async)]
 pub fn git_file_diff(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     path: String,
     source: DiffSource,
 ) -> Result<FileDiff, String> {
-    file_diff(&state, window.label(), &path, &source)
+    file_diff(&state.checked_root(&root)?, &path, &source)
 }
 
 /// 提交历史，最新的在最前。`limit` 不传就取一页。
 #[tauri::command(async)]
 pub fn git_log(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     limit: Option<u32>,
 ) -> Result<Vec<Commit>, String> {
-    log_of(&state, window.label(), limit.unwrap_or(LOG_PAGE))
+    log_of(&state.checked_root(&root)?, limit.unwrap_or(LOG_PAGE))
 }
 
 /// 某个提交改了哪些文件。
 #[tauri::command(async)]
 pub fn git_commit_files(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     rev: String,
 ) -> Result<Vec<CommitFile>, String> {
-    files_of(&state, window.label(), &rev)
+    files_of(&state.checked_root(&root)?, &rev)
 }
 
 /// 从远程取回引用，不动工作区。
 #[tauri::command(async)]
 pub fn git_fetch(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
 ) -> Result<GitStatus, String> {
-    fetch_remote(&state, window.label())
+    fetch_remote(&state.checked_root(&root)?)
 }
 
 /// 拉取当前分支的上游，只允许快进。
 #[tauri::command(async)]
 pub fn git_pull(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
 ) -> Result<GitStatus, String> {
-    pull_remote(&state, window.label())
+    pull_remote(&state.checked_root(&root)?)
 }
 
 /// 推送当前分支；没有上游时顺手建立跟踪关系。
 #[tauri::command(async)]
 pub fn git_push(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
 ) -> Result<GitStatus, String> {
-    push_remote(&state, window.label())
+    push_remote(&state.checked_root(&root)?)
 }
 
 /// 一批路径里，哪些被 .gitignore 之类的排除规则忽略了。文件树按这个把条目置灰。
 #[tauri::command(async)]
 pub fn git_ignored(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     paths: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    ignored_paths(&state, window.label(), &paths)
+    ignored_paths(&state.checked_root(&root)?, &paths)
 }
 
 /// 把一条路径追加进工作区根的 `.gitignore`。已经有一条同样的规则时什么都不做。
 #[tauri::command(async)]
 pub fn git_add_to_ignore(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     path: String,
 ) -> Result<(), String> {
-    add_to_ignore(&state, window.label(), &path)
+    add_to_ignore(&state.checked_root(&root)?, &path)
 }
 
 /// 一次问 git 多少条路径。argv 有命令行长度上限（Windows 是 32767 个字符），
@@ -1096,14 +1051,13 @@ const IGNORE_CHUNK: usize = 80;
 ///
 /// 路径走 argv 而不是 `--stdin`：`run_git_raw` 的 stdin 是关掉的，为它单开一套
 /// 写管道的路不值当。代价是输出不能带 `-z`（git 只在 `--stdin` 下认它），只能按行读。
-fn ignored_paths(state: &FsState, label: &str, raw: &[String]) -> Result<Vec<String>, String> {
-    let root = state.root(label)?;
+fn ignored_paths(root: &Path, raw: &[String]) -> Result<Vec<String>, String> {
 
     // 绝对路径 -> 喂给 git 的相对路径。越界的（前端理论上不会传）跳过而不是整批报错：
     // 这只是个显示效果，不该因为一条脏路径就让整棵树都不置灰
     let mut specs: Vec<(String, String)> = Vec::new();
     for item in raw {
-        let Ok((target, spec)) = workspace_relative(state, label, &root, item) else {
+        let Ok((target, spec)) = workspace_relative(root, item) else {
             continue;
         };
         // 形如 `dist/` 的规则只匹配目录，路径不带尾斜杠 git 就不认它
@@ -1119,7 +1073,7 @@ fn ignored_paths(state: &FsState, label: &str, raw: &[String]) -> Result<Vec<Str
         let mut args: Vec<&str> = vec!["check-ignore", "--"];
         args.extend(chunk.iter().map(|(_, spec)| spec.as_str()));
         // 退出码 1 是「一条都没匹配」，不是错误；run_git 已经把它折成 None
-        let Some(bytes) = run_git(&root, &args)? else {
+        let Some(bytes) = run_git(root, &args)? else {
             continue;
         };
         // 没有 --stdin 就用不了 -z（git 直接报 fatal），输出是按行一条。
@@ -1174,9 +1128,8 @@ fn escape_gitignore(spec: &str) -> String {
 ///
 /// 不去校验是不是仓库：这只是往一个文本文件里追加一行，目录还不是仓库时写了也无害
 /// （将来 init 的时候规则正好现成）。界面上按 `isRepo` 决定给不给这个菜单项。
-fn add_to_ignore(state: &FsState, label: &str, raw: &str) -> Result<(), String> {
-    let root = state.root(label)?;
-    let (target, mut spec) = workspace_relative(state, label, &root, raw)?;
+fn add_to_ignore(root: &Path, raw: &str) -> Result<(), String> {
+    let (target, mut spec) = workspace_relative(root, raw)?;
     // 目录带尾斜杠，和 ignored_paths 喂给 check-ignore 的写法一致：不然一条
     // `build` 会把同名的**文件**也一起忽略掉
     let is_dir = std::fs::metadata(&target)
@@ -1215,8 +1168,6 @@ fn add_to_ignore(state: &FsState, label: &str, raw: &str) -> Result<(), String> 
 mod tests {
     use super::*;
 
-    /// 测试里只有一个窗口，统一用这个 label
-    const TEST_LABEL: &str = "test";
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1406,7 +1357,7 @@ mod tests {
         let repo = top.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let state = FsState::new();
-        let root = state.set_root(TEST_LABEL, repo).unwrap();
+        let root = state.register(repo).unwrap();
         (state, root, top)
     }
 
@@ -1433,19 +1384,19 @@ mod tests {
 
     #[test]
     fn pathspecs_are_relative_to_the_workspace_and_stay_inside() {
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         fs::create_dir_all(repo.join("src")).unwrap();
 
-        let specs = pathspecs(&state, TEST_LABEL, &repo, &[path_of_file(&repo, "src/a.ts")]).unwrap();
+        let specs = pathspecs(&repo, &[path_of_file(&repo, "src/a.ts")]).unwrap();
         assert_eq!(specs, vec!["src/a.ts"]);
 
         // 工作区外的路径必须被沙箱挡下
         let outside = top.join("secret.txt").to_string_lossy().to_string();
-        assert!(pathspecs(&state, TEST_LABEL, &repo, &[outside]).is_err());
+        assert!(pathspecs(&repo, &[outside]).is_err());
 
         // 没给路径就是"全部"，而且必须落在工作区内
-        assert_eq!(all_or_specs(&state, TEST_LABEL, &repo, &None).unwrap(), vec!["."]);
-        assert_eq!(all_or_specs(&state, TEST_LABEL, &repo, &Some(vec![])).unwrap(), vec!["."]);
+        assert_eq!(all_or_specs(&repo, &None).unwrap(), vec!["."]);
+        assert_eq!(all_or_specs(&repo, &Some(vec![])).unwrap(), vec!["."]);
 
         cleanup(&top);
     }
@@ -1455,16 +1406,16 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         fs::write(repo.join("app.ts"), "a\n").unwrap();
 
-        let after = stage_paths(&state, TEST_LABEL, &Some(vec![path_of_file(&repo, "app.ts")])).unwrap();
+        let after = stage_paths(&repo, &Some(vec![path_of_file(&repo, "app.ts")])).unwrap();
         assert_eq!(after.files.len(), 1);
         assert_eq!((after.files[0].index, after.files[0].worktree), ('A', '.'));
 
         // 这个仓库还没有 HEAD，restore --staged 会 fatal，必须走 rm --cached
-        let after = unstage_paths(&state, TEST_LABEL, &Some(vec![path_of_file(&repo, "app.ts")])).unwrap();
+        let after = unstage_paths(&repo, &Some(vec![path_of_file(&repo, "app.ts")])).unwrap();
         assert_eq!(after.files.len(), 1);
         assert_eq!((after.files[0].index, after.files[0].worktree), ('?', '?'));
 
@@ -1476,18 +1427,18 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let file = repo.join("app.ts");
         fs::write(&file, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&file, "a\nb\n").unwrap();
-        let staged = stage_paths(&state, TEST_LABEL, &None).unwrap();
+        let staged = stage_paths(&repo, &None).unwrap();
         assert_eq!((staged.files[0].index, staged.files[0].worktree), ('M', '.'));
 
-        let after = unstage_paths(&state, TEST_LABEL, &None).unwrap();
+        let after = unstage_paths(&repo, &None).unwrap();
         // 有 HEAD 时必须回到"工作区已修改"，而不是"已暂存的删除 + 未跟踪"
         assert_eq!(after.files.len(), 1);
         assert_eq!((after.files[0].index, after.files[0].worktree), ('.', 'M'));
@@ -1500,21 +1451,21 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         fs::create_dir_all(repo.join("old")).unwrap();
         fs::write(repo.join("old").join("a.txt"), "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::remove_dir_all(repo.join("old")).unwrap();
 
-        let status = status_of(&state, TEST_LABEL).unwrap();
+        let status = status_of(&repo).unwrap();
         assert_eq!(status.files.len(), 1);
         assert_eq!(status.files[0].relative, "old/a.txt");
 
         // old 整个目录都没了，resolve 得靠"向上找最近存在的祖先"才能过
-        let after = stage_paths(&state, TEST_LABEL, &Some(vec![status.files[0].path.clone()])).unwrap();
+        let after = stage_paths(&repo, &Some(vec![status.files[0].path.clone()])).unwrap();
         assert_eq!((after.files[0].index, after.files[0].worktree), ('D', '.'));
 
         cleanup(&top);
@@ -1525,7 +1476,7 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         // `[1]` 在 git 的 pathspec 里是字符类，会匹配到 a1.txt；
         // Windows 文件名不允许 * 和 ?，所以用中括号当代表
@@ -1533,7 +1484,7 @@ mod tests {
             fs::write(repo.join(name), "x\n").unwrap();
         }
 
-        let after = stage_paths(&state, TEST_LABEL, &Some(vec![path_of_file(&repo, "a[1].txt")])).unwrap();
+        let after = stage_paths(&repo, &Some(vec![path_of_file(&repo, "a[1].txt")])).unwrap();
         let staged: Vec<&str> = after
             .files
             .iter()
@@ -1557,18 +1508,18 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         fs::create_dir_all(repo.join("brandnew").join("nested")).unwrap();
         fs::write(repo.join("brandnew").join("a.txt"), "a\n").unwrap();
         fs::write(repo.join("brandnew").join("nested").join("b.txt"), "b\n").unwrap();
 
         // --untracked-files=normal 会把未跟踪目录折叠成一条
-        let status = status_of(&state, TEST_LABEL).unwrap();
+        let status = status_of(&repo).unwrap();
         assert_eq!(status.files.len(), 1);
         assert_eq!(status.files[0].relative, "brandnew");
 
-        let after = stage_paths(&state, TEST_LABEL, &Some(vec![status.files[0].path.clone()])).unwrap();
+        let after = stage_paths(&repo, &Some(vec![status.files[0].path.clone()])).unwrap();
         let mut staged: Vec<&str> = after
             .files
             .iter()
@@ -1592,10 +1543,10 @@ mod tests {
         let sub = repo.join("sub");
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("inside.txt"), "i\n").unwrap();
-        let sub = state.set_root(TEST_LABEL, sub).unwrap();
+        let sub = state.register(sub).unwrap();
 
         // 不带 pathspec 的 add -A 会把仓库根那个文件也暂存了，界面上看不出来
-        let after = stage_paths(&state, TEST_LABEL, &None).unwrap();
+        let after = stage_paths(&sub, &None).unwrap();
         let staged: Vec<&str> = after.files.iter().map(|file| file.relative.as_str()).collect();
         assert_eq!(staged, vec!["inside.txt"]);
         assert!(sub.join("inside.txt").is_file());
@@ -1608,18 +1559,18 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         fs::write(repo.join("app.ts"), "a\n").unwrap();
 
         // 什么都没暂存就提交：git 在 stderr 上给出原因并返回非 0。
         // 关键是那段原文要原样带回来（它是多行的），而不是被吞成一句通用错误
-        let error = commit_staged(&state, TEST_LABEL, "init").unwrap_err();
+        let error = commit_staged(&repo, "init").unwrap_err();
         assert!(!error.trim().is_empty());
         assert!(error.lines().count() > 1, "报错被截断了: {error:?}");
 
         // 空信息在前端就该拦住，到这儿也要有个明确说法
-        assert!(commit_staged(&state, TEST_LABEL, "   ").unwrap_err().contains("不能为空"));
+        assert!(commit_staged(&repo, "   ").unwrap_err().contains("不能为空"));
 
         cleanup(&top);
     }
@@ -1631,20 +1582,20 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let path = path_of_file(&repo, "fresh.txt");
         fs::write(&path, "a\n").unwrap();
 
         // 还没暂存：index 里没有这条，基线是空
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let diff = file_diff(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "");
         assert_eq!(diff.modified, "a\n");
         assert!(!diff.is_binary && !diff.too_large);
 
         // 没有 HEAD 的仓库里暂存进来，基线依然是空
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Staged).unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let diff = file_diff(&repo, &path, &DiffSource::Staged).unwrap();
         assert_eq!(diff.original, "");
         assert_eq!(diff.modified, "a\n");
 
@@ -1656,16 +1607,16 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let path = path_of_file(&repo, "app.ts");
         fs::write(&path, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&path, "a\nb\n").unwrap();
         // 未暂存：基线是 index（还是提交时的 "a\n"）
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let diff = file_diff(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n");
 
@@ -1677,22 +1628,22 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let path = path_of_file(&repo, "app.ts");
         fs::write(&path, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&path, "a\nb\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
+        stage_paths(&repo, &None).unwrap();
 
         // 暂存后基线从 index 换成 HEAD
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Staged).unwrap();
+        let diff = file_diff(&repo, &path, &DiffSource::Staged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n");
         // 同一个文件此时未暂存侧没有改动，两边内容一致
-        let unstaged = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let unstaged = file_diff(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(unstaged.original, unstaged.modified);
 
         cleanup(&top);
@@ -1705,24 +1656,24 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         let path = path_of_file(&repo, "app.ts");
         fs::write(&path, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&path, "a\nb\n").unwrap();
-        let unstaged = file_diff_text(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let unstaged = file_diff_text(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert!(unstaged.contains("+b"), "应当带上新增那一行：{unstaged}");
         assert!(unstaged.contains("app.ts"));
 
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "more").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "more").unwrap();
         // 提交之后看这个提交：基线是它的父提交，照样能看出加了 b
         let rev = run_git(&repo, &["rev-parse", "HEAD"]).unwrap().unwrap();
         let rev = String::from_utf8_lossy(&rev).trim().to_string();
-        let commit = file_diff_text(&state, TEST_LABEL, &path, &DiffSource::Commit { rev }).unwrap();
+        let commit = file_diff_text(&repo, &path, &DiffSource::Commit { rev }).unwrap();
         assert!(commit.contains("+b"), "提交里的改动应当能取到：{commit}");
 
         cleanup(&top);
@@ -1733,13 +1684,13 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         // 未跟踪的文件 `git diff` 什么都不出，得把内容当成整个新增
         let path = path_of_file(&repo, "fresh.txt");
         fs::write(&path, "hello\nworld\n").unwrap();
 
-        let text = file_diff_text(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let text = file_diff_text(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert!(text.contains("新增文件"));
         assert!(text.contains("+hello"));
         assert!(text.contains("+world"));
@@ -1752,7 +1703,7 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         // `[1]` 在 git 的 pathspec 里是字符类，会匹配到 a1.txt；
         // Windows 文件名不允许 * 和 ?，所以用中括号当代表
@@ -1760,7 +1711,7 @@ mod tests {
         fs::write(&target, "one\n").unwrap();
         fs::write(path_of_file(&repo, "a1.txt"), "two\n").unwrap();
 
-        let text = file_diff_text(&state, TEST_LABEL, &target, &DiffSource::Unstaged).unwrap();
+        let text = file_diff_text(&repo, &target, &DiffSource::Unstaged).unwrap();
         assert!(text.contains("+one"), "应当只有 a[1].txt 的内容：{text}");
         assert!(!text.contains("+two"), "不该把 a1.txt 也带上：{text}");
 
@@ -1777,15 +1728,15 @@ mod tests {
         let sub = repo.join("sub");
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("inside.txt"), "a\n").unwrap();
-        let sub = state.set_root(TEST_LABEL, sub).unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        let sub = state.register(sub).unwrap();
+        stage_paths(&sub, &None).unwrap();
+        commit_staged(&sub, "init").unwrap();
 
         let path = path_of_file(&sub, "inside.txt");
         fs::write(&path, "a\nb\n").unwrap();
 
         // `cat-file` 的路径是相对仓库根的，工作区只是子目录时必须拼上 prefix
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let diff = file_diff(&sub, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n");
 
@@ -1797,15 +1748,15 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let path = path_of_file(&repo, "gone.txt");
         fs::write(&path, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::remove_file(&path).unwrap();
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let diff = file_diff(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "");
 
@@ -1817,16 +1768,16 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let path = path_of_file(&repo, "app.ts");
         // index 里存 LF（本项目 autocrlf=true 下的常态），工作区是 CRLF
         fs::write(&path, "a\nb\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&path, "a\r\nb\r\n").unwrap();
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap();
+        let diff = file_diff(&repo, &path, &DiffSource::Unstaged).unwrap();
         assert_eq!(diff.original, diff.modified, "只改行尾不该报成差异");
 
         cleanup(&top);
@@ -1834,12 +1785,12 @@ mod tests {
 
     #[test]
     fn non_repo_rejects_with_message() {
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         let path = path_of_file(&repo, "app.ts");
         fs::write(&path, "a\n").unwrap();
 
         // 目录存在但没 init 过，repo_prefix 返回 None
-        let error = file_diff(&state, TEST_LABEL, &path, &DiffSource::Unstaged).unwrap_err();
+        let error = file_diff(&repo, &path, &DiffSource::Unstaged).unwrap_err();
         assert!(error.contains("不是 git 仓库"), "{error:?}");
 
         cleanup(&top);
@@ -1864,10 +1815,10 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         // 空仓库里 git log 非 0 退出，这不是错误
-        assert!(log_of(&state, TEST_LABEL, LOG_PAGE).unwrap().is_empty());
+        assert!(log_of(&repo, LOG_PAGE).unwrap().is_empty());
         cleanup(&top);
     }
 
@@ -1876,18 +1827,18 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let file = repo.join("app.ts");
         fs::write(&file, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "第一条").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "第一条").unwrap();
 
         fs::write(&file, "a\nb\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "第二条 带 空格").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "第二条 带 空格").unwrap();
 
-        let commits = log_of(&state, TEST_LABEL, LOG_PAGE).unwrap();
+        let commits = log_of(&repo, LOG_PAGE).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "第二条 带 空格", "最新的排最前");
         assert_eq!(commits[1].subject, "第一条");
@@ -1897,7 +1848,7 @@ mod tests {
         assert!(commits[0].time > 0);
 
         // limit 要生效
-        assert_eq!(log_of(&state, TEST_LABEL, 1).unwrap().len(), 1);
+        assert_eq!(log_of(&repo, 1).unwrap().len(), 1);
 
         cleanup(&top);
     }
@@ -1913,14 +1864,14 @@ mod tests {
         fs::write(repo.join("outside.txt"), "o\n").unwrap();
         fs::write(repo.join("sub").join("inside.txt"), "i\n").unwrap();
         fs::write(repo.join("sub").join("nested").join("deep.txt"), "d\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        let head = commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let head = commit_staged(&repo, "init").unwrap();
         let _ = head;
-        let rev = log_of(&state, TEST_LABEL, 1).unwrap()[0].hash.clone();
+        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
 
         // 工作区切到 sub/：仓库根那个 outside.txt 不该出现在列表里
-        let sub = state.set_root(TEST_LABEL, repo.join("sub")).unwrap();
-        let files = files_of(&state, TEST_LABEL, &rev).unwrap();
+        let sub = state.register(repo.join("sub")).unwrap();
+        let files = files_of(&sub, &rev).unwrap();
         let mut relatives: Vec<&str> = files.iter().map(|f| f.relative.as_str()).collect();
         relatives.sort_unstable();
         assert_eq!(relatives, vec!["inside.txt", "nested/deep.txt"]);
@@ -1936,27 +1887,27 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let path = path_of_file(&repo, "app.ts");
         fs::write(&path, "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         // 第二次提交之后工作区再改一通，确保看的确实是提交本身而不是工作区
         fs::write(&path, "a\nb\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "改一行").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "改一行").unwrap();
         fs::write(&path, "a\nb\nc\n").unwrap();
 
-        let rev = log_of(&state, TEST_LABEL, 1).unwrap()[0].hash.clone();
-        let diff = file_diff(&state, TEST_LABEL, &path, &DiffSource::Commit { rev }).unwrap();
+        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let diff = file_diff(&repo, &path, &DiffSource::Commit { rev }).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n", "看的是提交里的版本，不是工作区");
 
         // 根提交没有父，基线该落到空
-        let root_rev = log_of(&state, TEST_LABEL, 2).unwrap()[1].hash.clone();
-        let first = file_diff(&state, TEST_LABEL, &path, &DiffSource::Commit { rev: root_rev }).unwrap();
+        let root_rev = log_of(&repo, 2).unwrap()[1].hash.clone();
+        let first = file_diff(&repo, &path, &DiffSource::Commit { rev: root_rev }).unwrap();
         assert_eq!(first.original, "");
         assert_eq!(first.modified, "a\n");
 
@@ -1968,19 +1919,19 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         fs::write(repo.join("keep.txt"), "k\n").unwrap();
         fs::write(repo.join("gone.txt"), "g\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::remove_file(repo.join("gone.txt")).unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "删掉一个").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "删掉一个").unwrap();
 
-        let rev = log_of(&state, TEST_LABEL, 1).unwrap()[0].hash.clone();
-        let files = files_of(&state, TEST_LABEL, &rev).unwrap();
+        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let files = files_of(&repo, &rev).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative, "gone.txt");
         assert_eq!(files[0].status, 'D');
@@ -1993,8 +1944,8 @@ mod tests {
     #[test]
     fn discard_needs_an_explicit_path() {
         // 不做"全部"：两个分组的还原目标不一样，pathspec `.` 会把另一组也带上
-        let (state, _repo, top) = temp_repo();
-        let error = discard_paths(&state, TEST_LABEL, &[], &DiscardSource::Unstaged).unwrap_err();
+        let (_state, repo, top) = temp_repo();
+        let error = discard_paths(&repo, &[], &DiscardSource::Unstaged).unwrap_err();
         assert!(error.contains("没有指定"), "{error}");
         cleanup(&top);
     }
@@ -2004,19 +1955,18 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let file = repo.join("app.ts");
         fs::write(&file, "one\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&file, "two\n").unwrap();
-        assert_eq!(status_of(&state, TEST_LABEL).unwrap().files.len(), 1);
+        assert_eq!(status_of(&repo).unwrap().files.len(), 1);
 
         let after = discard_paths(
-            &state,
-            TEST_LABEL,
+            &repo,
             &[path_of_file(&repo, "app.ts")],
             &DiscardSource::Unstaged,
         )
@@ -2032,19 +1982,18 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let file = repo.join("app.ts");
         fs::write(&file, "one\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         fs::write(&file, "two\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
+        stage_paths(&repo, &None).unwrap();
 
         let after = discard_paths(
-            &state,
-            TEST_LABEL,
+            &repo,
             &[path_of_file(&repo, "app.ts")],
             &DiscardSource::Staged,
         )
@@ -2060,24 +2009,23 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         let file = repo.join("app.ts");
         fs::write(&file, "one\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         // 先暂存一版、再在工作区改一版，状态就是 MM
         fs::write(&file, "two\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
+        stage_paths(&repo, &None).unwrap();
         fs::write(&file, "three\n").unwrap();
-        let status = status_of(&state, TEST_LABEL).unwrap();
+        let status = status_of(&repo).unwrap();
         assert_eq!((status.files[0].index, status.files[0].worktree), ('M', 'M'));
 
         // 「改动」组的放弃只动工作区：回到 index 里的 "two"，暂存的那版留着
         let after = discard_paths(
-            &state,
-            TEST_LABEL,
+            &repo,
             &[path_of_file(&repo, "app.ts")],
             &DiscardSource::Unstaged,
         )
@@ -2124,29 +2072,29 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         let remote_url = bare_remote(&top).to_string_lossy().to_string();
         assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
 
         fs::write(repo.join("app.ts"), "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
 
         // 第一次推没有上游，必须顺手建立跟踪关系，推完 ahead/behind 才是 0/0
-        let after = push_remote(&state, TEST_LABEL).unwrap();
+        let after = push_remote(&repo).unwrap();
         assert_eq!(after.branch.as_deref(), Some("main"));
         assert_eq!((after.ahead, after.behind), (0, 0));
 
         push_from_another_clone(&top, &remote_url, "from-other.txt");
 
         // fetch 只动引用：behind 变成 1，但工作区里还没这个文件
-        let after = fetch_remote(&state, TEST_LABEL).unwrap();
+        let after = fetch_remote(&repo).unwrap();
         assert_eq!((after.ahead, after.behind), (0, 1));
         assert!(!repo.join("from-other.txt").exists());
 
         // pull 快进：文件回来了，behind 归零
-        let after = pull_remote(&state, TEST_LABEL).unwrap();
+        let after = pull_remote(&repo).unwrap();
         assert_eq!((after.ahead, after.behind), (0, 0));
         // 比 trim 后的内容：本机 core.autocrlf 会把检出时的 LF 变成 CRLF
         assert_eq!(
@@ -2164,31 +2112,31 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         let remote_url = bare_remote(&top).to_string_lossy().to_string();
         assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
 
         fs::write(repo.join("app.ts"), "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
-        push_remote(&state, TEST_LABEL).unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        push_remote(&repo).unwrap();
 
         push_from_another_clone(&top, &remote_url, "remote-side.txt");
 
         // 本地也提交一个，两条线就此分叉
         fs::write(repo.join("local-side.txt"), "l\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "local side").unwrap();
-        let head_before = status_of(&state, TEST_LABEL).unwrap().head;
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "local side").unwrap();
+        let head_before = status_of(&repo).unwrap().head;
 
         // --ff-only 必须拒绝。只断言"失败了"和"HEAD 没动"：报错文案是 git 自己的，
         // 会随版本和语言环境变，照着某句英文去断言会在别人的机器上挂掉
-        let error = pull_remote(&state, TEST_LABEL).unwrap_err();
+        let error = pull_remote(&repo).unwrap_err();
         assert!(!error.trim().is_empty());
-        assert_eq!(status_of(&state, TEST_LABEL).unwrap().head, head_before);
+        assert_eq!(status_of(&repo).unwrap().head, head_before);
         // 没有被带进合并状态：仍然是干净的单线历史，随时可以在终端里处理
-        assert_eq!(log_of(&state, TEST_LABEL, 5).unwrap().len(), 2);
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
 
         cleanup(&top);
     }
@@ -2198,22 +2146,22 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         let remote_url = bare_remote(&top).to_string_lossy().to_string();
         assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
 
         fs::write(repo.join("app.ts"), "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
-        push_remote(&state, TEST_LABEL).unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        push_remote(&repo).unwrap();
 
         push_from_another_clone(&top, &remote_url, "remote-side.txt");
 
         // 本地没提交、只是落后：push 被拒后应当自动快进再重推成功。
         // 注意本地没 fetch 过，behind 这会儿还是 0，所以这一步只能靠
         // push 失败去触发拉取，不能拿 behind 当闸门
-        let after = push_remote(&state, TEST_LABEL).unwrap();
+        let after = push_remote(&repo).unwrap();
         assert_eq!((after.ahead, after.behind), (0, 0));
         // 比 trim 后的内容：本机 core.autocrlf 会把检出时的 LF 变成 CRLF
         assert_eq!(
@@ -2231,31 +2179,31 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         let remote_url = bare_remote(&top).to_string_lossy().to_string();
         assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
 
         fs::write(repo.join("app.ts"), "a\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "init").unwrap();
-        push_remote(&state, TEST_LABEL).unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        push_remote(&repo).unwrap();
 
         push_from_another_clone(&top, &remote_url, "remote-side.txt");
 
         // 本地也提交一个，自动重试里的 ff-only pull 必然失败
         fs::write(repo.join("local-side.txt"), "l\n").unwrap();
-        stage_paths(&state, TEST_LABEL, &None).unwrap();
-        commit_staged(&state, TEST_LABEL, "local side").unwrap();
-        let head_before = status_of(&state, TEST_LABEL).unwrap().head;
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "local side").unwrap();
+        let head_before = status_of(&repo).unwrap().head;
 
         // 断言"失败了"和"HEAD 没动"就够了：报错文案是 git 自己的，会随版本和
         // 语言环境变，照着某句英文去断言会在别人的机器上挂掉
-        let error = push_remote(&state, TEST_LABEL).unwrap_err();
+        let error = push_remote(&repo).unwrap_err();
         assert!(!error.trim().is_empty());
-        assert_eq!(status_of(&state, TEST_LABEL).unwrap().head, head_before);
+        assert_eq!(status_of(&repo).unwrap().head, head_before);
         // 没有被带进合并状态，也没有凭空多出一条提交
-        assert_eq!(log_of(&state, TEST_LABEL, 5).unwrap().len(), 2);
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
 
         cleanup(&top);
     }
@@ -2267,7 +2215,7 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
 
         fs::write(repo.join(".gitignore"), "ignored.txt\nbuild/\n*.log\n").unwrap();
@@ -2287,7 +2235,7 @@ mod tests {
             build.clone(),
             path_of_file(&repo, "kept.log"),
         ];
-        let ignored = ignored_paths(&state, TEST_LABEL, &listed).unwrap();
+        let ignored = ignored_paths(&repo, &listed).unwrap();
 
         assert!(ignored.contains(&path_of_file(&repo, "ignored.txt")));
         // 目录规则 `build/` 只有带上尾斜杠才匹配得上
@@ -2303,10 +2251,10 @@ mod tests {
     #[test]
     fn ignore_check_is_empty_outside_a_repository() {
         // 不是仓库时 check-ignore 非 0 退出，应当安静地给空结果——文件树照样能用
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         fs::write(repo.join("a.txt"), "a\n").unwrap();
 
-        let ignored = ignored_paths(&state, TEST_LABEL, &[path_of_file(&repo, "a.txt")]).unwrap();
+        let ignored = ignored_paths(&repo, &[path_of_file(&repo, "a.txt")]).unwrap();
         assert!(ignored.is_empty());
 
         cleanup(&top);
@@ -2330,12 +2278,12 @@ mod tests {
 
     #[test]
     fn appends_a_file_and_a_directory_rule() {
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         fs::write(repo.join("app.log"), "l\n").unwrap();
         fs::create_dir(repo.join("build")).unwrap();
 
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "app.log")).unwrap();
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "build")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "build")).unwrap();
 
         // 规则一律正斜杠；目录带尾斜杠，只匹配目录
         assert_eq!(read_text(&repo.join(".gitignore")), "app.log\nbuild/\n");
@@ -2345,11 +2293,11 @@ mod tests {
 
     #[test]
     fn does_not_append_a_rule_twice() {
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         fs::write(repo.join("app.log"), "l\n").unwrap();
 
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "app.log")).unwrap();
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "app.log")).unwrap();
 
         assert_eq!(read_text(&repo.join(".gitignore")), "app.log\n");
 
@@ -2358,12 +2306,12 @@ mod tests {
 
     #[test]
     fn treats_a_trailing_slash_as_the_same_rule() {
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         fs::create_dir(repo.join("build")).unwrap();
         // 手写的规则没有尾斜杠，但说的就是这个目录，不该再写一条
         fs::write(repo.join(".gitignore"), "build\n").unwrap();
 
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "build")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "build")).unwrap();
 
         assert_eq!(read_text(&repo.join(".gitignore")), "build\n");
 
@@ -2372,11 +2320,11 @@ mod tests {
 
     #[test]
     fn appends_after_a_file_without_a_final_newline() {
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         fs::write(repo.join(".gitignore"), "dist").unwrap();
         fs::write(repo.join("app.log"), "l\n").unwrap();
 
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "app.log")).unwrap();
 
         // 不补换行的话两条规则会粘成 `distapp.log`
         assert_eq!(read_text(&repo.join(".gitignore")), "dist\napp.log\n");
@@ -2389,17 +2337,17 @@ mod tests {
         if !git_available() {
             return;
         }
-        let (state, repo, top) = temp_repo();
+        let (_state, repo, top) = temp_repo();
         init_repo_on_main(&repo);
         fs::write(repo.join("app.log"), "l\n").unwrap();
         fs::create_dir(repo.join("build")).unwrap();
         fs::write(repo.join("build").join("out.bin"), "b\n").unwrap();
 
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "app.log")).unwrap();
-        add_to_ignore(&state, TEST_LABEL, &path_of_file(&repo, "build")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "app.log")).unwrap();
+        add_to_ignore(&repo, &path_of_file(&repo, "build")).unwrap();
 
         let listed = vec![path_of_file(&repo, "app.log"), path_of_file(&repo, "build")];
-        let ignored = ignored_paths(&state, TEST_LABEL, &listed).unwrap();
+        let ignored = ignored_paths(&repo, &listed).unwrap();
         assert!(ignored.contains(&path_of_file(&repo, "app.log")));
         // 目录规则要能被 check-ignore 认出来（尾斜杠的写法必须对得上）
         assert!(ignored.contains(&path_of_file(&repo, "build")));

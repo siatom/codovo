@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Mutex;
@@ -30,9 +30,10 @@ enum Signal {
     Stop,
 }
 
-/// 各窗口的目录监听，**按窗口 label 分片**：一个窗口一份。关窗或换根时只换自己的。
+/// 当前项目的目录监听。单窗口一次只显示一个项目，切项目时整体换掉。
 pub struct WatchState {
-    inner: Mutex<HashMap<String, Watch>>,
+    /// 连根一起记着：关闭项目时要据此判断该不该停，别停了别人的
+    current: Mutex<Option<(PathBuf, Watch)>>,
 }
 
 struct Watch {
@@ -45,16 +46,13 @@ struct Watch {
 impl WatchState {
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(HashMap::new()),
+            current: Mutex::new(None),
         }
     }
 
-    /// 监听本窗口 `root` 下的目录结构变化。调用方拿不到监听器也不该影响正常使用，
+    /// 监听 `root` 下的目录结构变化。调用方拿不到监听器也不该影响正常使用，
     /// 所以出错只返回 Err 让上面忽略。
-    ///
-    /// 事件定向发给 `label` 对应的窗口：多窗口下广播会让别的窗口收到不属于自己的
-    /// 变更，进而去重列一个它根本不显示的工作区。
-    pub fn watch(&self, app: AppHandle, label: &str, root: &Path) -> Result<(), String> {
+    pub fn watch(&self, app: AppHandle, root: &Path) -> Result<(), String> {
         let (tx, rx) = mpsc::channel::<Signal>();
         let event_tx = tx.clone();
         let event_root = root.to_path_buf();
@@ -85,7 +83,6 @@ impl WatchState {
             .map_err(|e| format!("监听目录失败 {}: {e}", root.display()))?;
 
         let emitter = app.clone();
-        let target = label.to_string();
         std::thread::spawn(move || {
             // 攒批：收到第一个事件后，一直吃到静默满 DEBOUNCE 为止再发
             while let Ok(first) = rx.recv() {
@@ -113,48 +110,48 @@ impl WatchState {
                     }
                 }
                 if !dirs.is_empty() {
-                    let _ = emitter.emit_to(&target, CHANGED_EVENT, sorted_paths(dirs));
+                    let _ = emitter.emit(CHANGED_EVENT, sorted_paths(dirs));
                 }
                 if !files.is_empty() {
-                    let _ = emitter.emit_to(&target, FILE_CHANGED_EVENT, sorted_paths(files));
+                    let _ = emitter.emit(FILE_CHANGED_EVENT, sorted_paths(files));
                 }
             }
         });
 
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        // 换工作区：先停本窗口的旧监听——丢掉 watcher 就停了，再让防抖线程收到
-        // Stop 退出，否则旧根目录上的事件会继续发给已经切换过去的界面。
-        // 只动自己这个 label：别的窗口的监听与这次切换无关。
-        if let Some(old) = inner.insert(
-            label.to_string(),
+        let mut inner = self.current.lock().map_err(|e| e.to_string())?;
+        // 换项目：先停旧监听——丢掉 watcher 就停了，再让防抖线程收到 Stop 退出，
+        // 否则旧根目录上的事件会继续发给已经切过去的界面。
+        if let Some((_, old)) = inner.replace((
+            root.to_path_buf(),
             Watch {
                 _watcher: watcher,
                 stop: tx,
             },
-        ) {
+        )) {
             let _ = old.stop.send(Signal::Stop);
         }
         Ok(())
     }
 
-    /// 关窗时停掉这个窗口的监听
-    pub fn stop(&self, label: &str) {
-        if let Ok(mut inner) = self.inner.lock() {
-            if let Some(old) = inner.remove(label) {
+    /// 换项目、关窗、退出时停掉监听（防抖线程收到 Stop 就退出）
+    pub fn stop(&self) {
+        if let Ok(mut inner) = self.current.lock() {
+            if let Some((_, old)) = inner.take() {
                 let _ = old.stop.send(Signal::Stop);
             }
         }
     }
 
-    /// 应用退出时兜底：把所有窗口的防抖线程叫停
-    pub fn stop_all(&self) {
-        // 先取出 label 列表再逐个停，别持着锁去调 stop（它会再取一次锁）
-        let labels: Vec<String> = match self.inner.lock() {
-            Ok(inner) => inner.keys().cloned().collect(),
-            Err(_) => return,
-        };
-        for label in labels {
-            self.stop(&label);
+    /// 关掉某个项目的监听。**关的不是当前监听着的那一个就什么都不做**——
+    /// 否则关掉一个后台项目会把当前项目的文件树刷新一起停掉。
+    pub fn stop_if(&self, root: &Path) {
+        if let Ok(mut inner) = self.current.lock() {
+            let matched = inner.as_ref().is_some_and(|(watched, _)| watched == root);
+            if matched {
+                if let Some((_, old)) = inner.take() {
+                    let _ = old.stop.send(Signal::Stop);
+                }
+            }
         }
     }
 }

@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "CodeDock 窗口权限：仅放行自研 command、文件夹选择、读写系统剪贴板、用系统程序打开 http(s) 链接与本地目录。win-* 是后端新建的项目窗口（label 由 windows.rs 分配；不匹配这里的话新窗口连 core:default 都拿不到）",
-  "windows": ["main", "win-*"],
+  "description": "CodeDock 主窗口权限：仅放行自研 command、文件夹选择、读写系统剪贴板、用系统程序打开 http(s) 链接与本地目录",
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:allow-open",

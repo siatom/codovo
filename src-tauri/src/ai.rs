@@ -171,8 +171,8 @@ async fn chat(config: &AiConfig, system: &str, user: &str, temperature: f32) -> 
 /// 让大模型根据当前仓库的暂存区改动生成一条提交信息。
 #[tauri::command]
 pub async fn ai_generate_commit_message(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     config: AiConfig,
 ) -> Result<String, String> {
     // 覆盖要赶在 resolve() 之前：面板留空、只写 .env 时也得能跑
@@ -183,7 +183,7 @@ pub async fn ai_generate_commit_message(
     config.resolve()?;
 
     // git 是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await 点
-    let context = git::commit_context(&state, window.label())?;
+    let context = git::commit_context(&state.checked_root(&root)?)?;
     if context.diff.trim().is_empty() {
         return Err("暂存区没有可生成的改动".to_string());
     }
@@ -203,8 +203,8 @@ pub async fn ai_generate_commit_message(
 /// 界面渲染，所以**不做** clean_message 那套去围栏处理——代码块本来就要留着。
 #[tauri::command]
 pub async fn ai_explain_change(
-    window: tauri::Window,
     state: tauri::State<'_, FsState>,
+    root: String,
     config: AiConfig,
     path: String,
     source: git::DiffSource,
@@ -215,8 +215,8 @@ pub async fn ai_explain_change(
     config.resolve()?;
 
     // 同 ai_generate_commit_message：git 是同步阻塞的，先跑完再 await
-    let root = state.root(window.label())?;
-    let diff = git::file_diff_text(&state, window.label(), &path, &source)?;
+    let root = state.checked_root(&root)?;
+    let diff = git::file_diff_text(&root, &path, &source)?;
     if diff.trim().is_empty() {
         return Err("这个文件没有可解读的改动".to_string());
     }

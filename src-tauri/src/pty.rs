@@ -24,7 +24,8 @@ struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    /// 开这个会话的窗口 label。关窗要按它收摊，否则 shell 会在后台留下。
+    /// 这个会话属于哪个项目（工作区根）。关闭项目时按它收摊，否则 shell 会在后台
+    /// 留下；空串表示不属于任何项目（比如没选工作区时开的终端）。
     owner: String,
 }
 
@@ -58,16 +59,16 @@ impl PtyState {
         }
     }
 
-    /// 关窗时调用：只收这个窗口开的 shell。PTY 池是全局的（会话按 id 区分），
-    /// 但归属窗口记在 `owner` 上，不然关掉窗口后 shell 还挂在后台。
-    pub fn kill_window(&self, label: &str) -> usize {
+    /// 关闭项目时调用：只收这个项目开的 shell。PTY 池是全局的（会话按 id 区分），
+    /// 但归属项目记在 `owner` 上，不然项目关掉后 shell 还挂在后台。
+    pub fn kill_project(&self, root: &str) -> usize {
         let mut sessions = match self.inner.sessions.lock() {
             Ok(s) => s,
             Err(_) => return 0,
         };
         let ids: Vec<u32> = sessions
             .iter()
-            .filter(|(_, session)| session.owner == label)
+            .filter(|(_, session)| session.owner == root)
             .map(|(id, _)| *id)
             .collect();
         for id in &ids {
@@ -163,16 +164,16 @@ fn open_shell(
 
 #[tauri::command]
 pub fn pty_spawn(
-    window: tauri::Window,
     state: tauri::State<'_, PtyState>,
     on_event: Channel<PtyEvent>,
+    root: String,
     cwd: Option<String>,
     cols: u16,
     rows: u16,
     // 设置里选的 shell 候选 id；null 表示自动
     shell: Option<String>,
 ) -> Result<u32, String> {
-    let owner = window.label().to_string();
+    let owner = root;
     let spawned = open_shell(cwd.as_deref(), cols, rows, shell.as_deref())?;
     let killer = spawned.child.clone_killer();
     let master = spawned.master;
