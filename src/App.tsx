@@ -192,9 +192,12 @@ function Shell() {
     };
   }, []);
 
-  // 窗口标题跟着当前项目走，用户和调试脚本都靠它分辨现在在哪个项目上
+  // 窗口标题跟着当前项目走，用户和调试脚本都靠它分辨现在在哪个项目上。
+  // dev 构建额外带个 (dev)：和安装版并存时一眼分得清。标记只放在标题里，
+  // 版本号本身保持纯数字——Windows 的 exe 版本资源不接受后缀。
   useEffect(() => {
-    document.title = activeRoot ? `CodeDock — ${baseName(activeRoot)}` : "CodeDock";
+    const name = import.meta.env.DEV ? "CodeDock (dev)" : "CodeDock";
+    document.title = activeRoot ? `${name} — ${baseName(activeRoot)}` : name;
   }, [activeRoot]);
 
   // 别的窗口（如果还开着）改了项目列表，本窗口的侧栏跟着更新

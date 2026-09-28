@@ -3,11 +3,27 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+// @ts-expect-error type error without @types/node package
+import { readFileSync } from "node:fs";
+
 const host = process.env.TAURI_DEV_HOST;
+
+/**
+ * 版本号只有一个来源：package.json——`tauri.conf.json` 的 `version` 也指向它，
+ * 所以安装包文件名、exe 的版本资源和界面里显示的必然是同一个值。
+ * 编译期注入，省得为了读版本再单开一个 Tauri 权限。
+ */
+const version = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+).version as string;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
+
+  define: {
+    __APP_VERSION__: JSON.stringify(version),
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

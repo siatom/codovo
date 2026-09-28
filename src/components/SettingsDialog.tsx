@@ -2186,8 +2186,13 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
           </div>
         </div>
 
-        {/* 恢复默认沉在底部：它管的是所有分类，放某个 tab 里会让人以为只重置那一页 */}
-        <footer className="flex h-12 shrink-0 items-center justify-end border-t border-line px-4">
+        {/* 恢复默认沉在底部：它管的是所有分类，放某个 tab 里会让人以为只重置那一页。
+            左上角顺手显示版本，装完能自己核对（dev 构建额外带个标记） */}
+        <footer className="flex h-12 shrink-0 items-center justify-between border-t border-line px-4">
+          <span className="select-text text-[11px] text-fg-faint">
+            CodeDock v{__APP_VERSION__}
+            {import.meta.env.DEV ? " (dev)" : ""}
+          </span>
           <button
             type="button"
             onClick={() => setConfirmReset(true)}

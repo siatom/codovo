@@ -10,6 +10,9 @@ pnpm tauri dev                    # 开发
 pnpm build                        # 前端类型检查 + 构建
 cd src-tauri && cargo test --lib  # 后端单测
 cd src-tauri && cargo clippy
+
+pnpm version patch                # 发版：升版本号并打 tag（minor / major 同理）
+git push --follow-tags            # 连 tag 一起推
 ```
 
 ## 约定
@@ -21,6 +24,12 @@ cd src-tauri && cargo clippy
 - 只改被要求改的地方：不重排 import、不改命名、不清理"看起来没用"的代码；宁可重复三行。
 - 设置项要动五处（`settings.tsx` → `SettingsDialog.tsx` → 消费方）；后端命令 `*.rs` 写
   `#[tauri::command]` → `lib.rs` 注册 → 前端 `lib/*.ts` 包一层，组件不直接 invoke。
+- 版本号**只有一个来源**：`package.json` 的 `version`——`tauri.conf.json` 的 `version` 指向
+  `../package.json`（安装包文件名、exe 版本资源都从那儿取），前端由 vite 的 `define` 注入
+  `__APP_VERSION__`。**改版本一律走 `pnpm version patch|minor|major`，别手改 JSON**：
+  以前是三处硬编码（`package.json` / `tauri.conf.json` / `Cargo.toml`），必然漂移。
+  dev 构建和安装版靠**窗口标题 / 设置面板里的 `(dev)` 标记**区分，不带进版本号本身——
+  Windows 的 exe 版本资源只接受纯 `x.y.z`。
 - 没有用户明确允许，不要 `git push` / 开 PR / 推分支；提交留在本地等确认。
 
 ## 关键实现决定
