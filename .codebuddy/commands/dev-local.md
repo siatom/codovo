@@ -1,11 +1,11 @@
 ---
-description: "本地开发构建：提交改动 → 构建 dev（debug）可执行文件，不打包、不安装"
+description: "本地开发构建：提交改动 → 构建 dev（debug）可执行文件 → 本机启动（不打包、不安装）"
 allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 ---
 
 按顺序执行下面三步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做提交 / 构建 / 确认，不改任何源代码。
 
-开工前先用 TaskCreate 建三条待办：`提交改动` / `构建 dev` / `确认产物`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
+开工前先用 TaskCreate 建三条待办：`提交改动` / `构建 dev` / `启动 dev`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
 
 ## 1. 提交改动（规则同 /commit）
 
@@ -62,9 +62,24 @@ echo "expected=$expected"; echo "actual=$actual"
 - 出现 `.dirty` 后缀同样算失败。
 - 把通过校验的标识记下来，第 3 步报告时用。
 
-## 3. 确认产物
+## 3. 启动 dev
 
-*（进入本节先把「确认产物」标为 `in_progress`，完成后再标 `completed`。）*
+*（进入本节先把「启动 dev」标为 `in_progress`，完成后再标 `completed`。）*
 
-1. 确认 `src-tauri/target/debug/codedock.exe` 存在，且修改时间是本次构建（别拿上一次的旧产物）。
-2. 报告：产物绝对路径 / 大小 / 修改时间、构建标识（2c 校验通过的那个）。**不要自动启动它**，交给用户。
+1. 确认 `src-tauri/target/debug/codedock.exe` 存在，且修改时间是本次构建（别起上一次的旧产物）。
+2. 启动它。用 Bash 工具的 `nohup ... &`，**不要**用 `run_in_background`——它会被工具回收，留下一个没有窗口的僵尸 `codedock.exe`，还锁着 exe 让下次编译报 `os error 5`：
+
+   ```
+   nohup ./src-tauri/target/debug/codedock.exe >/dev/null 2>&1 &
+   ```
+
+3. 确认进程真的起来了：用 PowerShell 工具按 CommandLine 认 `target\debug\codedock.exe` 那个（别错认成发布版 `AppData\Local\CodeDock\codedock.exe`）。
+4. 报告：产物绝对路径、构建标识（2c 校验通过的那个）、进程 PID。
+
+需要无头验证（CDP 9222）时，改用带环境变量的方式起：
+
+```
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup ./src-tauri/target/debug/codedock.exe >/dev/null 2>&1 &
+```
+
+注意发布版 CodeDock 开着时，它和 dev 版共用同一个 WebView2 浏览器进程，9222 不会监听；这时得先请用户关掉发布版（**别**自己 taskkill），或者干脆不用 9222。
