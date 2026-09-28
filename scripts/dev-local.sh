@@ -7,6 +7,9 @@
 # 「退出后清场」串进同一个进程，用户关掉 dev 窗口后由它收尾，保证不留占用。
 #
 # 用法：bash scripts/dev-local.sh [额外的 pnpm tauri dev 参数...]
+#
+# 运行时输出一律用英文：Git Bash 把 stdout 重定向到文件时中文会变成乱码，
+# 日志就没法看了（注释照常写中文，注释不输出）。
 
 set -u
 
@@ -17,20 +20,20 @@ cleanup() {
   local pids
   pids="$(netstat -ano | grep ':5273' | grep -i 'LISTENING' | awk '{print $NF}' | sort -u)"
   if [ -z "$pids" ]; then
-    echo "[dev-local] 清场：5273 已释放，无残留"
+    echo "[dev-local] cleanup: port 5273 already free"
     return
   fi
   for pid in $pids; do
-    echo "[dev-local] 清场：收掉占用 5273 的进程 PID=$pid"
+    echo "[dev-local] cleanup: killing PID=$pid (still holding 5273)"
     # //F //PID 的双斜杠是 Git Bash 的转义，避免 MSYS 把 /F 当路径转换
     taskkill //F //PID "$pid" >/dev/null 2>&1 \
-      || echo "[dev-local] 清场：停止 PID=$pid 失败（多半已经自己退了）"
+      || echo "[dev-local] cleanup: kill PID=$pid failed (probably already gone)"
   done
 }
 
-echo "[dev-local] 启动 pnpm tauri dev ..."
+echo "[dev-local] starting pnpm tauri dev ..."
 pnpm tauri dev "$@"
 code=$?
-echo "[dev-local] pnpm tauri dev 已退出（exit=$code），开始清场"
+echo "[dev-local] pnpm tauri dev exited (code=$code), cleaning up"
 cleanup
-echo "[dev-local] 清场完成"
+echo "[dev-local] cleanup done"
