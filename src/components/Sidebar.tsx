@@ -72,6 +72,9 @@ const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover 
 /** 菜单宽度（px），贴着按钮右边缘往左排时要拿它算 left */
 const MENU_W = 112;
 
+/** 项目菜单比别处宽：「在文件管理器中打开」有 9 个字，112 装不下一行 */
+const PROJECT_MENU_W = 140;
+
 /** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
 const AI_MENU_W = 150;
 
@@ -579,8 +582,8 @@ export function Sidebar({
           <div
             className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
-              width: MENU_W,
-              left: menu.x - MENU_W,
+              width: PROJECT_MENU_W,
+              left: menu.x - PROJECT_MENU_W,
               // 贴近窗口底部时往上收，别把菜单顶出可视区。开着项目时多一项「关闭」，收得也更多
               top: Math.min(
                 menu.y + 4,
@@ -593,7 +596,7 @@ export function Sidebar({
               onClick={() => openInSystem(menu.path)}
               className={MENU_ITEM}
             >
-              打开
+              在文件管理器中打开
             </button>
             {/* 只对已打开的项目露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
             {menuOpen && (
