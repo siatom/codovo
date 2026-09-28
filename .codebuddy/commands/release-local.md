@@ -18,6 +18,19 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob
 
 ## 2. 构建安装包
 
+### 2a. 构建前校验
+
+先确认工作区干净，再记下当前 HEAD：
+
+```
+git status --porcelain
+git rev-parse --short HEAD
+```
+
+`git status --porcelain` **必须一行输出都没有**。有输出说明第 1 步没提交干净——回去补提交，**不要**带着未提交改动构建（否则产物带 `.dirty`、装上去的东西和提交对不上）。
+
+### 2b. 构建
+
 用 Bash 工具**后台**跑（release 编译很慢，不要放前台等）：
 
 ```
@@ -28,10 +41,24 @@ pnpm tauri build --bundles nsis
 - 这里只出 NSIS 包（msi/WiX 对本机安装没用，跳过省时间）。命令行参数不改仓库配置，正常发版仍是全量。
 - 类型错误、rust 编译失败就停下报告，别继续装。
 
+### 2c. 构建后校验
+
+Vite 会把 `<version>+<git 短 hash>[.dirty]` 注入前端产物，核对它和当前 HEAD 是否一致（防止装到用旧 commit 构建的包）：
+
+```
+expected="$(node -p "require('./package.json').version")+$(git rev-parse --short HEAD)"
+actual="$(grep -ohE '[0-9]+\.[0-9]+\.[0-9]+\+[A-Za-z0-9._-]+' dist/assets/*.js | sort -u)"
+echo "expected=$expected"; echo "actual=$actual"
+```
+
+- 两者**必须相等**，且 `actual` 只应有一行。不一致就停下报告，**不要**继续安装——说明 dist 是旧的，或构建用的不是当前 commit。
+- 出现 `.dirty` 后缀同样算失败。
+- 把通过校验的标识记下来，第 3 步报告时用。
+
 ## 3. 装到本机
 
 产物：`src-tauri/target/release/bundle/nsis/CodeDock_<version>_x64-setup.exe`，`<version>` 取 `package.json` 的 `version`。
-先确认该产物的修改时间是本次构建，别装到上一次的旧包。
+先确认它的修改时间是本次构建，别装到上一次的旧包。
 
 1. **关掉正在运行的发布版**（不关装不进去）。用 PowerShell 工具按 CommandLine 区分：
    只有 `C:\Users\xiang\AppData\Local\CodeDock\codedock.exe` 是发布版、要关；
@@ -40,10 +67,11 @@ pnpm tauri build --bundles nsis
 2. 静默安装（安装器是 currentUser 模式，不弹 UAC）：
 
    ```
-   "<安装包绝对路径>" /S
+   MSYS_NO_PATHCONV=1 "<安装包绝对路径>" /S
    ```
 
    等它结束并确认退出码为 0。
-3. 报告结果：安装位置 `%LOCALAPPDATA%\CodeDock\codedock.exe`、装进去的版本号。**不要自动启动应用**，让用户自己开。
+   `MSYS_NO_PATHCONV=1` 不能省：Git Bash 会把 `/S` 当路径转换成 `C:/Program Files/Git/S`，安装器收不到静默参数，会弹出图形安装界面卡住。
+3. 报告结果：安装位置 `%LOCALAPPDATA%\CodeDock\codedock.exe`、装进去的版本号与构建标识（即 2c 校验通过的那个）。**不要自动启动应用**，让用户自己开。
 
 补充：安装器在静默模式下自身也会用 RestartManager 关掉占用该 exe 的进程；第 1 步是为了让它走优雅关闭，两者不冲突。
