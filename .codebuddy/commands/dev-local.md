@@ -1,11 +1,11 @@
 ---
-description: "本地开发构建：提交改动 → 构建 dev（debug）可执行文件 → 本机启动（不打包、不安装）"
+description: "本地开发：提交改动 → 以 dev 模式启动应用（构建 + 运行一条命令搞定）"
 allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 ---
 
-按顺序执行下面三步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做提交 / 构建 / 确认，不改任何源代码。
+按顺序执行下面两步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做提交 / 启动，不改任何源代码。
 
-开工前先用 TaskCreate 建三条待办：`提交改动` / `构建 dev` / `启动 dev`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
+开工前先用 TaskCreate 建两条待办：`提交改动` / `启动 dev`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
 
 ## 1. 提交改动（规则同 /commit）
 
@@ -20,66 +20,23 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 - **只提交，不 push**——push 要用户明确同意。
 - 工作区本来就干净时跳过本节。
 
-## 2. 构建 dev
-
-*（进入本节先把「构建 dev」标为 `in_progress`，完成后再标 `completed`。）*
-
-### 2a. 构建前校验
-
-先确认工作区干净，再记下当前 HEAD：
-
-```
-git status --porcelain
-git rev-parse --short HEAD
-```
-
-`git status --porcelain` **必须一行输出都没有**。有输出说明第 1 步没提交干净——回去补提交，**不要**带着未提交改动构建（否则产物带 `.dirty`、产出的东西和提交对不上）。
-
-### 2b. 构建
-
-用 Bash 工具**后台**跑（别放前台等）：
-
-```
-pnpm tauri build --debug --no-bundle
-```
-
-- `--debug` 出 debug 版（编译快、带调试信息），产物是 `src-tauri/target/debug/codedock.exe`。
-- `--no-bundle` 跳过打包——dev 版在本机直接跑，不需要 NSIS/MSI 安装包。
-- `tauri.conf.json` 的 `beforeBuildCommand` 已包含 `pnpm build`（tsc + vite），**不要**再单独跑一遍前端构建。
-- 类型错误、rust 编译失败就停下报告。
-
-### 2c. 构建后校验
-
-Vite 会把 `<version>+<git 短 hash>[.dirty]` 注入前端产物，核对它和当前 HEAD 是否一致（防止产物是旧 commit 编的）：
-
-```
-expected="$(node -p "require('./package.json').version")+$(git rev-parse --short HEAD)"
-actual="$(grep -ohE '[0-9]+\.[0-9]+\.[0-9]+\+[A-Za-z0-9._-]+' dist/assets/*.js | sort -u)"
-echo "expected=$expected"; echo "actual=$actual"
-```
-
-- 两者**必须相等**，且 `actual` 只应有一行。不一致就停下报告，说明 dist 是旧的或构建用的不是当前 commit。
-- 出现 `.dirty` 后缀同样算失败。
-- 把通过校验的标识记下来，第 3 步报告时用。
-
-## 3. 启动 dev
+## 2. 启动 dev
 
 *（进入本节先把「启动 dev」标为 `in_progress`，完成后再标 `completed`。）*
 
-1. 确认 `src-tauri/target/debug/codedock.exe` 存在，且修改时间是本次构建（别起上一次的旧产物）。
-2. 启动它。用 Bash 工具的 `nohup ... &`，**不要**用 `run_in_background`——它会被工具回收，留下一个没有窗口的僵尸 `codedock.exe`，还锁着 exe 让下次编译报 `os error 5`：
-
-   ```
-   nohup ./src-tauri/target/debug/codedock.exe >/dev/null 2>&1 &
-   ```
-
-3. 确认进程真的起来了：用 PowerShell 工具按 CommandLine 认 `target\debug\codedock.exe` 那个（别错认成发布版 `AppData\Local\CodeDock\codedock.exe`）。
-4. 报告：产物绝对路径、构建标识（2c 校验通过的那个）、进程 PID。
-
-需要无头验证（CDP 9222）时，改用带环境变量的方式起：
+`pnpm tauri dev` 一条命令就把前端 dev server、debug 编译、启动应用全做了——**不要**拆成「先 build 再起 exe」。用 Bash 工具的 `nohup ... &` 起，**不要**用 `run_in_background`（它会被工具回收，留下没有窗口的僵尸 `codedock.exe`，还锁着 exe 让下次编译报 `os error 5`）：
 
 ```
-WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup ./src-tauri/target/debug/codedock.exe >/dev/null 2>&1 &
+nohup pnpm tauri dev >/dev/null 2>&1 &
 ```
 
-注意发布版 CodeDock 开着时，它和 dev 版共用同一个 WebView2 浏览器进程，9222 不会监听；这时得先请用户关掉发布版（**别**自己 taskkill），或者干脆不用 9222。
+- 这条命令**常驻**：vite dev server 一直跑（前端 HMR），改 `src-tauri/*.rs` 会自动重编重启。别等它退出。
+- **别读它的退出码**：cargo 报错时应用也可能已经正常起来了（退出码不可信）。判断起没起来看进程。
+- 用 PowerShell 工具按 CommandLine 认 `target\debug\codedock.exe` 那个（别错认成发布版 `AppData\Local\CodeDock\codedock.exe`）。
+- 报告进程 PID。**不要**自动关掉它，交给用户。
+
+撞上这些坑时按这里处理：
+
+- 要挂 CDP 调试端口就用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup pnpm tauri dev >/dev/null 2>&1 &`。发布版开着时它和 dev 版共用同一个 WebView2 浏览器进程，9222 不会监听——得先请用户关掉发布版（**别**自己 taskkill），或者干脆不用 9222。
+- 上一次 dev CLI 挂掉后 vite 可能变成孤儿进程占着 5273，再起会因端口被占失败：先 `netstat -ano | grep :5273` 找到 PID，连父进程链一起 kill。
+- 本项目常是「用 CodeDock 开发 CodeDock」：dev 模式下改工作区内任意文件都会触发 HMR 重载（终端重置、编辑器清空），要在这上面开发就先换个工作区。
