@@ -27,11 +27,12 @@ lerna-debug.log*
 .idea/
 *.sw?
 
-# CodeBuddy：只放行随仓库共享的项目级技能（.codebuddy/skills/），
+# CodeBuddy：只放行随仓库共享的项目级技能与斜杠命令（.codebuddy/skills/、.codebuddy/commands/），
 # 其余（本地配置、会话数据）照旧忽略。
 # 必须先写 .codebuddy/* 而不是整个目录，否则下面的 ! 例外不生效
 .codebuddy/*
 !.codebuddy/skills/
+!.codebuddy/commands/
 
 # 系统
 .DS_Store
