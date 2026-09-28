@@ -257,6 +257,7 @@ function Shell() {
           onSelect={openProject}
           onAdd={pickWorkspace}
           onRemove={removeWorkspace}
+          onClose={closeProject}
           onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
         />

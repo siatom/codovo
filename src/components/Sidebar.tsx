@@ -42,6 +42,8 @@ interface SidebarProps {
   onAdd: () => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
   onRemove: (path: string) => void;
+  /** 关掉已打开的项目：收进程、丢实例，但保留在列表里 */
+  onClose: (path: string) => void;
   /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端 */
   onRunAiCommand: (command: string) => void;
   /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume" */
@@ -94,6 +96,7 @@ export function Sidebar({
   onSelect,
   onAdd,
   onRemove,
+  onClose,
   onRunAiCommand,
   onResumeSession,
 }: SidebarProps) {
@@ -217,6 +220,9 @@ export function Sidebar({
     const rect = target.getBoundingClientRect();
     setHistMenu({ item, x: rect.right, y: rect.bottom });
   };
+
+  /** 项目菜单针对的那个目录是不是正开着，决定要不要露出「关闭」 */
+  const menuOpen = menu !== null && opened.some((item) => samePath(item, menu.path));
 
   /** 点项目行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
   const launchAi = (target: HTMLElement) => {
@@ -575,8 +581,11 @@ export function Sidebar({
             style={{
               width: MENU_W,
               left: menu.x - MENU_W,
-              // 贴近窗口底部时往上收，别把菜单顶出可视区
-              top: Math.min(menu.y + 4, window.innerHeight - 116),
+              // 贴近窗口底部时往上收，别把菜单顶出可视区。开着项目时多一项「关闭」，收得也更多
+              top: Math.min(
+                menu.y + 4,
+                window.innerHeight - (menuOpen ? 140 : 116),
+              ),
             }}
           >
             <button
@@ -586,6 +595,20 @@ export function Sidebar({
             >
               打开
             </button>
+            {/* 只对已打开的项目露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
+            {menuOpen && (
+              <button
+                type="button"
+                onClick={() => {
+                  const path = menu.path;
+                  setMenu(null);
+                  onClose(path);
+                }}
+                className={MENU_ITEM}
+              >
+                关闭
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
