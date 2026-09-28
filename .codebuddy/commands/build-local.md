@@ -1,5 +1,5 @@
 ---
-description: "本地发布：提交改动 → 构建 NSIS 安装包 → 装到本机（不 push）"
+description: "本地构建安装：提交改动 → 构建 NSIS 安装包 → 装到本机（不 push）"
 allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 ---
 
