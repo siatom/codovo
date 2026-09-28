@@ -29,22 +29,23 @@ cd src-tauri && cargo clippy
 
 - 终端输出传**原始字节**、后端不解码（`read()` 会截断多字节 UTF-8）；非当前会话 `display:none` 藏而不卸载
   （卸载会杀 shell）；换工作区靠重开 shell、前后端根目录一起换；容器不设 padding 且 `overflow-clip`。
-- 多窗口：一个窗口一个项目，**后端状态一律按 window label 分片**（`FsState` / `WatchState` /
-  `AgentState` / `PtyState`）。同项目允许开多窗，所以**不能按 root 分片**；命令统一收 `tauri::Window`
-  取 label，不信前端传的任何标识。事件走 `emit_to(label)`——用全局 `emit` 会串到别的窗口。agent 的
-  `config_dir` 必须带 label 段：共用一份会让两个 opencode 争用，而且关窗的 `remove_dir_all` 会删掉
-  别窗的目录；探测失败只 `kill_window`，别 `kill_all`。窗口由后端 `WebviewWindowBuilder` 建
-  （`windows.rs`，label `win-N` 单调自增永不复用），新窗口的根在建窗时就播进 `FsState` + 启动监听，
-  前端起来先 `fs_root` 判断自己是主窗口（空 → 恢复 localStorage）还是项目窗口。**新窗口的前端地址
-  不能自己拼**：dev 下 `WebviewUrl::App("index.html")` 会让窗口停在 about:blank，要照抄已有窗口的
-  URL——是 http(s) 说明在 dev，用 `WebviewUrl::External` 并再 `navigate` 一次兜底；否则用
-  `App("index.html")`。`capabilities/default.json` 的 `windows` 必须含 `win-*`，不匹配的话新窗口连
-  `core:default` 都拿不到。关窗由 `on_window_event(Destroyed)` 收本窗口那几份状态，
-  `RunEvent::Exit` 的 `kill_all` 兜底。
-- 多窗口下的前端持久化：**窗口级偏好存 sessionStorage**（侧栏折叠、右栏模块、面板高度、提交历史展开、
-  浏览器地址、agent 当前会话、git 变更视图）；**跨窗口共享的留 localStorage**（设置、主题、工作区列表、
-  别名、CLI 选择）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；列表类一律
-  「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别的窗口刚写进去的。
+- **单窗口多项目**：一个窗口里同时开着多个项目，侧栏点哪个、右侧（终端 / 智能体 / 右边栏）就切到哪个。
+  切走的项目**在后台继续跑**（shell 不杀、opencode 不停），切回来时终端会话、编辑器标签、文件树展开态
+  原样还原。做法是**每个项目挂一个 `ProjectWorkspace` 实例**，非当前的 `display:none` 藏着不卸载——
+  和 TerminalSession 的会话切换同一套路，状态天然保留，所以**别用 `key={root}` 之类重置它**。
+- 后端状态**一律按项目 root 分片**（`FsState` / `WatchState` / `AgentState` / `PtyState`），命令显式收
+  `root: String`；`FsState` 只认「登记过的根」当白名单，否则前端能拿任意路径去读写。事件走全局 `emit`，
+  agent 的 payload 是 `{root, event}`，前端按 root 路由。agent 的 `config_dir` 用
+  `project_dir_name(root)`（非法字符替换 + 稳定 hash）：共用一份会让两个 opencode 争用，而且收掉某个
+  项目时的 `remove_dir_all` 会删掉别项目的目录。关项目走 `project_close`，一次收掉它的 shell、opencode
+  与目录监听。目录监听**只跟当前项目**，切项目时整体换掉。
+- 持久化的分层：**窗口级偏好存 sessionStorage**（侧栏折叠、CLI 选择）；**项目级的按 root 作 key**
+  （右栏模块、浏览器地址、提交历史视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
+  （设置、主题、工作区列表、别名）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
+  列表类一律「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别处刚写进去的。
+- 多项目下的前端约定：git 状态**只轮询当前项目**（`useGitStatus(root, visible)`，隐藏的项目停轮询但
+  保留状态）；Monaco 从隐藏切回可见要补一次 `layout()`（隐藏期间容器尺寸是 0）；侧栏命令、编辑器浮窗
+  这类「打到当前项目实例」的动作，走 App 里的 `root -> handle` 表路由。
 - 文件路径一律词法归一化 + 前缀校验，已存在的再 `canonicalize` 挡软链接逃逸；文件树改名 / 删除
   要带着编辑器标签一起换或关，改名前先落盘；工作区根禁改禁删。
 - 目录监听只推「哪个父目录变了」，编辑器重读另走 `fs-file-changed`；防抖 300ms 并跳过 `SKIP_DIRS`。
@@ -65,7 +66,7 @@ cd src-tauri && cargo clippy
 ## 验证
 
 前端改完至少跑 `pnpm build`（Vite dev 不做类型检查）；界面改动走 `scripts/cdp-check.cjs`（WebView2 的
-CDP 端口做截图 / 求值 / 输入），多窗口下传 `"target":"<项目名>"` 挑窗口——脚本会跳过 WebView2 那个
+CDP 端口做截图 / 求值 / 输入）；要指定窗口可以传 `"target":"<标题片段>"`，脚本会跳过 WebView2 那个
 内部的 about:blank target，**别拿 `pages[0]` 当目标窗口**，否则命令全打在空白页上。注意：`localStorage`
 是用户真实状态、验证后要还原；拖动必须走 `drag`
 而非合成 PointerEvent（应用用 `setPointerCapture`）；应用起没起来看 9222 端口。dev 下改工作区内任意
