@@ -39,7 +39,7 @@ interface SidebarProps {
   onAdd: () => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
   onRemove: (path: string) => void;
-  /** 在当前活动的终端会话里启动 AI CLI；执行落在终端那边，这边只管入口 */
+  /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端 */
   onRunAiCommand: (command: string) => void;
   /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume" */
   onResumeSession: (command: string) => void;
@@ -396,7 +396,7 @@ export function Sidebar({
                           </button>
                         </>
                       )}
-                      {/* TUI 下同一个位置放 AI CLI 的入口：往当前终端注入一条命令。
+                      {/* TUI 下同一个位置放 AI CLI 的入口：新开一个终端标签启动它。
                           配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
                       {isCurrent && !guiActive && (
                         <button
@@ -406,7 +406,7 @@ export function Sidebar({
                           title={
                             aiCommands.length === 0
                               ? "还没配置 AI CLI 命令，去设置里加一个"
-                              : "在当前终端中启动 AI CLI"
+                              : "新开终端标签启动 AI CLI"
                           }
                           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                         >

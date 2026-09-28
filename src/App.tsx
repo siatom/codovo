@@ -63,10 +63,11 @@ function Shell() {
     handlesRef.current.set(root, handles);
   }, []);
 
+  /** 侧栏项目行的 AI CLI 入口：新开一个终端标签启动它，不注入当前终端 */
   const runAiCommand = useCallback(
     (command: string) => {
       if (!activeRoot) return;
-      handlesRef.current.get(activeRoot)?.terminal?.runAiCommand(command);
+      handlesRef.current.get(activeRoot)?.terminal?.runInNewSession(command);
     },
     [activeRoot],
   );

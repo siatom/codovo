@@ -34,11 +34,9 @@ function formatLocation({ path, start, end }: EditorLocation): string {
 }
 
 export interface TerminalPaneHandle {
-  /** 在当前活动的会话里敲一条命令。AI CLI 的入口在侧边栏，执行落在这儿 */
-  runAiCommand: (command: string) => void;
   /**
-   * 新开一个终端标签并在里面执行命令（resume 会话用）。
-   * 不能写进当前活动会话——那儿多半正跑着一个 AI CLI，命令会被当成它的输入。
+   * 新开一个终端标签并在里面执行命令（侧栏的 AI CLI 入口与 CLI 会话 resume 都用它）。
+   * 不能写进当前活动会话——那儿可能正跑着别的东西，命令会被当成它的输入。
    */
   runInNewSession: (command: string) => void;
   /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
@@ -152,20 +150,13 @@ export function TerminalPane({
     }
   };
 
-  // 入口在侧边栏的项目行上，这里只把「往活动会话写命令」这个动作交出去
-  const runAiCommand = useCallback(
-    (command: string) => {
-      const handle = handlesRef.current.get(activeId);
-      handle?.write(`${command}\r`);
-      handle?.focus();
-    },
-    [activeId],
-  );
-
   /**
    * 新开标签跑一条命令。命令不在这儿写——新会话的 PTY 还在异步 spawn，
    * 现在写必然被丢掉。交给 initialCommand，由 TerminalSession 在 shell
    * 就绪后自己敲。
+   *
+   * 一律新开标签，不写进当前活动会话：那儿可能正跑着别的东西（shell、别的 AI CLI），
+   * 命令会被当成它的输入。
    */
   const runInNewSession = useCallback((command: string) => {
     const id = nextIdRef.current;
@@ -199,8 +190,8 @@ export function TerminalPane({
 
   useImperativeHandle(
     ref,
-    () => ({ runAiCommand, runInNewSession, insertToTerminal, insertToAgent }),
-    [runAiCommand, runInNewSession, insertToTerminal, insertToAgent],
+    () => ({ runInNewSession, insertToTerminal, insertToAgent }),
+    [runInNewSession, insertToTerminal, insertToAgent],
   );
 
   // 开关是在设置里随时能关的，而 mode 是共享状态：关掉之后分段控件不画了，
