@@ -253,6 +253,7 @@ function Shell() {
         <Sidebar
           workspaces={workspaces}
           current={activeRoot}
+          opened={projects}
           onSelect={openProject}
           onAdd={pickWorkspace}
           onRemove={removeWorkspace}

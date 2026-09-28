@@ -6,6 +6,7 @@ import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import {
   onWorkspaceNamesChanged,
   readWorkspaceNames,
+  samePath,
   saveWorkspaceNames,
   toDisplayPath,
 } from "../lib/fs";
@@ -35,6 +36,8 @@ interface SidebarProps {
   workspaces: string[];
   /** 当前工作区；null 表示还没选 */
   current: string | null;
+  /** 已经打开（挂着工作区实例、后台仍在跑）的项目根，用来在列表里点出「已打开」 */
+  opened: string[];
   onSelect: (path: string) => void;
   onAdd: () => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
@@ -87,6 +90,7 @@ function baseName(path: string): string {
 export function Sidebar({
   workspaces,
   current,
+  opened,
   onSelect,
   onAdd,
   onRemove,
@@ -322,6 +326,8 @@ export function Sidebar({
         )}
         {workspaces.map((path) => {
           const isCurrent = path === current;
+          // 已打开 = 后台挂着工作区实例的项目，和「只是用过的目录」区分开
+          const isOpen = opened.some((item) => samePath(item, path));
           return (
             <li key={path}>
               {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
@@ -362,6 +368,13 @@ export function Sidebar({
                       >
                         <IconFolder />
                         <span className="truncate">{displayName(path)}</span>
+                        {/* 已打开的项目在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
+                        {isOpen && (
+                          <span
+                            title="项目已打开"
+                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
+                          />
+                        )}
                       </button>
                       <button
                         type="button"
