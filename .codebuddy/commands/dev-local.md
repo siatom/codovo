@@ -49,11 +49,15 @@ netstat -ano | grep ":5273" | grep LISTENING
 
 ### 2b. 启动
 
-用 Bash 工具的 `nohup ... &`，**不要**用 `run_in_background`（它会被工具回收，留下没有窗口的僵尸 `codedock.exe`，还锁着 exe 让下次编译报 `os error 5`）。日志**重定向到项目外**（写项目内会触发 HMR 重载）：
+用 Bash 工具的 `nohup ... &`，**不要**用 `run_in_background`（它会被工具回收，留下没有窗口的僵尸 `codedock.exe`，还锁着 exe 让下次编译报 `os error 5`）。日志**重定向到项目外**（写项目内会触发 HMR 重载）。
+
+**用 `scripts/dev-local.sh` 包一层启动**——它把「跑 dev」和「退出后清场」串在同一进程里：用户关掉 dev 窗口、或 CLI 挂掉之后，它会自动收掉还占着 5273 的 vite 孤儿，保证不留占用：
 
 ```
-nohup pnpm tauri dev > "$TEMP/codedock-dev.log" 2>&1 &
+nohup bash scripts/dev-local.sh > "$TEMP/codedock-dev.log" 2>&1 &
 ```
+
+**不要**直接 `nohup pnpm tauri dev ... &`——那样窗口一关就没人收尾，残留的 vite 会让下一次启动失败。
 
 ### 2c. 校验；没起来就自动修一次再重试
 
