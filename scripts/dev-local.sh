@@ -15,10 +15,24 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
+# 取当前占着 5273 的监听进程 PID（多个用换行分隔）
+listening_pids() {
+  netstat -ano | grep ':5273' | grep -i 'LISTENING' | awk '{print $NF}' | sort -u
+}
+
+# 启动前先记下端口是不是已经被别人占了。如果一开始就占着，说明占它的不是我们
+# （这一轮根本起不来），cleanup 就别动它，免得误杀别的项目起的 vite；
+# 本项目自己上一次的残留由命令层的「启动前清障」负责收拾。
+preexisting="$(listening_pids)"
+
 # 收掉还占着 5273 的进程（正常退出时这里通常已经是空的）
 cleanup() {
+  if [ -n "$preexisting" ]; then
+    echo "[dev-local] cleanup: 5273 was already held before start (PIDs: $(echo $preexisting)), leaving it alone"
+    return
+  fi
   local pids
-  pids="$(netstat -ano | grep ':5273' | grep -i 'LISTENING' | awk '{print $NF}' | sort -u)"
+  pids="$(listening_pids)"
   if [ -z "$pids" ]; then
     echo "[dev-local] cleanup: port 5273 already free"
     return
