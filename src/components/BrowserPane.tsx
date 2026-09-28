@@ -3,15 +3,15 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { FullscreenButton } from "./FullscreenButton";
 import { IconExternalLink, IconRefresh } from "./icons";
 
-const URL_KEY = "codedock.browserUrl";
+const URL_KEY = "codedock.browserUrl.";
 
 /**
  * 记住上次的地址：右栏会记住停在哪个模块，回来时地址栏空着很别扭。
- * 用 sessionStorage：地址是窗口级的，两个窗口各预览各的本地服务。
+ * key 带上项目 root：多个项目各预览各的本地服务，切项目时地址跟着换。
  */
-function readSavedUrl(): string {
+function readSavedUrl(root: string): string {
   try {
-    return window.sessionStorage.getItem(URL_KEY) ?? "";
+    return window.sessionStorage.getItem(URL_KEY + root) ?? "";
   } catch {
     return "";
   }
@@ -40,13 +40,16 @@ function toUrl(raw: string): string {
  * 「刷新」是重挂 iframe，页面自己跳转到哪了会被拉回地址栏里那个地址。
  */
 export function BrowserPane({
+  root,
   fullscreen,
   onToggleFullscreen,
 }: {
+  /** 地址按项目各记一份：切项目时看到的是各自上次预览的那个地址 */
+  root: string;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
-  const [url, setUrl] = useState(readSavedUrl);
+  const [url, setUrl] = useState(() => readSavedUrl(root));
   const [draft, setDraft] = useState(url);
   /** 变一次就重挂 iframe，等于刷新 */
   const [nonce, setNonce] = useState(0);
@@ -58,11 +61,11 @@ export function BrowserPane({
     setDraft(next);
     setNonce((count) => count + 1);
     try {
-      window.sessionStorage.setItem(URL_KEY, next);
+      window.sessionStorage.setItem(URL_KEY + root, next);
     } catch {
       // 记不住不影响用
     }
-  }, []);
+  }, [root]);
 
   // 拒绝被嵌入的站点在 iframe 里就是一片空白，给它留个出口
   const openExternal = useCallback(() => {

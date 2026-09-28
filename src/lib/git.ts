@@ -133,20 +133,24 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
 }
 
 /**
- * 当前工作区的 git 状态。
+ * 某个项目的 git 状态。
+ *
+ * `enabled` 为 false 时**停掉轮询但保留已有状态**：一个窗口里会同时挂着多个项目，
+ * 只有当前显示的那个需要轮询，其余的一直在跑就是白烧 CPU。切回来时状态还是离开
+ * 时的样子，再等一个 tick 就又准了。
  *
  * 只读轮询：git 那侧没有任何写操作，命令带 --no-optional-locks，不会和用户
  * 在终端里敲的 git 抢 index 锁。写操作走 GitController.applyStatus 直接落地，
  * 不经过这里。
  */
-export function useGitStatus(root: string | null): GitController {
+export function useGitStatus(root: string | null, enabled = true): GitController {
   const [snapshot, setSnapshot] = useState<GitSnapshot>(EMPTY);
   // 手动刷新要能调到当前这一轮 effect 里的 load，所以用 ref 转一手
   const loadRef = useRef<(force?: boolean) => void>(() => {});
 
   useEffect(() => {
-    // 请求状态全放在 effect 里：换工作区时整份作废，旧请求回来会被 disposed
-    // 丢掉，不会把上一个仓库的状态盖到新目录上
+    // 请求状态全放在 effect 里：停掉时整份作废，旧请求回来会被 disposed 丢掉，
+    // 不会把上一个仓库的状态盖到新目录上
     let inFlight = false;
     let queued = false;
     let unavailable = false;
@@ -157,8 +161,13 @@ export function useGitStatus(root: string | null): GitController {
       loadRef.current = () => {};
       return;
     }
-    // 换工作区先把旧标记清掉，否则新目录会短暂顶着上一个仓库的状态
-    setSnapshot(EMPTY);
+    if (!enabled) {
+      // 这个项目切走了：只停轮询，**不清状态**——组件还挂着，切回来该是原样
+      loadRef.current = () => {};
+      return;
+    }
+    // 到这里 root 一定非空，收进局部变量，闭包里用着踏实
+    const repoRoot = root;
 
     const load = async (force = false) => {
       if (disposed || unavailable) return;
@@ -170,7 +179,7 @@ export function useGitStatus(root: string | null): GitController {
       }
       inFlight = true;
       try {
-        const payload = await gitStatus();
+        const payload = await gitStatus(repoRoot);
         if (!disposed) setSnapshot(toSnapshot(payload));
       } catch (reason) {
         if (disposed) return;
@@ -199,7 +208,7 @@ export function useGitStatus(root: string | null): GitController {
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [root]);
+  }, [root, enabled]);
 
   const refresh = useCallback(() => loadRef.current(true), []);
 

@@ -59,8 +59,10 @@ interface EditorPaneProps {
   /** 选中浮窗的两个动作：把位置引用送到终端 / 智能体输入框 */
   onSendToTerminal: (location: EditorLocation) => void;
   onSendToAgent: (location: EditorLocation) => void;
-  /** 工作区根目录：把绝对路径收敛成相对路径，给智能体标位置用 */
+  /** 工作区根目录：既是文件命令的沙箱根，也用来把绝对路径收敛成相对路径 */
   root: string;
+  /** 这个项目是不是当前显示的。从隐藏切回可见时 Monaco 要补一次 layout */
+  visible: boolean;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<EditorPaneHandle>;
 }
@@ -174,6 +176,7 @@ export function EditorPane({
   onSendToTerminal,
   onSendToAgent,
   root,
+  visible,
   ref,
 }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -367,7 +370,7 @@ export function EditorPane({
     let ok = true;
     try {
       for (const [key, cached] of targets) {
-        await writeFile(cached.path, cached.model.getValue());
+        await writeFile(rootRef.current, cached.path, cached.model.getValue());
         cached.savedVersionId = cached.model.getAlternativeVersionId();
         saved.add(key);
       }
@@ -420,7 +423,7 @@ export function EditorPane({
           // 编辑器里还留着没保存的改动就不覆盖，用户的编辑优先
           if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
           try {
-            const content = await readFile(cached.path);
+            const content = await readFile(rootRef.current, cached.path);
             if (content.isBinary || content.tooLarge) continue;
             // 读文件这一下用户可能又敲进了改动，再查一次，编辑优先
             if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
@@ -469,7 +472,7 @@ export function EditorPane({
           paths.some((item) => pathKey(item) === pathKey(current.path))
         ) {
           try {
-            const content = await readImage(current.path);
+            const content = await readImage(rootRef.current, current.path);
             // 等这一下的时候用户可能已经切走了，别把结果盖到别的标签上
             const now = activeRef.current;
             if (now && now.kind === "file" && pathKey(now.path) === pathKey(current.path)) {
@@ -557,7 +560,7 @@ export function EditorPane({
 
       let payload;
       try {
-        payload = await gitFileDiff(tab.path, tab.source);
+        payload = await gitFileDiff(rootRef.current, tab.path, tab.source);
       } catch (reason) {
         if (activeRef.current && tabKey(activeRef.current) === key) {
           setDiffStatus({ kind: "error", message: String(reason) });
@@ -763,7 +766,7 @@ export function EditorPane({
       setStatus({ kind: "loading" });
       editor.setModel(null);
 
-      void readImage(active.path)
+      void readImage(rootRef.current, active.path)
         .then((content) => {
           if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
           if (content.tooLarge) {
@@ -795,7 +798,7 @@ export function EditorPane({
     setStatus({ kind: "loading" });
     editor.setModel(null);
 
-    void readFile(path)
+    void readFile(rootRef.current, path)
       .then((content) => {
         if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
         if (content.tooLarge) {
@@ -912,14 +915,14 @@ export function EditorPane({
   }, [isPreview, active, previewNonce]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
-  // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的
+  // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；项目从后台切回来时同理
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       editorRef.current?.layout();
       diffRef.current?.layout();
     });
     return () => cancelAnimationFrame(frame);
-  }, [isPreview, isDiffTab, isImageTab]);
+  }, [isPreview, isDiffTab, isImageTab, visible]);
 
   // 标签过多、栏溢出时，激活标签可能落在可视区外，需要滚进来。
   // 用两边的 rect 差算滚动量、只挪横向，避免 scrollIntoView 连祖先的纵向滚动一起动。

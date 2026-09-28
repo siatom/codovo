@@ -211,7 +211,7 @@ export function ExplorerPane({
     // 上一个工作区的请求可能还在飞，它回来时已经属于旧工作区了，必须丢掉：
     // 否则后端会按新工作区校验旧路径，把"路径越界"盖到刚加载好的新目录上
     let cancelled = false;
-    void listDir(root)
+    void listDir(root, root)
       .then((listed) => {
         if (cancelled) return;
         setEntries(listed);
@@ -237,7 +237,7 @@ export function ExplorerPane({
 
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void searchFiles(activeQuery)
+      void searchFiles(root, activeQuery)
         .then((found) => {
           if (!cancelled) setHits(found);
         })
@@ -286,7 +286,7 @@ export function ExplorerPane({
 
       setLoading((current) => new Set(current).add(path));
       try {
-        const listed = await listDir(path);
+        const listed = await listDir(root, path);
         setChildren((current) => new Map(current).set(path, listed));
         setErrors((current) => {
           if (!current.has(path)) return current;
@@ -314,7 +314,7 @@ export function ExplorerPane({
   const refreshDir = useCallback(
     async (dir: string) => {
       try {
-        const listed = await listDir(dir);
+        const listed = await listDir(root, dir);
         if (pathKey(dir) === pathKey(root)) {
           setEntries(listed);
           return;
@@ -359,7 +359,7 @@ export function ExplorerPane({
       setMenu(null);
       setActionError(null);
       try {
-        await gitAddToIgnore(entry.path);
+        await gitAddToIgnore(root, entry.path);
         // 后端的 watcher 也会报 .gitignore 的改动，但得等 300ms 防抖；这里直接
         // 重列一次：重列会换掉 entries 的引用，忽略状态那个 effect 跟着重算
         await refreshDir(root);
@@ -399,7 +399,7 @@ export function ExplorerPane({
         setRenameError("有文件没保存成功，已取消重命名");
         return;
       }
-      const next = await renameEntry(path, name);
+      const next = await renameEntry(root, path, name);
       setRenaming(null);
       setActiveRow(next);
       onRenamed(path, next);
@@ -420,7 +420,7 @@ export function ExplorerPane({
     setBusy(true);
     setActionError(null);
     try {
-      await deleteEntry(entry.path);
+      await deleteEntry(root, entry.path);
       // 删掉的正好是当前那一行，锚点退回它所在的目录
       if (activeRow && isPathInside(activeRow, entry.path)) setActiveRow(parentOf(entry.path));
       onDeleted(entry.path);
@@ -498,7 +498,10 @@ export function ExplorerPane({
       return;
     }
     let cancelled = false;
-    void gitIgnored(loadedEntries.map((entry) => entry.path))
+    void gitIgnored(
+      root,
+      loadedEntries.map((entry) => entry.path),
+    )
       .then((paths) => {
         if (!cancelled) setIgnored(new Set(paths.map(pathKey)));
       })
@@ -533,7 +536,7 @@ export function ExplorerPane({
       if (children.has(parent)) return;
       setLoading((current) => new Set(current).add(parent));
       try {
-        const listed = await listDir(parent);
+        const listed = await listDir(root, parent);
         setChildren((current) => new Map(current).set(parent, listed));
       } catch (reason) {
         setCreateError(String(reason));
@@ -560,9 +563,9 @@ export function ExplorerPane({
     setCreatingBusy(true);
     setCreateError(null);
     try {
-      if (creating.kind === "file") await createFile(path);
-      else await createDirectory(path);
-      const listed = await listDir(creating.parent);
+      if (creating.kind === "file") await createFile(root, path);
+      else await createDirectory(root, path);
+      const listed = await listDir(root, creating.parent);
       if (pathKey(creating.parent) === pathKey(root)) {
         setEntries(listed);
       } else {

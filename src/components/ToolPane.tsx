@@ -7,7 +7,7 @@ import { SearchPane } from "./SearchPane";
 /** 右栏的工具模块。浏览器不在这里渲染内容（它独占编辑器那一列），但入口在同一个图标条上 */
 export type ToolId = "files" | "changes" | "search" | "browser";
 
-const TOOL_KEY = "codedock.rightTool";
+const TOOL_KEY = "codedock.rightTool.";
 
 const TOOLS: ToolId[] = ["files", "changes", "search", "browser"];
 
@@ -15,21 +15,21 @@ const TOOLS: ToolId[] = ["files", "changes", "search", "browser"];
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
  * 不给终端让位就白搭），所以这里只存模块名，不存展开状态。
  *
- * 用 sessionStorage：这是窗口级偏好，多窗口下各开各的模块互不影响
- * （localStorage 是同源共享的，两个窗口会互相改）。
+ * key 里带上项目 root：一个窗口里同时开着多个项目，各看各的模块才不会串。
+ * 用 sessionStorage 存，重启后回到「文件」，够用了。
  */
-export function readTool(): ToolId {
+export function readTool(root: string): ToolId {
   try {
-    const saved = window.sessionStorage.getItem(TOOL_KEY);
+    const saved = window.sessionStorage.getItem(TOOL_KEY + root);
     return TOOLS.find((tool) => tool === saved) ?? "files";
   } catch {
     return "files";
   }
 }
 
-export function saveTool(tool: ToolId) {
+export function saveTool(root: string, tool: ToolId) {
   try {
-    window.sessionStorage.setItem(TOOL_KEY, tool);
+    window.sessionStorage.setItem(TOOL_KEY + root, tool);
   } catch {
     // 记不住就每次启动回到「文件」，不影响使用
   }
@@ -38,6 +38,8 @@ export function saveTool(tool: ToolId) {
 interface ToolPaneProps {
   tool: ToolId;
   root: string;
+  /** 这个项目是不是当前显示的。隐藏时不做任何后端交互 */
+  visible: boolean;
   /** 当前打开的文件，文件树里要高亮 */
   selected: string | null;
   git: GitController;
@@ -66,6 +68,7 @@ interface ToolPaneProps {
 export function ToolPane({
   tool,
   root,
+  visible,
   selected,
   git,
   onSelectFile,
@@ -94,13 +97,12 @@ export function ToolPane({
         />
       </div>
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        {/* 换工作区丢掉上一个仓库残留的提交草稿和报错 */}
-        <GitChangesPane key={root} git={git} onOpen={onOpenDiff} />
+        <GitChangesPane root={root} git={git} onOpen={onOpenDiff} />
       </div>
       <div className={tool === "search" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        {/* 换工作区时结果和折叠状态一起作废 */}
         <SearchPane
-          key={root}
+          root={root}
+          visible={visible}
           onOpenMatch={onOpenMatch}
           onBeforeReplace={onBeforeReplace}
           onAfterReplace={onAfterReplace}

@@ -47,8 +47,8 @@ export interface TerminalSessionHandle {
 }
 
 interface TerminalSessionProps {
-  /** 当前工作目录；null 表示用户还没选工作区，shell 落在用户主目录 */
-  cwd: string | null;
+  /** 这个会话属于哪个项目；shell 就落在这个目录，后端也按它归属会话 */
+  root: string;
   /** 是否是当前显示的那个会话：从后台切回来要重新量尺寸并聚焦 */
   active: boolean;
   /** shell 起来后自动敲进去的一条命令（resume 会话用）。只在建实例那一次生效 */
@@ -67,7 +67,7 @@ interface TerminalSessionProps {
 export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
->(function TerminalSession({ cwd, active, initialCommand, shell }, ref) {
+>(function TerminalSession({ root, active, initialCommand, shell }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyRef = useRef<PtyHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -172,7 +172,8 @@ export const TerminalSession = forwardRef<
 
     const start = async () => {
       const handle = await spawnPty({
-        cwd: cwd ?? undefined,
+        root,
+        cwd: root,
         // 刻意读闭包里的值、且不放进下面的依赖数组：改了 shell 只该影响之后新建的
         // 会话，不能把正在跑的终端重建掉（那会打断命令和 AI CLI）。
         shell: (shell ?? settings.terminalShell) || undefined,
@@ -278,9 +279,9 @@ export const TerminalSession = forwardRef<
       termRef.current = null;
       fitRef.current = null;
     };
-    // cwd 变了就重开一个 shell 落在新目录，比往运行中的 shell 里塞 cd 可靠
+    // root 变了就重开一个 shell 落在新目录，比往运行中的 shell 里塞 cd 可靠
     // （跨盘符、各种 shell 的转义规则都不一样）
-  }, [sessionKey, cwd]);
+  }, [sessionKey, root]);
 
   // 切界面主题、或换终端配色，都不重建会话，只换调色板：滚动历史和正在跑的命令不受影响
   useEffect(() => {

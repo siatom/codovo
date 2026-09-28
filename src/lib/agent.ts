@@ -46,35 +46,44 @@ export interface AgentLaunchConfig {
   primary: string;
 }
 
-/** 启动智能体服务。幂等：同一工作区已经在跑就直接复用。 */
-export function startAgent(config: AgentLaunchConfig): Promise<AgentInfo> {
-  return invoke<AgentInfo>("agent_start", { config });
+/**
+ * 后端推来的事件都带着项目 root：单窗口下会同时开着多个项目、每个一个 opencode
+ * 进程，不带 root 就分不清这条事件是谁的。
+ */
+interface Tagged<T> {
+  root: string;
+  event: T;
 }
 
-export function agentStatus(): Promise<AgentStatus> {
-  return invoke<AgentStatus>("agent_status");
+/** 启动智能体服务。幂等：同一个项目已经在跑就直接复用。 */
+export function startAgent(root: string, config: AgentLaunchConfig): Promise<AgentInfo> {
+  return invoke<AgentInfo>("agent_start", { root, config });
 }
 
-/** 停掉服务。换工作区、退出前都要调。 */
-export function stopAgent(): Promise<void> {
-  return invoke<void>("agent_stop");
+export function agentStatus(root: string): Promise<AgentStatus> {
+  return invoke<AgentStatus>("agent_status", { root });
 }
 
-export function createAgentSession(title?: string): Promise<{ id: string }> {
-  return invoke<{ id: string }>("agent_create_session", { title: title ?? null });
+/** 停掉某个项目的服务。关闭项目、退出前都要调。 */
+export function stopAgent(root: string): Promise<void> {
+  return invoke<void>("agent_stop", { root });
+}
+
+export function createAgentSession(root: string, title?: string): Promise<{ id: string }> {
+  return invoke<{ id: string }>("agent_create_session", { root, title: title ?? null });
 }
 
 /** 拉某个会话的历史消息，打开会话时灌一次，之后靠 SSE 增量 */
-export function fetchAgentMessages(sessionId: string): Promise<unknown> {
-  return invoke<unknown>("agent_messages", { sessionId });
+export function fetchAgentMessages(root: string, sessionId: string): Promise<unknown> {
+  return invoke<unknown>("agent_messages", { root, sessionId });
 }
 
 /**
  * 列出 opencode 里的所有会话。
  * 它是全局存的、把各个项目的会话混在一起返回，调用方还得用 parseSessions 按工作区筛。
  */
-export function listAgentSessions(): Promise<unknown> {
-  return invoke<unknown>("agent_list_sessions");
+export function listAgentSessions(root: string): Promise<unknown> {
+  return invoke<unknown>("agent_list_sessions", { root });
 }
 
 /**
@@ -83,36 +92,52 @@ export function listAgentSessions(): Promise<unknown> {
  * 配置里的默认模型，那多半不是 CodeDock 里配的那个。
  */
 export function sendAgentMessage(
+  root: string,
   sessionId: string,
   text: string,
   model: string,
   /** 选中的 primary agent；v2 走切 agent 路由、v1 塞进请求体，都在后端处理 */
   agent?: string,
 ): Promise<void> {
-  return invoke<void>("agent_send", { sessionId, text, model, agent: agent ?? null });
+  return invoke<void>("agent_send", {
+    root,
+    sessionId,
+    text,
+    model,
+    agent: agent ?? null,
+  });
 }
 
-export function abortAgentSession(sessionId: string): Promise<void> {
-  return invoke<void>("agent_abort", { sessionId });
+export function abortAgentSession(root: string, sessionId: string): Promise<void> {
+  return invoke<void>("agent_abort", { root, sessionId });
 }
 
 /** 删掉一个会话（连同消息）。opencode 那边不可撤销。 */
-export function deleteAgentSession(sessionId: string): Promise<void> {
-  return invoke<void>("agent_delete_session", { sessionId });
+export function deleteAgentSession(root: string, sessionId: string): Promise<void> {
+  return invoke<void>("agent_delete_session", { root, sessionId });
 }
 
 /** 改会话标题。opencode 那边是 `PATCH /session/:id`，只动标题、不动消息。 */
-export function renameAgentSession(sessionId: string, title: string): Promise<void> {
-  return invoke<void>("agent_rename_session", { sessionId, title });
+export function renameAgentSession(
+  root: string,
+  sessionId: string,
+  title: string,
+): Promise<void> {
+  return invoke<void>("agent_rename_session", { root, sessionId, title });
 }
 
-export function onAgentEvent(handler: (event: AgentEvent) => void): Promise<UnlistenFn> {
-  return listen<AgentEvent>(EVENT_NAME, (event) => handler(event.payload));
+/** 订阅某个项目的智能体事件；别的项目的事件会被过滤掉 */
+export function onAgentEvent(
+  handler: (root: string, event: AgentEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<Tagged<AgentEvent>>(EVENT_NAME, (e) => handler(e.payload.root, e.payload.event));
 }
 
-/** 订阅子进程退出。payload 是退出码。 */
-export function onAgentExit(handler: (code: number) => void): Promise<UnlistenFn> {
-  return listen<number>(EXIT_EVENT, (event) => handler(event.payload));
+/** 订阅子进程退出。事件里带着项目 root 与退出码。 */
+export function onAgentExit(
+  handler: (root: string, code: number) => void,
+): Promise<UnlistenFn> {
+  return listen<Tagged<number>>(EXIT_EVENT, (e) => handler(e.payload.root, e.payload.event));
 }
 
 // ---- 事件归并 ----

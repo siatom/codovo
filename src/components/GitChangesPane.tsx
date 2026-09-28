@@ -55,6 +55,8 @@ import {
 } from "./icons";
 
 interface GitChangesPaneProps {
+  /** 这个面板属于哪个项目：所有 git / ai 命令都带着它，后端按它定位工作区 */
+  root: string;
   git: GitController;
   /** 点改动项 / 提交里的文件：打开差异视图，source 决定跟谁比 */
   onOpen: (path: string, source: DiffSource) => void;
@@ -93,8 +95,8 @@ function messageMetrics(el: HTMLTextAreaElement) {
 }
 
 // 提交历史这摊都是窗口级偏好，存 sessionStorage：多窗口下各收各的、各拖各的
-const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed";
-const LOG_HEIGHT_KEY = "codedock.commitLogHeight";
+const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed.";
+const LOG_HEIGHT_KEY = "codedock.commitLogHeight.";
 
 /** 提交历史那块能拖到多高/多矮 */
 const MIN_LOG_HEIGHT = 80;
@@ -104,17 +106,17 @@ const DEFAULT_LOG_HEIGHT = 224;
 /** 上面至少要留出来的高度：工具条 + 提交框 + 两三行改动列表 */
 const RESERVED_ABOVE = 200;
 
-function readLogCollapsed(): boolean {
+function readLogCollapsed(root: string): boolean {
   try {
-    return window.sessionStorage.getItem(LOG_COLLAPSED_KEY) === "1";
+    return window.sessionStorage.getItem(LOG_COLLAPSED_KEY + root) === "1";
   } catch {
     return false;
   }
 }
 
-function readLogHeight(): number {
+function readLogHeight(root: string): number {
   try {
-    const saved = Number(window.sessionStorage.getItem(LOG_HEIGHT_KEY));
+    const saved = Number(window.sessionStorage.getItem(LOG_HEIGHT_KEY + root));
     if (Number.isFinite(saved) && saved >= MIN_LOG_HEIGHT && saved <= MAX_LOG_HEIGHT) {
       return saved;
     }
@@ -124,7 +126,7 @@ function readLogHeight(): number {
   return DEFAULT_LOG_HEIGHT;
 }
 
-const VIEW_KEY = "codedock.gitChangesView";
+const VIEW_KEY = "codedock.gitChangesView.";
 
 /** 改动列表的两种排法：平铺，或按目录层级收起来 */
 type ChangeView = "list" | "tree";
@@ -132,10 +134,10 @@ type ChangeView = "list" | "tree";
 /** 树视图每一层缩进多少像素。和 FileTreeNode 用同一个值，两处观感一致 */
 const INDENT = 12;
 
-function readChangeView(): ChangeView {
+function readChangeView(root: string): ChangeView {
   try {
     // 只有明确存过 "tree" 才认，读坏了、存了怪值都回落列表
-    return window.sessionStorage.getItem(VIEW_KEY) === "tree" ? "tree" : "list";
+    return window.sessionStorage.getItem(VIEW_KEY + root) === "tree" ? "tree" : "list";
   } catch {
     return "list";
   }
@@ -600,7 +602,7 @@ function CommitRow({
  * 目录不是仓库（或系统里没有 git）时整个不渲染——工具列表那边已经把这行置灰了，
  * 这里的早退只是兜底。
  */
-export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
+export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
@@ -616,8 +618,8 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const messageDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
   // 提交历史
-  const [logCollapsed, setLogCollapsed] = useState(readLogCollapsed);
-  const [logHeight, setLogHeight] = useState(readLogHeight);
+  const [logCollapsed, setLogCollapsed] = useState(() => readLogCollapsed(root));
+  const [logHeight, setLogHeight] = useState(() => readLogHeight(root));
   const [draggingLog, setDraggingLog] = useState(false);
   /** 拖动起点，null 表示没在拖 */
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -633,7 +635,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const [logRevision, setLogRevision] = useState(0);
 
   /** 改动列表怎么排：平铺还是按目录收起来。选择落盘，下次进应用照旧 */
-  const [view, setView] = useState<ChangeView>(readChangeView);
+  const [view, setView] = useState<ChangeView>(() => readChangeView(root));
   /** 树视图里收起来的目录。空集合就是全展开，正好是默认要的样子 */
   const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
 
@@ -697,7 +699,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const commit = useCallback(() => {
     if (!message.trim()) return;
     void run("commit", async () => {
-      const payload = await gitCommit(message);
+      const payload = await gitCommit(root, message);
       setMessage(""); // 只有真提交成功才清空
       setLogRevision((revision) => revision + 1); // 刚多了一条提交
       return payload;
@@ -720,8 +722,8 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     const stageAllFirst = staged.length === 0 && unstaged.length > 0;
     void run("generate", async () => {
       // 暂存返回新状态，跟着一起落地，免得按钮还停在"未暂存"的旧状态上
-      const payload = stageAllFirst ? await gitStage() : undefined;
-      setMessage(await generateCommitMessage(aiConfig));
+      const payload = stageAllFirst ? await gitStage(root) : undefined;
+      setMessage(await generateCommitMessage(root, aiConfig));
       return payload;
     });
   }, [aiConfig, aiReady, run, staged.length, unstaged.length]);
@@ -752,7 +754,12 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
       const seq = (explainSeq.current += 1);
       setExplain({ title, text: null, error: null });
-      void explainChange(aiConfig, change.path, stagedRow ? { mode: "staged" } : { mode: "unstaged" })
+      void explainChange(
+        root,
+        aiConfig,
+        change.path,
+        stagedRow ? { mode: "staged" } : { mode: "unstaged" },
+      )
         .then((text) => {
           if (explainSeq.current === seq) setExplain({ title, text, error: null });
         })
@@ -777,12 +784,12 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
   /** 只取回引用，不动工作区，所以提交历史不用重拉 */
   const fetch = useCallback(() => {
-    void run("fetch", gitFetch);
+    void run("fetch", () => gitFetch(root));
   }, [run]);
 
   const pull = useCallback(() => {
     void run("pull", async () => {
-      const payload = await gitPull();
+      const payload = await gitPull(root);
       setLogRevision((revision) => revision + 1); // 快进之后历史多了一段
       return payload;
     });
@@ -790,7 +797,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
 
   /** 推送不动本地历史，只变了 ahead/behind，状态由 run() 落地 */
   const push = useCallback(() => {
-    void run("push", gitPush);
+    void run("push", () => gitPush(root));
   }, [run]);
 
   /**
@@ -806,7 +813,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     const pending = pendingDiscard;
     if (!pending) return;
     setPendingDiscard(null);
-    void run("discard", () => gitDiscard(pending.paths, pending.source));
+    void run("discard", () => gitDiscard(root, pending.paths, pending.source));
   }, [pendingDiscard, run]);
 
   const discardAllStaged = useCallback(() => {
@@ -828,7 +835,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const setLogCollapsedPersisted = (next: boolean) => {
     setLogCollapsed(next);
     try {
-      window.sessionStorage.setItem(LOG_COLLAPSED_KEY, next ? "1" : "0");
+      window.sessionStorage.setItem(LOG_COLLAPSED_KEY + root, next ? "1" : "0");
     } catch {
       // 记不住就按展开算，不影响使用
     }
@@ -837,7 +844,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   const setViewPersisted = (next: ChangeView) => {
     setView(next);
     try {
-      window.sessionStorage.setItem(VIEW_KEY, next);
+      window.sessionStorage.setItem(VIEW_KEY + root, next);
     } catch {
       // 记不住就下次回到列表，不影响使用
     }
@@ -885,7 +892,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
     document.body.classList.remove("codedock-dragging-row");
     try {
       // 用 state 里最新的值：拖动过程中它一直在变
-      window.sessionStorage.setItem(LOG_HEIGHT_KEY, String(logHeight));
+      window.sessionStorage.setItem(LOG_HEIGHT_KEY + root, String(logHeight));
     } catch {
       // 记不住就下次还是默认高度
     }
@@ -934,7 +941,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   useEffect(() => {
     if (logCollapsed || !snapshot.isRepo) return;
     let cancelled = false;
-    void gitLog(logLimit)
+    void gitLog(root, logLimit)
       .then((list) => {
         if (cancelled) return;
         setCommits(list);
@@ -954,7 +961,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
   useEffect(() => {
     if (!openCommit || commitFiles.has(openCommit)) return;
     let cancelled = false;
-    void gitCommitFiles(openCommit)
+    void gitCommitFiles(root, openCommit)
       .then((list) => {
         if (!cancelled) setCommitFiles((current) => new Map(current).set(openCommit, list));
       })
@@ -1215,7 +1222,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                 )}
                 <button
                   type="button"
-                  onClick={() => void run("unstage", () => gitUnstage())}
+                  onClick={() => void run("unstage", () => gitUnstage(root))}
                   disabled={busy !== null}
                   title="全部取消暂存"
                   className={GROUP_ICON}
@@ -1232,7 +1239,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                 collapsedDirs={collapsedDirs}
                 onToggleDir={toggleDir}
                 onOpen={onOpen}
-                onToggle={(path) => void run("unstage", () => gitUnstage([path]))}
+                onToggle={(path) => void run("unstage", () => gitUnstage(root, [path]))}
                 onDiscard={(change) =>
                   discard([change.path], { mode: "staged" }, change.relative)
                 }
@@ -1260,7 +1267,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                 )}
                 <button
                   type="button"
-                  onClick={() => void run("stage", () => gitStage())}
+                  onClick={() => void run("stage", () => gitStage(root))}
                   disabled={busy !== null}
                   title="全部暂存"
                   className={GROUP_ICON}
@@ -1277,7 +1284,7 @@ export function GitChangesPane({ git, onOpen }: GitChangesPaneProps) {
                 collapsedDirs={collapsedDirs}
                 onToggleDir={toggleDir}
                 onOpen={onOpen}
-                onToggle={(path) => void run("stage", () => gitStage([path]))}
+                onToggle={(path) => void run("stage", () => gitStage(root, [path]))}
                 onDiscard={(change) =>
                   discard([change.path], { mode: "unstaged" }, change.relative)
                 }

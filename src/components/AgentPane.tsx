@@ -8,6 +8,7 @@ import {
   type Ref,
 } from "react";
 import { useSettings } from "../lib/settings";
+import { samePath } from "../lib/fs";
 import { useEffectiveAiConfig } from "../lib/ai";
 import {
   boundModelRef,
@@ -52,7 +53,8 @@ export interface AgentPaneHandle {
 }
 
 interface AgentPaneProps {
-  cwd: string | null;
+  /** 这个智能体面板属于哪个项目。一个项目一个 opencode 进程，各自独立 */
+  root: string;
   /** 当前是不是停在智能体 tab；第一次变 true 时才去拉服务 */
   active: boolean;
   /** 左侧这一列（终端与智能体）是否已全屏展示 */
@@ -217,7 +219,7 @@ function PrimaryAgentPicker({
  * 智能体对话面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
  * 这里只负责发消息、把 SSE 事件渲染成对话。
  */
-export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: AgentPaneProps) {
+export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }: AgentPaneProps) {
   const { settings, update } = useSettings();
   // 会话列表和当前会话跟侧边栏共用：那边要按项目列出历史、并高亮正在聊的那条
   const {
@@ -232,7 +234,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     clearNewRequest,
     requestedRename,
     clearRenameRequest,
-  } = useAgentSession();
+  } = useAgentSession(root);
   const [phase, setPhase] = useState<Phase>("idle");
   const [fatal, setFatal] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
@@ -253,7 +255,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
 
   // 生效层（全局 + 当前项目已合并）与 primary agent 候选。选择器存的是名字，
   // 可能已被删掉 / 改名，所以实际用的是「候选里还有没有它」的结果，没有就回落 build。
-  const layer = useMemo(() => resolveAgentLayer(settings, cwd), [settings, cwd]);
+  const layer = useMemo(() => resolveAgentLayer(settings, root), [settings, root]);
   const agentOptions = useMemo(() => primaryAgentOptions(layer), [layer]);
   const primary = agentOptions.some((option) => option.value === settings.agentPrimary)
     ? settings.agentPrimary
@@ -285,25 +287,25 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
 
   /** 拉一次会话列表。失败不抛，返回空数组让调用方兜底 */
   const refreshSessions = useCallback(async (): Promise<AgentSessionSummary[]> => {
-    if (!cwd) return [];
+    if (!root) return [];
     try {
-      const list = parseSessions(await listAgentSessions(), cwd);
+      const list = parseSessions(await listAgentSessions(root), root);
       setSessions(list);
       return list;
     } catch {
       // 列表拉不到不该挡住对话，界面保持上一次的样子
       return [];
     }
-  }, [cwd]);
+  }, [root]);
 
   /** 打开某个会话：拉历史灌进来，并把它记成当前会话 */
   const openSession = useCallback(
     async (id: string) => {
-      if (!cwd) return;
+      if (!root) return;
       try {
-        const history = await fetchAgentMessages(id);
+        const history = await fetchAgentMessages(root, id);
         setCurrentId(id);
-        window.sessionStorage.setItem(SESSION_KEY_PREFIX + cwd, id);
+        window.sessionStorage.setItem(SESSION_KEY_PREFIX + root, id);
         setConversation(conversationFromHistory(history));
         setPhase("ready");
       } catch (reason) {
@@ -311,12 +313,12 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
         setPhase("error");
       }
     },
-    [cwd, setCurrentId],
+    [root, setCurrentId],
   );
 
   /** 拉服务 → 接着上次的会话（没了就接最近的一条；一条都没有就停在空态，等用户发第一句再建） */
   const boot = useCallback(async () => {
-    if (!cwd) {
+    if (!root) {
       setFatal("先选一个工作目录，智能体要知道在哪个仓库里干活");
       setPhase("error");
       return;
@@ -333,7 +335,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     setFatal(null);
 
     try {
-      const info = await startAgent({
+      const info = await startAgent(root, {
         command: agentCommand,
         port: agentPort,
         providers,
@@ -355,7 +357,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     // 会话列表才是真相：本地存的那个 id 可能已经被删了，也可能清过缓存。
     // 所以先问列表——本地那条还在就接着它，否则退一步接最近的一条。
     const list = await refreshSessions();
-    const saved = window.sessionStorage.getItem(SESSION_KEY_PREFIX + cwd);
+    const saved = window.sessionStorage.getItem(SESSION_KEY_PREFIX + root);
     const target = list.find((item) => item.id === saved) ?? list[0];
     if (target) {
       await openSession(target.id);
@@ -368,7 +370,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     setConversation(EMPTY_CONVERSATION);
     setPhase("ready");
   }, [
-    cwd,
+    root,
     aiReady,
     agentCommand,
     agentPort,
@@ -393,7 +395,9 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
-    void onAgentEvent((event) => {
+    void onAgentEvent((eventRoot, event) => {
+      // 一个窗口里会同时开着几个项目、各有一个 opencode 在跑，只认自己这份
+      if (!samePath(eventRoot, root)) return;
       const sessionId = currentIdRef.current;
       if (!sessionId) return;
       setConversation((current) => reduceAgentEvent(current, event, sessionId));
@@ -422,7 +426,8 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     let unlisten: (() => void) | undefined;
     let disposed = false;
 
-    void onAgentExit(() => {
+    void onAgentExit((eventRoot) => {
+      if (!samePath(eventRoot, root)) return;
       setFatal("智能体服务已退出，可能是被系统回收或端口被占");
       setPhase("error");
     }).then((fn) => {
@@ -514,10 +519,10 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     let sessionId = currentIdRef.current;
     if (!sessionId) {
       try {
-        const session = await createAgentSession();
+        const session = await createAgentSession(root);
         sessionId = session.id;
         setCurrentId(sessionId);
-        if (cwd) window.sessionStorage.setItem(SESSION_KEY_PREFIX + cwd, sessionId);
+        if (root) window.sessionStorage.setItem(SESSION_KEY_PREFIX + root, sessionId);
         void refreshSessions();
       } catch (reason) {
         setConversation((current) => ({ ...current, streaming: false, error: String(reason) }));
@@ -525,19 +530,19 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
       }
     }
 
-    void sendAgentMessage(sessionId, text, sendModel, primary).catch((reason) => {
+    void sendAgentMessage(root, sessionId, text, sendModel, primary).catch((reason) => {
       setConversation((current) => ({
         ...current,
         streaming: false,
         error: String(reason),
       }));
     });
-  }, [draft, conversation.streaming, sendModel, primary, cwd, setCurrentId, refreshSessions, clearComposer]);
+  }, [draft, conversation.streaming, sendModel, primary, root, setCurrentId, refreshSessions, clearComposer]);
 
   const stop = useCallback(() => {
     const sessionId = currentIdRef.current;
     if (!sessionId) return;
-    void abortAgentSession(sessionId).catch(() => {
+    void abortAgentSession(root, sessionId).catch(() => {
       // 停不下来也无所谓：这一轮跑完自然会给 session.idle
     });
   }, [currentIdRef]);
@@ -560,7 +565,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
   const deleteSession = useCallback(
     async (id: string) => {
       try {
-        await deleteAgentSession(id);
+        await deleteAgentSession(root, id);
       } catch (reason) {
         setConversation((current) => ({ ...current, error: String(reason) }));
         return;
@@ -592,7 +597,7 @@ export function AgentPane({ cwd, active, fullscreen, onToggleFullscreen, ref }: 
     if (!requestedRename) return;
     const { id, title } = requestedRename;
     clearRenameRequest();
-    void renameAgentSession(id, title)
+    void renameAgentSession(root, id, title)
       .then(() => refreshSessions())
       .catch((reason) => {
         setConversation((current) => ({ ...current, error: String(reason) }));

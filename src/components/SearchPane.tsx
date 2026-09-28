@@ -56,9 +56,15 @@ interface SearchPaneProps {
   onBeforeReplace: () => Promise<boolean>;
   /** 替换完让编辑器重新从磁盘加载这些文件 */
   onAfterReplace: (paths: string[]) => void;
+  /** 搜的是哪个项目（后端按它做沙箱校验） */
+  root: string;
+  /** 是不是当前显示的项目。隐藏时不发起搜索，切回来会重跑一遍 */
+  visible: boolean;
 }
 
 export function SearchPane({
+  root,
+  visible,
   onOpenMatch,
   onBeforeReplace,
   onAfterReplace,
@@ -82,6 +88,7 @@ export function SearchPane({
   const requestRef = useRef(0);
 
   useEffect(() => {
+    if (!visible) return;
     if (!query) {
       requestRef.current += 1;
       setResult(null);
@@ -93,7 +100,7 @@ export function SearchPane({
     const id = (requestRef.current += 1);
     setLoading(true);
     const timer = window.setTimeout(() => {
-      void searchContents(query, options)
+      void searchContents(root, query, options)
         .then((found) => {
           if (requestRef.current !== id) return;
           setResult(found);
@@ -111,7 +118,7 @@ export function SearchPane({
     }, SEARCH_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [query, options, reloadKey]);
+  }, [root, visible, query, options, reloadKey]);
 
   const totalMatches = result
     ? result.files.reduce((sum, file) => sum + file.matches.length, 0)
@@ -158,7 +165,7 @@ export function SearchPane({
     setMessage(null);
     try {
       if (!(await prepare())) return;
-      const outcome = await replaceAll({ paths, query, options, replacement });
+      const outcome = await replaceAll({ root, paths, query, options, replacement });
       onAfterReplace(outcome.files.map((file) => file.path));
       // 行列都变了，重搜一次让结果跟上
       setReloadKey((key) => key + 1);
@@ -188,6 +195,7 @@ export function SearchPane({
     try {
       if (!(await prepare())) return;
       await replaceOne({
+        root,
         path: file.path,
         position: { line: match.line, column: match.column, length: match.length },
         query,

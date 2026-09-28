@@ -20,35 +20,23 @@ const WORKSPACE_KEY = "codedock.workspace";
 const WORKSPACES_KEY = "codedock.workspaces";
 const WORKSPACE_NAMES_KEY = "codedock.workspaceNames";
 
-/** 当前工作区；用户还没选目录时为 null */
-export function getRoot(): Promise<string | null> {
-  return invoke<string | null>("fs_root");
+/**
+ * 打开 / 切换项目：后端登记这个根、把目录监听切过去，返回 canonical 后的路径。
+ * 之后每条命令都带着它——单窗口下会同时开着多个项目，后端靠 root 分辨是谁。
+ */
+export function projectActivate(path: string): Promise<string> {
+  return invoke<string>("project_activate", { path });
 }
 
-export function setRoot(path: string): Promise<string> {
-  return invoke<string>("fs_set_root", { path });
+/** 关闭项目：收掉它的终端与智能体进程、停掉目录监听，并从后端白名单里摘掉 */
+export function projectClose(root: string): Promise<void> {
+  return invoke("project_close", { root });
 }
 
-/** 弹目录选择框，只返回选中的路径，不动当前窗口的工作区；用户取消时返回 null */
+/** 弹目录选择框，返回选中的路径；用户取消时返回 null */
 export async function pickFolder(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title: "选择工作目录" });
   return typeof picked === "string" ? picked : null;
-}
-
-/** 弹目录选择框并设为当前窗口的工作区；用户取消时返回 null */
-export async function pickWorkspaceFolder(): Promise<string | null> {
-  const picked = await pickFolder();
-  if (!picked) return null;
-  return setRoot(picked);
-}
-
-/**
- * 新开一个窗口打开这个项目，当前窗口不受影响，返回新窗口的 label。
- * 窗口由后端创建：label 分配、工作区根、目录监听一起安排，前端起来时
- * `fs_root` 已经能拿到自己的目录。
- */
-export function openProjectWindow(path: string): Promise<string> {
-  return invoke<string>("project_window_open", { path });
 }
 
 export function readSavedWorkspace(): string | null {
@@ -171,16 +159,16 @@ export function onWorkspaceNamesChanged(
   return () => window.removeEventListener("storage", onStorage);
 }
 
-export function listDir(path: string): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>("fs_list_dir", { path });
+export function listDir(root: string, path: string): Promise<FileEntry[]> {
+  return invoke<FileEntry[]>("fs_list_dir", { root, path });
 }
 
 /**
  * 按文件名递归搜工作区（大小写不敏感的子串匹配），返回命中的绝对路径。
  * 后端会跳过 node_modules / .git / target 这类目录，并且有结果条数上限。
  */
-export function searchFiles(query: string): Promise<string[]> {
-  return invoke<string[]>("fs_search_files", { query });
+export function searchFiles(root: string, query: string): Promise<string[]> {
+  return invoke<string[]>("fs_search_files", { root, query });
 }
 
 /**
@@ -188,14 +176,16 @@ export function searchFiles(query: string): Promise<string[]> {
  * 行列都用 UTF-16 单位，能直接喂给 Monaco 的 Range。
  */
 export function searchContents(
+  root: string,
   query: string,
   options: SearchOptions,
 ): Promise<SearchResult> {
-  return invoke<SearchResult>("fs_search_content", { query, options });
+  return invoke<SearchResult>("fs_search_content", { root, query, options });
 }
 
 /** 替换单条匹配；行列对不上时后端会报「内容已经变了」，让用户重新搜索 */
 export function replaceOne(request: {
+  root: string;
   path: string;
   position: { line: number; column: number; length: number };
   query: string;
@@ -207,6 +197,7 @@ export function replaceOne(request: {
 
 /** 替换一批文件里的所有匹配；只动传进来的这些路径 */
 export function replaceAll(request: {
+  root: string;
   paths: string[];
   query: string;
   options: SearchOptions;
@@ -215,38 +206,38 @@ export function replaceAll(request: {
   return invoke<ReplaceResult>("fs_replace_all", request);
 }
 
-export function readFile(path: string): Promise<FileContent> {
-  return invoke<FileContent>("fs_read_file", { path });
+export function readFile(root: string, path: string): Promise<FileContent> {
+  return invoke<FileContent>("fs_read_file", { root, path });
 }
 
 /**
  * 读一张图片当预览用，后端返回 data URL。只认 png / jpg / gif / webp / bmp / ico，
  * 其余扩展名后端直接报错（`svg` 是文本，仍旧走 `readFile` 在编辑器里编辑）。
  */
-export function readImage(path: string): Promise<ImageContent> {
-  return invoke<ImageContent>("fs_read_image", { path });
+export function readImage(root: string, path: string): Promise<ImageContent> {
+  return invoke<ImageContent>("fs_read_image", { root, path });
 }
 
-export function writeFile(path: string, text: string): Promise<void> {
-  return invoke("fs_write_file", { path, text });
+export function writeFile(root: string, path: string, text: string): Promise<void> {
+  return invoke("fs_write_file", { root, path, text });
 }
 
-export function createFile(path: string): Promise<void> {
-  return invoke("fs_create_file", { path });
+export function createFile(root: string, path: string): Promise<void> {
+  return invoke("fs_create_file", { root, path });
 }
 
-export function createDirectory(path: string): Promise<void> {
-  return invoke("fs_create_directory", { path });
+export function createDirectory(root: string, path: string): Promise<void> {
+  return invoke("fs_create_directory", { root, path });
 }
 
 /** 就地改名。`newName` 只是一段名字，不带分隔符；返回改名后的绝对路径。 */
-export function renameEntry(path: string, newName: string): Promise<string> {
-  return invoke<string>("fs_rename", { path, newName });
+export function renameEntry(root: string, path: string, newName: string): Promise<string> {
+  return invoke<string>("fs_rename", { root, path, newName });
 }
 
 /** 删除文件或整个目录（递归）。**不可撤销**，调用前必须先跟用户确认。 */
-export function deleteEntry(path: string): Promise<void> {
-  return invoke("fs_delete", { path });
+export function deleteEntry(root: string, path: string): Promise<void> {
+  return invoke("fs_delete", { root, path });
 }
 
 /**
@@ -268,35 +259,35 @@ export function onFilesChanged(handler: (paths: string[]) => void): Promise<Unli
   return listen<string[]>("fs-file-changed", (event) => handler(event.payload));
 }
 
-/** 当前工作区的 git 状态；目录不是仓库时 isRepo 为 false */
-export function gitStatus(): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_status");
+/** 某个项目的 git 状态；目录不是仓库时 isRepo 为 false */
+export function gitStatus(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_status", { root });
 }
 
 /**
  * 这批绝对路径里，哪些被 .gitignore 之类的规则忽略了。文件树按它把条目置灰。
  * 目录不是仓库（或没装 git）时返回空数组，不是错误。
  */
-export function gitIgnored(paths: string[]): Promise<string[]> {
-  return invoke<string[]>("git_ignored", { paths });
+export function gitIgnored(root: string, paths: string[]): Promise<string[]> {
+  return invoke<string[]>("git_ignored", { root, paths });
 }
 
 /**
  * 把一条路径追加进工作区根的 `.gitignore`（目录自动带上尾斜杠）。
  * 已经有同样的规则时后端什么都不做，不是错误。
  */
-export function gitAddToIgnore(path: string): Promise<void> {
-  return invoke("git_add_to_ignore", { path });
+export function gitAddToIgnore(root: string, path: string): Promise<void> {
+  return invoke("git_add_to_ignore", { root, path });
 }
 
 /** 暂存；不传 paths 表示全部暂存。返回写完之后的新状态。 */
-export function gitStage(paths?: string[]): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_stage", { paths: paths ?? null });
+export function gitStage(root: string, paths?: string[]): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_stage", { root, paths: paths ?? null });
 }
 
 /** 取消暂存；不传 paths 表示全部取消。 */
-export function gitUnstage(paths?: string[]): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_unstage", { paths: paths ?? null });
+export function gitUnstage(root: string, paths?: string[]): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_unstage", { root, paths: paths ?? null });
 }
 
 /**
@@ -304,50 +295,55 @@ export function gitUnstage(paths?: string[]): Promise<GitStatusPayload> {
  * 调用前必须先跟用户确认。paths 不能为空：丢弃按分组来，没有"全部"这个说法。
  */
 export function gitDiscard(
+  root: string,
   paths: string[],
   source: DiscardSource,
 ): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_discard", { paths, source });
+  return invoke<GitStatusPayload>("git_discard", { root, paths, source });
 }
 
-export function gitCommit(message: string): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_commit", { message });
+export function gitCommit(root: string, message: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_commit", { root, message });
 }
 
 /**
  * 一个改动文件的两侧内容。`source` 决定跟谁比：
  * 未暂存比 index、暂存比 HEAD、看某个提交比它的父提交。
  */
-export function gitFileDiff(path: string, source: DiffSource): Promise<FileDiff> {
-  return invoke<FileDiff>("git_file_diff", { path, source });
+export function gitFileDiff(
+  root: string,
+  path: string,
+  source: DiffSource,
+): Promise<FileDiff> {
+  return invoke<FileDiff>("git_file_diff", { root, path, source });
 }
 
 /** 提交历史，最新的在最前；不传 limit 就取一页 */
-export function gitLog(limit?: number): Promise<GitCommit[]> {
-  return invoke<GitCommit[]>("git_log", { limit: limit ?? null });
+export function gitLog(root: string, limit?: number): Promise<GitCommit[]> {
+  return invoke<GitCommit[]>("git_log", { root, limit: limit ?? null });
 }
 
 /** 某个提交改了哪些文件 */
-export function gitCommitFiles(rev: string): Promise<GitCommitFile[]> {
-  return invoke<GitCommitFile[]>("git_commit_files", { rev });
+export function gitCommitFiles(root: string, rev: string): Promise<GitCommitFile[]> {
+  return invoke<GitCommitFile[]>("git_commit_files", { root, rev });
 }
 
 /**
  * 从远程取回引用，不动工作区。成功后 ahead/behind 才是最新的。
  * 耗时按网络算，后端给了 3 分钟超时。
  */
-export function gitFetch(): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_fetch");
+export function gitFetch(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_fetch", { root });
 }
 
 /** 拉取当前分支的上游，后端只允许快进（分叉时直接报错） */
-export function gitPull(): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_pull");
+export function gitPull(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_pull", { root });
 }
 
 /** 推送当前分支；还没有上游时后端会顺手建立跟踪关系 */
-export function gitPush(): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_push");
+export function gitPush(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_push", { root });
 }
 
 /** 后端一律用原生分隔符；界面按 VS Code 习惯显示 `/`。 */

@@ -133,7 +133,7 @@ export function Sidebar({
     requestDelete,
     requestNew,
     requestRename,
-  } = useAgentSession();
+  } = useAgentSession(current);
   // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
   const guiActive = settings.agentEnabled && mode === "agent";
   // 空命令是用户在设置里加了还没填的，不进菜单
