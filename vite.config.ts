@@ -5,6 +5,8 @@ import tailwindcss from "@tailwindcss/vite";
 import process from "node:process";
 // @ts-expect-error type error without @types/node package
 import { readFileSync } from "node:fs";
+// @ts-expect-error type error without @types/node package
+import { execSync } from "node:child_process";
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -17,12 +19,33 @@ const version = JSON.parse(
   readFileSync(new URL("./package.json", import.meta.url), "utf8"),
 ).version as string;
 
+/**
+ * 构建标识：`<短 hash>`，工作区有未提交改动就再缀个 `.dirty`。
+ *
+ * 版本号是**发布里程碑**、平时不动；这一串才是「这一次构建」的身份，用来回答
+ * 「我装的到底是哪一次」。exe 的版本资源和安装包文件名**不带**它——Windows 那边
+ * 只接受纯 `x.y.z`。
+ */
+function buildStamp(): string {
+  const run = (cmd: string) =>
+    execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    const hash = run("git rev-parse --short HEAD");
+    return run("git status --porcelain") ? `${hash}.dirty` : hash;
+  } catch {
+    // 没装 git、或者不是从仓库构建的（比如解压 tarball）——退回不带标识
+    return "";
+  }
+}
+
+const stamp = buildStamp();
+
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss()],
 
   define: {
-    __APP_VERSION__: JSON.stringify(version),
+    __APP_VERSION__: JSON.stringify(stamp ? `${version}+${stamp}` : version),
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

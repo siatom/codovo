@@ -28,8 +28,10 @@ git push --follow-tags            # 连 tag 一起推
   `../package.json`（安装包文件名、exe 版本资源都从那儿取），前端由 vite 的 `define` 注入
   `__APP_VERSION__`。**改版本一律走 `pnpm version patch|minor|major`，别手改 JSON**：
   以前是三处硬编码（`package.json` / `tauri.conf.json` / `Cargo.toml`），必然漂移。
-  dev 构建和安装版靠**窗口标题 / 设置面板里的 `(dev)` 标记**区分，不带进版本号本身——
-  Windows 的 exe 版本资源只接受纯 `x.y.z`。
+  界面上显示的其实是 `<version>+<git 短 hash>[.dirty]`：**版本号是发布里程碑、平时不动，
+  后面那串才是「这一次构建」的身份**，用来核对装的是哪一次（`.dirty` = 这个包含未提交的改动）。
+  那串标识**不进**版本号本身——Windows 的 exe 版本资源只接受纯 `x.y.z`；dev 构建另在
+  窗口标题和版本后面带 `(dev)` 标记，和安装版一眼区分。
 - 没有用户明确允许，不要 `git push` / 开 PR / 推分支；提交留在本地等确认。
 
 ## 关键实现决定
