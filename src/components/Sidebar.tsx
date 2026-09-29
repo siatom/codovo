@@ -23,6 +23,7 @@ import {
   AgentLogo,
   IconChevronDown,
   IconChevronRight,
+  IconClose,
   IconExternalLink,
   IconFeedback,
   IconFolder,
@@ -35,6 +36,7 @@ import {
   IconPlus,
   IconSettings,
   IconSun,
+  IconTrash,
 } from "./icons";
 
 interface SidebarProps {
@@ -676,7 +678,7 @@ export function Sidebar({
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconPencil className="h-3.5 w-3.5 shrink-0" />
-              编辑项目
+              编辑
             </button>
             {/* 只对已打开的项目露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
             {opened.includes(menu.project.id) && (
@@ -687,9 +689,10 @@ export function Sidebar({
                   setMenu(null);
                   onClose(project);
                 }}
-                className={MENU_ITEM}
+                className={`${MENU_ITEM} flex items-center gap-2`}
               >
-                关闭项目
+                <IconClose className="h-3.5 w-3.5 shrink-0" />
+                关闭
               </button>
             )}
             <button
@@ -699,8 +702,9 @@ export function Sidebar({
                 setMenu(null);
                 onRemove(project);
               }}
-              className={MENU_ITEM}
+              className={`${MENU_ITEM} flex items-center gap-2`}
             >
+              <IconTrash className="h-3.5 w-3.5 shrink-0" />
               移除
             </button>
           </div>
