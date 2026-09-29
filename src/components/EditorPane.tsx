@@ -913,13 +913,16 @@ export function EditorPane({
   const isPreview = canPreview && activeKey !== null && previewPaths.has(activeKey);
 
   // 进预览时同步渲染一次：放在渲染期算完，就不会先闪一帧空白。
-  // 依赖里没有 model —— 预览期间编辑器是 hidden 的、内容改不了，
-  // 而 isPreview / active 一变就会重算，读到的永远是刚挂上去的那个 model。
+  // 内容按 activeKey 从缓存里取，**不能**读编辑器当前挂着的 model：换 model 的
+  // effect 在渲染之后才跑，切到另一个 md 标签的这一帧读到的还是上一个文件的
+  // model；而 isPreview 由 false 变 true 就发生在这同一帧，等 effect 把 model
+  // 换好之后依赖没再变过，memo 不会重算，上一个文件的内容就永久留在预览层上了。
+  // 预览期间编辑器是 hidden 的、内容改不了，缓存里那份就是当前内容。
   const previewHtml = useMemo(() => {
-    if (!isPreview) return "";
-    const model = editorRef.current?.getModel();
+    if (!isPreview || activeKey === null) return "";
+    const model = modelsRef.current.get(activeKey)?.model;
     return model ? renderMarkdown(model.getValue()) : "";
-  }, [isPreview, active, previewNonce]);
+  }, [isPreview, activeKey, previewNonce]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
   // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；项目从后台切回来时同理
