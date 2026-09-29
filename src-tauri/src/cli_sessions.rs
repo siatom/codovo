@@ -778,7 +778,7 @@ mod tests {
             "rollout-2026-03-17T00-00-00-12345678-cccc-dddd",
             &[
                 r#"{"type":"session_meta","payload":{"id":"session-context","cwd":"/Users/someone/work"}}"#,
-                r#"{"type":"message","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/someone/work\n\n<INSTRUCTIONS>..."}]}}"#,
+                r##"{"type":"message","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/someone/work\n\n<INSTRUCTIONS>..."}]}}"##,
                 r#"{"type":"message","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"优化 Codex 历史对话名称"}]}}"#,
             ],
         );
