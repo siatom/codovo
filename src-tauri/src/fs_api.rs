@@ -130,9 +130,7 @@ pub(crate) fn resolve(root: &Path, raw: &str) -> Result<PathBuf, String> {
                     .ok_or_else(|| format!("非法路径: {raw}"))?
                     .to_os_string();
                 missing.push(name);
-                probe = probe
-                    .parent()
-                    .ok_or_else(|| format!("非法路径: {raw}"))?;
+                probe = probe.parent().ok_or_else(|| format!("非法路径: {raw}"))?;
             }
         }
     };
@@ -497,12 +495,7 @@ pub fn fs_write_file(
 /// 新建和重命名共用同一套规则——两处各写一份迟早会走偏。
 fn validate_name(name: &str) -> Result<(), String> {
     let name = name.trim();
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-    {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
         return Err("文件名无效".to_string());
     }
     Ok(())
@@ -942,12 +935,8 @@ fn replace_one(
     let pattern = build_pattern(query, options)?;
     let text = read_utf8(file)?;
 
-    let (start, content) = line_at(&text, line).ok_or_else(|| {
-        format!(
-            "{} 的第 {line} 行已经不在了，请重新搜索",
-            display(file)
-        )
-    })?;
+    let (start, content) = line_at(&text, line)
+        .ok_or_else(|| format!("{} 的第 {line} 行已经不在了，请重新搜索", display(file)))?;
 
     let hits: Vec<(usize, usize)> = pattern
         .find_iter(content)
@@ -1030,10 +1019,7 @@ pub fn fs_replace_all(
         let file = match resolve(&root, &raw) {
             Ok(path) => path,
             Err(message) => {
-                errors.push(ReplaceFailure {
-                    path: raw,
-                    message,
-                });
+                errors.push(ReplaceFailure { path: raw, message });
                 continue;
             }
         };
@@ -1070,7 +1056,8 @@ mod tests {
     fn temp_state() -> (FsState, PathBuf) {
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let unique = SEQ.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("codedock-test-{}-{unique}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("codedock-test-{}-{unique}", std::process::id()));
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let state = FsState::new();
@@ -1113,10 +1100,16 @@ mod tests {
         // （`D src/old/a.txt`，而 src/old 已经没了），拦在这里会让删除类改动
         // 没法暂存。真正的失败留给 OS——写文件时父目录不存在会报错。
         let nested = project_root(&state).join("nested").join("new.txt");
-        assert_eq!(resolve(&project_root(&state), nested.to_str().unwrap()).unwrap(), nested);
+        assert_eq!(
+            resolve(&project_root(&state), nested.to_str().unwrap()).unwrap(),
+            nested
+        );
 
         let flat = project_root(&state).join("new.txt");
-        assert_eq!(resolve(&project_root(&state), flat.to_str().unwrap()).unwrap(), flat);
+        assert_eq!(
+            resolve(&project_root(&state), flat.to_str().unwrap()).unwrap(),
+            flat
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -1168,12 +1161,22 @@ mod tests {
         let file = workspace.join("a.txt");
         fs::write(&file, "original").unwrap();
 
-        assert!(create_file_at(&project_root(&state), file.to_str().unwrap()).is_err(), "不能覆盖已有文件");
-        assert_eq!(fs::read_to_string(&file).unwrap(), "original", "失败时不能动原文件");
+        assert!(
+            create_file_at(&project_root(&state), file.to_str().unwrap()).is_err(),
+            "不能覆盖已有文件"
+        );
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            "original",
+            "失败时不能动原文件"
+        );
 
         let dir = workspace.join("src");
         fs::create_dir(&dir).unwrap();
-        assert!(create_directory_at(&project_root(&state), dir.to_str().unwrap()).is_err(), "不能覆盖已有目录");
+        assert!(
+            create_directory_at(&project_root(&state), dir.to_str().unwrap()).is_err(),
+            "不能覆盖已有目录"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
@@ -1200,18 +1203,28 @@ mod tests {
         let workspace = project_root(&state);
 
         let outside = root.join("outside.txt");
-        assert!(create_file_at(&project_root(&state), outside.to_str().unwrap()).is_err(), "越界要拒绝");
+        assert!(
+            create_file_at(&project_root(&state), outside.to_str().unwrap()).is_err(),
+            "越界要拒绝"
+        );
         assert!(!outside.exists());
 
         for bad in ["", ".", ".."] {
             let target = format!("{}/{}", workspace.to_string_lossy(), bad);
-            assert!(create_file_at(&project_root(&state), &target).is_err(), "{bad:?} 不该被当成名称");
+            assert!(
+                create_file_at(&project_root(&state), &target).is_err(),
+                "{bad:?} 不该被当成名称"
+            );
         }
 
         let dir = workspace.join("src");
         fs::create_dir(&dir).unwrap();
         assert!(
-            create_directory_at(&project_root(&state), dir.join("a").join("b").to_str().unwrap()).is_err(),
+            create_directory_at(
+                &project_root(&state),
+                dir.join("a").join("b").to_str().unwrap()
+            )
+            .is_err(),
             "中间目录不存在时不该用 create_dir_all 造出来"
         );
         fs::remove_dir_all(&root).ok();
@@ -1224,21 +1237,33 @@ mod tests {
 
         let file = workspace.join("old.txt");
         fs::write(&file, "hi").unwrap();
-        let renamed = rename_entry(&project_root(&state), file.to_str().unwrap(), "new.txt").unwrap();
+        let renamed =
+            rename_entry(&project_root(&state), file.to_str().unwrap(), "new.txt").unwrap();
         assert_eq!(renamed, display(&workspace.join("new.txt")));
         assert!(!file.exists());
-        assert_eq!(fs::read_to_string(workspace.join("new.txt")).unwrap(), "hi", "内容要跟着走");
+        assert_eq!(
+            fs::read_to_string(workspace.join("new.txt")).unwrap(),
+            "hi",
+            "内容要跟着走"
+        );
 
         let dir = workspace.join("src");
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("main.rs"), "").unwrap();
         let moved = rename_entry(&project_root(&state), dir.to_str().unwrap(), "app").unwrap();
-        assert!(workspace.join("app").join("main.rs").is_file(), "目录要连内容一起搬");
+        assert!(
+            workspace.join("app").join("main.rs").is_file(),
+            "目录要连内容一起搬"
+        );
         assert!(moved.ends_with("app"));
 
         // 名称带首尾空格是允许的（trim 掉），中文和空格也要能改
-        let spaced = rename_entry(&project_root(&state), workspace.join("new.txt").to_str().unwrap(), "我的 笔记.md")
-            .unwrap();
+        let spaced = rename_entry(
+            &project_root(&state),
+            workspace.join("new.txt").to_str().unwrap(),
+            "我的 笔记.md",
+        )
+        .unwrap();
         assert!(spaced.ends_with("我的 笔记.md"));
         fs::remove_dir_all(&root).ok();
     }
@@ -1259,7 +1284,10 @@ mod tests {
         }
         assert!(file.exists(), "校验失败时原文件一个字节都不该动");
 
-        assert!(rename_entry(&project_root(&state), file.to_str().unwrap(), "b.txt").is_err(), "不能覆盖同名文件");
+        assert!(
+            rename_entry(&project_root(&state), file.to_str().unwrap(), "b.txt").is_err(),
+            "不能覆盖同名文件"
+        );
         assert_eq!(fs::read_to_string(workspace.join("b.txt")).unwrap(), "b");
 
         // 改名不能跨目录：名称里带分隔符已经被上面挡掉了，越界的写法也一并拒绝
@@ -1279,7 +1307,8 @@ mod tests {
         fs::write(&file, "hi").unwrap();
 
         // Windows 上 exists() 会说"目标已存在"，但它就是自己，不该被拦下
-        let renamed = rename_entry(&project_root(&state), file.to_str().unwrap(), "README.md").unwrap();
+        let renamed =
+            rename_entry(&project_root(&state), file.to_str().unwrap(), "README.md").unwrap();
         assert_eq!(renamed.to_lowercase(), display(&file).to_lowercase());
         assert!(workspace.join("README.md").exists() || workspace.join("readme.md").exists());
         fs::remove_dir_all(&root).ok();
@@ -1319,13 +1348,21 @@ mod tests {
         fs::write(workspace.join("src").join("Main.rs"), "").unwrap();
         fs::write(workspace.join("README.md"), "").unwrap();
         fs::create_dir_all(workspace.join("node_modules").join("pkg")).unwrap();
-        fs::write(workspace.join("node_modules").join("pkg").join("main.js"), "").unwrap();
+        fs::write(
+            workspace.join("node_modules").join("pkg").join("main.js"),
+            "",
+        )
+        .unwrap();
 
         let hits = search_files(&workspace, "main");
         assert_eq!(hits.len(), 1, "只该命中 src/Main.rs: {hits:?}");
         assert!(hits[0].ends_with("Main.rs"), "命中的路径不对: {hits:?}");
 
-        assert_eq!(search_files(&workspace, "readme").len(), 1, "应该大小写不敏感");
+        assert_eq!(
+            search_files(&workspace, "readme").len(),
+            1,
+            "应该大小写不敏感"
+        );
         assert!(search_files(&workspace, "src").is_empty(), "目录不该算命中");
         fs::remove_dir_all(&root).ok();
     }
@@ -1347,9 +1384,11 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
 
         #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&outside, project_root(&state).join("link")).is_ok();
+        let linked =
+            std::os::unix::fs::symlink(&outside, project_root(&state).join("link")).is_ok();
         #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&outside, project_root(&state).join("link")).is_ok();
+        let linked =
+            std::os::windows::fs::symlink_dir(&outside, project_root(&state).join("link")).is_ok();
 
         // 建软链接通常需要权限，建不出来就跳过
         if linked {
@@ -1358,7 +1397,10 @@ mod tests {
 
             // 向上找祖先不能变成绕过前缀校验的后门：软链接下面的目录不存在时，
             // 拼回去的路径落在工作区外，照样要拒绝
-            let deeper = project_root(&state).join("link").join("missing").join("pwned.txt");
+            let deeper = project_root(&state)
+                .join("link")
+                .join("missing")
+                .join("pwned.txt");
             assert!(resolve(&project_root(&state), deeper.to_str().unwrap()).is_err());
         }
         fs::remove_dir_all(&root).ok();
@@ -1498,7 +1540,8 @@ mod tests {
         fs::write(&file, "one one\n").unwrap();
 
         // 两个匹配 + 位置对不上 = 猜不出来该换哪个，必须报错而不是乱写
-        let error = replace_one(&file, 1, 99, 99, "one", &opts(false, false, false), "1").unwrap_err();
+        let error =
+            replace_one(&file, 1, 99, 99, "one", &opts(false, false, false), "1").unwrap_err();
         assert!(error.contains("已经变了"), "{error}");
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
@@ -1516,8 +1559,7 @@ mod tests {
         fs::write(&file, "one two one\n").unwrap();
         let pattern = build_pattern("one", &opts(false, false, false)).unwrap();
 
-        let count =
-            replace_all_in_file(&file, &pattern, &opts(false, false, false), "1").unwrap();
+        let count = replace_all_in_file(&file, &pattern, &opts(false, false, false), "1").unwrap();
         assert_eq!(count, 2);
         assert_eq!(fs::read_to_string(&file).unwrap(), "1 two 1\n");
         fs::remove_dir_all(&root).ok();
@@ -1549,17 +1591,27 @@ mod tests {
         fs::write(workspace.join("a.txt"), "hi").unwrap();
 
         let image = read_image_at(&project_root(&state), image_path.to_str().unwrap()).unwrap();
-        assert!(image.data.starts_with("data:image/png;base64,"), "{}", image.data);
+        assert!(
+            image.data.starts_with("data:image/png;base64,"),
+            "{}",
+            image.data
+        );
         assert!(!image.too_large);
         let encoded = image.data.split_once(',').unwrap().1;
         assert_eq!(
-            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap(),
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
             raw,
             "base64 不能丢字节"
         );
 
         // 文本文件不给预览：否则借这个命令能绕开 fs_read_file 的上限把二进制读出去
-        let error = read_image_at(&project_root(&state), workspace.join("a.txt").to_str().unwrap()).unwrap_err();
+        let error = read_image_at(
+            &project_root(&state),
+            workspace.join("a.txt").to_str().unwrap(),
+        )
+        .unwrap_err();
         assert!(error.contains("不是可预览的图片格式"), "{error}");
         fs::remove_dir_all(&root).ok();
     }

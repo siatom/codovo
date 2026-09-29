@@ -7,6 +7,7 @@ mod dev;
 mod feedback;
 mod fs_api;
 mod git;
+mod installer;
 mod pty;
 mod secrets;
 mod shell_env;
@@ -65,6 +66,7 @@ pub fn run() {
             fs_api::fs_create_directory,
             fs_api::fs_rename,
             fs_api::fs_delete,
+            installer::install_dependency,
             git::git_status,
             git::git_stage,
             git::git_unstage,

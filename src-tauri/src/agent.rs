@@ -134,7 +134,6 @@ const PROBES: &[(&str, bool, Protocol)] = &[
     ("/global/health", false, Protocol::V1),
 ];
 
-
 /// 一条技能：写成 `<config_dir>/skills/<name>/SKILL.md`。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -195,7 +194,13 @@ impl ProviderSpec {
         let sanitized: String = self
             .id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '_'
+                }
+            })
             .collect();
         format!("{API_KEY_ENV_PREFIX}{sanitized}")
     }
@@ -239,19 +244,32 @@ pub struct AgentConfig {
 impl AgentConfig {
     /// 真正能拿去建连的提供商：id / 地址 / 模型齐全
     fn usable_providers(&self) -> Vec<&ProviderSpec> {
-        self.providers.iter().filter(|provider| provider.usable()).collect()
+        self.providers
+            .iter()
+            .filter(|provider| provider.usable())
+            .collect()
     }
 
     /// 默认模型引用的 `provider/model` 前缀，认不出来就退到第一个可用提供商。
     /// 都不认不出来返回 None（调用方据此报「没配提供商」）。
     fn default_provider_id(&self) -> Option<String> {
-        let prefix = self.default_model.split('/').next().filter(|part| !part.is_empty());
+        let prefix = self
+            .default_model
+            .split('/')
+            .next()
+            .filter(|part| !part.is_empty());
         if let Some(prefix) = prefix {
-            if self.providers.iter().any(|provider| provider.usable() && provider.id == prefix) {
+            if self
+                .providers
+                .iter()
+                .any(|provider| provider.usable() && provider.id == prefix)
+            {
                 return Some(prefix.to_string());
             }
         }
-        self.usable_providers().first().map(|provider| provider.id.clone())
+        self.usable_providers()
+            .first()
+            .map(|provider| provider.id.clone())
     }
 
     /// 生效的默认模型引用。设置里没填或指向的提供商已经没了时，取第一个可用
@@ -307,7 +325,8 @@ impl AgentConfig {
     /// 覆盖打在**默认提供商**上：`base_url` 改它的地址，`api_key` 只记进
     /// `dev_api_key`（不进钥匙串、不落配置文件），`model` 只换模型段、保留提供商前缀。
     fn apply(&mut self, overrides: &dev::AiOverrides) {
-        if overrides.base_url.is_none() && overrides.model.is_none() && overrides.api_key.is_none() {
+        if overrides.base_url.is_none() && overrides.model.is_none() && overrides.api_key.is_none()
+        {
             return;
         }
 
@@ -535,7 +554,6 @@ fn unwrap_data(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-
 /// 一个项目的智能体运行槽位。克隆给 SSE 任务和退出轮询线程持有——
 /// 它俩要独立于命令调用存活，不能借用 `AgentState`。
 #[derive(Clone)]
@@ -699,8 +717,8 @@ pub(crate) fn needs_cmd_wrapper(_path: &Path) -> bool {
 /// 挑一个空闲端口：让系统分配，拿到号之后立刻放掉。中间那一小段窗口理论上会被
 /// 别人抢，但本地开发场景不值得为此再加一层握手。
 fn free_port() -> Result<u16, String> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| format!("分配端口失败: {e}"))?;
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("分配端口失败: {e}"))?;
     listener
         .local_addr()
         .map(|addr| addr.port())
@@ -714,9 +732,7 @@ fn check_port(port: u16) -> Result<u16, String> {
             drop(listener);
             Ok(port)
         }
-        Err(_) => Err(format!(
-            "端口 {port} 已被占用，请改成自动分配或换一个端口"
-        )),
+        Err(_) => Err(format!("端口 {port} 已被占用，请改成自动分配或换一个端口")),
     }
 }
 
@@ -729,7 +745,10 @@ fn validate_name(name: &str) -> Result<&str, String> {
     let trimmed = name.trim();
     let valid = !trimmed.is_empty()
         && trimmed.split('-').all(|part| {
-            !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         });
     if !valid {
         return Err(format!(
@@ -819,7 +838,10 @@ fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
         }
 
         let mut options = serde_json::Map::new();
-        options.insert("baseURL".to_string(), serde_json::json!(provider.base_url.trim()));
+        options.insert(
+            "baseURL".to_string(),
+            serde_json::json!(provider.base_url.trim()),
+        );
         // 密钥不落盘：只留环境变量占位符，正文由 spawn 时从系统钥匙串取出来注入。
         // 本地模型（Ollama 之类）没有密钥，这时干脆不下发这个字段，塞个空占位符
         // 反而会让 opencode 拿空串去鉴权
@@ -904,11 +926,14 @@ fn spawn_opencode(
     password: &str,
 ) -> Result<(Child, ChildLog), String> {
     let port_text = port.to_string();
-    let args = ["serve", "--port", port_text.as_str(), "--hostname", "127.0.0.1"];
-    let path = crate::shell_env::resolved_path(
-        &crate::shell_env::default_shell(),
-        Some(cwd),
-    );
+    let args = [
+        "serve",
+        "--port",
+        port_text.as_str(),
+        "--hostname",
+        "127.0.0.1",
+    ];
+    let path = crate::shell_env::resolved_path(&crate::shell_env::default_shell(), Some(cwd));
 
     let mut cmd = match resolve_launch(command, path.as_deref())? {
         Launch::Direct(path) => {
@@ -1096,8 +1121,12 @@ async fn request_json(
         return Ok(serde_json::Value::Null);
     }
 
-    serde_json::from_str(&text)
-        .map_err(|_| format!("无法解析 opencode 响应: {}", truncate(&text, MAX_ERROR_CHARS)))
+    serde_json::from_str(&text).map_err(|_| {
+        format!(
+            "无法解析 opencode 响应: {}",
+            truncate(&text, MAX_ERROR_CHARS)
+        )
+    })
 }
 
 /// 一个探针打过去的结果，只用于报错时说明"每个探针各自返回了什么"。
@@ -1151,7 +1180,8 @@ async fn detect_protocol(
                     // 必须拿到 JSON 才算数：命中不了路由时 opencode 会把 SPA 的
                     // index.html 吐出来（200 + text/html），那不能当成探针成功
                     let Ok(value) = response.json::<serde_json::Value>().await else {
-                        outcomes[index].detail = "200 但不是 JSON（多半是前端页面兜底）".to_string();
+                        outcomes[index].detail =
+                            "200 但不是 JSON（多半是前端页面兜底）".to_string();
                         continue;
                     };
                     // 还必须有 version：v1 也会应答 /api/health，但只回
@@ -1261,9 +1291,10 @@ fn spawn_sse(
                         Ok(Some(chunk)) => {
                             buffer.push_str(&String::from_utf8_lossy(&chunk));
                             while let Some(frame) = pop_frame(&mut buffer) {
-                                let Some(data) = frame_data(&frame) else { continue };
-                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data)
-                                {
+                                let Some(data) = frame_data(&frame) else {
+                                    continue;
+                                };
+                                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
                                     let _ = app.emit(
                                         EVENT_NAME,
                                         TaggedEvent {
@@ -1435,8 +1466,14 @@ pub async fn agent_start(
         write_config(&config_dir, &config)?;
 
         let password = random_password();
-        let (child, log) =
-            spawn_opencode(&config.command, port, &cwd, &config_dir, &secrets, &password)?;
+        let (child, log) = spawn_opencode(
+            &config.command,
+            port,
+            &cwd,
+            &config_dir,
+            &secrets,
+            &password,
+        )?;
         let generation = slot.generation.load(Ordering::SeqCst);
 
         *guard = Some(Running {
@@ -1463,15 +1500,14 @@ pub async fn agent_start(
         }
     };
 
-    let (protocol, version) =
-        match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
-            Ok(found) => found,
-            Err(reason) => {
-                // 只收本项目这一份：探测失败的责任不该由别的项目的智能体承担
-                state.kill_project(&root);
-                return Err(reason);
-            }
-        };
+    let (protocol, version) = match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
+        Ok(found) => found,
+        Err(reason) => {
+            // 只收本项目这一份：探测失败的责任不该由别的项目的智能体承担
+            state.kill_project(&root);
+            return Err(reason);
+        }
+    };
 
     // 探测结果落回状态里：后面每个命令都按它选路由
     {
@@ -1761,7 +1797,10 @@ mod tests {
 
     #[test]
     fn split_model_ref_cuts_on_the_first_slash() {
-        assert_eq!(split_model_ref("codedock/some-model"), Some(("codedock", "some-model")));
+        assert_eq!(
+            split_model_ref("codedock/some-model"),
+            Some(("codedock", "some-model"))
+        );
         // 模型 id 自己带斜杠时，后半段整段都是模型名
         assert_eq!(
             split_model_ref("ollama/meta-llama/Llama-3-8B"),
@@ -1795,7 +1834,9 @@ mod tests {
         assert!(v2.get("agent").is_none());
 
         // 模型 / agent 留空时两代都不带对应字段（交给 opencode 自己的默认）
-        assert!(prompt_body(Protocol::V1, "x", None, None).get("model").is_none());
+        assert!(prompt_body(Protocol::V1, "x", None, None)
+            .get("model")
+            .is_none());
         assert!(prompt_body(Protocol::V1, "x", None, Some("  "))
             .get("agent")
             .is_none());
@@ -1838,10 +1879,7 @@ mod tests {
 
     #[test]
     fn config_materializes_rules_memory_skills_and_agents() {
-        let dir = std::env::temp_dir().join(format!(
-            "codedock-agent-layer-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("codedock-agent-layer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut cfg = bare_config();
@@ -1897,10 +1935,7 @@ mod tests {
 
     #[test]
     fn bare_config_writes_no_extension_fields() {
-        let dir = std::env::temp_dir().join(format!(
-            "codedock-agent-bare-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("codedock-agent-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
         write_config(&dir, &cfg).unwrap();
@@ -2088,7 +2123,9 @@ mod tests {
         assert!(value["provider"].get("broken").is_none());
         assert!(value["provider"].get("nomodels").is_none());
         // 没有密钥的提供商不该出现 apiKey——空占位符会让 opencode 拿空串去鉴权
-        assert!(value["provider"]["ollama"]["options"].get("apiKey").is_none());
+        assert!(value["provider"]["ollama"]["options"]
+            .get("apiKey")
+            .is_none());
         assert_eq!(
             value["provider"]["deepseek"]["options"]["apiKey"],
             "{env:CODEDOCK_AI_KEY_DEEPSEEK}"
@@ -2156,7 +2193,10 @@ mod tests {
             default_model: "deepseek/gone".to_string(),
             ..bare_config()
         };
-        assert_eq!(cfg.resolved_default_model().as_deref(), Some("codedock/some-model"));
+        assert_eq!(
+            cfg.resolved_default_model().as_deref(),
+            Some("codedock/some-model")
+        );
 
         // 指向的提供商整个没了 → 退到第一个可用提供商
         let cfg = AgentConfig {
@@ -2197,10 +2237,7 @@ mod tests {
         };
         assert_eq!(
             cfg.secrets().unwrap(),
-            vec![(
-                "CODEDOCK_AI_KEY_DEEPSEEK".to_string(),
-                "sk-dev".to_string()
-            )]
+            vec![("CODEDOCK_AI_KEY_DEEPSEEK".to_string(), "sk-dev".to_string())]
         );
     }
 
@@ -2233,10 +2270,7 @@ mod tests {
         cfg.apply(&overrides);
         assert_eq!(cfg.default_model, "codedock/dev-model");
         assert_eq!(cfg.providers[0].base_url, "https://dev.example.com/v1");
-        assert_eq!(
-            cfg.providers[1].base_url,
-            "https://deepseek.example.com/v1"
-        );
+        assert_eq!(cfg.providers[1].base_url, "https://deepseek.example.com/v1");
         // .env 的密钥只落在默认那家，别家不受影响（它们得各查各的钥匙串条目）
         assert_eq!(
             cfg.secrets().unwrap(),

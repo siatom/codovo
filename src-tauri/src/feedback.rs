@@ -198,7 +198,9 @@ fn write_to(path: &Path, records: &[FeedbackRecord]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|reason| format!("创建配置目录失败: {reason}"))?;
     }
-    let store = Store { records: records.to_vec() };
+    let store = Store {
+        records: records.to_vec(),
+    };
     let text = serde_json::to_string_pretty(&store)
         .map_err(|reason| format!("序列化反馈记录失败: {reason}"))?;
     let temp = path.with_extension("json.tmp");
@@ -216,11 +218,7 @@ fn shim_to_node(shim: &Path, args: &[String]) -> Result<Command, String> {
         .parent()
         .map(|dir| dir.join(NPM_ENTRY))
         .filter(|path| path.is_file())
-        .ok_or_else(|| {
-            format!(
-                "找不到 gitee CLI 的入口脚本（{NPM_ENTRY}），请改装原生版 gitee"
-            )
-        })?;
+        .ok_or_else(|| format!("找不到 gitee CLI 的入口脚本（{NPM_ENTRY}），请改装原生版 gitee"))?;
     // node 跟着 npm 一起来，PATH 里应该有；没有就让 Command 自己报错
     let node = crate::agent::find_on_path("node", std::env::var_os("PATH").as_deref())
         .unwrap_or_else(|| PathBuf::from("node"));
@@ -308,12 +306,24 @@ pub fn feedback_cli_status() -> CliStatus {
         .map(|item| item.to_string())
         .collect();
     if let Err(reason) = cli_command(&args) {
-        return CliStatus { available: false, logged_in: false, detail: reason };
+        return CliStatus {
+            available: false,
+            logged_in: false,
+            detail: reason,
+        };
     }
     match run_cli(&args) {
         // 成功时 CLI 会打印「Logged in to gitee.com as …」，界面用不上，不带回去了
-        Ok(_) => CliStatus { available: true, logged_in: true, detail: String::new() },
-        Err(reason) => CliStatus { available: true, logged_in: false, detail: reason },
+        Ok(_) => CliStatus {
+            available: true,
+            logged_in: true,
+            detail: String::new(),
+        },
+        Err(reason) => CliStatus {
+            available: true,
+            logged_in: false,
+            detail: reason,
+        },
     }
 }
 
@@ -342,14 +352,20 @@ pub fn feedback_submit(
 
     // repo 用 -R 显式指定：工作区可能根本不是这个仓库，不能靠 CLI 去推断
     let repo = format!("{OWNER}/{REPO}");
-    let args: Vec<String> = ["issue", "create", "-R", &repo, "--no-tui", "-j", "-t", &title, "-b", &body]
-        .iter()
-        .map(|item| item.to_string())
-        .collect();
+    let args: Vec<String> = [
+        "issue", "create", "-R", &repo, "--no-tui", "-j", "-t", &title, "-b", &body,
+    ]
+    .iter()
+    .map(|item| item.to_string())
+    .collect();
     let stdout = run_cli(&args)?;
 
-    let value: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|_| format!("无法解析 gitee 的输出: {}", truncate(&stdout, MAX_ERROR_CHARS)))?;
+    let value: serde_json::Value = serde_json::from_str(&stdout).map_err(|_| {
+        format!(
+            "无法解析 gitee 的输出: {}",
+            truncate(&stdout, MAX_ERROR_CHARS)
+        )
+    })?;
     let (number, url, state) = parse_issue(&value)?;
 
     let record = FeedbackRecord {
@@ -380,7 +396,10 @@ pub fn feedback_refresh(app: tauri::AppHandle) -> Result<RefreshResult, String> 
     let path = store_path(&app)?;
     let mut records = read_from(&path)?;
     if records.is_empty() {
-        return Ok(RefreshResult { records, errors: Vec::new() });
+        return Ok(RefreshResult {
+            records,
+            errors: Vec::new(),
+        });
     }
 
     let repo = format!("{OWNER}/{REPO}");
@@ -417,7 +436,10 @@ pub fn feedback_refresh(app: tauri::AppHandle) -> Result<RefreshResult, String> 
 
 /// 从本地历史里删掉一条。只清索引，**不动 Gitee 上的 issue**。
 #[tauri::command]
-pub fn feedback_delete(app: tauri::AppHandle, number: String) -> Result<Vec<FeedbackRecord>, String> {
+pub fn feedback_delete(
+    app: tauri::AppHandle,
+    number: String,
+) -> Result<Vec<FeedbackRecord>, String> {
     let path = store_path(&app)?;
     let mut records = read_from(&path)?;
     records.retain(|item| item.number != number);

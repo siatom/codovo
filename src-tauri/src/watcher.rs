@@ -60,7 +60,11 @@ impl WatchState {
     pub fn watch_roots(&self, app: AppHandle, roots: &[PathBuf]) {
         let fresh: Vec<(PathBuf, Watch)> = roots
             .iter()
-            .filter_map(|root| start_watch(&app, root).ok().map(|item| (root.clone(), item)))
+            .filter_map(|root| {
+                start_watch(&app, root)
+                    .ok()
+                    .map(|item| (root.clone(), item))
+            })
             .collect();
 
         let Ok(mut inner) = self.current.lock() else {
@@ -191,14 +195,14 @@ fn sorted_paths(paths: HashSet<PathBuf>) -> Vec<String> {
 /// 否则用户刚把某个目录加进忽略名单，界面却毫无反应。
 fn should_refresh(kind: &EventKind, paths: &[PathBuf]) -> bool {
     match kind {
-        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => true,
-        EventKind::Modify(ModifyKind::Data(_)) => {
-            paths.iter().any(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name == ".gitignore")
-            })
+        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => {
+            true
         }
+        EventKind::Modify(ModifyKind::Data(_)) => paths.iter().any(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name == ".gitignore")
+        }),
         _ => false,
     }
 }

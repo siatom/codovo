@@ -47,6 +47,7 @@ import {
   type RemoteModel,
 } from "../lib/ai";
 import { deleteSecret, setSecret } from "../lib/secrets";
+import { installDependency } from "../lib/installer";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -64,6 +65,7 @@ const TABS = [
   { id: "terminal", label: "终端" },
   { id: "editor", label: "编辑器" },
   { id: "agent", label: "智能体" },
+  { id: "dependencies", label: "依赖" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -1421,6 +1423,38 @@ function LayerEditor({
   );
 }
 
+function DependencyRow({
+  id,
+  label,
+  detail,
+  installing,
+  onInstall,
+}: {
+  id: string;
+  label: string;
+  detail: string;
+  installing: boolean;
+  onInstall: (id: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-line px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <p className="text-[12px] text-fg">{label}</p>
+        <p className="truncate text-[11px] text-fg-faint">{detail}</p>
+      </div>
+      <button
+        type="button"
+        disabled={installing}
+        onClick={() => onInstall(id)}
+        className="flex shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-50"
+      >
+        <IconDownload className="h-3.5 w-3.5" />
+        {installing ? "安装中…" : "安装"}
+      </button>
+    </div>
+  );
+}
+
 export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const { settings, update, reset, secretNotice } = useSettings();
   // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
@@ -1438,6 +1472,8 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const [confirmReset, setConfirmReset] = useState(false);
   /** 提供商列表的手风琴：一次只展开一条，和技能 / Agent 一个交互 */
   const [openProvider, setOpenProvider] = useState<number | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [installMessage, setInstallMessage] = useState("");
   /** 等确认的「删除提供商」；带上被引用的次数，确认框里说清影响面 */
   const [pendingRemove, setPendingRemove] = useState<{
     provider: AiProvider;
@@ -1462,6 +1498,19 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   };
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
+
+  const install = async (id: string) => {
+    setInstalling(id);
+    setInstallMessage("");
+    try {
+      const result = await installDependency(id);
+      setInstallMessage(result.message);
+    } catch (error) {
+      setInstallMessage(String(error));
+    } finally {
+      setInstalling(null);
+    }
+  };
 
   // ---- 模型提供商 ----
 
@@ -2034,6 +2083,54 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     </Field>
                   )}
                 </>
+              )}
+
+              {tab === "dependencies" && (
+                <Section
+                  title="本机开发依赖"
+                  hint="安装到当前用户的系统环境；安装完成后可能需要重启 CodeDock 才能识别新的 PATH。"
+                >
+                  <DependencyRow
+                    id="node"
+                    label="Node.js"
+                    detail="运行 npm 和各类 JavaScript CLI"
+                    installing={installing === "node"}
+                    onInstall={install}
+                  />
+                  <DependencyRow
+                    id="opencode"
+                    label="opencode"
+                    detail="npm install -g @opencode/cli"
+                    installing={installing === "opencode"}
+                    onInstall={install}
+                  />
+                  <DependencyRow
+                    id="codex"
+                    label="Codex"
+                    detail="npm install -g @openai/codex"
+                    installing={installing === "codex"}
+                    onInstall={install}
+                  />
+                  <DependencyRow
+                    id="codebuddy"
+                    label="CodeBuddy"
+                    detail="npm install -g @tencent-ai/codebuddy-code"
+                    installing={installing === "codebuddy"}
+                    onInstall={install}
+                  />
+                  <DependencyRow
+                    id="claude"
+                    label="Claude Code"
+                    detail="npm install -g @anthropic-ai/claude-code"
+                    installing={installing === "claude"}
+                    onInstall={install}
+                  />
+                  {installMessage && (
+                    <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-fg-faint">
+                      {installMessage}
+                    </p>
+                  )}
+                </Section>
               )}
 
               {tab === "agent" && (

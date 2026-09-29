@@ -11,8 +11,8 @@
 //! 一个提供商一条记录，条目名就是 provider id。密钥正文只在这个模块和发请求的地方
 //! 出现，不回前端、不进日志。
 
-use serde::Serialize;
 use keyring::Entry;
+use serde::Serialize;
 
 /// 条目归类名。用户在系统凭据管理器 / 钥匙串里看到的就是它，所以用产品名。
 const SERVICE: &str = "CodeDock";
@@ -117,7 +117,10 @@ pub fn secret_delete(provider_id: String) -> Result<(), String> {
 pub fn secret_status(provider_ids: Vec<String>) -> SecretStatus {
     let store_error = store_error().unwrap_or_default();
     if !store_error.is_empty() {
-        return SecretStatus { store_error, available: Vec::new() };
+        return SecretStatus {
+            store_error,
+            available: Vec::new(),
+        };
     }
     SecretStatus {
         store_error,
@@ -143,7 +146,10 @@ mod tests {
 
     #[test]
     fn describe_keeps_the_platform_detail() {
-        let text = describe(&keyring::Error::Invalid("attr".to_string(), "boom".to_string()));
+        let text = describe(&keyring::Error::Invalid(
+            "attr".to_string(),
+            "boom".to_string(),
+        ));
         assert!(text.contains("boom"));
         assert!(text.contains("系统钥匙串"));
     }

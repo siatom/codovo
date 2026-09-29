@@ -113,7 +113,14 @@ fn table() -> Vec<Entry> {
     }
     // cmd 几乎必然存在（ComSpec 兜底），不用探测，直接列
     let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-    entries.push(entry("cmd", "cmd", "cmd", "命令提示符 (cmd)", &comspec, &[]));
+    entries.push(entry(
+        "cmd",
+        "cmd",
+        "cmd",
+        "命令提示符 (cmd)",
+        &comspec,
+        &[],
+    ));
     if let Some(bash) = find_git_bash() {
         entries.push(entry(
             "git-bash",
@@ -165,8 +172,8 @@ fn table() -> Vec<Entry> {
     let mut entries = Vec::new();
     for path in paths {
         // 解析软链去重（macOS 上 /bin 常是 /usr/bin 的链接），顺便剔除已不存在的项
-        let resolved = std::fs::canonicalize(&path)
-            .unwrap_or_else(|_| std::path::PathBuf::from(&path));
+        let resolved =
+            std::fs::canonicalize(&path).unwrap_or_else(|_| std::path::PathBuf::from(&path));
         if !resolved.is_file() {
             continue;
         }
@@ -261,11 +268,20 @@ mod tests {
     #[test]
     fn describe_groups_shells_that_share_a_logo() {
         // POSIX 系（含 Debian 的 dash、BSD 的 ksh）共用 bash 的图标，显示名仍是自己
-        assert_eq!(describe("/bin/dash"), ("dash".to_string(), "bash".to_string()));
-        assert_eq!(describe("/usr/bin/ksh"), ("ksh".to_string(), "bash".to_string()));
+        assert_eq!(
+            describe("/bin/dash"),
+            ("dash".to_string(), "bash".to_string())
+        );
+        assert_eq!(
+            describe("/usr/bin/ksh"),
+            ("ksh".to_string(), "bash".to_string())
+        );
         assert_eq!(describe("/bin/sh"), ("sh".to_string(), "bash".to_string()));
         // C shell 家族单独一类
-        assert_eq!(describe("/bin/tcsh"), ("tcsh".to_string(), "csh".to_string()));
+        assert_eq!(
+            describe("/bin/tcsh"),
+            ("tcsh".to_string(), "csh".to_string())
+        );
         assert_eq!(describe("/bin/zsh"), ("zsh".to_string(), "zsh".to_string()));
         // 认不出的落到通用图标，别乱套 logo
         assert_eq!(describe("/usr/bin/weird-shell").1, "shell");

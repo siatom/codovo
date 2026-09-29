@@ -84,8 +84,8 @@ pub fn cli_list_sessions(
     if provider == "opencode" {
         return list_opencode(&command, &cwd);
     }
-    let relative = provider_projects_dir(&provider)
-        .ok_or_else(|| format!("不支持的 AI CLI: {provider}"))?;
+    let relative =
+        provider_projects_dir(&provider).ok_or_else(|| format!("不支持的 AI CLI: {provider}"))?;
     // 拿不到主目录、没装过这个 CLI，都当"没有会话"——列不出历史不是错误
     let Some(home) = home_dir() else {
         return Ok(Vec::new());
@@ -114,10 +114,8 @@ fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
 
     // PATH 用登录 shell 解析出来的那份：从 Dock / 开始菜单启动时进程自己的 PATH
     // 可能不全（和 agent.rs 起服务时同一个理由）
-    let path = crate::shell_env::resolved_path(
-        &crate::shell_env::default_shell(),
-        Some(Path::new(cwd)),
-    );
+    let path =
+        crate::shell_env::resolved_path(&crate::shell_env::default_shell(), Some(Path::new(cwd)));
     let launch = resolve_launch(&program, path.as_deref())?;
 
     let mut args = leading;
@@ -272,7 +270,9 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
             collect_jsonl_files(&dir, &mut paths);
             paths
         } else {
-            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
             entries.flatten().map(|file| file.path()).collect()
         };
         for path in files {
@@ -316,7 +316,9 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
 }
 
 fn collect_jsonl_files(path: &Path, output: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(path) else { return };
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -391,22 +393,40 @@ fn scan_codex(value: &serde_json::Value, titles: &mut Titles) {
         return;
     }
     let payload = value.get("payload");
-    let is_user = payload
-        .and_then(|v| v.get("type"))
-        .and_then(|v| v.as_str())
+    let is_user = payload.and_then(|v| v.get("type")).and_then(|v| v.as_str())
         == Some("user_message")
-        || payload
-            .and_then(|v| v.get("role"))
-            .and_then(|v| v.as_str())
-            == Some("user");
+        || payload.and_then(|v| v.get("role")).and_then(|v| v.as_str()) == Some("user");
     if !is_user {
         return;
     }
-    if let Some(text) = payload.and_then(|v| v.get("message")).and_then(|v| v.as_str()) {
-        titles.first = clean_title(text);
-        return;
+    let title = payload
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .and_then(non_empty_title)
+        .or_else(|| codex_content_title(payload.and_then(|v| v.get("content"))));
+
+    // Codex 新版把工作区指令作为首条 user message 写进日志；它不是用户这轮对话的标题。
+    // 跳过后继续扫描，才能拿到后面真正的提问，而旧版 event_msg 格式仍走同一条路径。
+    if let Some(title) = title.filter(|title| !is_codex_context(title)) {
+        titles.first = title;
     }
-    titles.first = block_text(payload.and_then(|v| v.get("content")), "input_text");
+}
+
+fn non_empty_title(text: &str) -> Option<String> {
+    let title = clean_title(text);
+    (!title.is_empty()).then_some(title)
+}
+
+fn codex_content_title(content: Option<&serde_json::Value>) -> Option<String> {
+    match content {
+        Some(serde_json::Value::String(text)) => non_empty_title(text),
+        Some(serde_json::Value::Array(_)) => non_empty_title(&block_text(content, "input_text")),
+        _ => None,
+    }
+}
+
+fn is_codex_context(title: &str) -> bool {
+    title.starts_with("# AGENTS.md instructions")
 }
 
 fn scan_codebuddy(value: &serde_json::Value, titles: &mut Titles) {
@@ -580,14 +600,18 @@ mod tests {
             &projects,
             "-Users-someone-work",
             "aaaa-1111",
-            &[r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"在当前项目里干活"}],"cwd":"/Users/someone/work"}"#],
+            &[
+                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"在当前项目里干活"}],"cwd":"/Users/someone/work"}"#,
+            ],
         );
         // 同一个 slug 目录下也可能混着别的 cwd（slug 有损，两个不同路径可能撞进一个目录）
         write_session(
             &projects,
             "-Users-someone-work",
             "bbbb-2222",
-            &[r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"别的目录"}],"cwd":"/Users/someone/other"}"#],
+            &[
+                r#"{"type":"message","role":"user","content":[{"type":"input_text","text":"别的目录"}],"cwd":"/Users/someone/other"}"#,
+            ],
         );
 
         let found = list_sessions_in(&projects, "claude", WORK);
@@ -742,6 +766,26 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "session-uuid");
         assert_eq!(found[0].title, "修复 Codex 历史");
+        fs::remove_dir_all(&projects).ok();
+    }
+
+    #[test]
+    fn codex_skips_injected_workspace_context_when_naming_sessions() {
+        let projects = temp_projects();
+        write_session(
+            &projects.join("2026").join("03").join("17"),
+            "ignored",
+            "rollout-2026-03-17T00-00-00-12345678-cccc-dddd",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"session-context","cwd":"/Users/someone/work"}}"#,
+                r#"{"type":"message","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/someone/work\n\n<INSTRUCTIONS>..."}]}}"#,
+                r#"{"type":"message","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"优化 Codex 历史对话名称"}]}}"#,
+            ],
+        );
+
+        let found = list_sessions_in(&projects, "codex", WORK);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "优化 Codex 历史对话名称");
         fs::remove_dir_all(&projects).ok();
     }
 

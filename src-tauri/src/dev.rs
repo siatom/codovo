@@ -138,8 +138,14 @@ mod tests {
     fn parse_handles_crlf_and_bom() {
         // Windows 上这两样最常见：BOM 会污染第一个键名，CRLF 的 \r 会留在值尾
         let parsed = parse_env("\u{feff}CODEDOCK_AI_API_KEY=sk-1\r\nCODEDOCK_AI_MODEL=m\r\n");
-        assert_eq!(parsed[0], ("CODEDOCK_AI_API_KEY".to_string(), "sk-1".to_string()));
-        assert_eq!(parsed[1], ("CODEDOCK_AI_MODEL".to_string(), "m".to_string()));
+        assert_eq!(
+            parsed[0],
+            ("CODEDOCK_AI_API_KEY".to_string(), "sk-1".to_string())
+        );
+        assert_eq!(
+            parsed[1],
+            ("CODEDOCK_AI_MODEL".to_string(), "m".to_string())
+        );
     }
 
     #[test]

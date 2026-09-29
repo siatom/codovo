@@ -106,7 +106,12 @@ impl AiConfig {
 ///
 /// 只走 Rust 侧的 HTTP：密钥不进 WebView，也不受各厂商的跨域限制。
 /// 两个功能（生成提交信息 / 解读改动）共用，调用方自己拼提示词、自己清理输出。
-async fn chat(config: &AiConfig, system: &str, user: &str, temperature: f32) -> Result<String, String> {
+async fn chat(
+    config: &AiConfig,
+    system: &str,
+    user: &str,
+    temperature: f32,
+) -> Result<String, String> {
     let (base_url, api_key, model) = config.resolve()?;
 
     let body = serde_json::json!({
@@ -416,7 +421,10 @@ fn parse_models(text: &str) -> Result<Vec<RemoteModel>, String> {
             .unwrap_or_default()
             .trim()
             .to_string();
-        models.push(RemoteModel { id: id.to_string(), name });
+        models.push(RemoteModel {
+            id: id.to_string(),
+            name,
+        });
     }
     models.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(models)
@@ -606,8 +614,14 @@ mod tests {
         assert_eq!(
             models,
             vec![
-                RemoteModel { id: "deepseek-chat".to_string(), name: "DeepSeek Chat".to_string() },
-                RemoteModel { id: "deepseek-reasoner".to_string(), name: String::new() },
+                RemoteModel {
+                    id: "deepseek-chat".to_string(),
+                    name: "DeepSeek Chat".to_string()
+                },
+                RemoteModel {
+                    id: "deepseek-reasoner".to_string(),
+                    name: String::new()
+                },
             ]
         );
     }
@@ -641,7 +655,10 @@ mod tests {
         );
         // 没有 provider id 时无从查起，返回空串（本地模型不带鉴权头）
         assert_eq!(resolve_probe_key("", None).unwrap(), "");
-        assert_eq!(resolve_probe_key("  ", Some("   ".to_string())).unwrap(), "");
+        assert_eq!(
+            resolve_probe_key("  ", Some("   ".to_string())).unwrap(),
+            ""
+        );
     }
 
     #[test]
@@ -702,7 +719,10 @@ mod tests {
     fn clean_leaves_plain_message_untouched() {
         assert_eq!(clean_message("  feat: 加个东西\n"), "feat: 加个东西");
         // 只有一侧有引号时不能剥，否则会把正文吃掉
-        assert_eq!(clean_message("fix: 处理 \"a\" 的情况"), "fix: 处理 \"a\" 的情况");
+        assert_eq!(
+            clean_message("fix: 处理 \"a\" 的情况"),
+            "fix: 处理 \"a\" 的情况"
+        );
     }
 
     #[test]
@@ -777,12 +797,8 @@ mod tests {
     #[test]
     fn explain_prompt_names_the_commit_and_the_staged_baseline() {
         let path = under("a.ts");
-        let (_, staged) = build_explain_prompt(
-            &root(),
-            &path.to_string_lossy(),
-            &DiffSource::Staged,
-            "x",
-        );
+        let (_, staged) =
+            build_explain_prompt(&root(), &path.to_string_lossy(), &DiffSource::Staged, "x");
         assert!(staged.contains("已暂存的改动"));
 
         let (_, commit) = build_explain_prompt(

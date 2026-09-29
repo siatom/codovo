@@ -5,9 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use portable_pty::{
-    native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize,
-};
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::ipc::Channel;
 
@@ -242,7 +240,12 @@ pub fn pty_write(state: tauri::State<'_, PtyState>, id: u32, data: String) -> Re
 }
 
 #[tauri::command]
-pub fn pty_resize(state: tauri::State<'_, PtyState>, id: u32, cols: u16, rows: u16) -> Result<(), String> {
+pub fn pty_resize(
+    state: tauri::State<'_, PtyState>,
+    id: u32,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
     let sessions = state.inner.sessions.lock().map_err(|e| e.to_string())?;
     let session = sessions.get(&id).ok_or("PTY 会话不存在")?;
     session

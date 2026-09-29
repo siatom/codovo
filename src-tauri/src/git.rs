@@ -295,7 +295,11 @@ fn run_git_network(dir: &Path, args: &[&str]) -> Result<(), String> {
 fn git_error(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let text = if stderr.trim().is_empty() { stdout } else { stderr };
+    let text = if stderr.trim().is_empty() {
+        stdout
+    } else {
+        stderr
+    };
     let text = text.trim();
     if text.is_empty() {
         format!("git 退出码 {}", output.status.code().unwrap_or(-1))
@@ -782,7 +786,9 @@ fn log_of(root: &Path, limit: u32) -> Result<Vec<Commit>, String> {
 /// 重命名/复制多一个 token，是 `<R100>\0<原路径>\0<新路径>\0`。
 fn parse_name_status(raw: &[u8], prefix: &str, root: &Path) -> Vec<CommitFile> {
     let mut files = Vec::new();
-    let mut tokens = raw.split(|byte| *byte == 0).filter(|token| !token.is_empty());
+    let mut tokens = raw
+        .split(|byte| *byte == 0)
+        .filter(|token| !token.is_empty());
 
     while let Some(status_token) = tokens.next() {
         let status = String::from_utf8_lossy(status_token)
@@ -895,8 +901,7 @@ fn pull_remote(root: &Path) -> Result<GitStatus, String> {
 /// 被拒时先快进拉取再重推一次；拉不动（本地已分叉，或网络/凭据有问题）就
 /// 原样报错，这里不做 force push、也不解决冲突。
 fn push_remote(root: &Path) -> Result<GitStatus, String> {
-    let branch = current_branch(root)?
-        .ok_or("当前不在任何分支上（游离 HEAD），无法推送")?;
+    let branch = current_branch(root)?.ok_or("当前不在任何分支上（游离 HEAD），无法推送")?;
 
     // 上游存在时 `@{u}` 能解析出 origin/main 这样的名字；非 0 退出即没有上游
     let has_upstream = run_git(
@@ -958,7 +963,12 @@ fn merge_upstream(root: &Path) -> Result<GitStatus, String> {
     }
     // 上游必须先存在。放在 fetch 之前查：没有跟踪分支时先报的会是 fetch 的错，
     // 那句更难懂，也帮不到用户
-    if run_git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?.is_none() {
+    if run_git(
+        root,
+        &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+    )?
+    .is_none()
+    {
         return Err("当前分支没有上游分支，先在终端里 push -u 建立跟踪关系".to_string());
     }
 
@@ -1003,10 +1013,7 @@ fn merge_continue(root: &Path) -> Result<GitStatus, String> {
 }
 
 #[tauri::command(async)]
-pub fn git_status(
-    state: tauri::State<'_, FsState>,
-    root: String,
-) -> Result<GitStatus, String> {
+pub fn git_status(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     status_of(&state.checked_root(&root)?)
 }
 
@@ -1084,38 +1091,26 @@ pub fn git_commit_files(
 
 /// 从远程取回引用，不动工作区。
 #[tauri::command(async)]
-pub fn git_fetch(
-    state: tauri::State<'_, FsState>,
-    root: String,
-) -> Result<GitStatus, String> {
+pub fn git_fetch(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     fetch_remote(&state.checked_root(&root)?)
 }
 
 /// 拉取当前分支的上游，只允许快进。
 #[tauri::command(async)]
-pub fn git_pull(
-    state: tauri::State<'_, FsState>,
-    root: String,
-) -> Result<GitStatus, String> {
+pub fn git_pull(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     pull_remote(&state.checked_root(&root)?)
 }
 
 /// 推送当前分支；没有上游时顺手建立跟踪关系。
 #[tauri::command(async)]
-pub fn git_push(
-    state: tauri::State<'_, FsState>,
-    root: String,
-) -> Result<GitStatus, String> {
+pub fn git_push(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     push_remote(&state.checked_root(&root)?)
 }
 
 /// 合并当前分支的上游：先 fetch 再 merge。分叉时生成合并提交；
 /// 冲突时不报错，而是把仓库留在合并状态，前端据 merging 切到"合并中"界面。
 #[tauri::command(async)]
-pub fn git_merge(
-    state: tauri::State<'_, FsState>,
-    root: String,
-) -> Result<GitStatus, String> {
+pub fn git_merge(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     merge_upstream(&state.checked_root(&root)?)
 }
 
@@ -1170,7 +1165,6 @@ const IGNORE_CHUNK: usize = 80;
 /// 路径走 argv 而不是 `--stdin`：`run_git_raw` 的 stdin 是关掉的，为它单开一套
 /// 写管道的路不值当。代价是输出不能带 `-z`（git 只在 `--stdin` 下认它），只能按行读。
 fn ignored_paths(root: &Path, raw: &[String]) -> Result<Vec<String>, String> {
-
     // 绝对路径 -> 喂给 git 的相对路径。越界的（前端理论上不会传）跳过而不是整批报错：
     // 这只是个显示效果，不该因为一条脏路径就让整棵树都不置灰
     let mut specs: Vec<(String, String)> = Vec::new();
@@ -1440,7 +1434,10 @@ mod tests {
     fn non_repo_workspace_reports_itself_as_such() {
         // 拿一个不存在的目录当工作区：rev-parse 必然非 0 退出
         let missing = std::env::temp_dir().join("codedock-not-a-repo-ever");
-        assert_eq!(run_git(&missing, &["rev-parse", "--show-prefix"]).unwrap(), None);
+        assert_eq!(
+            run_git(&missing, &["rev-parse", "--show-prefix"]).unwrap(),
+            None
+        );
     }
 
     // ---- 写操作：下面这些都跑真 git，机器上没有 git 就跳过 ----
@@ -1471,7 +1468,8 @@ mod tests {
     fn temp_repo() -> (FsState, PathBuf, PathBuf) {
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let unique = SEQ.fetch_add(1, Ordering::Relaxed);
-        let top = std::env::temp_dir().join(format!("codedock-git-{}-{unique}", std::process::id()));
+        let top =
+            std::env::temp_dir().join(format!("codedock-git-{}-{unique}", std::process::id()));
         let repo = top.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let state = FsState::new();
@@ -1554,7 +1552,10 @@ mod tests {
 
         fs::write(&file, "a\nb\n").unwrap();
         let staged = stage_paths(&repo, &None).unwrap();
-        assert_eq!((staged.files[0].index, staged.files[0].worktree), ('M', '.'));
+        assert_eq!(
+            (staged.files[0].index, staged.files[0].worktree),
+            ('M', '.')
+        );
 
         let after = unstage_paths(&repo, &None).unwrap();
         // 有 HEAD 时必须回到"工作区已修改"，而不是"已暂存的删除 + 未跟踪"
@@ -1665,7 +1666,11 @@ mod tests {
 
         // 不带 pathspec 的 add -A 会把仓库根那个文件也暂存了，界面上看不出来
         let after = stage_paths(&sub, &None).unwrap();
-        let staged: Vec<&str> = after.files.iter().map(|file| file.relative.as_str()).collect();
+        let staged: Vec<&str> = after
+            .files
+            .iter()
+            .map(|file| file.relative.as_str())
+            .collect();
         assert_eq!(staged, vec!["inside.txt"]);
         assert!(sub.join("inside.txt").is_file());
 
@@ -1688,7 +1693,9 @@ mod tests {
         assert!(error.lines().count() > 1, "报错被截断了: {error:?}");
 
         // 空信息在前端就该拦住，到这儿也要有个明确说法
-        assert!(commit_staged(&repo, "   ").unwrap_err().contains("不能为空"));
+        assert!(commit_staged(&repo, "   ")
+            .unwrap_err()
+            .contains("不能为空"));
 
         cleanup(&top);
     }
@@ -1995,7 +2002,9 @@ mod tests {
         assert_eq!(relatives, vec!["inside.txt", "nested/deep.txt"]);
         assert_eq!(files[0].status, 'A');
         // path 得是工作区里的绝对路径，点开差异要用
-        assert!(files.iter().all(|f| f.path.starts_with(&sub.to_string_lossy().to_string())));
+        assert!(files
+            .iter()
+            .all(|f| f.path.starts_with(&sub.to_string_lossy().to_string())));
 
         cleanup(&top);
     }
@@ -2139,7 +2148,10 @@ mod tests {
         stage_paths(&repo, &None).unwrap();
         fs::write(&file, "three\n").unwrap();
         let status = status_of(&repo).unwrap();
-        assert_eq!((status.files[0].index, status.files[0].worktree), ('M', 'M'));
+        assert_eq!(
+            (status.files[0].index, status.files[0].worktree),
+            ('M', 'M')
+        );
 
         // 「改动」组的放弃只动工作区：回到 index 里的 "two"，暂存的那版留着
         let after = discard_paths(
@@ -2160,7 +2172,10 @@ mod tests {
     /// 分支名显式定成 main。`init.defaultBranch` 在不同机器上可能是 master，
     /// 裸仓库的 HEAD 指向不存在的 ref 时克隆下来是个空仓库，测试会莫名其妙地挂。
     fn init_repo_on_main(repo: &Path) {
-        assert!(git(repo, &["init", "-q", "-b", "main", "."]), "git init 失败");
+        assert!(
+            git(repo, &["init", "-q", "-b", "main", "."]),
+            "git init 失败"
+        );
         assert!(git(repo, &["config", "user.email", "codedock@test"]));
         assert!(git(repo, &["config", "user.name", "codedock"]));
     }
