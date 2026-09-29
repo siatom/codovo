@@ -165,6 +165,7 @@ const DEFAULTS: Settings = {
   aiCommands: [
     { name: "claude", command: "claude" },
     { name: "codebuddy", command: "codebuddy" },
+    { name: "codex", command: "codex --no-daemon" },
     { name: "opencode", command: "opencode" },
   ],
   // 不预置任何厂商：提供商和模型都由用户自己加
