@@ -658,6 +658,21 @@ export const IconPencil = icon(
   </>,
 );
 
+/** 意见反馈：一个带尾巴的对话框，和「聊天」区分开的语义靠调用处的 title 说明 */
+export const IconFeedback = icon(
+  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z" />,
+);
+
+/** 垃圾桶：反馈历史里「只删本地记录」那一下 */
+export const IconTrash = icon(
+  <>
+    <path d="M3 6h18" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <path d="M10 11v6M14 11v6" />
+  </>,
+);
+
 /* ---------- AI CLI 的品牌 logo ---------- */
 
 /** 认得出是哪家就上哪家的 logo；认不出回落成上面那个通用的机器人图标 */

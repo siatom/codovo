@@ -15,11 +15,13 @@ import { useTheme } from "../lib/theme";
 import type { AgentSessionSummary } from "../lib/types";
 import { CliHistory } from "./CliHistory";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { FeedbackDialog } from "./FeedbackDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
   AgentLogo,
   IconChevronDown,
   IconChevronRight,
+  IconFeedback,
   IconFolder,
   IconFolderPlus,
   IconMoon,
@@ -105,6 +107,8 @@ export function Sidebar({
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   /** 当前项目的对话历史是否展开；默认展开 */
   const [historyOpen, setHistoryOpen] = useState(true);
   /** 等待确认删除的会话；非空时弹确认框 */
@@ -283,6 +287,14 @@ export function Sidebar({
           </button>
           <button
             type="button"
+            onClick={() => setFeedbackOpen(true)}
+            title="意见反馈"
+            className={FOOTER_BUTTON}
+          >
+            <IconFeedback />
+          </button>
+          <button
+            type="button"
             onClick={() => setSettingsOpen(true)}
             title="设置"
             className={FOOTER_BUTTON}
@@ -302,6 +314,7 @@ export function Sidebar({
         {settingsOpen && (
           <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={current} />
         )}
+        {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
       </div>
     );
   }
@@ -539,6 +552,14 @@ export function Sidebar({
         </button>
         <button
           type="button"
+          onClick={() => setFeedbackOpen(true)}
+          title="意见反馈"
+          className={FOOTER_BUTTON}
+        >
+          <IconFeedback />
+        </button>
+        <button
+          type="button"
           onClick={() => setSettingsOpen(true)}
           title="设置"
           className={FOOTER_BUTTON}
@@ -559,6 +580,8 @@ export function Sidebar({
       {settingsOpen && (
           <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={current} />
         )}
+
+      {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
 
       {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
