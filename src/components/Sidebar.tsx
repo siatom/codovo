@@ -632,7 +632,7 @@ export function Sidebar({
                 }}
                 className={MENU_ITEM}
               >
-                关闭
+                关闭项目
               </button>
             )}
             <button
