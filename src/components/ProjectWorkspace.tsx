@@ -106,8 +106,9 @@ export function ProjectWorkspace({
   }, [onExitFullscreen]);
 
   /**
-   * 点右边栏自己的空白处切显隐。只挂在图标条和工具面板上——编辑器是主区域，
-   * 不算「右边栏」，浏览器模块的内容是 iframe，点进去的事件根本出不来。
+   * 点图标条上的空白处切显隐，和左侧栏一个手感——这是收起/展开右边栏的唯一空白区。
+   * 工具面板的内容区不挂它：文件树等模块自己要用空白点击（收回锚点、清高亮），
+   * 沾上「收起整条右栏」会误伤。编辑器是主区域、浏览器内容是 iframe，本来也不该算。
    * 全屏时整块在铺满窗口，不响应，退出全屏走 Esc 或全屏按钮。
    */
   const onBlankClick = useCallback(
@@ -329,7 +330,6 @@ export function ProjectWorkspace({
                       onBeforeRename={saveAllEdits}
                       onEntryRenamed={renameOpenTabs}
                       onEntryDeleted={dropOpenTabs}
-                      onBlankClick={onBlankClick}
                     />
                   }
                   second={
