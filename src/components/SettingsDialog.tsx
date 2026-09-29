@@ -84,6 +84,12 @@ const VISIBLE_OPTIONS: { value: boolean; label: string }[] = [
   { value: false, label: "隐藏" },
 ];
 
+/** 开着项目时关窗口：直接收进托盘，还是每次都问一句 */
+const CLOSE_OPTIONS: { value: boolean; label: string }[] = [
+  { value: false, label: "每次询问" },
+  { value: true, label: "收进托盘" },
+];
+
 /** 时机名字跟 VS Code 的 files.autoSave 对齐 */
 const AUTO_SAVE_OPTIONS: { value: AutoSaveMode; label: string }[] = [
   { value: "off", label: "关闭" },
@@ -1828,6 +1834,16 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       options={VISIBLE_OPTIONS}
                       disabledValue={lastVisible === "browser" ? false : undefined}
                       onChange={(rightBrowserVisible) => update({ rightBrowserVisible })}
+                    />
+                  </Field>
+                  <Field
+                    label="关闭窗口"
+                    hint="开着项目时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
+                  >
+                    <BoolToggle
+                      value={settings.closeToTray}
+                      options={CLOSE_OPTIONS}
+                      onChange={(closeToTray) => update({ closeToTray })}
                     />
                   </Field>
                 </>

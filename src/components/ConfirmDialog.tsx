@@ -1,12 +1,20 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 interface ConfirmDialogProps {
   /** 要确认的事，一句话把后果说清楚 */
   message: string;
   /** 确认按钮的文案，用动词（「放弃」「删除」），别写成「确定」 */
   confirmLabel: string;
-  onConfirm: () => void;
-  onCancel: () => void;
+  /**
+   * 取消按钮的文案，默认「取消」。当取消位上其实是个有意义的动作时改这里
+   * （关窗口那处，「取消」= 「最小化到托盘」），点遮罩和按 Esc 都算走这条
+   */
+  cancelLabel?: string;
+  /** 有值时在正文下方多一个勾选框，勾没勾跟着确认 / 取消一起回传 */
+  checkboxLabel?: string;
+  /** `checked` 只在给了 `checkboxLabel` 时才有意义，否则恒为 false */
+  onConfirm: (checked: boolean) => void;
+  onCancel: (checked: boolean) => void;
 }
 
 const CANCEL_BUTTON =
@@ -27,21 +35,25 @@ const CONFIRM_BUTTON =
 export function ConfirmDialog({
   message,
   confirmLabel,
+  cancelLabel = "取消",
+  checkboxLabel,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const [checked, setChecked] = useState(false);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel();
+      if (event.key === "Escape") onCancel(checked);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+  }, [onCancel, checked]);
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
-      onClick={onCancel}
+      onClick={() => onCancel(checked)}
     >
       <div
         role="dialog"
@@ -50,12 +62,32 @@ export function ConfirmDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <p className="text-[12px] leading-relaxed text-fg">{message}</p>
+        {checkboxLabel && (
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-fg-muted">
+            <input
+              type="checkbox"
+              checked={checked}
+              onChange={(event) => setChecked(event.target.checked)}
+              className="accent-accent"
+            />
+            {checkboxLabel}
+          </label>
+        )}
         <div className="mt-4 flex justify-end gap-2">
           {/* 焦点默认落在取消上：破坏性操作不该让回车顺手确认掉 */}
-          <button type="button" autoFocus onClick={onCancel} className={CANCEL_BUTTON}>
-            取消
+          <button
+            type="button"
+            autoFocus
+            onClick={() => onCancel(checked)}
+            className={CANCEL_BUTTON}
+          >
+            {cancelLabel}
           </button>
-          <button type="button" onClick={onConfirm} className={CONFIRM_BUTTON}>
+          <button
+            type="button"
+            onClick={() => onConfirm(checked)}
+            className={CONFIRM_BUTTON}
+          >
             {confirmLabel}
           </button>
         </div>

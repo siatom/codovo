@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { Sidebar } from "./components/Sidebar";
 import {
   ProjectWorkspace,
@@ -23,6 +24,7 @@ import {
   samePath,
   saveWorkspace,
 } from "./lib/fs";
+import { useSettings } from "./lib/settings";
 import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
 /** 取路径最后一段当显示名；盘符根这类取不到就退回原串 */
@@ -55,9 +57,13 @@ function Shell() {
   /** 关项目时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
 
+  const { settings, update } = useSettings();
+  /** 关窗口的确认框：开着项目、又还没记住选择时才弹 */
+  const [closePrompt, setClosePrompt] = useState(false);
+
   /**
    * 关窗口那一下已经被后端拦下了（`prevent_close`），是收进托盘还是真退出由这儿说了算。
-   * 项目列表变得勤，用 ref 兜住最新值、监听只注册一次——每次变化都重注册
+   * 项目列表和设置都变得勤，用 ref 兜住最新值、监听只注册一次——每次变化都重注册
    * 会跟卸载抢时间，回调可能打到已经被清的监听上。
    */
   const onCloseRef = useRef<() => void>(() => {});
@@ -65,8 +71,10 @@ function Shell() {
     if (projects.length === 0) {
       // 没项目就别留个空壳进程在后台
       void quitApp();
-    } else {
+    } else if (settings.closeToTray) {
       void hideToTray();
+    } else {
+      setClosePrompt(true);
     }
   };
 
@@ -301,6 +309,24 @@ function Shell() {
       ))}
       {projects.length === 0 && (
         <WorkspaceEmpty error={notice} onPick={pickWorkspace} />
+      )}
+      {closePrompt && (
+        <ConfirmDialog
+          message={`还有 ${projects.length} 个项目开着，终端与智能体仍在后台运行。`}
+          confirmLabel="退出程序"
+          cancelLabel="最小化到托盘"
+          checkboxLabel="下次不再询问，直接最小化到托盘"
+          onConfirm={(remember) => {
+            if (remember) update({ closeToTray: true });
+            setClosePrompt(false);
+            void quitApp();
+          }}
+          onCancel={(remember) => {
+            if (remember) update({ closeToTray: true });
+            setClosePrompt(false);
+            void hideToTray();
+          }}
+        />
       )}
     </div>
   );
