@@ -60,6 +60,10 @@ git push --follow-tags            # 连 tag 一起推
 - 文件路径一律词法归一化 + 前缀校验，已存在的再 `canonicalize` 挡软链接逃逸；文件树改名 / 删除
   要带着编辑器标签一起换或关，改名前先落盘；工作区根禁改禁删。
 - 目录监听只推「哪个父目录变了」，编辑器重读另走 `fs-file-changed`；防抖 300ms 并跳过 `SKIP_DIRS`。
+- markdown 预览层的内容在渲染期算，**按 `activeKey` 从 model 缓存取**，绝不能读编辑器当前挂着的
+  model：换 model 的 effect 在渲染之后才跑，从别的文件切到 md 的那一帧读到的还是上一个文件的
+  model，而 `isPreview` 由 false 变 true 只发生这一帧，之后依赖不变、memo 不重算，错误内容就一直
+  留在预览层上（切回编辑再进预览才会纠正）。
 - 差异基线照 VS Code（暂存 `HEAD↔index`、未暂存 `index↔工作区`），两侧统一按 LF 比较；差异编辑器
   懒创建、只读、不参与脏标记，三种差异靠 model URI 的 scheme 段区分。
 - git 状态走 `status --porcelain=v2 --branch -z`；工作区可能只是仓库子目录，先 `rev-parse --show-prefix`；
