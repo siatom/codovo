@@ -17,6 +17,20 @@ document.addEventListener("contextmenu", (event) => {
   if (!event.defaultPrevented) event.preventDefault();
 });
 
+if (!import.meta.env.DEV) {
+  // 正式版禁用浏览器快捷键，避免误触刷新、打印或打开开发者工具；开发版保留这些快捷键方便调试。
+  document.addEventListener("keydown", (event) => {
+    const key = event.key.toLowerCase();
+    const primary = event.ctrlKey || event.metaKey;
+    const reload = key === "r" && primary;
+    const print = key === "p" && primary && !event.altKey;
+    const devtools = key === "f12" || (key === "i" && primary && (event.shiftKey || event.altKey));
+    if (key === "f5" || reload || print || devtools) {
+      event.preventDefault();
+    }
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
