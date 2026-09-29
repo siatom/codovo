@@ -356,6 +356,24 @@ export function gitPush(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_push", { root });
 }
 
+/**
+ * 合并当前分支的上游：后端先 fetch 再 merge，分叉时产生合并提交。
+ * 冲突不算失败——返回的状态里 `merging` 为真，面板据此切到"合并中"界面。
+ */
+export function gitMerge(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_merge", { root });
+}
+
+/** 中止正在进行的合并，工作区回到合并前（不在合并态时是 no-op） */
+export function gitMergeAbort(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_merge_abort", { root });
+}
+
+/** 冲突都解决并暂存后，用 MERGE_MSG 提交完成合并 */
+export function gitMergeContinue(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_merge_continue", { root });
+}
+
 /** 后端一律用原生分隔符；界面按 VS Code 习惯显示 `/`。 */
 export function toDisplayPath(path: string): string {
   return path.replace(/\\/g, "/");

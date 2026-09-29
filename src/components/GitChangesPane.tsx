@@ -14,6 +14,9 @@ import {
   gitDiscard,
   gitFetch,
   gitLog,
+  gitMerge,
+  gitMergeAbort,
+  gitMergeContinue,
   gitPull,
   gitPush,
   gitStage,
@@ -45,6 +48,7 @@ import {
   IconCloudDownload,
   IconFolder,
   IconList,
+  IconMerge,
   IconMinus,
   IconPlus,
   IconRefresh,
@@ -251,6 +255,10 @@ const TEXT_INPUT =
 const PRIMARY_BUTTON =
   "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
 
+/** 合并中的「中止合并」：这一下会丢掉整次合并尝试，用危险色描边 */
+const MERGE_ABORT_BUTTON =
+  "shrink-0 rounded-md border border-danger-line px-3 py-1.5 text-[12px] text-danger hover:bg-danger-bg disabled:opacity-40";
+
 /** AI 生成：塞进提交框内部的纯图标按钮，居中对齐、平时淡、悬停才亮 */
 const GENERATE_ICON =
   "absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
@@ -276,7 +284,7 @@ const ROW_DANGER =
 
 /** 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
  *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。
- *  fetch/pull/push 是网络操作，跑起来可能要几分钟，更不能叠着发。 */
+ *  fetch/pull/push/merge 是网络操作，跑起来可能要几分钟，更不能叠着发。 */
 type Busy =
   | null
   | "stage"
@@ -286,7 +294,10 @@ type Busy =
   | "generate"
   | "fetch"
   | "pull"
-  | "push";
+  | "push"
+  | "merge"
+  | "mergeAbort"
+  | "mergeContinue";
 
 /**
  * 能不能「放弃修改」。
@@ -309,6 +320,9 @@ const SYNC_NOTICE = {
   fetch: "正在获取远程更新…",
   pull: "正在拉取…",
   push: "正在推送…",
+  merge: "正在合并…",
+  mergeAbort: "正在中止合并…",
+  mergeContinue: "正在完成合并…",
 } as const;
 
 /** 右键菜单：只有一项，宽高按文案量出来，用来贴着窗口边缘收一收 */
@@ -607,6 +621,8 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  /** 中止合并会丢掉整次合并尝试，和放弃修改一样先过确认框 */
+  const [pendingMergeAbort, setPendingMergeAbort] = useState(false);
   /**
    * null = 随内容长高（也就是默认的一行）；拖过之后是固定高度（px），内容多了自己滚动。
    * 高度不落盘：每次进应用都从一行起步，省得某次拖高之后再也回不到默认。
@@ -799,6 +815,30 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
   const push = useCallback(() => {
     void run("push", () => gitPush(root));
   }, [run]);
+
+  /** 合并要么快进、要么产生一个合并提交，两条路都动了历史 */
+  const merge = useCallback(() => {
+    void run("merge", async () => {
+      const payload = await gitMerge(root);
+      setLogRevision((revision) => revision + 1);
+      return payload;
+    });
+  }, [run, root]);
+
+  /** 冲突解决完、暂存好之后再点：用 MERGE_MSG 生成合并提交 */
+  const mergeContinue = useCallback(() => {
+    void run("mergeContinue", async () => {
+      const payload = await gitMergeContinue(root);
+      setLogRevision((revision) => revision + 1); // 多了一条合并提交
+      return payload;
+    });
+  }, [run, root]);
+
+  const confirmMergeAbort = useCallback(() => {
+    setPendingMergeAbort(false);
+    // 中止丢掉一次合并尝试：本来就没产生提交，不用重拉历史
+    void run("mergeAbort", () => gitMergeAbort(root));
+  }, [run, root]);
 
   /**
    * 放弃修改不可撤销，落手前先记下来弹确认框，用户点了才真跑。
@@ -1029,10 +1069,24 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
   // 有暂存就按暂存生成；只有未暂存的改动也能生成（点下去会先全部暂存）
   const canGenerate = (staged.length > 0 || unstaged.length > 0) && busy === null;
-  // 改动全都提交完了、本地还领先上游：主按钮从「提交」切成「推送变更」
-  const showSync = staged.length === 0 && unstaged.length === 0 && snapshot.ahead > 0;
+  // 改动全都提交完了、本地还领先上游：主按钮从「提交」切成「推送变更」。
+  // 合并中不做这个切换——那会儿的主操作是「完成合并 / 中止合并」
+  const showSync =
+    staged.length === 0 && unstaged.length === 0 && snapshot.ahead > 0 && !snapshot.merging;
+  // 两边各有自己的提交，快进的「拉取」推不动了，才轮到「合并」。
+  // 只落后不领先时「拉取」能覆盖，不必再亮一个语义重叠的按钮；
+  // behind 陈旧（还没 fetch 过）的那段窗口期靠 fetch 或拉取失败后的轮询自愈
+  const canMerge =
+    snapshot.ahead > 0 && snapshot.behind > 0 && !snapshot.merging && busy === null;
   const notice =
-    busy === "fetch" || busy === "pull" || busy === "push" ? SYNC_NOTICE[busy] : null;
+    busy === "fetch" ||
+    busy === "pull" ||
+    busy === "push" ||
+    busy === "merge" ||
+    busy === "mergeAbort" ||
+    busy === "mergeContinue"
+      ? SYNC_NOTICE[busy]
+      : null;
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
@@ -1058,13 +1112,15 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
           </span>
         )}
 
-        {/* 四个图标按钮单独成组：header 的 gap-1.5 对它们太松，
-            组内压到 gap-0.5 更像一组操作；命中区仍是 24px，不为了紧凑牺牲点击 */}
+        {/* 远程/视图这几个图标按钮单独成组：header 的 gap-1.5 对它们太松，
+            组内压到 gap-0.5 更像一组操作；命中区仍是 24px，不为了紧凑牺牲点击。
+            合并期间远程操作语义未定（push 会推合并前的 HEAD），一律禁掉，
+            只留下面主按钮区的「完成合并 / 中止合并」 */}
         <div className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             onClick={fetch}
-            disabled={busy !== null}
+            disabled={busy !== null || snapshot.merging}
             title="获取远程更新"
             className={HEADER_ACTION}
           >
@@ -1075,7 +1131,7 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
           <button
             type="button"
             onClick={pull}
-            disabled={busy !== null}
+            disabled={busy !== null || snapshot.merging}
             title="拉取（只允许快进）"
             className={HEADER_ACTION}
           >
@@ -1085,8 +1141,17 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
           </button>
           <button
             type="button"
+            onClick={merge}
+            disabled={!canMerge}
+            title="合并远程分支（先获取再合并，分叉时产生合并提交）"
+            className={HEADER_ACTION}
+          >
+            <IconMerge className={`h-3.5 w-3.5 ${busy === "merge" ? "animate-pulse" : ""}`} />
+          </button>
+          <button
+            type="button"
             onClick={push}
-            disabled={busy !== null}
+            disabled={busy !== null || snapshot.merging}
             title="推送"
             className={HEADER_ACTION}
           >
@@ -1165,8 +1230,33 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
           }`}
         />
 
-        <div className="flex shrink-0 items-center">
-          {staged.length > 0 ? (
+        <div className="flex shrink-0 items-center gap-1.5">
+          {snapshot.merging ? (
+            // 合并中：主操作只有"收尾"两件事。冲突没清完时「完成合并」禁用，
+            // 按钮上直接写着还剩几个，省得用户去列表里数
+            <>
+              <button
+                type="button"
+                onClick={mergeContinue}
+                disabled={busy !== null || snapshot.conflicts > 0}
+                className={PRIMARY_BUTTON}
+              >
+                {busy === "mergeContinue"
+                  ? "完成合并中…"
+                  : snapshot.conflicts > 0
+                    ? `还有 ${snapshot.conflicts} 个冲突`
+                    : "完成合并"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingMergeAbort(true)}
+                disabled={busy !== null}
+                className={MERGE_ABORT_BUTTON}
+              >
+                {busy === "mergeAbort" ? "中止中…" : "中止合并"}
+              </button>
+            </>
+          ) : staged.length > 0 ? (
             <button type="button" onClick={commit} disabled={!canCommit} className={PRIMARY_BUTTON}>
               {busy === "commit" ? "提交中…" : "提交"}
             </button>
@@ -1187,6 +1277,15 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
             </button>
           )}
         </div>
+
+        {snapshot.merging && (
+          <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
+            正在合并：
+            {snapshot.conflicts > 0
+              ? `还有 ${snapshot.conflicts} 个冲突未解决，改完文件后暂存，再点「完成合并」`
+              : "冲突已解决，点「完成合并」生成合并提交"}
+          </p>
+        )}
 
         {notice && (
           <p className="shrink-0 px-1 text-[11px] text-fg-faint">{notice}</p>
@@ -1380,6 +1479,15 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
           confirmLabel="放弃"
           onConfirm={confirmDiscard}
           onCancel={() => setPendingDiscard(null)}
+        />
+      )}
+
+      {pendingMergeAbort && (
+        <ConfirmDialog
+          message="中止合并？将丢弃这次合并尝试，工作区与暂存区回到合并前的状态，无法撤销。"
+          confirmLabel="中止合并"
+          onConfirm={confirmMergeAbort}
+          onCancel={() => setPendingMergeAbort(false)}
         />
       )}
 

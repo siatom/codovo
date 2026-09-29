@@ -49,6 +49,10 @@ export interface GitStatusPayload {
   head: string | null;
   ahead: number;
   behind: number;
+  /** 仓库正卡在一次没结束的合并里（有冲突待解决，或已解决待提交） */
+  merging: boolean;
+  /** 未合并（冲突）条目数，含 AA/DD 这种 XY 里没有 U 的 */
+  conflicts: number;
   /** 改动条目总数；条目过多时可能大于 files.length */
   changed: number;
   files: GitFileStatus[];

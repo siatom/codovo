@@ -41,6 +41,10 @@ pub struct GitStatus {
     head: Option<String>,
     ahead: u32,
     behind: u32,
+    /// 仓库正卡在一次没结束的合并里（有冲突待解决，或已解决待提交）
+    merging: bool,
+    /// 未合并（冲突）条目数。porcelain 的 u 记录，含 AA/DD 这种 XY 里没有 U 的
+    conflicts: u32,
     /// 改动条目总数，可能大于 files.len()（见 MAX_ENTRIES）
     changed: u32,
     files: Vec<FileStatus>,
@@ -54,6 +58,8 @@ impl GitStatus {
             head: None,
             ahead: 0,
             behind: 0,
+            merging: false,
+            conflicts: 0,
             changed: 0,
             files: Vec::new(),
         }
@@ -381,7 +387,12 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
                 fields
             }
             // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
-            Some('u') => (xy_of(&text), path_of(&text, 10)),
+            // 未合并（冲突）记录。AA/DD 这种 XY 里没有 U，只能靠记录类型认；
+            // 计数要在下面的 MAX_ENTRIES 截断之前，否则条目超限时冲突数会被少算
+            Some('u') => {
+                status.conflicts += 1;
+                (xy_of(&text), path_of(&text, 10))
+            }
             // ? <path>
             Some('?') => (('?', '?'), path_of(&text, 1)),
             _ => continue, // '!' 之类，界面不关心
@@ -438,7 +449,10 @@ fn status_of(root: &Path) -> Result<GitStatus, String> {
     )?
     .ok_or("git status 执行失败")?;
 
-    Ok(parse_status(&raw, &prefix, root))
+    let mut status = parse_status(&raw, &prefix, root);
+    // 合并状态得另查：porcelain v2 不暴露 MERGE_HEAD
+    status.merging = is_merging(root)?;
+    Ok(status)
 }
 
 /// 把前端传来的绝对路径折算成"工作区内的相对路径（正斜杠）"。
@@ -559,6 +573,16 @@ fn current_branch(root: &Path) -> Result<Option<String>, String> {
     Ok(run_git(root, &["rev-parse", "--abbrev-ref", "HEAD"])?
         .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
         .filter(|name| !name.is_empty() && name != "HEAD"))
+}
+
+/// 仓库是不是正卡在一次没结束的合并里（有冲突待解决，或已解决但还没提交）。
+///
+/// 用 MERGE_HEAD 而不是解析 status：porcelain v2 根本不暴露合并状态，而且
+/// 冲突文件全部 add 完之后 unmerged 记录就消失了，靠 status 判会提前认为
+/// "合并结束了"。rev-parse 自己会解析真实 gitdir（含 worktree 那种情况），
+/// 比手拼 `.git/MERGE_HEAD` 路径稳。`-q` 压掉"不存在"的报错，非 0 退出即 false。
+fn is_merging(root: &Path) -> Result<bool, String> {
+    Ok(run_git(root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])?.is_some())
 }
 
 /// 两侧内容统一按 LF 比较。
@@ -851,8 +875,9 @@ fn fetch_remote(root: &Path) -> Result<GitStatus, String> {
 
 /// 拉取。
 ///
-/// `--ff-only`：本地和远程分叉时直接失败，不悄悄产生一个合并提交、也不把仓库
-/// 带进冲突状态——冲突要靠终端解决，界面里给不出像样的处理方式。
+/// `--ff-only`：只走保守的快进路径。本地和远程分叉时直接失败，不悄悄产生一个
+/// 合并提交、也不把仓库带进冲突状态——真分叉交给用户点「合并」按钮，显式地选择
+/// 生成合并提交（见 merge_upstream）。
 /// `--no-rebase`：把用户全局配置里的 `pull.rebase=true` 压掉，行为在哪儿都一样。
 /// ff-only 不会生成合并提交，所以不需要 `--no-edit`。
 fn pull_remote(root: &Path) -> Result<GitStatus, String> {
@@ -909,6 +934,71 @@ fn push_remote(root: &Path) -> Result<GitStatus, String> {
         run_git_network(root, &["push", "-u", &remote, &branch])?;
     }
 
+    status_of(root)
+}
+
+/// 合并上游：先取回引用，再把上游分支合进当前分支。
+///
+/// 刻意不用 `git pull`：pull 把"网络"和"改工作区"揉成一次调用，失败时没法区分
+/// 是网络断了（工作区没动，可以直接重试）还是合并冲突（工作区已经进了合并状态，
+/// 得让用户解决或中止）。拆两步后 fetch 失败就是网络问题，merge 失败再看
+/// MERGE_HEAD 判是不是冲突。顺带也绕开用户的 pull.rebase / pull.ff 配置。
+///
+/// 不加 `--no-ff`：纯落后时按默认快进，只有真分叉才生成合并提交，和 pull 一致。
+/// `--no-edit`：用 git 生成的默认合并信息，不弹编辑器（我们本来也没有 TTY）。
+///
+/// 目标固定 `@{u}` 而不是 `FETCH_HEAD`：无参 fetch 可能一次取回多个 ref，
+/// FETCH_HEAD 在那种情况下有歧义，而 `@{u}` 明确指向当前分支的远程跟踪分支。
+fn merge_upstream(root: &Path) -> Result<GitStatus, String> {
+    if current_branch(root)?.is_none() {
+        return Err("当前不在任何分支上（游离 HEAD），无法合并".to_string());
+    }
+    if is_merging(root)? {
+        return Err("已经有一次没结束的合并，先解决冲突提交或中止它".to_string());
+    }
+    // 上游必须先存在。放在 fetch 之前查：没有跟踪分支时先报的会是 fetch 的错，
+    // 那句更难懂，也帮不到用户
+    if run_git(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])?.is_none() {
+        return Err("当前分支没有上游分支，先在终端里 push -u 建立跟踪关系".to_string());
+    }
+
+    run_git_network(root, &["fetch"])?;
+
+    if let Err(failed) = run_git_checked(root, &["merge", "--no-edit", "@{u}"]) {
+        // 冲突会让 merge 非 0 退出，并在仓库里留下 MERGE_HEAD。这不是"失败"，
+        // 而是"等用户解决"——照常把状态回传，前端据 merging 切到合并中界面。
+        // 工作区脏、钩子失败等别的原因不会留下 MERGE_HEAD，走下面的 Err 透传
+        if is_merging(root)? {
+            return status_of(root);
+        }
+        return Err(failed);
+    }
+    status_of(root)
+}
+
+/// 中止合并：把工作区和 index 回到合并前，丢掉这次合并的所有尝试。
+///
+/// 不在合并状态时当 no-op 返回当前状态：按钮本就存在竞态，这时报一句
+/// "没有合并可中止"对用户没意义，反而像个 bug。
+fn merge_abort(root: &Path) -> Result<GitStatus, String> {
+    if !is_merging(root)? {
+        return status_of(root);
+    }
+    run_git_checked(root, &["merge", "--abort"])?;
+    status_of(root)
+}
+
+/// 完成合并：冲突都解决并暂存后，用 git 准备好的 MERGE_MSG 生成合并提交。
+///
+/// 不复用 commit_staged：那要用户手写信息，而且会盖掉 MERGE_MSG 里那段
+/// "Merge branch ..." 的默认说明。`--no-edit` 直接用 MERGE_MSG。
+/// 还有没解决的冲突时 git 自己会拒绝并列出一条条 unmerged 路径，
+/// run_git_checked 把它的原文原样透传，前端错误区（whitespace-pre-wrap）放得下。
+fn merge_continue(root: &Path) -> Result<GitStatus, String> {
+    if !is_merging(root)? {
+        return Err("当前没有正在进行的合并".to_string());
+    }
+    run_git_checked(root, &["commit", "--no-edit"])?;
     status_of(root)
 }
 
@@ -1017,6 +1107,34 @@ pub fn git_push(
     root: String,
 ) -> Result<GitStatus, String> {
     push_remote(&state.checked_root(&root)?)
+}
+
+/// 合并当前分支的上游：先 fetch 再 merge。分叉时生成合并提交；
+/// 冲突时不报错，而是把仓库留在合并状态，前端据 merging 切到"合并中"界面。
+#[tauri::command(async)]
+pub fn git_merge(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<GitStatus, String> {
+    merge_upstream(&state.checked_root(&root)?)
+}
+
+/// 中止正在进行的合并，工作区回到合并前。不在合并态时是 no-op。
+#[tauri::command(async)]
+pub fn git_merge_abort(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<GitStatus, String> {
+    merge_abort(&state.checked_root(&root)?)
+}
+
+/// 冲突都解决并暂存后，用 MERGE_MSG 提交，完成这次合并。
+#[tauri::command(async)]
+pub fn git_merge_continue(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<GitStatus, String> {
+    merge_continue(&state.checked_root(&root)?)
 }
 
 /// 一批路径里，哪些被 .gitignore 之类的排除规则忽略了。文件树按这个把条目置灰。
@@ -2067,6 +2185,68 @@ mod tests {
         assert!(git(&other, &["push", "-q"]));
     }
 
+    /// 在别的克隆里改**同一个文件的同一行**再推上去，制造一次真冲突。
+    /// `push_from_another_clone` 写的是新文件，永远不会冲突，这里要的是对撞。
+    fn push_conflicting_change(top: &Path, remote_url: &str, name: &str, content: &str) {
+        assert!(git(top, &["clone", "-q", remote_url, "conflict-clone"]));
+        let other = top.join("conflict-clone");
+        assert!(git(&other, &["config", "user.email", "codedock@test"]));
+        assert!(git(&other, &["config", "user.name", "codedock"]));
+        fs::write(other.join(name), content).unwrap();
+        assert!(git(&other, &["add", "-A"]));
+        assert!(git(&other, &["commit", "-q", "-m", "remote side"]));
+        assert!(git(&other, &["push", "-q"]));
+    }
+
+    /// 建好一个"已推到远程、本地再提交一条"的分叉仓库（非冲突）。
+    /// 返回 (repo, top, remote_url)；调用方负责 cleanup(top)。
+    fn diverged_repo(remote_file: &str) -> (PathBuf, PathBuf, String) {
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        push_remote(&repo).unwrap();
+
+        push_from_another_clone(&top, &remote_url, remote_file);
+
+        // 本地也提交一个，两条线就此分叉
+        fs::write(repo.join("local-side.txt"), "l\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "local side").unwrap();
+
+        (repo, top, remote_url)
+    }
+
+    /// 建好一个"本地和远程改了同一行"的仓库，并真的发起一次会冲突的合并。
+    /// 返回 (repo, top, 合并前的 HEAD)；调用方负责 cleanup(top)。
+    fn conflicted_repo() -> (PathBuf, PathBuf, Option<String>) {
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "base\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        push_remote(&repo).unwrap();
+
+        // 远程把同一行改成 remote、本地改成 local，两个 hunk 正面对撞
+        push_conflicting_change(&top, &remote_url, "app.ts", "remote\n");
+        fs::write(repo.join("app.ts"), "local\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "local side").unwrap();
+        let head_before = status_of(&repo).unwrap().head;
+
+        let after = merge_upstream(&repo).unwrap();
+        assert!(after.merging, "前置条件：这次合并应当冲突并停在合并状态");
+
+        (repo, top, head_before)
+    }
+
     #[test]
     fn push_then_fetch_then_pull_round_trips() {
         if !git_available() {
@@ -2351,6 +2531,184 @@ mod tests {
         assert!(ignored.contains(&path_of_file(&repo, "app.log")));
         // 目录规则要能被 check-ignore 认出来（尾斜杠的写法必须对得上）
         assert!(ignored.contains(&path_of_file(&repo, "build")));
+
+        cleanup(&top);
+    }
+
+    // ---- 合并：分叉、冲突、中止、完成 ----
+
+    #[test]
+    fn merge_creates_a_merge_commit_when_the_branch_has_diverged() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _remote_url) = diverged_repo("remote-side.txt");
+
+        let after = merge_upstream(&repo).unwrap();
+        assert!(!after.merging);
+        assert_eq!(after.conflicts, 0);
+        // init + 远程那条 + 本地那条 + 合并提交本身
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 4);
+        assert_eq!((after.ahead, after.behind), (2, 0));
+        assert!(repo.join("remote-side.txt").exists());
+        assert!(repo.join("local-side.txt").exists());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_fast_forwards_when_only_behind() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        push_remote(&repo).unwrap();
+
+        push_from_another_clone(&top, &remote_url, "from-other.txt");
+
+        // 本地没有自己的提交：应当快进，不该凭空多一个合并提交（没加 --no-ff）
+        let after = merge_upstream(&repo).unwrap();
+        assert_eq!((after.ahead, after.behind), (0, 0));
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert!(repo.join("from-other.txt").exists());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_stops_in_conflict_and_reports_merging() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _head_before) = conflicted_repo();
+
+        // 冲突不是"失败"：返回 Ok，靠 merging 表达"等用户解决"
+        let after = status_of(&repo).unwrap();
+        assert!(after.merging);
+        assert!(after.conflicts >= 1);
+        assert!(is_merging(&repo).unwrap());
+        // 冲突期间没有产生提交
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert!(read_text(&repo.join("app.ts")).contains("<<<<<<<"));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_abort_returns_to_the_pre_merge_state() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, head_before) = conflicted_repo();
+
+        let after = merge_abort(&repo).unwrap();
+        assert!(!after.merging);
+        assert_eq!(after.conflicts, 0);
+        assert!(!is_merging(&repo).unwrap());
+        assert_eq!(after.head, head_before);
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        // 冲突标记被清掉，文件回到本地那一版
+        assert_eq!(read_text(&repo.join("app.ts")).trim(), "local");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_abort_is_a_noop_outside_a_merge() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        let head_before = status_of(&repo).unwrap().head;
+
+        // 没有合并可中止时不该报错，也不该动 HEAD
+        let after = merge_abort(&repo).unwrap();
+        assert!(!after.merging);
+        assert_eq!(after.head, head_before);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_continue_refuses_while_conflicts_remain() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _head_before) = conflicted_repo();
+
+        // 冲突没解决就想提交：git 自己会拒绝。只断言"失败了 + 还在合并中 + 没多提交"
+        let error = merge_continue(&repo).unwrap_err();
+        assert!(!error.trim().is_empty());
+        assert!(is_merging(&repo).unwrap());
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_continue_commits_the_resolved_merge() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _head_before) = conflicted_repo();
+
+        // 解决冲突：写一版结果并暂存，再让 git 用 MERGE_MSG 提交
+        fs::write(repo.join("app.ts"), "resolved\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+
+        let after = merge_continue(&repo).unwrap();
+        assert!(!after.merging);
+        assert_eq!(after.conflicts, 0);
+        // init + 远程那条 + 本地那条 + 合并提交本身
+        assert_eq!(log_of(&repo, 5).unwrap().len(), 4);
+        assert_eq!((after.ahead, after.behind), (2, 0));
+        assert_eq!(read_text(&repo.join("app.ts")).trim(), "resolved");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_then_push_succeeds() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _remote_url) = diverged_repo("remote-side.txt");
+
+        merge_upstream(&repo).unwrap();
+        let after = push_remote(&repo).unwrap();
+        assert_eq!((after.ahead, after.behind), (0, 0));
+        assert!(!after.merging);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn merge_without_an_upstream_is_refused() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        let head_before = status_of(&repo).unwrap().head;
+
+        // 没有上游就没有可合并的分支，得在 fetch 之前就拦住
+        let error = merge_upstream(&repo).unwrap_err();
+        assert!(!error.trim().is_empty());
+        assert_eq!(status_of(&repo).unwrap().head, head_before);
 
         cleanup(&top);
     }

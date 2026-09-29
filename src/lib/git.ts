@@ -32,6 +32,10 @@ export interface GitSnapshot {
   head: string | null;
   ahead: number;
   behind: number;
+  /** 仓库正卡在一次没结束的合并里；为真时面板切成"合并中"界面 */
+  merging: boolean;
+  /** 未合并（冲突）条目数，后端按 porcelain 的 u 记录数出来的 */
+  conflicts: number;
   /** 改动条目总数；条目过多时可能大于 marks.size */
   changed: number;
   /** 文件绝对路径的归一化 key -> 标记，供文件树和标签页查 */
@@ -54,6 +58,8 @@ const EMPTY: GitSnapshot = {
   head: null,
   ahead: 0,
   behind: 0,
+  merging: false,
+  conflicts: 0,
   changed: 0,
   marks: new Map(),
   changes: [],
@@ -61,8 +67,9 @@ const EMPTY: GitSnapshot = {
 
 /** 只看一个状态字母。判断顺序即优先级。 */
 function markOfXY(xy: string): GitMark {
-  // 冲突记录（u）的 XY 里一定有 U，比如 UU/AA/DU
-  if (xy.includes("U")) return { label: "C", kind: "conflict" };
+  // 冲突记录（u）的 XY 里一定有 U，比如 UU/AA/DU；
+  // 但 AA（双方都新增）/ DD（双方都删）是例外，XY 里没有 U，得单独认
+  if (xy.includes("U") || xy === "AA" || xy === "DD") return { label: "C", kind: "conflict" };
   if (xy.includes("?")) return { label: "U", kind: "untracked" };
   if (xy.includes("D")) return { label: "D", kind: "deleted" };
   if (xy.includes("A")) return { label: "A", kind: "added" };
@@ -126,6 +133,8 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
     head: payload.head,
     ahead: payload.ahead,
     behind: payload.behind,
+    merging: payload.merging,
+    conflicts: payload.conflicts,
     changed: payload.changed,
     marks,
     changes,

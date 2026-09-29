@@ -607,6 +607,15 @@ export const IconBranch = icon(
   </>,
 );
 
+/** 合并：岔出去的那条线又汇回主线。和 IconBranch（一条干分两叉）区分开语义 */
+export const IconMerge = icon(
+  <>
+    <circle cx="18" cy="18" r="3" />
+    <circle cx="6" cy="6" r="3" />
+    <path d="M6 21V9a9 9 0 0 0 9 9" />
+  </>,
+);
+
 /** 从远程取回引用：云 + 下箭头。刻意不用 IconRefresh 那个回转箭头，免得和"刷新"混淆 */
 export const IconCloudDownload = icon(
   <>
