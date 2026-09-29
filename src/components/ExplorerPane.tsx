@@ -122,7 +122,8 @@ function buildFilter(root: string, hits: string[]): FilterTree {
     for (let i = 0; i < parts.length; i += 1) {
       prefix = `${prefix}${sep}${parts[i]}`;
       const isLast = i === parts.length - 1;
-      push(parent, { name: parts[i], path: prefix, isDir: !isLast });
+      // 搜索结果是从命令行拿的，没有 stat：modified 给 0，悬停时显示「未知」
+      push(parent, { name: parts[i], path: prefix, isDir: !isLast, modified: 0 });
       if (!isLast) dirs.add(prefix);
       parent = prefix;
     }

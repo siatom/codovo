@@ -158,6 +158,8 @@ pub struct Entry {
     name: String,
     path: String,
     is_dir: bool,
+    /// 最近修改时间（Unix 毫秒）。读不到就是 0，前端当「未知」处理
+    modified: u64,
 }
 
 #[derive(Serialize)]
@@ -221,10 +223,19 @@ fn list_entries(dir: &Path) -> Result<Vec<Entry>, String> {
         let name = item.file_name().to_string_lossy().to_string();
         let item_path = item.path();
         let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        // 多一次 stat，只为悬停时能显示修改时间。目录列不长，值这点开销
+        let modified = item
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         entries.push(Entry {
             name,
             path: display(&item_path),
             is_dir,
+            modified,
         });
     }
 

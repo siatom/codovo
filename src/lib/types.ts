@@ -2,6 +2,8 @@ export interface FileEntry {
   name: string;
   path: string;
   isDir: boolean;
+  /** 最近修改时间（Unix 毫秒），0 表示读不到 */
+  modified: number;
 }
 
 export interface FileContent {

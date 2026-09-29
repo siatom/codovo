@@ -59,6 +59,16 @@ interface FileTreeNodeProps {
 
 const INDENT = 12;
 
+/** 悬停提示里的修改时间。自己拼而不用 toLocaleString：别处显示的格式不该随后端语言飘 */
+function formatModified(ms: number): string {
+  if (!ms) return "未知";
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
+    d.getHours(),
+  )}:${pad(d.getMinutes())}`;
+}
+
 export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const isOpen = entry.isDir && tree.expanded.has(entry.path);
   const isSelected = tree.selected === entry.path;
@@ -126,7 +136,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
       ) : (
         <button
           type="button"
-          title={toDisplayPath(entry.path)}
+          title={`${toDisplayPath(entry.path)}\n最近修改：${formatModified(entry.modified)}`}
           onClick={() => (entry.isDir ? tree.toggle(entry) : tree.select(entry))}
           onContextMenu={(event) => tree.openMenu(entry, event)}
           className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}`}
