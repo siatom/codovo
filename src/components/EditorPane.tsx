@@ -9,6 +9,7 @@ import {
 } from "react";
 import { monaco, DARK_THEME, LIGHT_THEME } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
+import { reindentModelOnOpen } from "../lib/json5";
 import { renderMarkdown } from "../lib/markdown";
 import {
   gitFileDiff,
@@ -810,14 +811,20 @@ export function EditorPane({
           return;
         }
         const uri = monaco.Uri.file(path);
-        const model =
-          monaco.editor.getModel(uri) ??
-          monaco.editor.createModel(content.text, languageOf(path), uri);
+        const language = languageOf(path);
+        const existing = monaco.editor.getModel(uri);
+        const model = existing ?? monaco.editor.createModel(content.text, language, uri);
+        // savedVersionId 取「重排之前」的版本号：json5/jsonc 打开时会自动重排，
+        // 于是重排完立刻算未保存改动（用户 Ctrl+Z 撤销回原缩进时，版本号回到这里又会变干净）
         modelsRef.current.set(key, {
           path,
           model,
           savedVersionId: model.getAlternativeVersionId(),
         });
+        // 只对首次创建的 json5 / jsonc 自动重排；缓存 model 与差异 model 都到不了这里
+        if (!existing && (language === "json5" || language === "jsonc")) {
+          reindentModelOnOpen(model);
+        }
         editor.setModel(model);
         setStatus({ kind: "ready" });
         syncDirty();

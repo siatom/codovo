@@ -6,6 +6,8 @@ import HtmlWorker from "monaco-editor/language/html/html.worker?worker";
 import JsonWorker from "monaco-editor/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
+import { registerJsonLikeLanguages } from "./json5";
+
 /**
  * Monaco 默认从 CDN 拉 worker，桌面端必须离线。这里用 Vite 的 `?worker`
  * 把 worker 打进产物，再交给 MonacoEnvironment 分发。
@@ -96,5 +98,8 @@ export function setupMonacoTheme() {
 }
 
 setupMonacoTheme();
+// 注册 json5 / jsonc 语言与格式化器。放模块顶层：EditorPane 会先 import 本模块，
+// 保证任何 createModel 之前语言已经就位
+registerJsonLikeLanguages();
 
 export { monaco };
