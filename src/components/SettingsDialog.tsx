@@ -47,7 +47,11 @@ import {
   type RemoteModel,
 } from "../lib/ai";
 import { deleteSecret, setSecret } from "../lib/secrets";
-import { installDependency } from "../lib/installer";
+import {
+  checkDependencies,
+  installDependency,
+  type DependencyStatus,
+} from "../lib/installer";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -1428,29 +1432,64 @@ function DependencyRow({
   label,
   detail,
   installing,
+  checking,
+  status,
   onInstall,
 }: {
   id: string;
   label: string;
   detail: string;
   installing: boolean;
+  checking: boolean;
+  status?: DependencyStatus;
   onInstall: (id: string) => void;
 }) {
+  const installed = status?.installed === true;
   return (
-    <div className="flex items-center gap-3 rounded-md border border-line px-3 py-2">
-      <div className="min-w-0 flex-1">
-        <p className="text-[12px] text-fg">{label}</p>
-        <p className="truncate text-[11px] text-fg-faint">{detail}</p>
-      </div>
-      <button
-        type="button"
-        disabled={installing}
-        onClick={() => onInstall(id)}
-        className="flex shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-50"
+    <div
+      className={`group flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
+        "border-line bg-surface hover:border-line-hover"
+      }`}
+    >
+      <div
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+          installed ? "bg-ok/10 text-ok" : "bg-raised text-fg-faint"
+        }`}
       >
-        <IconDownload className="h-3.5 w-3.5" />
-        {installing ? "安装中…" : "安装"}
-      </button>
+        {installed ? (
+          <span className="flex h-5 w-5 items-center justify-center rounded-full border border-ok/50">
+            <IconCheck className="h-3.5 w-3.5" />
+          </span>
+        ) : (
+          <IconDownload className={`h-4 w-4 ${installing ? "animate-spin" : ""}`} />
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-[12px] font-medium text-fg">{label}</p>
+          {installed && (
+            <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[10px] font-medium text-ok">
+              已安装
+            </span>
+          )}
+        </div>
+        <p className="mt-0.5 truncate text-[11px] text-fg-faint">{detail}</p>
+        {installed && status.version && (
+          <p className="mt-0.5 truncate font-mono text-[10px] text-ok/80">{status.version}</p>
+        )}
+      </div>
+      {installed ? (
+        <span className="shrink-0 text-[11px] text-ok">就绪</span>
+      ) : (
+        <button
+          type="button"
+          disabled={checking || installing}
+          onClick={() => onInstall(id)}
+          className="flex shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-2.5 py-1.5 text-[12px] text-fg-muted transition-colors hover:border-accent-line hover:bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-50"
+        >
+          {checking ? "检查中…" : installing ? "安装中…" : "安装"}
+        </button>
+      )}
     </div>
   );
 }
@@ -1474,6 +1513,8 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const [openProvider, setOpenProvider] = useState<number | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [installMessage, setInstallMessage] = useState("");
+  const [dependencyStatuses, setDependencyStatuses] = useState<Record<string, DependencyStatus>>({});
+  const [checkingDependencies, setCheckingDependencies] = useState(true);
   /** 等确认的「删除提供商」；带上被引用的次数，确认框里说清影响面 */
   const [pendingRemove, setPendingRemove] = useState<{
     provider: AiProvider;
@@ -1499,18 +1540,35 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
 
+  const refreshDependencies = async () => {
+    setCheckingDependencies(true);
+    try {
+      const statuses = await checkDependencies();
+      setDependencyStatuses(Object.fromEntries(statuses.map((status) => [status.id, status])));
+    } catch (error) {
+      setInstallMessage(`检查依赖失败：${String(error)}`);
+    } finally {
+      setCheckingDependencies(false);
+    }
+  };
+
   const install = async (id: string) => {
     setInstalling(id);
     setInstallMessage("");
     try {
       const result = await installDependency(id);
       setInstallMessage(result.message);
+      await refreshDependencies();
     } catch (error) {
       setInstallMessage(String(error));
     } finally {
       setInstalling(null);
     }
   };
+
+  useEffect(() => {
+    void refreshDependencies();
+  }, []);
 
   // ---- 模型提供商 ----
 
@@ -2086,51 +2144,101 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
               )}
 
               {tab === "dependencies" && (
-                <Section
-                  title="本机开发依赖"
-                  hint="安装到当前用户的系统环境；安装完成后可能需要重启 CodeDock 才能识别新的 PATH。"
-                >
-                  <DependencyRow
-                    id="node"
-                    label="Node.js"
-                    detail="运行 npm 和各类 JavaScript CLI"
-                    installing={installing === "node"}
-                    onInstall={install}
-                  />
-                  <DependencyRow
-                    id="opencode"
-                    label="opencode"
-                    detail="npm install -g @opencode/cli"
-                    installing={installing === "opencode"}
-                    onInstall={install}
-                  />
-                  <DependencyRow
-                    id="codex"
-                    label="Codex"
-                    detail="npm install -g @openai/codex"
-                    installing={installing === "codex"}
-                    onInstall={install}
-                  />
-                  <DependencyRow
-                    id="codebuddy"
-                    label="CodeBuddy"
-                    detail="npm install -g @tencent-ai/codebuddy-code"
-                    installing={installing === "codebuddy"}
-                    onInstall={install}
-                  />
-                  <DependencyRow
-                    id="claude"
-                    label="Claude Code"
-                    detail="npm install -g @anthropic-ai/claude-code"
-                    installing={installing === "claude"}
-                    onInstall={install}
-                  />
+                <>
+                  <Section
+                    title="基础运行环境"
+                    hint="这些工具用于文件变更、终端和本机 AI 命令。已安装的项目会显示版本。"
+                    action={
+                      <span className="text-[11px] text-fg-faint">
+                        {Object.values(dependencyStatuses).filter((status) => status.installed).length}/7 已就绪
+                      </span>
+                    }
+                  >
+                    <DependencyRow
+                      id="git"
+                      label="Git"
+                      detail="文件变更、暂存、提交和历史记录"
+                      installing={installing === "git"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.git}
+                      onInstall={install}
+                    />
+                    <DependencyRow
+                      id="node"
+                      label="Node.js"
+                      detail="运行 npm 和各类 JavaScript CLI"
+                      installing={installing === "node"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.node}
+                      onInstall={install}
+                    />
+                  </Section>
+
+                  <Section
+                    title="AI 命令行工具"
+                    hint="按需安装；安装后可在终端中使用，也可加入顶部的 CLI 列表。"
+                  >
+                    <DependencyRow
+                      id="opencode"
+                      label="opencode"
+                      detail="npm install -g @opencode/cli"
+                      installing={installing === "opencode"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.opencode}
+                      onInstall={install}
+                    />
+                    <DependencyRow
+                      id="codex"
+                      label="Codex"
+                      detail="npm install -g @openai/codex"
+                      installing={installing === "codex"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.codex}
+                      onInstall={install}
+                    />
+                    <DependencyRow
+                      id="codebuddy"
+                      label="CodeBuddy"
+                      detail="npm install -g @tencent-ai/codebuddy-code"
+                      installing={installing === "codebuddy"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.codebuddy}
+                      onInstall={install}
+                    />
+                    <DependencyRow
+                      id="claude"
+                      label="Claude Code"
+                      detail="npm install -g @anthropic-ai/claude-code"
+                      installing={installing === "claude"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.claude}
+                      onInstall={install}
+                    />
+                  </Section>
+
+                  <Section
+                    title="可选扩展"
+                    hint="只在使用 CodeDock 的 Gitee 反馈功能时需要。"
+                  >
+                    <DependencyRow
+                      id="gitee"
+                      label="Gitee CLI"
+                      detail="npm install -g @gitee/gitee-cli"
+                      installing={installing === "gitee"}
+                      checking={checkingDependencies}
+                      status={dependencyStatuses.gitee}
+                      onInstall={install}
+                    />
+                  </Section>
                   {installMessage && (
                     <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-fg-faint">
                       {installMessage}
                     </p>
                   )}
-                </Section>
+                  <p className="text-[11px] leading-relaxed text-fg-faint">
+                    Windows 的 WebView2 由系统提供；如果应用无法启动，请先安装 Microsoft Edge WebView2 Runtime。
+                  </p>
+                </>
               )}
 
               {tab === "agent" && (

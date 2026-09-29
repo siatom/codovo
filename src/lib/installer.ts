@@ -9,3 +9,14 @@ export interface InstallResult {
 export function installDependency(id: string): Promise<InstallResult> {
   return invoke<InstallResult>("install_dependency", { id });
 }
+
+
+export interface DependencyStatus {
+  id: string;
+  installed: boolean;
+  version: string | null;
+}
+
+export function checkDependencies(): Promise<DependencyStatus[]> {
+  return invoke<DependencyStatus[]>("check_dependencies");
+}

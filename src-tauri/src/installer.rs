@@ -29,12 +29,66 @@ const NPM_PACKAGES: &[PackageSpec] = &[
         label: "Claude Code",
         package: "@anthropic-ai/claude-code",
     },
+    PackageSpec {
+        id: "gitee",
+        label: "Gitee CLI",
+        package: "@gitee/gitee-cli",
+    },
 ];
 
 #[derive(serde::Serialize)]
 pub struct InstallResult {
     pub ok: bool,
     pub message: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct DependencyStatus {
+    pub id: String,
+    pub installed: bool,
+    pub version: Option<String>,
+}
+
+fn executable_for(id: &str) -> Option<&'static str> {
+    match id {
+        "node" => Some("node"),
+        "git" => Some("git"),
+        "gitee" => Some("gitee"),
+        "opencode" => Some("opencode"),
+        "codex" => Some("codex"),
+        "codebuddy" => Some("codebuddy"),
+        "claude" => Some("claude"),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+pub async fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        [
+            "git",
+            "node",
+            "opencode",
+            "codex",
+            "codebuddy",
+            "claude",
+            "gitee",
+        ]
+        .into_iter()
+        .map(|id| {
+            let version = executable_for(id)
+                .and_then(|program| run(program, &["--version"]).ok())
+                .filter(|value| !value.trim().is_empty());
+            DependencyStatus {
+                id: id.to_string(),
+                installed: version.is_some(),
+                version,
+            }
+        })
+        .collect()
+    })
+    .await
+    .map_err(|error| format!("检查依赖失败：{error}"))
 }
 
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
@@ -75,6 +129,33 @@ pub async fn install_dependency(id: String) -> Result<InstallResult, String> {
 }
 
 fn install_dependency_sync(id: &str) -> Result<InstallResult, String> {
+    if id == "git" {
+        #[cfg(target_os = "windows")]
+        let result = run(
+            "winget",
+            &[
+                "install",
+                "--id",
+                "Git.Git",
+                "--exact",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+            ],
+        );
+        #[cfg(target_os = "macos")]
+        let result = run("brew", &["install", "git"]);
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let result = install_git_linux();
+        return result.map(|output| InstallResult {
+            ok: true,
+            message: if output.is_empty() {
+                "Git 安装完成，请重启 CodeDock 使 PATH 生效。".into()
+            } else {
+                format!("Git 安装完成。\n{output}")
+            },
+        });
+    }
+
     if id == "node" {
         #[cfg(target_os = "windows")]
         let result = run(
@@ -115,6 +196,23 @@ fn install_dependency_sync(id: &str) -> Result<InstallResult, String> {
             format!("{} 安装完成。\n{output}", spec.label)
         },
     })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn install_git_linux() -> Result<String, String> {
+    if command_exists("apt-get") {
+        return run(
+            "sh",
+            &["-c", "sudo apt-get update && sudo apt-get install -y git"],
+        );
+    }
+    if command_exists("dnf") {
+        return run("sudo", &["dnf", "install", "-y", "git"]);
+    }
+    if command_exists("pacman") {
+        return run("sudo", &["pacman", "-Sy", "--noconfirm", "git"]);
+    }
+    Err("未找到 apt-get、dnf 或 pacman。请先安装 Git，或手动安装系统包。".into())
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
