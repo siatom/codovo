@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { GitController } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
 import { ExplorerPane } from "./ExplorerPane";
@@ -59,6 +60,8 @@ interface ToolPaneProps {
   onEntryRenamed: (from: string, to: string) => void;
   /** 文件树里删除成功：编辑器标签要关掉 */
   onEntryDeleted: (path: string) => void;
+  /** 点面板上的空白处：切整条右边栏的显隐，和左侧栏一个手感 */
+  onBlankClick: (event: ReactMouseEvent<HTMLElement>) => void;
 }
 
 /**
@@ -79,11 +82,12 @@ export function ToolPane({
   onBeforeRename,
   onEntryRenamed,
   onEntryDeleted,
+  onBlankClick,
 }: ToolPaneProps) {
   const filesHidden = tool === "changes" || tool === "search";
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-panel">
+    <section className="flex h-full min-h-0 flex-col bg-panel" onClick={onBlankClick}>
       <div className={filesHidden ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <ExplorerPane
           root={root}

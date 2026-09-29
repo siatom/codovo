@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { SplitPane } from "./SplitPane";
 import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 import { ToolPane, readTool, saveTool, type ToolId } from "./ToolPane";
@@ -7,6 +7,7 @@ import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { BrowserPane } from "./BrowserPane";
 import { useGitStatus } from "../lib/git";
 import { useSettings } from "../lib/settings";
+import { isBlankClick } from "../lib/dom";
 import { isPathInside } from "../lib/fs";
 import { sameTab, type DiffSource, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
@@ -103,6 +104,20 @@ export function ProjectWorkspace({
     setRightOpen((open) => !open);
     onExitFullscreen();
   }, [onExitFullscreen]);
+
+  /**
+   * 点右边栏自己的空白处切显隐。只挂在图标条和工具面板上——编辑器是主区域，
+   * 不算「右边栏」，浏览器模块的内容是 iframe，点进去的事件根本出不来。
+   * 全屏时整块在铺满窗口，不响应，退出全屏走 Esc 或全屏按钮。
+   */
+  const onBlankClick = useCallback(
+    (event: ReactMouseEvent<HTMLElement>) => {
+      if (fullscreen !== "none") return;
+      if (!isBlankClick(event)) return;
+      setRightOpen((open) => !open);
+    },
+    [fullscreen],
+  );
 
   /** AI CLI 的入口挂在侧边栏的项目行上，命令要落到当前项目终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
@@ -282,6 +297,7 @@ export function ProjectWorkspace({
                 onPick={pickTool}
                 rightOpen={rightOpen}
                 onToggleRight={toggleRight}
+                onBlankClick={onBlankClick}
               />
               {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
                   Monaco 的撤销历史和文件树的展开态都留得住。
@@ -313,6 +329,7 @@ export function ProjectWorkspace({
                       onBeforeRename={saveAllEdits}
                       onEntryRenamed={renameOpenTabs}
                       onEntryDeleted={dropOpenTabs}
+                      onBlankClick={onBlankClick}
                     />
                   }
                   second={

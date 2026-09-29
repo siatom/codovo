@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ToolId } from "./ToolPane";
 import {
   IconBranch,
@@ -43,6 +44,8 @@ interface ToolRailProps {
   rightOpen: boolean;
   /** 收放按钮沉在图标条最下面，和左侧栏的收起按钮同一个位置 */
   onToggleRight: () => void;
+  /** 点图标条上的空白处：切整条右边栏的显隐，和左侧栏一个手感 */
+  onBlankClick: (event: ReactMouseEvent<HTMLDivElement>) => void;
 }
 
 /** 角标数字的上限，再多就写成 99+，否则图标条装不下 */
@@ -59,9 +62,10 @@ export function ToolRail({
   onPick,
   rightOpen,
   onToggleRight,
+  onBlankClick,
 }: ToolRailProps) {
   return (
-    <div className={RAIL}>
+    <div className={RAIL} onClick={onBlankClick}>
       {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
         // 不是仓库时「变更」点了也没内容可看，置灰而不是藏起来，免得用户以为模块没了
         const blocked = id === "changes" && !gitReady;

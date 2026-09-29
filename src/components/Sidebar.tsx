@@ -1,5 +1,11 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
@@ -10,6 +16,7 @@ import {
   saveWorkspaceNames,
   toDisplayPath,
 } from "../lib/fs";
+import { isBlankClick } from "../lib/dom";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
 import type { AgentSessionSummary } from "../lib/types";
@@ -214,6 +221,15 @@ export function Sidebar({
     }
   };
 
+  /**
+   * 点侧边栏自己的空白处切显隐：项目列表下方的空档、标题栏两侧、图标条上没按钮的地方
+   * 都算。收起态那条竖栏只有一个图标宽，点它也能切回来。
+   */
+  const onBlankClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!isBlankClick(event)) return;
+    setCollapsedPersisted(!collapsed);
+  };
+
   /*
    * 侧边栏宽度走像素、不走 SplitPane 那套百分比：窗口拉宽时侧栏不该跟着涨。
    * 复用 SplitPane 的分隔条手法（pointer capture + body 上的拖动类），
@@ -332,7 +348,10 @@ export function Sidebar({
   // 这样来回切换时图标只横向挪位，不会上下跳。
   if (collapsed) {
     return (
-      <div className="flex h-full w-11 shrink-0 flex-col border-r border-line bg-panel">
+      <div
+        className="flex h-full w-11 shrink-0 flex-col border-r border-line bg-panel"
+        onClick={onBlankClick}
+      >
         {/* 顶部空出和展开态头部同高的一段：来回切换时下面的图标只横向挪位、不上下跳 */}
         <div className="h-11 shrink-0" />
 
@@ -394,6 +413,7 @@ export function Sidebar({
     <div
       className="relative flex h-full shrink-0 flex-col border-r border-line bg-panel"
       style={{ width }}
+      onClick={onBlankClick}
     >
       {/* 标题栏只放 CodeDock，顶部高度与右侧保持一致 */}
       <header className="flex h-11 shrink-0 items-center px-2">
