@@ -4,6 +4,7 @@ mod agent;
 mod ai;
 mod cli_sessions;
 mod dev;
+mod feedback;
 mod fs_api;
 mod git;
 mod pty;
@@ -64,6 +65,12 @@ pub fn run() {
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,
+            feedback::feedback_target,
+            feedback::feedback_cli_status,
+            feedback::feedback_list,
+            feedback::feedback_submit,
+            feedback::feedback_refresh,
+            feedback::feedback_delete,
             dev::dev_ai_overrides,
             cli_sessions::cli_list_sessions,
             agent::agent_start,
