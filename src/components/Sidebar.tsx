@@ -1,5 +1,5 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
@@ -55,6 +55,24 @@ interface SidebarProps {
 /** 窗口级偏好，存 sessionStorage：多窗口下各收各的侧边栏 */
 const COLLAPSED_KEY = "codedock.sidebarCollapsed";
 
+/** 同上，窗口级：展开态宽度（px），各窗口各拖各的 */
+const WIDTH_KEY = "codedock.sidebarWidth";
+
+/** 展开态默认宽度，和原来写死的 w-60 一致 */
+const DEFAULT_WIDTH = 240;
+
+/** 再窄项目名和会话标题就没法看了 */
+const MIN_WIDTH = 180;
+
+/** 上限还得看窗口：占掉一半就快没地方给编辑器了 */
+const MAX_WIDTH = 560;
+
+/** 读到的值可能来自更宽的窗口，按当前窗口再夹一次 */
+function clampWidth(value: number): number {
+  const max = Math.min(MAX_WIDTH, Math.round(window.innerWidth / 2));
+  return Math.min(max, Math.max(MIN_WIDTH, value));
+}
+
 /** 导航行的固定高度：展开态和收起态共用，来回切换时图标不会上下跳 */
 const ROW_H = "h-[34px]";
 
@@ -88,6 +106,16 @@ function readCollapsed(): boolean {
   }
 }
 
+function readWidth(): number {
+  try {
+    const raw = Number(window.sessionStorage.getItem(WIDTH_KEY));
+    if (Number.isFinite(raw) && raw > 0) return clampWidth(raw);
+  } catch {
+    // 读不到就用默认宽度
+  }
+  return clampWidth(DEFAULT_WIDTH);
+}
+
 /** 末级目录名，取不到就退回整个路径 */
 function baseName(path: string): string {
   const parts = toDisplayPath(path).split("/").filter(Boolean);
@@ -106,6 +134,11 @@ export function Sidebar({
   onResumeSession,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  /** 展开态宽度，拖动分隔条改 */
+  const [width, setWidth] = useState(readWidth);
+  /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
+  const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
+  const [resizing, setResizing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -178,6 +211,44 @@ export function Sidebar({
       window.sessionStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
     } catch {
       // 记不住就每次启动按展开算，不影响使用
+    }
+  };
+
+  /*
+   * 侧边栏宽度走像素、不走 SplitPane 那套百分比：窗口拉宽时侧栏不该跟着涨。
+   * 复用 SplitPane 的分隔条手法（pointer capture + body 上的拖动类），
+   * 但那个组件的值不受控也不落盘，包进来还得给右栏两处调用点加分支，不划算。
+   */
+  const onResizeDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeRef.current = { startX: event.clientX, startWidth: width, width };
+    setResizing(true);
+    document.body.classList.add("codedock-dragging");
+  };
+
+  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = resizeRef.current;
+    if (!drag) return;
+    const next = clampWidth(drag.startWidth + event.clientX - drag.startX);
+    drag.width = next;
+    setWidth(next);
+  };
+
+  const stopResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const drag = resizeRef.current;
+    if (!drag) return;
+    resizeRef.current = null;
+    setResizing(false);
+    document.body.classList.remove("codedock-dragging");
+    // 松手才落盘：拖动中每帧写一次没必要
+    try {
+      window.sessionStorage.setItem(WIDTH_KEY, String(drag.width));
+    } catch {
+      // 记不住就每次启动按默认宽度算，不影响使用
     }
   };
 
@@ -320,7 +391,10 @@ export function Sidebar({
   }
 
   return (
-    <div className="flex h-full w-60 shrink-0 flex-col border-r border-line bg-panel">
+    <div
+      className="relative flex h-full shrink-0 flex-col border-r border-line bg-panel"
+      style={{ width }}
+    >
       {/* 标题栏只放 CodeDock，顶部高度与右侧保持一致 */}
       <header className="flex h-11 shrink-0 items-center px-2">
         {/* Beta 当上标用：内联元素照常占位，靠相对位移浮到 CodeDock 右上角 */}
@@ -727,6 +801,24 @@ export function Sidebar({
           </div>
         </>
       )}
+
+      {/* 拖宽分隔条：命中区往外挂 4px，压住右边工作区的左沿一点点（和 SplitPane 一个路子）；
+          画出来的仍是原本那条 1px 右边框，悬停/拖动才染色。收起态不画，宽度是死的 */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={onResizeDown}
+        onPointerMove={onResizeMove}
+        onPointerUp={stopResize}
+        onPointerCancel={stopResize}
+        className="group absolute inset-y-0 -right-px z-10 w-1 cursor-col-resize"
+      >
+        <span
+          className={`absolute inset-y-0 left-0 w-px ${
+            resizing ? "bg-accent-strong" : "group-hover:bg-line-hover"
+          }`}
+        />
+      </div>
     </div>
   );
 }
