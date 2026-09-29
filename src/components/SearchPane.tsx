@@ -447,7 +447,8 @@ export function SearchPane({
                       </button>
                     )}
                     {!groupCollapsed && (
-            <ul>
+            /* 多根时整组往右缩一级，跟分组标题拉开层级（单根没有标题，缩了白缩） */
+            <ul className={roots.length > 1 ? "pl-3" : undefined}>
               {group.files.map((file) => {
                 const isCollapsed = collapsed.has(file.path);
                 return (
