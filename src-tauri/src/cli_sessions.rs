@@ -50,6 +50,7 @@ fn provider_projects_dir(provider: &str) -> Option<&'static str> {
     match provider {
         "codebuddy" => Some(".codebuddy/projects"),
         "claude" => Some(".claude/projects"),
+        "codex" => Some(".codex/sessions"),
         _ => None,
     }
 }
@@ -249,6 +250,8 @@ impl Titles {
 struct HeadScan {
     cwd: String,
     title: String,
+    /// Codex 的文件名带 rollout 前缀，resume 必须使用 session_meta 里的 UUID。
+    id: Option<String>,
 }
 
 /// 抽出来是为了能在单测里直接造夹具验证过滤与排序规则（同 fs_api::list_entries）。
@@ -264,18 +267,19 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
     // memory/ 这些目录被"只认 .jsonl 文件"挡在外面
     for entry in entries.flatten() {
         let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let Ok(files) = fs::read_dir(&dir) else {
-            continue;
+        let files: Vec<PathBuf> = if provider == "codex" {
+            let mut paths = Vec::new();
+            collect_jsonl_files(&dir, &mut paths);
+            paths
+        } else {
+            let Ok(entries) = fs::read_dir(&dir) else { continue };
+            entries.flatten().map(|file| file.path()).collect()
         };
-        for file in files.flatten() {
-            let path = file.path();
+        for path in files {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Ok(meta) = file.metadata() else {
+            let Ok(meta) = fs::metadata(&path) else {
                 continue;
             };
             // 开了就退的会话是 0 字节，本机一大堆（一个项目目录 16 个文件里 10 个是空的）
@@ -297,7 +301,7 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
                 continue;
             };
             found.push(CliSession {
-                id: id.to_string(),
+                id: scan.id.as_deref().unwrap_or(id).to_string(),
                 title: scan.title,
                 updated: mtime_ms(&meta),
                 cwd: scan.cwd,
@@ -309,6 +313,18 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
     found.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
     found.truncate(MAX_SESSIONS);
     found
+}
+
+fn collect_jsonl_files(path: &Path, output: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(path) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, output);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            output.push(path);
+        }
+    }
 }
 
 fn read_head(path: &Path) -> Option<String> {
@@ -325,6 +341,7 @@ fn read_head(path: &Path) -> Option<String> {
 fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
     let mut cwd = String::new();
     let mut titles = Titles::default();
+    let mut id = None;
 
     // 整段头扫完、不提前退出：实测 codebuddy 的 ai-title 排在 summary 后面，
     // 一见到 summary 就收工会把更好的标题漏掉
@@ -335,13 +352,25 @@ fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
         // claude 前几行是 permission-mode / file-history-snapshot，没有 cwd，
         // 所以不能只看第一行
         if cwd.is_empty() {
-            if let Some(text) = value.get("cwd").and_then(|v| v.as_str()) {
+            let text = value
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .or_else(|| value.pointer("/payload/cwd").and_then(|v| v.as_str()));
+            if let Some(text) = text {
                 cwd = text.to_string();
             }
+        }
+        if id.is_none() && provider == "codex" {
+            id = value
+                .pointer("/payload/id")
+                .and_then(|v| v.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
         }
         match provider {
             "codebuddy" => scan_codebuddy(&value, &mut titles),
             "claude" => scan_claude(&value, &mut titles),
+            "codex" => scan_codex(&value, &mut titles),
             _ => {}
         }
     }
@@ -353,7 +382,31 @@ fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
     Some(HeadScan {
         cwd,
         title: titles.pick(),
+        id,
     })
+}
+
+fn scan_codex(value: &serde_json::Value, titles: &mut Titles) {
+    if !titles.first.is_empty() {
+        return;
+    }
+    let payload = value.get("payload");
+    let is_user = payload
+        .and_then(|v| v.get("type"))
+        .and_then(|v| v.as_str())
+        == Some("user_message")
+        || payload
+            .and_then(|v| v.get("role"))
+            .and_then(|v| v.as_str())
+            == Some("user");
+    if !is_user {
+        return;
+    }
+    if let Some(text) = payload.and_then(|v| v.get("message")).and_then(|v| v.as_str()) {
+        titles.first = clean_title(text);
+        return;
+    }
+    titles.first = block_text(payload.and_then(|v| v.get("content")), "input_text");
 }
 
 fn scan_codebuddy(value: &serde_json::Value, titles: &mut Titles) {
@@ -666,10 +719,30 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_provider() {
+    fn recognizes_supported_providers() {
         assert!(provider_projects_dir("opencode").is_none());
         assert!(provider_projects_dir("codebuddy").is_some());
         assert!(provider_projects_dir("claude").is_some());
+        assert!(provider_projects_dir("codex").is_some());
+    }
+
+    #[test]
+    fn lists_codex_sessions_from_nested_date_dirs() {
+        let projects = temp_projects();
+        write_session(
+            &projects.join("2026").join("03").join("17"),
+            "ignored",
+            "rollout-2026-03-17T00-00-00-12345678-aaaa-bbbb",
+            &[
+                r#"{"timestamp":"2026-03-17T00:00:00Z","type":"session_meta","payload":{"id":"session-uuid","cwd":"/Users/someone/work"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"修复 Codex 历史"}}"#,
+            ],
+        );
+        let found = list_sessions_in(&projects, "codex", WORK);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "session-uuid");
+        assert_eq!(found[0].title, "修复 Codex 历史");
+        fs::remove_dir_all(&projects).ok();
     }
 
     #[test]

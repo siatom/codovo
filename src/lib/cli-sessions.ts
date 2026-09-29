@@ -8,7 +8,7 @@ import type { CliSessionInfo } from "./types";
 export interface CliProvider {
   key: string;
   label: string;
-  /** resume 时用的 flag。opencode 是 --session，另两家是 --resume */
+  /** resume 时接在命令后的子命令/参数。opencode 是 --session，Codex 是 resume */
   resumeFlag: string;
 }
 
@@ -16,6 +16,7 @@ export interface CliProvider {
 export const CLI_PROVIDERS: CliProvider[] = [
   { key: "codebuddy", label: "CodeBuddy", resumeFlag: "--resume" },
   { key: "claude", label: "Claude Code", resumeFlag: "--resume" },
+  { key: "codex", label: "Codex", resumeFlag: "resume" },
   { key: "opencode", label: "opencode", resumeFlag: "--session" },
 ];
 
