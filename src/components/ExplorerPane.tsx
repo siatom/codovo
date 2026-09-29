@@ -10,6 +10,7 @@ import {
   isPathInside,
   listDir,
   onDirsChanged,
+  ownerRoot,
   pathKey,
   renameEntry,
   searchFiles,
@@ -25,10 +26,19 @@ import {
   type TreeController,
 } from "./FileTreeNode";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconClose, IconFolderPlus, IconPlus, IconRefresh, IconSearch } from "./icons";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconClose,
+  IconFolderPlus,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+} from "./icons";
 
 interface ExplorerPaneProps {
-  root: string;
+  /** 项目的全部源文件夹：每一根在树里各成一棵子树，并列显示 */
+  roots: string[];
   selected: string | null;
   /** 归一化路径 -> git 标记，行尾那个字母 */
   gitMarks: ReadonlyMap<string, GitMark>;
@@ -65,6 +75,16 @@ function parentOf(path: string): string {
   return index > 0 ? path.slice(0, index) : path;
 }
 
+/** 末级目录名，取不到就退回整个路径 */
+function folderName(path: string): string {
+  return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
+/** roots 数组每次渲染都是新引用，effect 的依赖得靠这个字符串来判断「换没换」 */
+function rootsKeyOf(roots: string[]): string {
+  return roots.map((root) => pathKey(root)).join("\u0000");
+}
+
 /**
  * 写系统剪贴板。走 Tauri 的 clipboard 插件而不是 `navigator.clipboard`：
  * WebView 那套要文档有焦点、WebView2 还会弹一个系统授权框（实测点一次
@@ -80,8 +100,8 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 interface FilterTree {
-  /** 工作区根下要显示的项 */
-  rootEntries: FileEntry[];
+  /** 每个源文件夹下要显示的项，按根分组 */
+  rootEntries: Map<string, FileEntry[]>;
   /** 目录绝对路径 -> 该目录下要显示的项 */
   children: Map<string, FileEntry[]>;
   /** 所有需要展开的祖先目录 */
@@ -91,9 +111,10 @@ interface FilterTree {
 /**
  * 把命中文件的绝对路径拼回一棵树：只留通往命中项的目录和文件本身。
  * 路径全是后端给的，所以祖先目录直接按路径合成即可，不用再 listDir 一遍。
+ * 多根时每条命中项按它所属的根分组，免得两条来自不同源文件夹的路径拼到一根上。
  */
-function buildFilter(root: string, hits: string[]): FilterTree {
-  const rootEntries: FileEntry[] = [];
+function buildFilter(roots: string[], hits: string[]): FilterTree {
+  const rootEntries = new Map<string, FileEntry[]>();
   const children = new Map<string, FileEntry[]>();
   const dirs = new Set<string>();
   const seen = new Set<string>();
@@ -102,8 +123,10 @@ function buildFilter(root: string, hits: string[]): FilterTree {
     const key = `${pathKey(parent)}\u0000${pathKey(entry.path)}`;
     if (seen.has(key)) return;
     seen.add(key);
-    if (parent === root) {
-      rootEntries.push(entry);
+    if (roots.some((root) => pathKey(root) === pathKey(parent))) {
+      const list = rootEntries.get(parent);
+      if (list) list.push(entry);
+      else rootEntries.set(parent, [entry]);
       return;
     }
     const found = children.get(parent);
@@ -112,6 +135,8 @@ function buildFilter(root: string, hits: string[]): FilterTree {
   };
 
   for (const hit of hits) {
+    const root = ownerRoot(roots, hit);
+    if (!root) continue;
     // 后端给的路径一定是 root + 分隔符 + 相对路径，分隔符直接读那一位，不用猜
     const sep = hit.charAt(root.length);
     if (sep !== "/" && sep !== "\\") continue;
@@ -133,7 +158,7 @@ function buildFilter(root: string, hits: string[]): FilterTree {
 }
 
 export function ExplorerPane({
-  root,
+  roots,
   selected,
   gitMarks,
   isRepo,
@@ -142,7 +167,8 @@ export function ExplorerPane({
   onRenamed,
   onDeleted,
 }: ExplorerPaneProps) {
-  const [entries, setEntries] = useState<FileEntry[]>([]);
+  /** 每个源文件夹的顶层条目，按根分组 */
+  const [entries, setEntries] = useState<Map<string, FileEntry[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, FileEntry[]>>(new Map());
   const [loading, setLoading] = useState<Set<string>>(new Set());
@@ -178,9 +204,15 @@ export function ExplorerPane({
   const [hits, setHits] = useState<string[] | null>(null);
   /** 过滤模式下被用户单独收起的目录 */
   const [filterCollapsed, setFilterCollapsed] = useState<Set<string>>(new Set());
+  /** 多根并列时被整块收起的源文件夹（归一化路径）。收起后只留根名那一行 */
+  const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
 
   const activeQuery = query.trim();
   const filtering = searching && activeQuery.length > 0;
+
+  const rootsKey = rootsKeyOf(roots);
+  /** 主要根：点空白、没选题时新建都落在这里 */
+  const primaryRoot = roots[0] ?? "";
 
   // 打开/切换文件时把焦点带回那一行。只在 selected 变化时同步，
   // 所以点目录选中的那一行不会被这条 effect 反复抢走
@@ -190,7 +222,24 @@ export function ExplorerPane({
 
   const focusRow = activeRow ?? selected;
 
-  // 工作区一变，整棵树的展开状态就作废了
+  /** 这个路径是不是某一个源文件夹本身 */
+  const isRootPath = useCallback(
+    (path: string) => roots.some((root) => pathKey(root) === pathKey(path)),
+    [roots],
+  );
+
+  /** 收起 / 展开一个源文件夹的整棵子树 */
+  const toggleRoot = useCallback((root: string) => {
+    const key = pathKey(root);
+    setCollapsedRoots((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // 工作区一变（换了项目、或改了项目的源文件夹），整棵树的展开状态就作废了
   useEffect(() => {
     setExpanded(new Set());
     setChildren(new Map());
@@ -202,6 +251,8 @@ export function ExplorerPane({
     setQuery("");
     setHits(null);
     setFilterCollapsed(new Set());
+    // 源文件夹可能整个换掉了，收起的键跟着作废
+    setCollapsedRoots(new Set());
     // 就地改名/菜单里的那一行也属于旧工作区
     setRenaming(null);
     setRenameError(null);
@@ -212,21 +263,30 @@ export function ExplorerPane({
     // 上一个工作区的请求可能还在飞，它回来时已经属于旧工作区了，必须丢掉：
     // 否则后端会按新工作区校验旧路径，把"路径越界"盖到刚加载好的新目录上
     let cancelled = false;
-    void listDir(root, root)
-      .then((listed) => {
-        if (cancelled) return;
-        setEntries(listed);
-      })
-      .catch((reason) => {
-        if (cancelled) return;
-        setEntries([]);
-        setRootError(String(reason));
-      });
+    void Promise.all(
+      roots.map((root) =>
+        listDir(root, root).then(
+          (listed) => ({ root, listed, error: null as string | null }),
+          (reason) => ({ root, listed: [] as FileEntry[], error: String(reason) }),
+        ),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const next = new Map<string, FileEntry[]>();
+      const problems: string[] = [];
+      for (const item of results) {
+        next.set(item.root, item.listed);
+        // 一个根本来不了（被删了/换盘了）不该让整棵树空着，标出是哪个
+        if (item.error) problems.push(`${folderName(item.root)}：${item.error}`);
+      }
+      setEntries(next);
+      setRootError(problems.length > 0 ? problems.join("\n") : null);
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [root, reloadKey]);
+  }, [rootsKey, reloadKey]);
 
   // 搜索：防抖 + 丢弃过期结果（查询一变，上一趟回来时已经被取消）
   useEffect(() => {
@@ -238,14 +298,15 @@ export function ExplorerPane({
 
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void searchFiles(root, activeQuery)
-        .then((found) => {
-          if (!cancelled) setHits(found);
+      // 多根就每根各搜一趟再合并——后端一次只认一个根
+      void Promise.all(
+        roots.map((root) => searchFiles(root, activeQuery).catch(() => [] as string[])),
+      )
+        .then((lists) => {
+          if (!cancelled) setHits(lists.flat());
         })
-        .catch((reason) => {
-          if (cancelled) return;
-          setHits([]);
-          console.warn("搜索失败：", reason);
+        .catch(() => {
+          if (!cancelled) setHits([]);
         });
     }, SEARCH_DEBOUNCE_MS);
 
@@ -253,7 +314,7 @@ export function ExplorerPane({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [filtering, activeQuery, root]);
+  }, [filtering, activeQuery, rootsKey]);
 
   const closeSearch = useCallback(() => {
     setSearching(false);
@@ -266,6 +327,8 @@ export function ExplorerPane({
     async (entry: FileEntry) => {
       if (!entry.isDir) return;
       const { path } = entry;
+      const owner = ownerRoot(roots, path);
+      if (!owner) return;
 
       // 展开状态一律读渲染时的快照，不能靠 setState 的 updater 里赋值：
       // React 只在更新队列干净时才顺手跑一次 updater，否则要等到渲染阶段，
@@ -287,7 +350,7 @@ export function ExplorerPane({
 
       setLoading((current) => new Set(current).add(path));
       try {
-        const listed = await listDir(root, path);
+        const listed = await listDir(owner, path);
         setChildren((current) => new Map(current).set(path, listed));
         setErrors((current) => {
           if (!current.has(path)) return current;
@@ -305,7 +368,7 @@ export function ExplorerPane({
         });
       }
     },
-    [expanded, children],
+    [expanded, children, roots],
   );
 
   /**
@@ -314,10 +377,13 @@ export function ExplorerPane({
    */
   const refreshDir = useCallback(
     async (dir: string) => {
+      const owner = ownerRoot(roots, dir);
+      if (!owner) return;
       try {
-        const listed = await listDir(root, dir);
-        if (pathKey(dir) === pathKey(root)) {
-          setEntries(listed);
+        const listed = await listDir(owner, dir);
+        if (isRootPath(dir)) {
+          // 顶层条目按根存，别把 A 根的列表写到 B 根上
+          setEntries((current) => new Map(current).set(owner, listed));
           return;
         }
         setChildren((current) =>
@@ -328,17 +394,19 @@ export function ExplorerPane({
         // 目录可能刚好在同一次批量里被删掉，忽略；父目录的刷新会把它从树里摘掉
       }
     },
-    [root],
+    [roots, isRootPath],
   );
 
   /** 工作区内的相对路径，一律用 `/` 分隔——粘到代码、终端、文档里都能直接用 */
   const relativePath = useCallback(
     (path: string) => {
       const full = toDisplayPath(path);
-      const base = toDisplayPath(root).replace(/\/+$/, "");
+      const owner = ownerRoot(roots, path);
+      if (!owner) return full;
+      const base = toDisplayPath(owner).replace(/\/+$/, "");
       return full.startsWith(`${base}/`) ? full.slice(base.length + 1) : full;
     },
-    [root],
+    [roots],
   );
 
   /** 右键一行：先把它选中（跟 VS Code 一样，右键同时改变选中项），再开菜单 */
@@ -354,21 +422,23 @@ export function ExplorerPane({
     if (!(await copyText(text))) setActionError("复制失败：系统剪贴板不可用");
   }, []);
 
-  /** 把这一行加进工作区根的 .gitignore，然后重列根目录让置灰立刻生效 */
+  /** 把这一行加进它所属根的 .gitignore，然后重列那个根让置灰立刻生效 */
   const addToIgnore = useCallback(
     async (entry: FileEntry) => {
       setMenu(null);
       setActionError(null);
+      const owner = ownerRoot(roots, entry.path);
+      if (!owner) return;
       try {
-        await gitAddToIgnore(root, entry.path);
+        await gitAddToIgnore(owner, entry.path);
         // 后端的 watcher 也会报 .gitignore 的改动，但得等 300ms 防抖；这里直接
         // 重列一次：重列会换掉 entries 的引用，忽略状态那个 effect 跟着重算
-        await refreshDir(root);
+        await refreshDir(owner);
       } catch (reason) {
         setActionError(String(reason));
       }
     },
-    [root, refreshDir],
+    [roots, refreshDir],
   );
 
   const startRename = useCallback((entry: FileEntry) => {
@@ -392,6 +462,11 @@ export function ExplorerPane({
     }
 
     const { path } = renaming;
+    const owner = ownerRoot(roots, path);
+    if (!owner) {
+      setRenameError("这个路径不在任何源文件夹里");
+      return;
+    }
     setBusy(true);
     setRenameError(null);
     try {
@@ -400,7 +475,7 @@ export function ExplorerPane({
         setRenameError("有文件没保存成功，已取消重命名");
         return;
       }
-      const next = await renameEntry(root, path, name);
+      const next = await renameEntry(owner, path, name);
       setRenaming(null);
       setActiveRow(next);
       onRenamed(path, next);
@@ -412,7 +487,7 @@ export function ExplorerPane({
     } finally {
       setBusy(false);
     }
-  }, [renaming, busy, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch]);
+  }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch]);
 
   const confirmDelete = useCallback(async () => {
     const entry = pendingDelete;
@@ -420,8 +495,14 @@ export function ExplorerPane({
     setPendingDelete(null);
     setBusy(true);
     setActionError(null);
+    const owner = ownerRoot(roots, entry.path);
+    if (!owner) {
+      setActionError("这个路径不在任何源文件夹里");
+      setBusy(false);
+      return;
+    }
     try {
-      await deleteEntry(root, entry.path);
+      await deleteEntry(owner, entry.path);
       // 删掉的正好是当前那一行，锚点退回它所在的目录
       if (activeRow && isPathInside(activeRow, entry.path)) setActiveRow(parentOf(entry.path));
       onDeleted(entry.path);
@@ -432,14 +513,14 @@ export function ExplorerPane({
     } finally {
       setBusy(false);
     }
-  }, [pendingDelete, busy, activeRow, onDeleted, refreshDir, filtering, closeSearch]);
+  }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, closeSearch]);
 
-  /** 当前已经在树里、值得跟着磁盘刷新的目录（含工作区根） */
+  /** 当前已经在树里、值得跟着磁盘刷新的目录（含全部源文件夹） */
   const loadedDirs = useMemo(() => {
-    const keys = new Set<string>([pathKey(root)]);
+    const keys = new Set<string>(roots.map((root) => pathKey(root)));
     for (const dir of children.keys()) keys.add(pathKey(dir));
     return keys;
-  }, [root, children]);
+  }, [rootsKey, children]);
 
   // 磁盘上的目录结构变了就跟着刷新。订阅只建一次：回调通过 ref 拿最新的
   // 目录快照，否则每展开一个目录都要重新 listen 一遍
@@ -481,7 +562,8 @@ export function ExplorerPane({
   }, []);
 
   const loadedEntries = useMemo(() => {
-    const all = [...entries];
+    const all: FileEntry[] = [];
+    for (const listed of entries.values()) all.push(...listed);
     for (const listed of children.values()) all.push(...listed);
     return all;
   }, [entries, children]);
@@ -492,52 +574,57 @@ export function ExplorerPane({
    * 拿的是**全部已加载条目**而不是刚列出来的那个目录：这样整体替换、不用做增量合并，
    * 也不会有残留的旧状态。`loadedEntries` 每次列目录都会换新对象，所以展开目录、
    * `fs-changed` 重列、改了 .gitignore（watcher 会把它的父目录报上来）都会自动重算。
+   * 多根时按所属根分组问，一次 `git_ignored` 只认一个根。
    */
   useEffect(() => {
     if (loadedEntries.length === 0) {
       setIgnored(new Set());
       return;
     }
+    const byRoot = new Map<string, string[]>();
+    for (const entry of loadedEntries) {
+      const owner = ownerRoot(roots, entry.path);
+      if (!owner) continue;
+      const list = byRoot.get(owner);
+      if (list) list.push(entry.path);
+      else byRoot.set(owner, [entry.path]);
+    }
+    if (byRoot.size === 0) {
+      setIgnored(new Set());
+      return;
+    }
     let cancelled = false;
-    void gitIgnored(
-      root,
-      loadedEntries.map((entry) => entry.path),
-    )
-      .then((paths) => {
-        if (!cancelled) setIgnored(new Set(paths.map(pathKey)));
-      })
-      .catch(() => {
-        // 算不出来就当都没被忽略：这是锦上添花的显示效果，不该把树搞出错误
-        if (!cancelled) setIgnored(new Set());
-      });
+    void Promise.all(
+      [...byRoot].map(([owner, paths]) => gitIgnored(owner, paths).catch(() => [] as string[])),
+    ).then((lists) => {
+      if (!cancelled) setIgnored(new Set(lists.flat().map(pathKey)));
+    });
     return () => {
       cancelled = true;
     };
-  }, [loadedEntries]);
+  }, [loadedEntries, rootsKey]);
 
   const beginCreate = useCallback(
     async (kind: CreateKind) => {
       if (filtering || creatingBusy) return;
-      // 目标 = 选中的那一行：目录就建在里面，文件就建在它旁边，没选中就建在工作区根
+      // 目标 = 选中的那一行：目录就建在里面，文件就建在它旁边，没选中就建在主要根
       const target = focusRow
         ? loadedEntries.find((entry) => pathKey(entry.path) === pathKey(focusRow))
         : undefined;
-      let parent = root;
+      let parent = primaryRoot;
       if (target?.isDir) parent = target.path;
-      else if (target) {
-        const separator = target.path.includes("\\") ? "\\" : "/";
-        const index = target.path.lastIndexOf(separator);
-        if (index > 0) parent = target.path.slice(0, index);
-      }
+      else if (target) parent = parentOf(target.path);
+      const owner = ownerRoot(roots, parent);
+      if (!owner) return;
       setCreateError(null);
       setCreating({ kind, parent, value: "" });
-      if (pathKey(parent) === pathKey(root)) return;
+      if (isRootPath(parent)) return;
       // 输入框挂在目标目录的子层里，所以那个目录必须是展开的——哪怕用户刚把它点收起
       setExpanded((current) => new Set(current).add(parent));
       if (children.has(parent)) return;
       setLoading((current) => new Set(current).add(parent));
       try {
-        const listed = await listDir(root, parent);
+        const listed = await listDir(owner, parent);
         setChildren((current) => new Map(current).set(parent, listed));
       } catch (reason) {
         setCreateError(String(reason));
@@ -549,7 +636,7 @@ export function ExplorerPane({
         });
       }
     },
-    [children, creatingBusy, filtering, focusRow, loadedEntries, root],
+    [children, creatingBusy, filtering, focusRow, loadedEntries, roots, isRootPath, primaryRoot],
   );
 
   const submitCreate = useCallback(async () => {
@@ -559,16 +646,21 @@ export function ExplorerPane({
       setCreateError("名称无效");
       return;
     }
+    const owner = ownerRoot(roots, creating.parent);
+    if (!owner) {
+      setCreateError("这个路径不在任何源文件夹里");
+      return;
+    }
     const separator = creating.parent.includes("\\") ? "\\" : "/";
     const path = `${creating.parent}${separator}${name}`;
     setCreatingBusy(true);
     setCreateError(null);
     try {
-      if (creating.kind === "file") await createFile(root, path);
-      else await createDirectory(root, path);
-      const listed = await listDir(root, creating.parent);
-      if (pathKey(creating.parent) === pathKey(root)) {
-        setEntries(listed);
+      if (creating.kind === "file") await createFile(owner, path);
+      else await createDirectory(owner, path);
+      const listed = await listDir(owner, creating.parent);
+      if (isRootPath(creating.parent)) {
+        setEntries((current) => new Map(current).set(owner, listed));
       } else {
         setChildren((current) => new Map(current).set(creating.parent, listed));
         setExpanded((current) => new Set(current).add(creating.parent));
@@ -579,11 +671,11 @@ export function ExplorerPane({
     } finally {
       setCreatingBusy(false);
     }
-  }, [creating, creatingBusy, root]);
+  }, [creating, creatingBusy, roots, isRootPath]);
 
   const filtered = useMemo(
-    () => (filtering && hits ? buildFilter(root, hits) : null),
-    [filtering, hits, root],
+    () => (filtering && hits ? buildFilter(roots, hits) : null),
+    [filtering, hits, rootsKey],
   );
 
   const changeRename = useCallback((value: string) => {
@@ -683,9 +775,17 @@ export function ExplorerPane({
     cancelRename,
   ]);
 
-  const folderName = toDisplayPath(root).split("/").filter(Boolean).pop() ?? root;
   // 搜索期间只画命中结果，免得旧树和新结果混在一起看不清
-  const visibleEntries = filtering ? (filtered?.rootEntries ?? []) : entries;
+  const groups = useMemo(() => {
+    if (filtering) {
+      return filtered ? [...filtered.rootEntries].map(([root, items]) => ({ root, items })) : [];
+    }
+    return roots.map((root) => ({ root, items: entries.get(root) ?? [] }));
+  }, [filtering, filtered, roots, entries]);
+
+  // 根名在树里各自有一行，header 不再重复；只有多根时才给一个总览
+  const headerTitle = roots.length > 1 ? `${roots.length} 个源文件夹` : "";
+  const headerHint = roots.map((root) => toDisplayPath(root)).join("\n");
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-panel">
@@ -717,9 +817,9 @@ export function ExplorerPane({
           <>
             <span
               className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim"
-              title={toDisplayPath(root)}
+              title={headerHint}
             >
-              {folderName}
+              {headerTitle}
             </span>
             <button
               type="button"
@@ -762,10 +862,10 @@ export function ExplorerPane({
       <div
         className="min-h-0 flex-1 overflow-auto px-1 py-1"
         onClick={(event) => {
-          // 点空白处把锚点收回工作区根：焦点行没了高亮，之后新建也落在根目录下。
+          // 点空白处把锚点收回主要根：焦点行没了高亮，之后新建也落在那儿。
           // 点到行按钮或新建输入框的点击会冒泡到这，不算空白
           if ((event.target as HTMLElement).closest("button, input")) return;
-          setActiveRow(root);
+          setActiveRow(primaryRoot);
         }}
       >
         {filtering && (
@@ -787,42 +887,73 @@ export function ExplorerPane({
             {rootError}
           </p>
         )}
-        {!filtering && !rootError && entries.length === 0 && (
-          <p className="px-2 py-1 text-[11px] text-fg-faint">空目录</p>
-        )}
-        <ul>
-          {!filtering && creating?.parent === root && (
-            <li>
-              {/* 缩进和行高都照普通树行来（行高 24px 含边框，左缩进 4px），
-                  否则新建时会冒出一个跟树对不齐的浮框 */}
-              <div style={{ paddingLeft: 4 }}>
-                <input
-                  autoFocus
-                  value={creating.value}
-                  onChange={(event) => {
-                    setCreating((current) => (current ? { ...current, value: event.target.value } : current));
-                    setCreateError(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") void submitCreate();
-                    if (event.key === "Escape") {
-                      event.stopPropagation();
-                      setCreating(null);
-                      setCreateError(null);
-                    }
-                  }}
-                  placeholder={creating.kind === "file" ? "文件名" : "文件夹名"}
-                  aria-label={creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
-                  className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
-                />
-              </div>
-              {createError && <p className="px-2 py-[2px] text-[11px] text-danger">{createError}</p>}
-            </li>
-          )}
-          {visibleEntries.map((entry) => (
-            <FileTreeNode key={entry.path} entry={entry} depth={0} tree={tree} />
-          ))}
-        </ul>
+        {/* 每个源文件夹各一棵子树，并列显示；只有多根时才加一行根名做分隔 */}
+        {groups.map((group) => {
+          const collapsed = collapsedRoots.has(pathKey(group.root));
+          const empty = !filtering && group.items.length === 0;
+          const showCreate = !filtering && creating !== null && isRootPath(creating.parent) &&
+            pathKey(creating.parent) === pathKey(group.root);
+          return (
+            <div key={group.root}>
+              {/* 每个源文件夹一行，点一下整块收起——收起只留这一行，下面连空目录提示都不画 */}
+              <button
+                type="button"
+                onClick={() => toggleRoot(group.root)}
+                title={toDisplayPath(group.root)}
+                className="flex w-full items-center gap-1 rounded px-1 pt-1.5 pb-0.5 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:bg-hover hover:text-fg"
+              >
+                {collapsed ? (
+                  <IconChevronRight className="h-3 w-3 shrink-0" />
+                ) : (
+                  <IconChevronDown className="h-3 w-3 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1 truncate">{folderName(group.root)}</span>
+              </button>
+              {!collapsed && (
+                <>
+                  {empty && (
+                    <p className="px-2 py-1 text-[11px] text-fg-faint">空目录</p>
+                  )}
+                  {/* 整棵子树往右缩一级：树行自身是 depth*INDENT+4，根标题行只有 4px，
+                      不额外给左内边距两者就齐平了，看不出谁在谁里面 */}
+                  <ul className="pl-3">
+                {showCreate && (
+                  <li>
+                    {/* 缩进和行高都照普通树行来（行高 24px 含边框，左缩进 4px），
+                        否则新建时会冒出一个跟树对不齐的浮框 */}
+                    <div style={{ paddingLeft: 4 }}>
+                      <input
+                        autoFocus
+                        value={creating.value}
+                        onChange={(event) => {
+                          setCreating((current) => (current ? { ...current, value: event.target.value } : current));
+                          setCreateError(null);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void submitCreate();
+                          if (event.key === "Escape") {
+                            event.stopPropagation();
+                            setCreating(null);
+                            setCreateError(null);
+                          }
+                        }}
+                        placeholder={creating.kind === "file" ? "文件名" : "文件夹名"}
+                        aria-label={creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                        className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
+                      />
+                    </div>
+                    {createError && <p className="px-2 py-[2px] text-[11px] text-danger">{createError}</p>}
+                  </li>
+                )}
+                    {group.items.map((entry) => (
+                      <FileTreeNode key={entry.path} entry={entry} depth={0} tree={tree} />
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* 删除不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}

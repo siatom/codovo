@@ -14,6 +14,7 @@ import { renderMarkdown } from "../lib/markdown";
 import {
   gitFileDiff,
   isPathInside,
+  ownerRoot,
   pathKey,
   readFile,
   readImage,
@@ -60,8 +61,13 @@ interface EditorPaneProps {
   /** 选中浮窗的两个动作：把位置引用送到终端 / 智能体输入框 */
   onSendToTerminal: (location: EditorLocation) => void;
   onSendToAgent: (location: EditorLocation) => void;
-  /** 工作区根目录：既是文件命令的沙箱根，也用来把绝对路径收敛成相对路径 */
+  /** 项目内当前活动根。文件命令的沙箱根按**文件实际所属根**算，见 `roots` */
   root: string;
+  /**
+   * 项目的全部源文件夹。标签是跨根共用一个的，读一个次要根里的文件时如果仍拿活动根
+   * 去请求，后端会判「路径越界（不在工作区内）」——所以每条读写都先按路径找归属
+   */
+  roots: string[];
   /** 这个项目是不是当前显示的。从隐藏切回可见时 Monaco 要补一次 layout */
   visible: boolean;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
@@ -177,6 +183,7 @@ export function EditorPane({
   onSendToTerminal,
   onSendToAgent,
   root,
+  roots,
   visible,
   ref,
 }: EditorPaneProps) {
@@ -219,6 +226,16 @@ export function EditorPane({
   // 浮窗的鼠标回调也建在「只跑一次」的建 editor effect 里，读 root 同样得走 ref
   const rootRef = useRef(root);
   rootRef.current = root;
+  const rootsRef = useRef(roots);
+  rootsRef.current = roots;
+  /**
+   * 这个路径该用哪个沙箱根去请求后端。标签跨根共用，次要根里的文件拿活动根去读会
+   * 被判「路径越界」；万一一个都不匹配（比如路径已被删掉），退回活动根，让后端照常报错
+   */
+  const rootFor = useCallback(
+    (path: string) => ownerRoot(rootsRef.current, path) ?? rootRef.current,
+    [],
+  );
   const fontSizeRef = useRef(settings.editorFontSize);
   fontSizeRef.current = settings.editorFontSize;
   const fontFamilyRef = useRef(settings.editorFontFamily);
@@ -321,7 +338,7 @@ export function EditorPane({
     floatLocationRef.current =
       current && current.kind === "file"
         ? {
-            path: relativeToRoot(current.path, rootRef.current),
+            path: relativeToRoot(current.path, rootFor(current.path)),
             start: selection.startLineNumber,
             end: selection.endLineNumber,
           }
@@ -371,7 +388,7 @@ export function EditorPane({
     let ok = true;
     try {
       for (const [key, cached] of targets) {
-        await writeFile(rootRef.current, cached.path, cached.model.getValue());
+        await writeFile(rootFor(cached.path), cached.path, cached.model.getValue());
         cached.savedVersionId = cached.model.getAlternativeVersionId();
         saved.add(key);
       }
@@ -424,7 +441,7 @@ export function EditorPane({
           // 编辑器里还留着没保存的改动就不覆盖，用户的编辑优先
           if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
           try {
-            const content = await readFile(rootRef.current, cached.path);
+            const content = await readFile(rootFor(cached.path), cached.path);
             if (content.isBinary || content.tooLarge) continue;
             // 读文件这一下用户可能又敲进了改动，再查一次，编辑优先
             if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
@@ -473,7 +490,7 @@ export function EditorPane({
           paths.some((item) => pathKey(item) === pathKey(current.path))
         ) {
           try {
-            const content = await readImage(rootRef.current, current.path);
+            const content = await readImage(rootFor(current.path), current.path);
             // 等这一下的时候用户可能已经切走了，别把结果盖到别的标签上
             const now = activeRef.current;
             if (now && now.kind === "file" && pathKey(now.path) === pathKey(current.path)) {
@@ -561,7 +578,7 @@ export function EditorPane({
 
       let payload;
       try {
-        payload = await gitFileDiff(rootRef.current, tab.path, tab.source);
+        payload = await gitFileDiff(rootFor(tab.path), tab.path, tab.source);
       } catch (reason) {
         if (activeRef.current && tabKey(activeRef.current) === key) {
           setDiffStatus({ kind: "error", message: String(reason) });
@@ -767,7 +784,7 @@ export function EditorPane({
       setStatus({ kind: "loading" });
       editor.setModel(null);
 
-      void readImage(rootRef.current, active.path)
+      void readImage(rootFor(active.path), active.path)
         .then((content) => {
           if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
           if (content.tooLarge) {
@@ -799,7 +816,7 @@ export function EditorPane({
     setStatus({ kind: "loading" });
     editor.setModel(null);
 
-    void readFile(rootRef.current, path)
+    void readFile(rootFor(path), path)
       .then((content) => {
         if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
         if (content.tooLarge) {

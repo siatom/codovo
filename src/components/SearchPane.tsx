@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { replaceAll, replaceOne, searchContents } from "../lib/fs";
-import type { SearchFile, SearchMatch, SearchOptions, SearchResult } from "../lib/types";
+import { ownerRoot, pathKey, replaceAll, replaceOne, searchContents, toDisplayPath } from "../lib/fs";
+import { folderName } from "../lib/projects";
+import type { SearchFile, SearchMatch, SearchOptions } from "../lib/types";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -46,6 +47,17 @@ const SWITCH_ON = "bg-accent-line text-accent-soft";
 const HEADER_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
+/**
+ * 一次搜索的结果，**按源文件夹分组**：一个项目可能挂着多个根，每根各搜一趟，
+ * 回来按组分开展示——不然两个根里的同名文件只能靠路径前缀猜，跟文件树也对不上。
+ */
+interface SearchGroups {
+  /** 只留有命中文件的根 */
+  groups: { root: string; files: SearchFile[] }[];
+  truncated: boolean;
+  skippedLarge: number;
+}
+
 interface SearchPaneProps {
   /** 点一条结果：打开文件并跳到那一行那一列 */
   onOpenMatch: (path: string, line: number, column: number, length: number) => void;
@@ -56,14 +68,17 @@ interface SearchPaneProps {
   onBeforeReplace: () => Promise<boolean>;
   /** 替换完让编辑器重新从磁盘加载这些文件 */
   onAfterReplace: (paths: string[]) => void;
-  /** 搜的是哪个项目（后端按它做沙箱校验） */
-  root: string;
+  /**
+   * 搜哪些源文件夹。一个项目可以挂多个根，每根各搜一趟再合并——
+   * 后端的 `fs_search_content` 一次只认一个沙箱根
+   */
+  roots: string[];
   /** 是不是当前显示的项目。隐藏时不发起搜索，切回来会重跑一遍 */
   visible: boolean;
 }
 
 export function SearchPane({
-  root,
+  roots,
   visible,
   onOpenMatch,
   onBeforeReplace,
@@ -77,10 +92,13 @@ export function SearchPane({
     wholeWord: false,
     regex: false,
   });
-  const [result, setResult] = useState<SearchResult | null>(null);
+  const [result, setResult] = useState<SearchGroups | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ kind: "error" | "note"; text: string } | null>(null);
+  /** 结果里被整块收起的源文件夹分组（归一化路径） */
+  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
+  /** 收起单个文件自己的匹配行 */
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   /** 替换完 +1，用来触发一次重搜（行列会变，结果得跟着刷新） */
   const [reloadKey, setReloadKey] = useState(0);
@@ -99,11 +117,20 @@ export function SearchPane({
 
     const id = (requestRef.current += 1);
     setLoading(true);
+    const targets = roots;
     const timer = window.setTimeout(() => {
-      void searchContents(root, query, options)
+      // 每个根各搜一趟再分组：后端一次只认一个根
+      void Promise.all(targets.map((root) => searchContents(root, query, options)))
         .then((found) => {
           if (requestRef.current !== id) return;
-          setResult(found);
+          setResult({
+            // 没有命中的根不占位置，省得一堆空标题
+            groups: targets
+              .map((root, index) => ({ root, files: found[index].files }))
+              .filter((group) => group.files.length > 0),
+            truncated: found.some((one) => one.truncated),
+            skippedLarge: found.reduce((sum, one) => sum + one.skippedLarge, 0),
+          });
           setMessage(null);
         })
         .catch((reason) => {
@@ -118,11 +145,26 @@ export function SearchPane({
     }, SEARCH_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [root, visible, query, options, reloadKey]);
+  }, [roots, visible, query, options, reloadKey]);
 
   const totalMatches = result
-    ? result.files.reduce((sum, file) => sum + file.matches.length, 0)
+    ? result.groups.reduce(
+        (sum, group) => sum + group.files.reduce((one, file) => one + file.matches.length, 0),
+        0,
+      )
     : 0;
+  const totalFiles = result ? result.groups.reduce((sum, group) => sum + group.files.length, 0) : 0;
+
+  /** 收起 / 展开一个源文件夹的整组结果 */
+  const toggleGroup = (root: string) => {
+    const key = pathKey(root);
+    setCollapsedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const toggleCollapse = (path: string) => {
     setCollapsed((current) => {
@@ -155,8 +197,8 @@ export function SearchPane({
   };
 
   const runReplaceAll = async () => {
-    if (busy || !result || result.files.length === 0) return;
-    const paths = result.files.map((file) => file.path);
+    if (busy || !result || result.groups.length === 0) return;
+    const paths = result.groups.flatMap((group) => group.files.map((file) => file.path));
     if (!window.confirm(`将在 ${paths.length} 个文件里替换 ${totalMatches} 处，确定吗？`)) {
       return;
     }
@@ -165,19 +207,35 @@ export function SearchPane({
     setMessage(null);
     try {
       if (!(await prepare())) return;
-      const outcome = await replaceAll({ root, paths, query, options, replacement });
-      onAfterReplace(outcome.files.map((file) => file.path));
+      // 按所属根分组：一次 fs_replace_all 只认一个沙箱根，跨根的文件得拆开跑
+      const groups = new Map<string, string[]>();
+      for (const path of paths) {
+        const owner = ownerRoot(roots, path);
+        if (!owner) continue;
+        const list = groups.get(owner);
+        if (list) list.push(path);
+        else groups.set(owner, [path]);
+      }
+      const outcomes = await Promise.all(
+        [...groups].map(([owner, group]) =>
+          replaceAll({ root: owner, paths: group, query, options, replacement }),
+        ),
+      );
+      const changedFiles = outcomes.flatMap((outcome) => outcome.files);
+      const failures = outcomes.flatMap((outcome) => outcome.errors);
+      const totalReplaced = outcomes.reduce((sum, outcome) => sum + outcome.totalReplaced, 0);
+      onAfterReplace(changedFiles.map((file) => file.path));
       // 行列都变了，重搜一次让结果跟上
       setReloadKey((key) => key + 1);
 
-      const changed = outcome.files.length;
-      if (outcome.errors.length > 0) {
+      const changed = changedFiles.length;
+      if (failures.length > 0) {
         setMessage({
           kind: "error",
-          text: `改了 ${changed} 个文件，${outcome.errors.length} 个失败：${outcome.errors[0].message}`,
+          text: `改了 ${changed} 个文件，${failures.length} 个失败：${failures[0].message}`,
         });
       } else if (changed > 0) {
-        setMessage({ kind: "note", text: `已在 ${changed} 个文件里替换 ${outcome.totalReplaced} 处` });
+        setMessage({ kind: "note", text: `已在 ${changed} 个文件里替换 ${totalReplaced} 处` });
       } else {
         setMessage({ kind: "note", text: "没有需要替换的内容" });
       }
@@ -194,8 +252,13 @@ export function SearchPane({
     setMessage(null);
     try {
       if (!(await prepare())) return;
+      const owner = ownerRoot(roots, file.path);
+      if (!owner) {
+        setMessage({ kind: "error", text: "这个文件不在任何源文件夹里" });
+        return;
+      }
       await replaceOne({
-        root,
+        root: owner,
         path: file.path,
         position: { line: match.line, column: match.column, length: match.length },
         query,
@@ -343,19 +406,49 @@ export function SearchPane({
         {query && loading && !result && (
           <p className="px-3 py-2 text-[11px] text-fg-faint">搜索中…</p>
         )}
-        {query && result && result.files.length === 0 && (
+        {query && result && result.groups.length === 0 && (
           <p className="px-3 py-2 text-[11px] text-fg-faint">没有匹配</p>
         )}
 
-        {result && result.files.length > 0 && (
+        {result && result.groups.length > 0 && (
           <>
             <p className="px-3 py-1 text-[11px] text-fg-faint">
-              {result.files.length} 个文件 · {totalMatches} 处
+              {totalFiles} 个文件 · {totalMatches} 处
               {result.truncated && "（结果已截断）"}
               {result.skippedLarge > 0 && `（跳过 ${result.skippedLarge} 个超过 2MB 的文件）`}
             </p>
             <ul>
-              {result.files.map((file) => {
+              {result.groups.map((group) => {
+                const groupCollapsed = collapsedGroups.has(pathKey(group.root));
+                const groupMatches = group.files.reduce(
+                  (sum, file) => sum + file.matches.length,
+                  0,
+                );
+                return (
+                  <li key={group.root}>
+                    {/* 项目挂了多个源文件夹就给标题（哪怕只有一组命中，也得让人知道
+                        这批结果出自哪个根）；单根下它就是多余的一行 */}
+                    {roots.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(group.root)}
+                        title={toDisplayPath(group.root)}
+                        className="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:bg-hover hover:text-fg"
+                      >
+                        {groupCollapsed ? (
+                          <IconChevronRight className="h-3 w-3 shrink-0" />
+                        ) : (
+                          <IconChevronDown className="h-3 w-3 shrink-0" />
+                        )}
+                        <span className="min-w-0 flex-1 truncate">{folderName(group.root)}</span>
+                        <span className="shrink-0 text-fg-faint tabular-nums">
+                          {group.files.length} 个文件 · {groupMatches} 处
+                        </span>
+                      </button>
+                    )}
+                    {!groupCollapsed && (
+            <ul>
+              {group.files.map((file) => {
                 const isCollapsed = collapsed.has(file.path);
                 return (
                   <li key={file.path}>
@@ -418,6 +511,11 @@ export function SearchPane({
                           </li>
                         ))}
                       </ul>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
                     )}
                   </li>
                 );

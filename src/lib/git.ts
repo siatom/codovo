@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { gitStatus, pathKey } from "./fs";
+import { gitStatus, pathKey, rootsKeyOf } from "./fs";
 import type { GitStatusPayload } from "./types";
 
 /** 轮询间隔。本地仓库的 status 通常几十毫秒，2 秒足够跟手又不至于吵 */
@@ -133,74 +133,90 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
 }
 
 /**
- * 某个项目的 git 状态。
+ * 一个项目的 git 状态（可能挂着多个源文件夹）。
+ *
+ * `byRoot` 是每根各一份快照；`marks` / `changed` / `isRepo` 是合并视图——文件树、
+ * 标签页、图标条要的是「整个项目现在什么样」，而变更面板要按根分开列。
  *
  * `enabled` 为 false 时**停掉轮询但保留已有状态**：一个窗口里会同时挂着多个项目，
  * 只有当前显示的那个需要轮询，其余的一直在跑就是白烧 CPU。切回来时状态还是离开
  * 时的样子，再等一个 tick 就又准了。
  *
  * 只读轮询：git 那侧没有任何写操作，命令带 --no-optional-locks，不会和用户
- * 在终端里敲的 git 抢 index 锁。写操作走 GitController.applyStatus 直接落地，
- * 不经过这里。
+ * 在终端里敲的 git 抢 index 锁。写操作走 `applyStatus` 直接落地，不经过这里。
  */
-export function useGitStatus(root: string | null, enabled = true): GitController {
-  const [snapshot, setSnapshot] = useState<GitSnapshot>(EMPTY);
+export interface GitStatusStore {
+  /** 根 -> 该根的快照。没轮到的根取不到，用 `snapshotOf` 兜底 */
+  byRoot: Record<string, GitSnapshot>;
+  /** 各根的 marks 合并（路径天然不重叠），文件树和标签页查它 */
+  marks: ReadonlyMap<string, GitMark>;
+  /** 各根改动条目之和，图标条上的徽标 */
+  changed: number;
+  /** 任意一根是仓库 */
+  isRepo: boolean;
+  /** 立刻重拉；不传 root 就拉全部 */
+  refresh: (root?: string) => void;
+  /** 某根的写操作已经把新状态带回来了，直接落地，省一次往返 */
+  applyStatus: (root: string, payload: GitStatusPayload) => void;
+}
+
+export function useGitStatus(roots: string[], enabled = true): GitStatusStore {
+  const [byRoot, setByRoot] = useState<Record<string, GitSnapshot>>({});
   // 手动刷新要能调到当前这一轮 effect 里的 load，所以用 ref 转一手
-  const loadRef = useRef<(force?: boolean) => void>(() => {});
+  const loadRef = useRef<(root?: string, force?: boolean) => void>(() => {});
+  const rootsKey = rootsKeyOf(roots);
 
   useEffect(() => {
     // 请求状态全放在 effect 里：停掉时整份作废，旧请求回来会被 disposed 丢掉，
     // 不会把上一个仓库的状态盖到新目录上
-    let inFlight = false;
-    let queued = false;
-    let unavailable = false;
+    const targets = roots;
+    if (!enabled || targets.length === 0) {
+      // 项目切走了：只停轮询，**不清状态**——组件还挂着，切回来该是原样
+      loadRef.current = () => {};
+      return;
+    }
+
     let disposed = false;
+    /** 正在飞的根、以及 git 不可用（没装/超时）被停掉的根 */
+    const inFlight = new Set<string>();
+    const queued = new Set<string>();
+    const unavailable = new Set<string>();
 
-    if (!root) {
-      setSnapshot(EMPTY);
-      loadRef.current = () => {};
-      return;
-    }
-    if (!enabled) {
-      // 这个项目切走了：只停轮询，**不清状态**——组件还挂着，切回来该是原样
-      loadRef.current = () => {};
-      return;
-    }
-    // 到这里 root 一定非空，收进局部变量，闭包里用着踏实
-    const repoRoot = root;
-
-    const load = async (force = false) => {
-      if (disposed || unavailable) return;
-      if (inFlight) {
+    const load = async (root: string, force = false) => {
+      if (disposed || unavailable.has(root)) return;
+      if (inFlight.has(root)) {
         // 正在飞的时候又来了刷新请求：记一笔，等它落地后补跑一次。
         // 既不丢刷新，也不会把请求堆起来
-        if (force) queued = true;
+        if (force) queued.add(root);
         return;
       }
-      inFlight = true;
+      inFlight.add(root);
       try {
-        const payload = await gitStatus(repoRoot);
-        if (!disposed) setSnapshot(toSnapshot(payload));
+        const payload = await gitStatus(root);
+        if (!disposed) setByRoot((current) => ({ ...current, [root]: toSnapshot(payload) }));
       } catch (reason) {
         if (disposed) return;
-        // git 没装或超时：停掉轮询，免得每 2 秒白起一个进程。
+        // git 没装或超时：停掉这一根的轮询，免得每 2 秒白起一个进程。
         // "目录不是仓库"不是错误，那条路后端会正常返回 isRepo: false
-        unavailable = true;
-        console.warn("git 状态不可用，已停止轮询：", reason);
+        unavailable.add(root);
+        console.warn(`git 状态不可用（${root}），已停止轮询：`, reason);
       } finally {
-        inFlight = false;
-        if (queued && !disposed) {
-          queued = false;
-          void load();
+        inFlight.delete(root);
+        if (queued.has(root) && !disposed) {
+          queued.delete(root);
+          void load(root);
         }
       }
     };
 
-    loadRef.current = (force = false) => void load(force);
-    void load();
-    const timer = window.setInterval(() => void load(), POLL_MS);
+    loadRef.current = (root, force = false) => {
+      if (root) void load(root, force);
+      else for (const item of targets) void load(item, force);
+    };
+    loadRef.current(undefined, false);
+    const timer = window.setInterval(() => loadRef.current(undefined, false), POLL_MS);
     // 从终端或别的窗口切回来时立刻补一次，不用干等下一个 tick
-    const onFocus = () => void load();
+    const onFocus = () => loadRef.current(undefined, false);
     window.addEventListener("focus", onFocus);
 
     return () => {
@@ -208,16 +224,55 @@ export function useGitStatus(root: string | null, enabled = true): GitController
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [root, enabled]);
+  }, [rootsKey, enabled]);
 
-  const refresh = useCallback(() => loadRef.current(true), []);
+  // 换过根之后把不在列表里的旧快照摘掉：不然改项目留下的根会一直挂在状态里
+  useEffect(() => {
+    setByRoot((current) => {
+      const keep = Object.keys(current).filter((root) =>
+        roots.some((item) => pathKey(item) === pathKey(root)),
+      );
+      if (keep.length === Object.keys(current).length) return current;
+      const next: Record<string, GitSnapshot> = {};
+      for (const root of keep) next[root] = current[root];
+      return next;
+    });
+  }, [rootsKey]);
 
-  const applyStatus = useCallback((payload: GitStatusPayload) => {
-    setSnapshot(toSnapshot(payload));
+  const merged = useMemo(() => {
+    const marks = new Map<string, GitMark>();
+    let changed = 0;
+    let isRepo = false;
+    for (const root of roots) {
+      const snapshot = byRoot[root];
+      if (!snapshot) continue;
+      if (snapshot.isRepo) isRepo = true;
+      changed += snapshot.changed;
+      for (const [key, mark] of snapshot.marks) marks.set(key, mark);
+    }
+    return { marks, changed, isRepo };
+  }, [byRoot, rootsKey]);
+
+  const refresh = useCallback((root?: string) => loadRef.current(root, true), []);
+
+  const applyStatus = useCallback((root: string, payload: GitStatusPayload) => {
+    setByRoot((current) => ({ ...current, [root]: toSnapshot(payload) }));
   }, []);
 
   return useMemo(
-    () => ({ snapshot, refresh, applyStatus }),
-    [snapshot, refresh, applyStatus],
+    () => ({ byRoot, marks: merged.marks, changed: merged.changed, isRepo: merged.isRepo, refresh, applyStatus }),
+    [byRoot, merged, refresh, applyStatus],
   );
+}
+
+/** 某根的控制器，交给 `GitChangesPane` 用（它的接口就是单根的） */
+export function controllerOf(
+  store: GitStatusStore,
+  root: string,
+): GitController {
+  return {
+    snapshot: store.byRoot[root] ?? EMPTY,
+    refresh: () => store.refresh(root),
+    applyStatus: (payload: GitStatusPayload) => store.applyStatus(root, payload),
+  };
 }

@@ -21,16 +21,26 @@ const WORKSPACES_KEY = "codedock.workspaces";
 const WORKSPACE_NAMES_KEY = "codedock.workspaceNames";
 
 /**
- * 打开 / 切换项目：后端登记这个根、把目录监听切过去，返回 canonical 后的路径。
- * 之后每条命令都带着它——单窗口下会同时开着多个项目，后端靠 root 分辨是谁。
+ * 打开 / 切换项目：后端登记这个项目的**全部源文件夹**、把目录监听整体换成这一组，
+ * 返回 canonical 后的路径（顺序跟传入一致，`roots[0]` 是主要根）。
+ *
+ * 之后每条命令都带着某个 root——单窗口下会同时开着多个项目，后端靠 root 分辨是谁。
  */
-export function projectActivate(path: string): Promise<string> {
-  return invoke<string>("project_activate", { path });
+export function projectActivate(roots: string[]): Promise<string[]> {
+  return invoke<string[]>("project_activate", { roots });
 }
 
-/** 关闭项目：收掉它的终端与智能体进程、停掉目录监听，并从后端白名单里摘掉 */
-export function projectClose(root: string): Promise<void> {
-  return invoke("project_close", { root });
+/**
+ * 只登记源文件夹、**不换目录监听**：编辑一个「开着、但不是当前显示」的项目时用。
+ * 监听只跟当前项目，给后台项目改根不能顺手 activate，否则会把监听抢过去。
+ */
+export function projectRegister(roots: string[]): Promise<string[]> {
+  return invoke<string[]>("project_register", { roots });
+}
+
+/** 关闭项目：收掉它每个源文件夹的终端与智能体进程、停掉各自的目录监听，并从后端白名单里摘掉 */
+export function projectClose(roots: string[]): Promise<void> {
+  return invoke("project_close", { roots });
 }
 
 /** 弹目录选择框，返回选中的路径；用户取消时返回 null */
@@ -375,4 +385,29 @@ export function isPathInside(child: string, parent: string): boolean {
   const kid = pathKey(child);
   if (kid === base) return true;
   return kid.startsWith(base ? `${base}/` : "/");
+}
+
+/**
+ * 这条路径落在哪个根里——取**最长**的那个匹配，这样一根套在另一根里时也算给里层
+ * （外层根下的那条路径其实归里层管）。哪个根都不是就返回 null。
+ *
+ * 一个项目可以挂多个源文件夹，但后端每条 fs 命令只认一个白名单里的 root：
+ * 拿错 root 会被 `checked_root` 挡下，报「路径越界（不在工作区内）」。
+ * 所以凡是「路径可能来自任意根」的地方，都得先过这一道。
+ */
+export function ownerRoot(roots: string[], path: string): string | null {
+  let best: string | null = null;
+  for (const root of roots) {
+    if (!isPathInside(path, root)) continue;
+    if (best === null || root.length > best.length) best = root;
+  }
+  return best;
+}
+
+/**
+ * 一组根的稳定标识。数组每次渲染都可能是新引用，effect / useMemo 的依赖得靠这个
+ * 字符串来判断「根换没换」，不然每渲染一次就重订阅一遍。
+ */
+export function rootsKeyOf(roots: string[]): string {
+  return roots.map((root) => pathKey(root)).join("\u0000");
 }

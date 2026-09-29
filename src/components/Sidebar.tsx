@@ -9,13 +9,8 @@ import {
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
-import {
-  onWorkspaceNamesChanged,
-  readWorkspaceNames,
-  samePath,
-  saveWorkspaceNames,
-  toDisplayPath,
-} from "../lib/fs";
+import { toDisplayPath } from "../lib/fs";
+import type { Project } from "../lib/projects";
 import { isBlankClick } from "../lib/dom";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
@@ -28,6 +23,7 @@ import {
   AgentLogo,
   IconChevronDown,
   IconChevronRight,
+  IconExternalLink,
   IconFeedback,
   IconFolder,
   IconFolderPlus,
@@ -35,24 +31,29 @@ import {
   IconMore,
   IconPanelCollapse,
   IconPanelExpand,
+  IconPencil,
   IconPlus,
   IconSettings,
   IconSun,
 } from "./icons";
 
 interface SidebarProps {
-  /** 用过的目录，最近打开的排在最前 */
-  workspaces: string[];
-  /** 当前工作区；null 表示还没选 */
-  current: string | null;
-  /** 已经打开（挂着工作区实例、后台仍在跑）的项目根，用来在列表里点出「已打开」 */
+  /** 全部项目，最近创建/打开的排在最前 */
+  projects: Project[];
+  /** 当前项目的 id；null 表示还没选 */
+  currentId: string | null;
+  /** 当前项目的活动根。会话历史 / 设置 / CLI 选择这些还按根记的东西用它 */
+  activeRoot: string | null;
+  /** 已经打开（挂着工作区实例、后台仍在跑）的项目 id，用来在列表里点出「已打开」 */
   opened: string[];
-  onSelect: (path: string) => void;
-  onAdd: () => void;
+  onSelect: (project: Project) => void;
+  /** 「打开项目」：新建一个项目 */
+  onCreate: () => void;
+  onEdit: (project: Project) => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
-  onRemove: (path: string) => void;
+  onRemove: (project: Project) => void;
   /** 关掉已打开的项目：收进程、丢实例，但保留在列表里 */
-  onClose: (path: string) => void;
+  onClose: (project: Project) => void;
   /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端 */
   onRunAiCommand: (command: string) => void;
   /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume" */
@@ -99,8 +100,8 @@ const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover 
 /** 菜单宽度（px），贴着按钮右边缘往左排时要拿它算 left */
 const MENU_W = 112;
 
-/** 项目菜单比别处宽：「在文件管理器中打开」有 9 个字，112 装不下一行 */
-const PROJECT_MENU_W = 140;
+/** 项目菜单比别处宽：里面要列出源文件夹的完整路径 */
+const PROJECT_MENU_W = 320;
 
 /** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
 const AI_MENU_W = 150;
@@ -123,18 +124,14 @@ function readWidth(): number {
   return clampWidth(DEFAULT_WIDTH);
 }
 
-/** 末级目录名，取不到就退回整个路径 */
-function baseName(path: string): string {
-  const parts = toDisplayPath(path).split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? path;
-}
-
 export function Sidebar({
-  workspaces,
-  current,
+  projects,
+  currentId,
+  activeRoot,
   opened,
   onSelect,
-  onAdd,
+  onCreate,
+  onEdit,
   onRemove,
   onClose,
   onRunAiCommand,
@@ -153,14 +150,10 @@ export function Sidebar({
   const [historyOpen, setHistoryOpen] = useState(true);
   /** 等待确认删除的会话；非空时弹确认框 */
   const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
-  /** 项目在 CodeDock 里的显示名（别名）；只影响界面，不改磁盘上的文件夹名 */
-  const [names, setNames] = useState(readWorkspaceNames);
   /** 「⋯」菜单开在哪个项目上，以及贴着按钮的位置 */
-  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
   /** AI CLI 菜单开在哪儿；配了多个命令时才用得上，位置同项目菜单 */
   const [aiMenu, setAiMenu] = useState<{ x: number; y: number } | null>(null);
-  /** 正在就地改名的项目 */
-  const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
   /** 会话行的「⋯」菜单开在哪条会话上，位置同项目菜单 */
   const [histMenu, setHistMenu] = useState<{
     item: AgentSessionSummary;
@@ -172,22 +165,20 @@ export function Sidebar({
     id: string;
     value: string;
   } | null>(null);
-  /** 底部会话历史里当前选的是哪条命令；按项目记住 */
-  const [cliChoice, setCliChoice] = useState(() => readCliChoice(current));
+  /** 底部会话历史里当前选的是哪条命令；按活动根记住 */
+  const [cliChoice, setCliChoice] = useState(() => readCliChoice(activeRoot));
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
 
-  // 别的窗口改了项目别名，本窗口的列表跟着更新
-  useEffect(() => onWorkspaceNamesChanged(setNames), []);
   const {
     mode,
     sessions,
-    currentId,
+    currentId: sessionId,
     requestSession,
     requestDelete,
     requestNew,
     requestRename,
-  } = useAgentSession(current);
+  } = useAgentSession(activeRoot);
   // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
   const guiActive = settings.agentEnabled && mode === "agent";
   // 空命令是用户在设置里加了还没填的，不进菜单
@@ -203,13 +194,13 @@ export function Sidebar({
 
   // 换项目要跟着换回这个项目上次选的 CLI
   useEffect(() => {
-    setCliChoice(readCliChoice(current));
-  }, [current]);
+    setCliChoice(readCliChoice(activeRoot));
+  }, [activeRoot]);
 
-  /** 选 CLI：改状态并按项目落盘。项目行的 + 和底部选择器共用它 */
+  /** 选 CLI：改状态并按活动根落盘。项目行的 + 和底部选择器共用它 */
   const pickCli = (command: string) => {
     setCliChoice(command);
-    saveCliChoice(current, command);
+    saveCliChoice(activeRoot, command);
   };
 
   const setCollapsedPersisted = (next: boolean) => {
@@ -268,35 +259,6 @@ export function Sidebar({
     }
   };
 
-  /** 列表里显示的名字：有别名的用别名，否则用目录名 */
-  const displayName = (path: string) => names[path] ?? baseName(path);
-
-  /**
-   * 改名只写 CodeDock 的显示名，**不动磁盘上的文件夹**。
-   * 清空、或者写回目录原名，都等于不要别名——留一条没意义的记录反而会在
-   * 用户真的去改目录名之后继续盖住新名字。
-   */
-  const renameWorkspace = (path: string, value: string) => {
-    const name = value.trim();
-    // 先读一遍最新的：别的窗口可能刚改过，拿本窗口的 state 覆盖会丢改动
-    const next = readWorkspaceNames();
-    if (!name || name === baseName(path)) delete next[path];
-    else next[path] = name;
-    setNames(next);
-    saveWorkspaceNames(next);
-    setRenaming(null);
-  };
-
-  /** 只去掉 CodeDock 里的记录，连同它的别名，不碰磁盘 */
-  const removeWorkspace = (path: string) => {
-    setMenu(null);
-    onRemove(path);
-    const next = readWorkspaceNames();
-    delete next[path];
-    setNames(next);
-    saveWorkspaceNames(next);
-  };
-
   /** 用系统的文件浏览器打开这个目录（Windows 资源管理器 / macOS 访达 / Linux 文件管理器） */
   const openInSystem = (path: string) => {
     setMenu(null);
@@ -305,18 +267,15 @@ export function Sidebar({
     });
   };
 
-  const openMenu = (path: string, target: HTMLElement) => {
+  const openMenu = (project: Project, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
-    setMenu({ path, x: rect.right, y: rect.bottom });
+    setMenu({ project, x: rect.right, y: rect.bottom });
   };
 
   const openHistMenu = (item: AgentSessionSummary, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
     setHistMenu({ item, x: rect.right, y: rect.bottom });
   };
-
-  /** 项目菜单针对的那个目录是不是正开着，决定要不要露出「关闭」 */
-  const menuOpen = menu !== null && opened.some((item) => samePath(item, menu.path));
 
   /** 点项目行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
   const launchAi = (target: HTMLElement) => {
@@ -358,7 +317,7 @@ export function Sidebar({
         <div className="flex shrink-0 flex-col px-2 pb-1">
           <button
             type="button"
-            onClick={onAdd}
+            onClick={onCreate}
             title="打开项目"
             className={`flex w-7 ${ROW_H} items-center justify-center rounded-lg text-fg-dim hover:bg-hover hover:text-fg`}
           >
@@ -402,7 +361,7 @@ export function Sidebar({
         </div>
 
         {settingsOpen && (
-          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={current} />
+          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={activeRoot} />
         )}
         {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
       </div>
@@ -427,7 +386,7 @@ export function Sidebar({
       </header>
 
       <nav className="flex shrink-0 flex-col gap-0.5 px-2 pb-1">
-        <button type="button" onClick={onAdd} className={ROW}>
+        <button type="button" onClick={onCreate} className={ROW}>
           <IconFolderPlus />
           <span className="truncate">打开项目</span>
         </button>
@@ -437,116 +396,87 @@ export function Sidebar({
         项目
       </p>
       <ul className="min-h-0 flex-1 overflow-auto px-2 pb-2">
-        {workspaces.length === 0 && (
-          <li className="px-2 py-1 text-[12px] text-fg-faint">还没有打开过目录</li>
+        {projects.length === 0 && (
+          <li className="px-2 py-1 text-[12px] text-fg-faint">还没有项目</li>
         )}
-        {workspaces.map((path) => {
-          const isCurrent = path === current;
-          // 已打开 = 后台挂着工作区实例的项目，和「只是用过的目录」区分开
-          const isOpen = opened.some((item) => samePath(item, path));
+        {projects.map((project) => {
+          const isCurrent = project.id === currentId;
+          // 已打开 = 后台挂着工作区实例的项目，和「只在列表里」区分开
+          const isOpen = opened.includes(project.id);
           return (
-            <li key={path}>
+            <li key={project.id}>
               {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
               <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
                 <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
-                  {renaming?.path === path ? (
-                    <>
-                      <IconFolder />
-                      {/* 就地改名：Enter 确认、Esc 取消、点别处也算确认 */}
-                      <input
-                        autoFocus
-                        value={renaming.value}
-                        onChange={(event) =>
-                          setRenaming({ path, value: event.target.value })
-                        }
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            renameWorkspace(path, renaming.value);
-                          } else if (event.key === "Escape") {
-                            event.preventDefault();
-                            setRenaming(null);
-                          }
-                        }}
-                        onBlur={() => renameWorkspace(path, renaming.value)}
-                        placeholder={baseName(path)}
-                        title="只改 CodeDock 里的显示名，不会改文件夹名"
-                        className="min-w-0 flex-1 rounded border border-line bg-app px-1.5 py-0.5 text-[13px] text-fg outline-none placeholder:text-fg-faint focus:border-line-hover"
+                  <button
+                    type="button"
+                    onClick={() => onSelect(project)}
+                    title={project.roots.map((root) => toDisplayPath(root)).join("\n")}
+                    className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                  >
+                    <IconFolder />
+                    <span className="truncate">{project.name}</span>
+                    {/* 已打开的项目在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
+                    {isOpen && (
+                      <span
+                        title="项目已打开"
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
                       />
-                    </>
-                  ) : (
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => openMenu(project, event.currentTarget)}
+                    title="更多操作"
+                    className={ROW_ACTION}
+                  >
+                    <IconMore className="h-3.5 w-3.5" />
+                  </button>
+                  {/* 新建对话和折叠按钮贴在项目名右侧，只在当前项目且停在 GUI 时才出现 */}
+                  {isCurrent && guiActive && (
                     <>
                       <button
                         type="button"
-                        onClick={() => onSelect(path)}
-                        title={toDisplayPath(path)}
-                        className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                        onClick={requestNew}
+                        title="新建对话"
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
                       >
-                        <IconFolder />
-                        <span className="truncate">{displayName(path)}</span>
-                        {/* 已打开的项目在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
-                        {isOpen && (
-                          <span
-                            title="项目已打开"
-                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
-                          />
+                        <IconPlus className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHistoryOpen((open) => !open)}
+                        title={historyOpen ? "收起对话历史" : "展开对话历史"}
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
+                      >
+                        {historyOpen ? (
+                          <IconChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <IconChevronRight className="h-3.5 w-3.5" />
                         )}
                       </button>
-                      <button
-                        type="button"
-                        onClick={(event) => openMenu(path, event.currentTarget)}
-                        title="更多操作"
-                        className={ROW_ACTION}
-                      >
-                        <IconMore className="h-3.5 w-3.5" />
-                      </button>
-                      {/* 新建对话和折叠按钮贴在文件夹名右侧，只在当前项目且停在 GUI 时才出现 */}
-                      {isCurrent && guiActive && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={requestNew}
-                            title="新建对话"
-                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
-                          >
-                            <IconPlus className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setHistoryOpen((open) => !open)}
-                            title={historyOpen ? "收起对话历史" : "展开对话历史"}
-                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
-                          >
-                            {historyOpen ? (
-                              <IconChevronDown className="h-3.5 w-3.5" />
-                            ) : (
-                              <IconChevronRight className="h-3.5 w-3.5" />
-                            )}
-                          </button>
-                        </>
-                      )}
-                      {/* TUI 下同一个位置放 AI CLI 的入口：新开一个终端标签启动它。
-                          配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
-                      {isCurrent && !guiActive && (
-                        <button
-                          type="button"
-                          onClick={(event) => launchAi(event.currentTarget)}
-                          disabled={aiCommands.length === 0}
-                          title={
-                            aiCommands.length === 0
-                              ? "还没配置 AI CLI 命令，去设置里加一个"
-                              : "新开终端标签启动 AI CLI"
-                          }
-                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                        >
-                          <IconPlus className="h-3.5 w-3.5" />
-                        </button>
-                      )}
                     </>
+                  )}
+                  {/* TUI 下同一个位置放 AI CLI 的入口：新开一个终端标签启动它。
+                      配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
+                  {isCurrent && !guiActive && (
+                    <button
+                      type="button"
+                      onClick={(event) => launchAi(event.currentTarget)}
+                      disabled={aiCommands.length === 0}
+                      title={
+                        aiCommands.length === 0
+                          ? "还没配置 AI CLI 命令，去设置里加一个"
+                          : "新开终端标签启动 AI CLI"
+                      }
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                    >
+                      <IconPlus className="h-3.5 w-3.5" />
+                    </button>
                   )}
                 </div>
 
-                {/* 对话历史挂当前项目下，由文件夹行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
+                {/* 对话历史挂当前项目下，由项目行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
                 {isCurrent &&
                   guiActive &&
                   historyOpen &&
@@ -555,7 +485,7 @@ export function Sidebar({
                   ) : (
                     <ul className="flex flex-col pb-1">
                       {sessions.map((item) => {
-                        const isActive = item.id === currentId;
+                        const isActive = item.id === sessionId;
                         return (
                           <li
                             key={item.id}
@@ -624,9 +554,9 @@ export function Sidebar({
 
       {/* 当前 AI CLI 的会话历史。只在 TUI 下出现：GUI 那边项目行下面已经有
           opencode 自己的对话历史了，两套同时出现会打架 */}
-      {current && !guiActive && aiCommands.length > 0 && (
+      {activeRoot && !guiActive && aiCommands.length > 0 && (
         <CliHistory
-          cwd={current}
+          cwd={activeRoot}
           commands={aiCommands}
           value={activeCliCommand}
           onChange={pickCli}
@@ -672,7 +602,7 @@ export function Sidebar({
       </footer>
 
       {settingsOpen && (
-          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={current} />
+          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={activeRoot} />
         )}
 
       {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
@@ -690,8 +620,9 @@ export function Sidebar({
         />
       )}
 
-      {/* 项目行的「⋯」菜单。用 fixed 定位而不是绝对定位：项目列表是滚动容器，
-          绝对定位的菜单会被 overflow 裁掉，靠窗口底部的项目就看不见菜单了 */}
+      {/* 项目行的「⋯」菜单：项目名 + 各源文件夹 + 编辑/关闭。用 fixed 定位而不是
+          绝对定位：项目列表是滚动容器，绝对定位的菜单会被 overflow 裁掉，
+          靠窗口底部的项目就看不见菜单了 */}
       {menu && (
         <>
           {/* 铺一层透明遮罩接住外部点击 */}
@@ -700,29 +631,61 @@ export function Sidebar({
             className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
               width: PROJECT_MENU_W,
-              left: menu.x - PROJECT_MENU_W,
-              // 贴近窗口底部时往上收，别把菜单顶出可视区。开着项目时多一项「关闭」，收得也更多
+              left: Math.max(4, menu.x - PROJECT_MENU_W),
+              // 条目数随源文件夹数量变，按实际行数折算高度，免得贴底时被顶出可视区
               top: Math.min(
                 menu.y + 4,
-                window.innerHeight - (menuOpen ? 140 : 116),
+                window.innerHeight - (menu.project.roots.length * 24 + 116),
               ),
             }}
           >
+            <div className="flex items-center gap-2 px-3 py-1">
+              <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">
+                {menu.project.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => openInSystem(menu.project.roots[0])}
+                title="在文件管理器中打开"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:text-fg"
+              >
+                <IconExternalLink className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div className="my-1 border-t border-line" />
+            {menu.project.roots.map((root) => (
+              <div key={root} className="flex items-center gap-2 px-3 py-1">
+                <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
+                <span
+                  className="min-w-0 flex-1 truncate text-[12px] text-fg-muted"
+                  title={toDisplayPath(root)}
+                >
+                  {toDisplayPath(root)}
+                </span>
+              </div>
+            ))}
+            <div className="my-1 border-t border-line" />
             <button
               type="button"
-              onClick={() => openInSystem(menu.path)}
-              className={MENU_ITEM}
+              onClick={() => {
+                const { project } = menu;
+                setMenu(null);
+                onEdit(project);
+              }}
+              className={`${MENU_ITEM} flex items-center gap-2`}
             >
-              在文件管理器中打开
+              <IconPencil className="h-3.5 w-3.5 shrink-0" />
+              编辑项目
             </button>
             {/* 只对已打开的项目露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
-            {menuOpen && (
+            {opened.includes(menu.project.id) && (
               <button
                 type="button"
                 onClick={() => {
-                  const path = menu.path;
+                  const { project } = menu;
                   setMenu(null);
-                  onClose(path);
+                  onClose(project);
                 }}
                 className={MENU_ITEM}
               >
@@ -732,17 +695,10 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => {
-                const path = menu.path;
+                const { project } = menu;
                 setMenu(null);
-                setRenaming({ path, value: displayName(path) });
+                onRemove(project);
               }}
-              className={MENU_ITEM}
-            >
-              重命名
-            </button>
-            <button
-              type="button"
-              onClick={() => removeWorkspace(menu.path)}
               className={MENU_ITEM}
             >
               移除
