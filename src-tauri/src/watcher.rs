@@ -30,10 +30,13 @@ enum Signal {
     Stop,
 }
 
-/// 当前项目的目录监听。单窗口一次只显示一个项目，切项目时整体换掉。
+/// 当前项目的目录监听。切项目时整体换掉。
+///
+/// 一个项目可能挂多个源文件夹，所以这里是一**组**根、而不是一个：每个根各有一套
+/// 监听和防抖线程，否则后加的根会把先加的顶掉，文件树只有最后一根是活的。
 pub struct WatchState {
     /// 连根一起记着：关闭项目时要据此判断该不该停，别停了别人的
-    current: Mutex<Option<(PathBuf, Watch)>>,
+    current: Mutex<Vec<(PathBuf, Watch)>>,
 }
 
 struct Watch {
@@ -46,114 +49,129 @@ struct Watch {
 impl WatchState {
     pub fn new() -> Self {
         Self {
-            current: Mutex::new(None),
+            current: Mutex::new(Vec::new()),
         }
     }
 
-    /// 监听 `root` 下的目录结构变化。调用方拿不到监听器也不该影响正常使用，
-    /// 所以出错只返回 Err 让上面忽略。
-    pub fn watch(&self, app: AppHandle, root: &Path) -> Result<(), String> {
-        let (tx, rx) = mpsc::channel::<Signal>();
-        let event_tx = tx.clone();
-        let event_root = root.to_path_buf();
+    /// 盯着这一组根（一个项目的全部源文件夹）。
+    ///
+    /// 整体替换当前监听：切项目时旧的逐个停掉，免得旧根目录上的事件继续发给已经切
+    /// 过去的界面。单个根起不来（目录被删了等）只跳过它，不妨碍其余根。
+    pub fn watch_roots(&self, app: AppHandle, roots: &[PathBuf]) {
+        let fresh: Vec<(PathBuf, Watch)> = roots
+            .iter()
+            .filter_map(|root| start_watch(&app, root).ok().map(|item| (root.clone(), item)))
+            .collect();
 
-        let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
-            let Ok(event) = result else {
-                // 监听本身出问题（缓冲溢出等）不该把界面搞崩，丢一轮即可
-                return;
-            };
-            if should_refresh(&event.kind, &event.paths) {
-                for dir in changed_dirs(&event_root, &event.paths) {
-                    let _ = event_tx.send(Signal::Dir(dir));
-                }
-            }
-            // 内容变了的文件：不挑事件类型，靠"现在是不是一个真实文件"兜底。
-            // 各平台的保存姿势不一样（直接写、原子替换、inotify 的 CLOSE_WRITE），
-            // 按事件类型逐个枚举迟早会漏，代价只是多几次 is_file。
-            for file in changed_files(&event_root, &event.paths) {
-                if file.is_file() {
-                    let _ = event_tx.send(Signal::File(file));
-                }
-            }
-        })
-        .map_err(|e| format!("启动目录监听失败: {e}"))?;
-
-        watcher
-            .watch(root, RecursiveMode::Recursive)
-            .map_err(|e| format!("监听目录失败 {}: {e}", root.display()))?;
-
-        let emitter = app.clone();
-        std::thread::spawn(move || {
-            // 攒批：收到第一个事件后，一直吃到静默满 DEBOUNCE 为止再发
-            while let Ok(first) = rx.recv() {
-                if matches!(first, Signal::Stop) {
-                    return;
-                }
-                let mut dirs: HashSet<PathBuf> = HashSet::new();
-                let mut files: HashSet<PathBuf> = HashSet::new();
-                // 第一个事件也要算进去，所以先存下来、进循环再归位
-                let mut pending = first;
-                loop {
-                    match pending {
-                        Signal::Stop => return,
-                        Signal::Dir(dir) => {
-                            dirs.insert(dir);
-                        }
-                        Signal::File(file) => {
-                            files.insert(file);
-                        }
-                    }
-                    match rx.recv_timeout(DEBOUNCE) {
-                        Ok(next) => pending = next,
-                        Err(RecvTimeoutError::Timeout) => break,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
-                }
-                if !dirs.is_empty() {
-                    let _ = emitter.emit(CHANGED_EVENT, sorted_paths(dirs));
-                }
-                if !files.is_empty() {
-                    let _ = emitter.emit(FILE_CHANGED_EVENT, sorted_paths(files));
-                }
-            }
-        });
-
-        let mut inner = self.current.lock().map_err(|e| e.to_string())?;
-        // 换项目：先停旧监听——丢掉 watcher 就停了，再让防抖线程收到 Stop 退出，
-        // 否则旧根目录上的事件会继续发给已经切过去的界面。
-        if let Some((_, old)) = inner.replace((
-            root.to_path_buf(),
-            Watch {
-                _watcher: watcher,
-                stop: tx,
-            },
-        )) {
+        let Ok(mut inner) = self.current.lock() else {
+            return;
+        };
+        for (_, old) in inner.drain(..) {
             let _ = old.stop.send(Signal::Stop);
         }
-        Ok(())
+        *inner = fresh;
     }
 
-    /// 换项目、关窗、退出时停掉监听（防抖线程收到 Stop 就退出）
+    /// 关窗、退出时停掉全部监听（防抖线程收到 Stop 就退出）
     pub fn stop(&self) {
         if let Ok(mut inner) = self.current.lock() {
-            if let Some((_, old)) = inner.take() {
+            for (_, old) in inner.drain(..) {
                 let _ = old.stop.send(Signal::Stop);
             }
         }
     }
 
-    /// 关掉某个项目的监听。**关的不是当前监听着的那一个就什么都不做**——
+    /// 关掉某一根的监听。**不在当前监听集合里的根什么都不做**——
     /// 否则关掉一个后台项目会把当前项目的文件树刷新一起停掉。
     pub fn stop_if(&self, root: &Path) {
         if let Ok(mut inner) = self.current.lock() {
-            let matched = inner.as_ref().is_some_and(|(watched, _)| watched == root);
-            if matched {
-                if let Some((_, old)) = inner.take() {
-                    let _ = old.stop.send(Signal::Stop);
+            let mut kept = Vec::with_capacity(inner.len());
+            for (watched, watch) in inner.drain(..) {
+                if watched == root {
+                    let _ = watch.stop.send(Signal::Stop);
+                } else {
+                    kept.push((watched, watch));
                 }
             }
+            *inner = kept;
         }
     }
+}
+
+/// 为一根建一套监听：notify 的 watcher + 一个攒批的防抖线程。
+///
+/// 拆出来是因为一个项目可能挂多个根——每组各自持有自己的 `event_root` 做归属过滤，
+/// 共用一个 watcher 的话就分不清事件落在哪个根上了。
+fn start_watch(app: &AppHandle, root: &Path) -> Result<Watch, String> {
+    let (tx, rx) = mpsc::channel::<Signal>();
+    let event_tx = tx.clone();
+    let event_root = root.to_path_buf();
+
+    let mut watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
+        let Ok(event) = result else {
+            // 监听本身出问题（缓冲溢出等）不该把界面搞崩，丢一轮即可
+            return;
+        };
+        if should_refresh(&event.kind, &event.paths) {
+            for dir in changed_dirs(&event_root, &event.paths) {
+                let _ = event_tx.send(Signal::Dir(dir));
+            }
+        }
+        // 内容变了的文件：不挑事件类型，靠"现在是不是一个真实文件"兜底。
+        // 各平台的保存姿势不一样（直接写、原子替换、inotify 的 CLOSE_WRITE），
+        // 按事件类型逐个枚举迟早会漏，代价只是多几次 is_file。
+        for file in changed_files(&event_root, &event.paths) {
+            if file.is_file() {
+                let _ = event_tx.send(Signal::File(file));
+            }
+        }
+    })
+    .map_err(|e| format!("启动目录监听失败: {e}"))?;
+
+    watcher
+        .watch(root, RecursiveMode::Recursive)
+        .map_err(|e| format!("监听目录失败 {}: {e}", root.display()))?;
+
+    let emitter = app.clone();
+    std::thread::spawn(move || {
+        // 攒批：收到第一个事件后，一直吃到静默满 DEBOUNCE 为止再发
+        while let Ok(first) = rx.recv() {
+            if matches!(first, Signal::Stop) {
+                return;
+            }
+            let mut dirs: HashSet<PathBuf> = HashSet::new();
+            let mut files: HashSet<PathBuf> = HashSet::new();
+            // 第一个事件也要算进去，所以先存下来、进循环再归位
+            let mut pending = first;
+            loop {
+                match pending {
+                    Signal::Stop => return,
+                    Signal::Dir(dir) => {
+                        dirs.insert(dir);
+                    }
+                    Signal::File(file) => {
+                        files.insert(file);
+                    }
+                }
+                match rx.recv_timeout(DEBOUNCE) {
+                    Ok(next) => pending = next,
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            if !dirs.is_empty() {
+                let _ = emitter.emit(CHANGED_EVENT, sorted_paths(dirs));
+            }
+            if !files.is_empty() {
+                let _ = emitter.emit(FILE_CHANGED_EVENT, sorted_paths(files));
+            }
+        }
+    });
+
+    Ok(Watch {
+        _watcher: watcher,
+        stop: tx,
+    })
 }
 
 /// 排序只为让同样的变更给出同样的载荷，方便日志和测试比对

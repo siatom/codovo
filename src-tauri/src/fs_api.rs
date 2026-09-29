@@ -178,39 +178,68 @@ pub struct ImageContent {
     too_large: bool,
 }
 
-/// 打开 / 切换项目：登记这个根，并把目录监听切过来。
+/// 打开 / 切换项目：登记这个项目的**全部源文件夹**，并把目录监听整体换成这一组。
 ///
-/// 监听失败不影响用——文件树还有刷新按钮，所以只吞掉错误，不把切换搞失败。
+/// 一次收一组而不是逐个调，是因为监听是「整组替换」的：逐个来的话后一个根会把前一个
+/// 顶掉，文件树只有最后一根是活的。返回 canonical 后的路径列表，顺序跟传入一致
+/// （`roots[0]` 是主要根）。
+///
+/// 监听失败不影响用——文件树还有刷新按钮——所以只吞掉错误，不把切换搞失败。
 #[tauri::command]
 pub fn project_activate(
     app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
     watch: tauri::State<'_, crate::watcher::WatchState>,
-    path: String,
-) -> Result<String, String> {
-    let target = PathBuf::from(&path);
-    if !target.is_dir() {
-        return Err(format!("不是有效的目录: {path}"));
+    roots: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut resolved = Vec::with_capacity(roots.len());
+    for raw in &roots {
+        let target = PathBuf::from(raw);
+        if !target.is_dir() {
+            return Err(format!("不是有效的目录: {raw}"));
+        }
+        resolved.push(state.register(target)?);
     }
-    let root = state.register(target)?;
-    let _ = watch.watch(app, &root);
-    Ok(display(&root))
+    watch.watch_roots(app, &resolved);
+    Ok(resolved.iter().map(|root| display(root)).collect())
 }
 
-/// 关闭一个项目：收掉它的终端与 opencode 进程、停掉它的目录监听（只在正听着它时），
-/// 并把根从白名单摘掉。前端「移除项目」和「关闭项目」都走这里。
+/// 只登记这一组根、**不换目录监听**：编辑一个「开着、但不是当前显示」的项目时用。
+///
+/// 监听只跟当前项目（切过去时才由 `project_activate` 整体换），所以给后台项目改
+/// 源文件夹时不能顺手 activate——那会把监听抢到它身上，当前项目的文件树就不刷了。
+#[tauri::command]
+pub fn project_register(
+    state: tauri::State<'_, FsState>,
+    roots: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut resolved = Vec::with_capacity(roots.len());
+    for raw in &roots {
+        let target = PathBuf::from(raw);
+        if !target.is_dir() {
+            return Err(format!("不是有效的目录: {raw}"));
+        }
+        resolved.push(state.register(target)?);
+    }
+    Ok(resolved.iter().map(|root| display(root)).collect())
+}
+
+/// 关闭一个项目：收掉它每个源文件夹的终端与 opencode 进程、停掉各自的目录监听
+/// （只在正听着它时），并把根从白名单摘掉。前端「移除项目」和「关闭项目」都走这里。
 #[tauri::command]
 pub fn project_close(
     state: tauri::State<'_, FsState>,
     watch: tauri::State<'_, crate::watcher::WatchState>,
     pty: tauri::State<'_, crate::pty::PtyState>,
     agent: tauri::State<'_, crate::agent::AgentState>,
-    root: String,
+    roots: Vec<String>,
 ) {
-    agent.kill_project(&root);
-    let _ = pty.kill_project(&root);
-    watch.stop_if(Path::new(&root));
-    state.forget(&root);
+    for root in &roots {
+        agent.kill_project(root);
+        let _ = pty.kill_project(root);
+        watch.stop_if(Path::new(root));
+        state.forget(root);
+    }
 }
 
 /// 列目录。抽出来是为了能在单元测试里直接验证过滤/排序规则。

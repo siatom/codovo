@@ -51,6 +51,7 @@ pub fn run() {
             pty::pty_kill,
             shells::shell_list,
             fs_api::project_activate,
+            fs_api::project_register,
             fs_api::project_close,
             fs_api::fs_list_dir,
             fs_api::fs_search_files,
