@@ -19,6 +19,11 @@ use tauri::{Emitter, Manager};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例必须第一个注册：第二个实例被这个插件挡下后会立刻退出，不该再跑后面插件的 setup。
+        // 回调在「已经在跑的那个」里执行——它可能被收进了托盘，把主窗口唤回来
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
