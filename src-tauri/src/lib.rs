@@ -11,9 +11,10 @@ mod pty;
 mod secrets;
 mod shell_env;
 mod shells;
+mod tray;
 mod watcher;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,6 +26,19 @@ pub fn run() {
         .manage(fs_api::FsState::new())
         .manage(watcher::WatchState::new())
         .manage(agent::AgentState::new())
+        .setup(|app| {
+            // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
+            tray::init(app.handle())?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关窗一律先拦下：界面还没告诉我们是收进托盘还是真退出。判断依据
+            // （开着几个项目、用户是不是勾了「不再提醒」）全在前端，后端只管转发
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.emit("app://close-requested", ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -83,6 +97,8 @@ pub fn run() {
             agent::agent_abort,
             agent::agent_delete_session,
             agent::agent_rename_session,
+            tray::app_quit,
+            tray::app_hide_to_tray,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
@@ -100,6 +116,9 @@ pub fn run() {
                     state.stop();
                 }
             }
+            // macOS 点 Dock 图标：窗口可能被收起来了，亮回来（关窗只隐藏，不走 Exit）
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => tray::show_main(app),
             _ => {}
         });
 }

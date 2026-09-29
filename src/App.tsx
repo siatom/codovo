@@ -23,6 +23,7 @@ import {
   samePath,
   saveWorkspace,
 } from "./lib/fs";
+import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
 /** 取路径最后一段当显示名；盘符根这类取不到就退回原串 */
 function baseName(path: string): string {
@@ -53,6 +54,29 @@ function Shell() {
 
   /** 关项目时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
+
+  /**
+   * 关窗口那一下已经被后端拦下了（`prevent_close`），是收进托盘还是真退出由这儿说了算。
+   * 项目列表变得勤，用 ref 兜住最新值、监听只注册一次——每次变化都重注册
+   * 会跟卸载抢时间，回调可能打到已经被清的监听上。
+   */
+  const onCloseRef = useRef<() => void>(() => {});
+  onCloseRef.current = () => {
+    if (projects.length === 0) {
+      // 没项目就别留个空壳进程在后台
+      void quitApp();
+    } else {
+      void hideToTray();
+    }
+  };
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    void onCloseRequested(() => onCloseRef.current()).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, []);
 
   /**
    * root -> 该项目的两个 handle。侧栏的 AI CLI 命令、编辑器浮窗得打到**当前项目**
