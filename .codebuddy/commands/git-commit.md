@@ -51,5 +51,5 @@ EOF
 ## 4. 收尾
 
 - **该验证的验证完再提交**：前端 `pnpm build`、后端 `cd src-tauri && cargo test --lib`（+ `cargo clippy`）、界面改动走 `scripts/cdp-check.cjs`。没验证过的改动先别提交。
-- 报告分了几条、每条 `hash + 标题`，并说明**改动留在本地、未 push**。
+- 报告分了几条、每条 `hash + 标题`，并说明**改动留在本地、未 push**；要推到远程走 `/git-push`。
 - 绝不 `--amend`、绝不 `--no-verify`、绝不动 git config。
