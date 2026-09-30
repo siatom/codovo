@@ -25,6 +25,7 @@ import {
   IconExternalLink,
   IconFeedback,
   IconFolder,
+  IconFolderOpen,
   IconFolderPlus,
   IconMoon,
   IconMore,
@@ -408,7 +409,8 @@ export function Sidebar({
                     title={project.roots.map((root) => toDisplayPath(root)).join("\n")}
                     className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                   >
-                    <IconFolder />
+                    {/* 当前项目用打开态的文件夹，其余闭合，列表里一眼看出正在看哪个 */}
+                    {isCurrent ? <IconFolderOpen /> : <IconFolder />}
                     <span className="truncate">{project.name}</span>
                     {/* 已打开的项目在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
                     {isOpen && (

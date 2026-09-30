@@ -87,6 +87,13 @@ const FOLDER =
 
 export const IconFolder = icon(<path d={FOLDER} />);
 
+// 文件夹打开态：右侧多一个斜出的盖板，和闭合态一眼区分
+export const IconFolderOpen = icon(
+  <path
+    d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"
+  />,
+);
+
 export const IconFolderPlus = icon(
   <>
     <path d="M12 10v6M9 13h6" />
