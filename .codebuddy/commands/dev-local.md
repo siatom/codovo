@@ -7,6 +7,16 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 
 开工前先用 TaskCreate 建一条待办：`启动 dev`。进入本节就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
 
+## 0. 命令环境（先按系统选对再动手）
+
+`pnpm` / `node` 一类的命令在三端的可用 shell 不一样，选错要么直接崩、要么拿不到环境。**每一步开始前先确认当前系统，再用对应环境执行**：
+
+- **Windows**：一律用 **PowerShell 工具**，别用 Bash。Git Bash（MSYS）下 Node 设进程标题会撞 `Assertion failed: process_title, file src\win\util.c`，`pnpm build` 一启动就整个挂掉，根本跑不到真正的构建。
+- **macOS**：用 **zsh**——命令包一层 `zsh -lc '<cmd>'`，跟 GUI 进程的 login shell 环境保持一致（Node / pnpm / cargo 常靠 `~/.zprofile` 里的 PATH）。
+- **Linux**：用系统**默认 shell**（Bash 工具直接跑即可）。
+
+下文凡是给出 shell 片段的地方，**Windows 看 PowerShell / MSYS 版、macOS / Linux 看 Bash 版**；只给一份的时候默认是 Bash，macOS 上记得包 `zsh -lc`。
+
 ## 1. 启动 dev
 
 *（先把「启动 dev」标为 `in_progress`，完成后再标 `completed`。）*
@@ -15,63 +25,98 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 
 ### 1a. 启动前清障
 
-`pnpm tauri dev` 的两个最常见失败，都是上一次没退干净留下的，先扫一遍：
+`pnpm tauri dev` 的两个最常见失败，都是上一次没退干净留下的，先扫一遍。**只做当前系统那一套**。
 
-1. **5273 端口被占**（vite 孤儿进程）：
+#### 1a-1. 5273 端口被占（vite 孤儿进程）
 
+**Windows（Bash 工具）**：
 ```
 netstat -ano | grep ":5273" | grep LISTENING
 ```
+有输出说明被占。用 **PowerShell 工具** `Get-CimInstance Win32_Process` 查那个 PID 的命令行，确认是本项目的 vite/node（命令行含 `D:\CodeProjects\CodeDock`）后再停掉它；父进程链还在就照 `ParentProcessId` 一并停。
 
-有输出说明被占。用 PowerShell 工具 `Get-CimInstance Win32_Process` 查那个 PID 的命令行，确认是本项目的 vite/node（命令行含 `D:\CodeProjects\CodeDock`）后再停掉它；父进程链还在就照 `ParentProcessId` 一并停。
+**macOS / Linux（Bash 工具）**：
+```
+lsof -nP -iTCP:5273 -sTCP:LISTEN          # 没装 lsof 就退到：ss -ltnp | grep ':5273'
+```
+拿到 PID 后用 `ps -p <pid> -o args=` 确认命令行属于本项目（含本仓库路径）再停：
+```
+kill -TERM <pid>          # 赖着不走再：kill -KILL <pid>
+```
+
 **别误杀**：CodeBuddy 自己的 node 进程、别的项目的 vite 都不动。
 
-2. **无窗口的 dev 版僵尸**（锁着 `target\debug\codedock.exe`，会让 cargo 报 `os error 5`）：
+#### 1a-2. 残留的 dev 版进程（锁着可执行文件，会让下一轮编译失败）
 
-用 PowerShell 工具按 CommandLine 找 `target\debug\codedock.exe`：
+**Windows（PowerShell 工具）**：按 CommandLine 找 `target\debug\codedock.exe`：
 - 窗口还活着（`tasklist /V` 里 Window Title 不是 `N/A`）→ 是用户正在用的 dev 实例，**别动**，报告并停下。
 - Window Title 是 `N/A`（无窗口僵尸）→ 停掉它。
+
+**macOS / Linux（Bash 工具）**：
+```
+pgrep -af 'target/debug/codedock'         # 排除已安装版（路径在 /Applications、/usr/bin）
+```
+- **macOS**：用 `osascript -e 'tell application "System Events" to count windows of (first process whose unix id is <pid>)'` 数窗口。0 就是残留，可以停；非 0 或**脚本报错（没授权辅助功能）**都按「在用」处理，**别动**，报告并停下。
+- **Linux**：没有统一的、可依赖的窗口检测手段（`xdotool` / `wmctrl` 未必装），**一律按「可能在用」处理**——报告 PID 和命令行后停下，由用户自己确认。只有用户明确说「是残留，关掉」时再 `kill -TERM <pid>`。
 
 两项都干净就直接进 1b。
 
 ### 1b. 启动
 
-用 Bash 工具的 `nohup ... &`，**不要**用 `run_in_background`（它会被工具回收，留下没有窗口的僵尸 `codedock.exe`，还锁着 exe 让下次编译报 `os error 5`）。日志**重定向到项目外**（写项目内会触发 HMR 重载）。
+用 Bash 工具的 `nohup ... &`，**不要**用 `run_in_background`（它会被工具回收，留下没有窗口的僵尸进程，还锁着可执行文件让下次编译失败）。日志**重定向到项目外**（写项目内会触发 HMR 重载）。
 
-**用 `scripts/dev-local.sh` 包一层启动**——它把「跑 dev」和「退出后清场」串在同一进程里：用户关掉 dev 窗口、或 CLI 挂掉之后，它会自动收掉还占着 5273 的 vite 孤儿，保证不留占用：
+**用 `scripts/dev-local.sh` 包一层启动**——它把「跑 dev」和「退出后清场」串在同一进程里：用户关掉 dev 窗口、或 CLI 挂掉之后，它会自动收掉还占着 5273 的 vite 孤儿，保证不留占用（端口探测 / 杀进程按系统分支，三端都可用）。
 
+**Windows（Bash 工具）**：
 ```
 nohup bash scripts/dev-local.sh > "$TEMP/codedock-dev.log" 2>&1 &
+```
+
+**macOS（Bash 工具，包 `zsh -lc` 让脚本里的 pnpm 拿到 login PATH）**：
+```
+nohup zsh -lc 'bash scripts/dev-local.sh' > "${TMPDIR:-/tmp}/codedock-dev.log" 2>&1 &
+```
+
+**Linux（Bash 工具）**：
+```
+nohup bash scripts/dev-local.sh > "${TMPDIR:-/tmp}/codedock-dev.log" 2>&1 &
 ```
 
 **不要**直接 `nohup pnpm tauri dev ... &`——那样窗口一关就没人收尾，残留的 vite 会让下一次启动失败。
 
 ### 1c. 校验；没起来就自动修一次再重试
 
-别等固定时长——每 ~15 秒查一次，最多等 3 分钟。**下面两条都满足**才算起来：
+别等固定时长——每 ~15 秒查一次，最多等 3 分钟。**下面两条都满足**才算起来。
 
+vite 在监听（**Windows**）：
 ```
-netstat -ano | grep ":5273" | grep LISTENING     # vite 在监听
+netstat -ano | grep ":5273" | grep LISTENING
+```
+vite 在监听（**macOS / Linux**）：
+```
+lsof -nP -iTCP:5273 -sTCP:LISTEN          # 没装 lsof 就退到：ss -ltnp | grep ':5273'
 ```
 
-再用 PowerShell 工具确认存在 `target\debug\codedock.exe` 进程（别错认成发布版 `AppData\Local\CodeDock\codedock.exe`）。
+再用对应工具确认 dev 版进程在跑，**别错认成已安装版**（Windows 的 `AppData\Local\CodeDock\codedock.exe`、macOS 的 `/Applications/CodeDock.app`、Linux 的 `/usr/bin/codedock`）：
+- **Windows（PowerShell 工具）**：查 `target\debug\codedock.exe` 进程。
+- **macOS / Linux（Bash 工具）**：`pgrep -af 'target/debug/codedock'`。
 
 **别读它的退出码**：cargo 报错时应用也可能已经正常起来了，判断起没起来只看上面两条。
 
-超过 3 分钟还没起来，就读日志（`Read` `$TEMP/codedock-dev.log`）定位，按下表修完**重试一次**——只重试一次，还失败就停下报告，别无限循环：
+超过 3 分钟还没起来，就读日志（`Read` 日志文件：Windows `$TEMP/codedock-dev.log`、macOS / Linux `${TMPDIR:-/tmp}/codedock-dev.log`）定位，按下表修完**重试一次**——只重试一次，还失败就停下报告，别无限循环：
 
 | 日志症状 | 原因 | 处理 |
 |---|---|---|
 | `Port 5273 is already in use` | vite 孤儿占了端口 | 按 1a-1 停掉占用进程，重跑 1b |
-| `failed to remove file ... os error 5`、`拒绝访问` | 无窗口的 codedock.exe 锁着 exe | 按 1a-2 停掉僵尸再重跑；有窗口的在跑就别动，改为报告用户 |
+| `os error 5` / `拒绝访问`（Windows）、`Text file busy` / `ETXTBSY`（macOS / Linux） | 残留的 dev 进程锁着可执行文件 | 按 1a-2 停掉再重跑；有窗口 / 可能在用的别动，改为报告用户 |
 | `error: could not compile`、tsc / 类型报错 | 代码问题 | **不要改代码**，直接停下贴原始错误 |
 
 修复只允许动**进程和端口**，**不改任何源代码**。
 
 - 起来之后这条命令**常驻**：vite dev server 一直跑（前端 HMR），改 `src-tauri/*.rs` 会自动重编重启。别等它退出。
-- 报告进程 PID。**不要**自动关掉它，交给用户。
+- 报告进程 PID 和平台分支。**不要**自动关掉它，交给用户。
 
 另外两条已知坑：
 
-- 要挂 CDP 调试端口就用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup pnpm tauri dev > "$TEMP/codedock-dev.log" 2>&1 &`。发布版开着时它和 dev 版共用同一个 WebView2 浏览器进程，9222 不会监听——得先请用户关掉发布版（**别**自己 taskkill）。
+- **CDP 调试端口只在 Windows 可用**。`scripts/cdp-check.cjs` 依赖 WebView2 的 CDP，Windows 上用 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup bash scripts/dev-local.sh > "$TEMP/codedock-dev.log" 2>&1 &`。macOS 是 WKWebView、Linux 是 WebKitGTK，都没有这套 CDP 端口，该脚本在两端跑不通，改界面要么换回 Windows 验证，要么用各平台自带的开发者工具。Windows 上还有个前置条件：发布版开着时它和 dev 版共用同一个 WebView2 浏览器进程，9222 不会监听——得先请用户关掉发布版（**别**自己 taskkill）。
 - 本项目常是「用 CodeDock 开发 CodeDock」：dev 模式下改工作区内任意文件都会触发 HMR 重载（终端重置、编辑器清空），要在这上面开发就先换个工作区。
