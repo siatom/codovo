@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { secretStatus, setSecret } from "./secrets";
+import { defaultShortcuts, resolveShortcuts } from "./shortcuts";
 
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
@@ -128,6 +129,8 @@ export interface Settings {
   rightChangesVisible: boolean;
   rightSearchVisible: boolean;
   rightBrowserVisible: boolean;
+  /** 应用命令的键位，按命令 id 索引；值的写法见 lib/shortcuts.ts */
+  shortcuts: Record<string, string>;
 }
 
 const SETTINGS_KEY = "codedock.settings";
@@ -194,6 +197,7 @@ const DEFAULTS: Settings = {
   rightChangesVisible: true,
   rightSearchVisible: true,
   rightBrowserVisible: true,
+  shortcuts: defaultShortcuts(),
 };
 
 function clampSize(value: unknown, fallback: number): number {
@@ -431,6 +435,8 @@ function readSaved(): Settings {
       raw.rightBrowserVisible,
       DEFAULTS.rightBrowserVisible,
     ),
+    // 老版本的设置里没有这个字段，resolveShortcuts 会给出厂默认
+    shortcuts: resolveShortcuts(raw.shortcuts),
   };
 }
 
@@ -540,6 +546,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       // 同 aiCommands：DEFAULTS 是模块级常量，层里带数组，必须换成新对象
       agentGlobal: emptyAgentLayer(),
       agentProjects: {},
+      // 同 aiCommands：DEFAULTS 是模块级常量，键位表也得换成新的，免得被就地改到
+      shortcuts: defaultShortcuts(),
     });
   }, []);
 

@@ -48,6 +48,7 @@ import {
   type RemoteModel,
 } from "../lib/ai";
 import { deleteSecret, setSecret } from "../lib/secrets";
+import { SHORTCUT_COMMANDS, formatShortcut, shortcutFromEvent } from "../lib/shortcuts";
 import {
   checkDependencies,
   installDependency,
@@ -69,6 +70,7 @@ const TABS = [
   { id: "appearance", label: "外观" },
   { id: "terminal", label: "终端" },
   { id: "editor", label: "编辑器" },
+  { id: "shortcuts", label: "快捷键" },
   { id: "agent", label: "智能体" },
   { id: "dependencies", label: "依赖" },
 ] as const;
@@ -186,6 +188,89 @@ function Section({
       </div>
       <div className="flex flex-col gap-3">{children}</div>
     </section>
+  );
+}
+
+/** 录制式键位控件：点一下进入录制，按下目标组合键即捕获；Esc 取消，冲突时留在录制态 */
+function ShortcutRecorder({
+  combo,
+  onRecord,
+}: {
+  combo: string;
+  /** 返回错误信息表示被拒（如与别的命令冲突）；返回 null 表示已接受 */
+  onRecord: (next: string) => string | null;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [error, setError] = useState("");
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  // 用 ref 存最新回调：父组件每次渲染都会传新函数，进了依赖数组会反复解绑重挂
+  const recordRef = useRef(onRecord);
+  recordRef.current = onRecord;
+
+  useEffect(() => {
+    if (!recording) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // 录制期间吃掉所有按键，别让它们去触发别的快捷键或输入
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setRecording(false);
+        setError("");
+        return;
+      }
+      const next = shortcutFromEvent(event);
+      if (!next) return; // 纯修饰键 / 保留键：继续等目标键
+      const message = recordRef.current(next);
+      if (message) {
+        setError(message);
+        return;
+      }
+      setError("");
+      setRecording(false);
+    };
+    const onBlur = () => {
+      setRecording(false);
+      setError("");
+    };
+    // 点到别处就退出录制：否则点到另一个录制控件会同时挂两份监听，按键被处理两遍
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (buttonRef.current && target instanceof Node && buttonRef.current.contains(target)) {
+        return;
+      }
+      setRecording(false);
+      setError("");
+    };
+    // 捕获阶段挂到 window：录制期间焦点在哪都收得到，也抢在设置面板的 Esc 关弹窗之前
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("blur", onBlur);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+    };
+  }, [recording]);
+
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2">
+      <button
+        type="button"
+        ref={buttonRef}
+        onClick={() => {
+          setRecording((current) => !current);
+          setError("");
+        }}
+        className={`min-w-28 rounded-md border px-2 py-1 text-left text-[12px] ${
+          recording
+            ? "border-accent text-accent"
+            : "border-line-strong text-fg hover:border-accent"
+        }`}
+      >
+        {recording ? "按下组合键…" : formatShortcut(combo)}
+      </button>
+      {error && <span className="shrink-0 text-[11px] text-danger">{error}</span>}
+    </div>
   );
 }
 
@@ -1720,6 +1805,16 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const resizeRef = useRef<ResizeDrag | null>(null);
   const moveRef = useRef<MoveDrag | null>(null);
 
+  /** 落一条键位：与别的命令撞键就拒绝并回一句提示，否则写进设置。返回 null 表示已接受 */
+  const applyShortcut = (id: string, combo: string): string | null => {
+    const owner = SHORTCUT_COMMANDS.find(
+      (command) => command.id !== id && settings.shortcuts[command.id] === combo,
+    );
+    if (owner) return `与「${owner.label}」冲突`;
+    update({ shortcuts: { ...settings.shortcuts, [id]: combo } });
+    return null;
+  };
+
   // 右边栏只剩一个模块开着时，它的「隐藏」不能再点，否则右边栏就空了。
   // 顺序照 ToolRail 的注册表来，加模块时这里跟着补一行
   const rightVisible: Record<ToolId, boolean> = {
@@ -2340,6 +2435,36 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                 </>
               )}
 
+              {tab === "shortcuts" && (
+                <Section
+                  title="应用命令"
+                  hint="点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。"
+                >
+                  {SHORTCUT_COMMANDS.map((command) => (
+                    <Field
+                      key={command.id}
+                      label={command.label}
+                      hint={`默认 ${formatShortcut(command.defaultCombo)}`}
+                      action={
+                        <button
+                          type="button"
+                          disabled={settings.shortcuts[command.id] === command.defaultCombo}
+                          onClick={() => applyShortcut(command.id, command.defaultCombo)}
+                          className="rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:text-fg-muted"
+                        >
+                          恢复默认
+                        </button>
+                      }
+                    >
+                      <ShortcutRecorder
+                        combo={settings.shortcuts[command.id]}
+                        onRecord={(next) => applyShortcut(command.id, next)}
+                      />
+                    </Field>
+                  ))}
+                </Section>
+              )}
+
               {tab === "dependencies" && (
                 <>
                   <Section
@@ -2645,7 +2770,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
 
       {confirmReset && (
         <ConfirmDialog
-          message="恢复默认设置？模型提供商、密钥、AI CLI 列表、字体、主题和右栏模块都会回到初始值，无法撤销。"
+          message="恢复默认设置？模型提供商、密钥、AI CLI 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。"
           confirmLabel="恢复默认"
           onConfirm={() => {
             reset();

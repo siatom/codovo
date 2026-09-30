@@ -10,6 +10,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { isPrimaryModifier } from "../lib/keys";
+import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
@@ -99,6 +100,10 @@ export const TerminalSession = forwardRef<
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+  // 关标签的键位可配置，而下面的 keydown 监听挂一次就不重建（依赖只有 [sessionKey, root]），
+  // 所以拿 ref 存最新值，改键位立刻生效
+  const closeComboRef = useRef(settings.shortcuts["closeTab"]);
+  closeComboRef.current = settings.shortcuts["closeTab"];
   // 建实例的 effect 依赖是 [sessionKey, root]，塞不进这个回调：它每次渲染都变，
   // 进了依赖就等于「每关一个标签就重开 shell」。用 ref 存最新的那份。
   const onRequestCloseRef = useRef(onRequestClose);
@@ -246,12 +251,19 @@ export const TerminalSession = forwardRef<
     };
 
     /**
-     * 快捷键认领：复制/粘贴，以及关闭当前标签页。用捕获阶段 + stopPropagation 抢在
-     * xterm 自己的 textarea 监听之前处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被
-     * 发成 \x03（中断）、Ctrl+W 会变成 \x17 发给 shell（删词）。
-     * 认领条件都带前缀键，普通输入不受影响。
+     * 快捷键认领：关闭当前终端标签（键位可配置，和编辑器共用「关闭标签页」这条命令），
+     * 以及复制/粘贴。用捕获阶段 + stopPropagation 抢在 xterm 自己的 textarea 监听之前
+     * 处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被发成 \x03（中断）。
+     *
+     * 关闭键位先判：它可能不是主修饰键（比如用户改成 Alt+W），不能受 isPrimaryModifier 限制。
      */
     const onKeyDown = (event: KeyboardEvent) => {
+      if (matchesShortcut(event, closeComboRef.current)) {
+        event.preventDefault();
+        event.stopPropagation();
+        onRequestCloseRef.current?.();
+        return;
+      }
       if (!isPrimaryModifier(event)) return;
       const key = event.key.toLowerCase();
       if (key === "c") {
@@ -264,10 +276,6 @@ export const TerminalSession = forwardRef<
         event.preventDefault();
         event.stopPropagation();
         pasteFromClipboard();
-      } else if (key === "w") {
-        event.preventDefault();
-        event.stopPropagation();
-        onRequestCloseRef.current?.();
       }
     };
     container.addEventListener("keydown", onKeyDown, true);

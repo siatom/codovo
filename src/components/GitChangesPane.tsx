@@ -33,6 +33,8 @@ import {
   type GitMark,
 } from "../lib/git";
 import { explainChange, generateCommitMessage, useEffectiveAiConfig } from "../lib/ai";
+import { useSettings } from "../lib/settings";
+import { matchesShortcut } from "../lib/shortcuts";
 import type { DiffSource } from "../lib/tabs";
 import type { GitCommit, GitCommitFile, GitStatusPayload, DiscardSource } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
@@ -617,6 +619,7 @@ function CommitRow({
  * 这里的早退只是兜底。
  */
 export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
+  const { settings } = useSettings();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1019,11 +1022,10 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
   }, []);
 
   const onMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter 留给换行（提交信息常常是多行），提交用 Ctrl/Cmd+Enter
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-      event.preventDefault();
-      commit();
-    }
+    // Enter 留给换行（提交信息常常是多行），提交走可配置的快捷键（默认 Ctrl/Cmd+Enter）
+    if (!matchesShortcut(event, settings.shortcuts["git.commit"])) return;
+    event.preventDefault();
+    commit();
   };
 
   /**

@@ -12,7 +12,7 @@ import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
 import { renderMarkdown } from "../lib/markdown";
-import { isPrimaryModifier } from "../lib/keys";
+import { parseShortcut, matchesShortcut } from "../lib/shortcuts";
 import {
   gitFileDiff,
   isPathInside,
@@ -44,6 +44,41 @@ const TABS_MENU_ITEM =
 /** 浮窗按钮：两个动作同款，禁用态（智能体没开）不给 hover 反馈 */
 const FLOAT_BAR_BUTTON =
   "flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
+
+/** Monaco 的键名和 DOM 的 event.key 有几处对不上，别名一下 */
+const MONACO_KEY_ALIASES: Record<string, string> = {
+  ArrowUp: "UpArrow",
+  ArrowDown: "DownArrow",
+  ArrowLeft: "LeftArrow",
+  ArrowRight: "RightArrow",
+};
+
+/**
+ * 把配置里的键位字符串翻成 Monaco 的 keybinding 位掩码。翻不出来（键名 Monaco 不认）
+ * 就返回 null，调用方换成"不注册键位"，而不是抛错。
+ *
+ * Mod 走 `CtrlCmd`：Monaco 自己按平台映射成 Cmd / Ctrl，正好对上配置里 Mod 的语义。
+ */
+function toMonacoKeybinding(combo: string): number | null {
+  const parsed = parseShortcut(combo);
+  if (!parsed) return null;
+  const codes = monaco.KeyCode as unknown as Record<string, number>;
+  const name = MONACO_KEY_ALIASES[parsed.key] ?? parsed.key;
+  let code: number | undefined;
+  if (/^[A-Z]$/.test(name)) code = codes[`Key${name}`];
+  else if (/^[0-9]$/.test(name)) code = codes[`Digit${name}`];
+  else code = codes[name];
+  if (code === undefined) return null;
+
+  let mods = 0;
+  // Monaco 没有单独的 Ctrl 修饰位：CtrlCmd 在 mac 是 Cmd、其余平台是 Ctrl，正好覆盖
+  // Mod；显式写的 Ctrl token 也并到这里（mac 上会被当成 Cmd，属罕见边角，不额外处理）
+  if (parsed.mod || parsed.ctrl) mods |= monaco.KeyMod.CtrlCmd;
+  if (parsed.meta) mods |= monaco.KeyMod.WinCtrl;
+  if (parsed.shift) mods |= monaco.KeyMod.Shift;
+  if (parsed.alt) mods |= monaco.KeyMod.Alt;
+  return mods | code;
+}
 
 interface EditorPaneProps {
   /** 已打开的标签，按打开顺序 */
@@ -120,6 +155,8 @@ export interface EditorPaneHandle {
    * 文件又写回磁盘。
    */
   dropPaths: (paths: string[]) => void;
+  /** 关掉当前标签页。焦点在右侧面板（文件树 / 变更）里时走这个入口 */
+  closeActiveTab: () => void;
 }
 
 type Status =
@@ -202,6 +239,11 @@ export function EditorPane({
   const diffRevealPendingRef = useRef(false);
 
   const activeRef = useRef<Tab | null>(active);
+  /**
+   * 关标签的实现要经 ref 暴露成 `closeActiveTab` 句柄（右侧面板也用它）。它定义在
+   * useImperativeHandle 之后，塞不进那个依赖数组，只能用 ref 兜住最新那份。
+   */
+  const closeTabRef = useRef<(tab: Tab) => void>(() => {});
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [diffStatus, setDiffStatus] = useState<Status>({ kind: "idle" });
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
@@ -515,6 +557,12 @@ export function EditorPane({
           disposeModels((path) => paths.some((item) => isPathInside(path, item))),
         );
       },
+
+      // 关掉当前标签。焦点在右侧面板里时由 ToolPane 调它——差异标签就开在这根标签栏上
+      closeActiveTab: () => {
+        const current = activeRef.current;
+        if (current) closeTabRef.current(current);
+      },
     }),
     [disposeModels, forgetKeys],
   );
@@ -663,17 +711,8 @@ export function EditorPane({
       if (event.selection.isEmpty()) setFloatBar(null);
     });
     const scrollSub = editor.onDidScrollChange(() => setFloatBar(null));
-    const saveAction = editor.addAction({
-      id: "codedock.save",
-      label: "保存文件",
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS],
-      run: () => {
-        void saveRef.current();
-      },
-    });
 
     return () => {
-      saveAction.dispose();
       contentSub.dispose();
       mouseUpSub.dispose();
       selectionSub.dispose();
@@ -693,6 +732,25 @@ export function EditorPane({
       diffModelsRef.current.clear();
     };
   }, [syncDirty, showFloatBar]);
+
+  // 保存键可配置：单独挂一个 effect，改键位时重建 action。
+  // 不能塞进上面那个建实例的 effect——它的依赖里没有 settings，改键位永远不会生效。
+  // 声明在建实例之后，首次挂载跑起来时 editorRef 已经是新的编辑器了。
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const keybinding = toMonacoKeybinding(settings.shortcuts["editor.save"]);
+    const action = editor.addAction({
+      id: "codedock.save",
+      label: "保存文件",
+      // 键位翻不出来就不注册键位，保存按钮和菜单里的该项仍可用
+      keybindings: keybinding === null ? [] : [keybinding],
+      run: () => {
+        void saveRef.current();
+      },
+    });
+    return () => action.dispose();
+  }, [settings.shortcuts]);
 
   // 切主题不重建 editor，只换配色（差分编辑器共用全局主题）
   useEffect(() => {
@@ -918,21 +976,23 @@ export function EditorPane({
     },
     [dirtyPaths, onClose, disposeModels, forgetKeys],
   );
+  closeTabRef.current = closeTab;
 
   /**
-   * Ctrl/Cmd+W 关掉当前标签（文件标签和差异标签同一根标签栏，走同一套逻辑）。
+   * 关掉当前标签（文件标签和差异标签同一根标签栏，走同一套逻辑）。键位可配置，
+   * 默认 Ctrl/Cmd+W。
    *
    * 挂在编辑器区最外层、**捕获阶段**：焦点在标签栏按钮上、或落在 Monaco 里都收得到，
-   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。所以只有焦点在编辑器区内才生效，
-   * 焦点在文件树/终端时按不到这儿。
+   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。焦点在右侧面板里时另有一份处理
+   * （见 ToolPane），所以这里只管编辑器区内。
    */
   const onPaneKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (!isPrimaryModifier(event) || event.key.toLowerCase() !== "w") return;
+    if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
     const current = activeRef.current;
     if (!current) return;
     event.preventDefault();
     event.stopPropagation();
-    closeTab(current);
+    closeTabRef.current(current);
   };
 
   const isDiffTab = active?.kind === "diff";

@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { GitController, GitMark } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import { folderName } from "../lib/projects";
+import { useSettings } from "../lib/settings";
+import { matchesShortcut } from "../lib/shortcuts";
 import { ExplorerPane } from "./ExplorerPane";
 import { GitChangesPane } from "./GitChangesPane";
 import { SearchPane } from "./SearchPane";
@@ -69,6 +71,11 @@ interface ToolPaneProps {
   onEntryRenamed: (from: string, to: string) => void;
   /** 文件树里删除成功：编辑器标签要关掉 */
   onEntryDeleted: (path: string) => void;
+  /**
+   * 焦点在这一栏（文件树 / 变更）里时按「关闭标签页」——关掉编辑器里当前那个标签
+   * （含从「变更」打开的差异标签）。编辑器自己那份处理管的是焦点在编辑器区内的情形。
+   */
+  onRequestCloseTab: () => void;
 }
 
 /**
@@ -91,7 +98,9 @@ export function ToolPane({
   onBeforeRename,
   onEntryRenamed,
   onEntryDeleted,
+  onRequestCloseTab,
 }: ToolPaneProps) {
+  const { settings } = useSettings();
   const filesHidden = tool === "changes" || tool === "search";
   /** 变更面板里被整块收起的源文件夹（归一化路径）。收起只留根名那一行 */
   const [collapsedRoots, setCollapsedRoots] = useState<ReadonlySet<string>>(new Set());
@@ -106,8 +115,33 @@ export function ToolPane({
     });
   };
 
+  /**
+   * 「关闭标签页」在这一栏里也生效：焦点在文件树 / 变更里时关掉编辑器当前那个标签
+   * （含从「变更」打开的差异标签）。文本输入框（重命名、搜索、提交信息）里不抢键，
+   * 否则会误伤输入。
+   */
+  const onPanelKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (
+      target?.isContentEditable ||
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      tag === "SELECT"
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    onRequestCloseTab();
+  };
+
   return (
-    <section className="flex h-full min-h-0 flex-col bg-panel">
+    <section
+      className="flex h-full min-h-0 flex-col bg-panel"
+      onKeyDownCapture={onPanelKeyDown}
+    >
       <div className={filesHidden ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <ExplorerPane
           roots={roots}

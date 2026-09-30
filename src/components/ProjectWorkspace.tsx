@@ -360,6 +360,7 @@ export function ProjectWorkspace({
                       onBeforeRename={saveAllEdits}
                       onEntryRenamed={renameOpenTabs}
                       onEntryDeleted={dropOpenTabs}
+                      onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
                     />
                   }
                   second={
