@@ -73,6 +73,8 @@ pub fn run() {
             git::git_unstage,
             git::git_discard,
             git::git_commit,
+            git::git_amend,
+            git::git_undo_commit,
             git::git_file_diff,
             git::git_log,
             git::git_commit_files,
