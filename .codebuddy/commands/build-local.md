@@ -7,6 +7,14 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
 
 开工前先用 TaskCreate 建三条待办：`提交改动` / `构建安装包` / `装到本机`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
 
+## 0. 命令环境（先按系统选对再动手）
+
+`pnpm` / `node` 一类的命令在三端的可用 shell 不一样，选错要么直接崩、要么拿不到环境。**每一步开始前先确认当前系统，再用对应环境执行**：
+
+- **Windows**：一律用 **PowerShell 工具**，别用 Bash。Git Bash（MSYS）下 Node 设进程标题会撞 `Assertion failed: process_title, file src\win\util.c`，`pnpm build` 一启动就整个挂掉，根本跑不到真正的构建。
+- **macOS**：用 **zsh**——命令包一层 `zsh -lc '<cmd>'`，跟 GUI 进程的 login shell 环境保持一致（Node / pnpm / cargo 常靠 `~/.zprofile` 里的 PATH）。
+- **Linux**：用系统**默认 shell**（Bash 工具直接跑即可）。
+
 ## 1. 提交改动（规则同 /commit）
 
 *（进入本节先把「提交改动」标为 `in_progress`，完成后再标 `completed`。）*
@@ -37,12 +45,14 @@ git rev-parse --short HEAD
 
 ### 2b. 构建
 
-用 Bash 工具**后台**跑（release 编译很慢，不要放前台等）：
+用**第 0 步选定的环境**、**后台**跑（release 编译很慢，不要放前台等）：Windows 走 PowerShell 工具，macOS 包 `zsh -lc`，Linux 走 Bash。
 
 ```
 pnpm tauri build --bundles nsis
 ```
 
+- Windows 上**务必用 PowerShell 工具**：换成 Bash 会撞 `process_title` 断言直接崩（见第 0 步）。
+- **后台任务要给足超时**：release 编译远超工具默认的 2 分钟，跑后台时显式带上 `timeout`（如 600000ms），否则会在编译中途被掐断、误判成构建失败。
 - `tauri.conf.json` 的 `beforeBuildCommand` 已包含 `pnpm build`（tsc + vite），**不要**再单独跑一遍前端构建。
 - 这里只出 NSIS 包（msi/WiX 对本机安装没用，跳过省时间）。命令行参数不改仓库配置，正常发版仍是全量。
 - 类型错误、rust 编译失败就停下报告，别继续装。
@@ -72,14 +82,14 @@ echo "expected=$expected"; echo "actual=$actual"
    只有 `C:\Users\xiang\AppData\Local\CodeDock\codedock.exe` 是发布版、要关；
    `src-tauri\target\debug\codedock.exe` 是 dev 版，**别动**。
    关闭用 `(Get-Process -Id <pid>).CloseMainWindow()` 走窗口关闭流程（子进程会被回收，比 taskkill 干净），然后确认进程真的退出了再继续。
-2. 静默安装（安装器是 currentUser 模式，不弹 UAC）：
+2. 静默安装（安装器是 currentUser 模式，不弹 UAC）。用 **PowerShell 工具**执行（Windows 一律走 PowerShell，别用 Bash）：
 
-   ```
-   MSYS_NO_PATHCONV=1 "<安装包绝对路径>" /S
+   ```powershell
+   & "<安装包绝对路径>" /S
    ```
 
-   等它结束并确认退出码为 0。
-   `MSYS_NO_PATHCONV=1` 不能省：Git Bash 会把 `/S` 当路径转换成 `C:/Program Files/Git/S`，安装器收不到静默参数，会弹出图形安装界面卡住。
+   等它结束并确认退出码为 0（`$LASTEXITCODE`）。
+   用 PowerShell 不必管 `MSYS_NO_PATHCONV`；之所以强调别用 Git Bash，就是 Git Bash 会把 `/S` 当路径转成 `C:/Program Files/Git/S`，安装器收不到静默参数、弹出图形安装界面卡住。
 3. 报告结果：安装位置 `%LOCALAPPDATA%\CodeDock\codedock.exe`、装进去的版本号与构建标识（即 2c 校验通过的那个）。**不要自动启动应用**，让用户自己开。
 
 补充：安装器在静默模式下自身也会用 RestartManager 关掉占用该 exe 的进程；第 1 步是为了让它走优雅关闭，两者不冲突。
