@@ -23,6 +23,12 @@ export interface GitChange {
   index: string;
   /** porcelain v2 的 Y 列：工作区状态 */
   worktree: string;
+  /** 暂存那一侧增删了几行；null = 没统计出来（二进制 / 未跟踪） */
+  stagedAdded: number | null;
+  stagedRemoved: number | null;
+  /** 工作区那一侧增删了几行 */
+  unstagedAdded: number | null;
+  unstagedRemoved: number | null;
 }
 
 export interface GitSnapshot {
@@ -121,6 +127,10 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
         relative: file.relative,
         index: file.index,
         worktree: file.worktree,
+        stagedAdded: file.stagedAdded,
+        stagedRemoved: file.stagedRemoved,
+        unstagedAdded: file.unstagedAdded,
+        unstagedRemoved: file.unstagedRemoved,
       });
       const previous = marks.get(key);
       if (previous && RANK[previous.kind] >= RANK[mark.kind]) continue;

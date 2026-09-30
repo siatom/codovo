@@ -40,6 +40,14 @@ export interface GitFileStatus {
   /** porcelain v2 的 XY：X 是暂存区状态，Y 是工作区状态 */
   index: string;
   worktree: string;
+  /**
+   * 两侧各增删了几行。`null` = 该侧没有改动，或者统计不出来（二进制、未跟踪文件）。
+   * 同一个文件在暂存 / 未暂存两个分组里显示的是各自那一侧的数字。
+   */
+  stagedAdded: number | null;
+  stagedRemoved: number | null;
+  unstagedAdded: number | null;
+  unstagedRemoved: number | null;
 }
 
 export interface GitStatusPayload {

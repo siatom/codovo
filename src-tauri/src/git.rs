@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
@@ -28,6 +29,12 @@ pub struct FileStatus {
     /// porcelain v2 的 XY 两列：X 是暂存区状态，Y 是工作区状态
     index: char,
     worktree: char,
+    /// 这一侧增删了几行。`None` = 该侧没有改动，或者统计不出来（二进制、未跟踪）。
+    /// 两侧各存一份：同一个文件在两个分组里显示的是各自那一侧的改动量。
+    staged_added: Option<u32>,
+    staged_removed: Option<u32>,
+    unstaged_added: Option<u32>,
+    unstaged_removed: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -421,11 +428,74 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
                 relative: relative.to_string(),
                 index: xy.0,
                 worktree: xy.1,
+                // 行数 porcelain 里没有，由 status_of 再跑一次 numstat 填进来
+                staged_added: None,
+                staged_removed: None,
+                unstaged_added: None,
+                unstaged_removed: None,
             });
         }
     }
 
     status
+}
+
+/// 解析 `git diff --numstat -z` 的输出：`<增>\t<删>\t<路径>\0`。
+///
+/// 重命名/复制时路径字段是**空的**，后面另跟两个 NUL 分隔的 token（旧路径、新路径）——
+/// 实测就是这个格式，取新路径（界面显示和点开看的都是它）。
+/// 二进制文件的增删两列都是 `-`，转成 None：显示「-/-」不如什么都不显示。
+fn parse_numstat(raw: &[u8]) -> Vec<(String, Option<u32>, Option<u32>)> {
+    let tokens: Vec<&[u8]> = raw.split(|byte| *byte == 0).collect();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        if token.is_empty() {
+            index += 1;
+            continue;
+        }
+        let text = String::from_utf8_lossy(token);
+        let mut parts = text.splitn(3, '\t');
+        let added = to_count(parts.next().unwrap_or(""));
+        let removed = to_count(parts.next().unwrap_or(""));
+        let path = parts.next().unwrap_or("");
+        // 路径空 = 重命名记录，旧、新路径各占后面一个 token
+        if path.is_empty() && index + 2 < tokens.len() {
+            let renamed = String::from_utf8_lossy(tokens[index + 2]).into_owned();
+            out.push((renamed, added, removed));
+            index += 3;
+            continue;
+        }
+        out.push((path.to_string(), added, removed));
+        index += 1;
+    }
+    out
+}
+
+/// numstat 的计数列。二进制是 `-`，认不出的一律 None（不显示比显示错的好）
+fn to_count(text: &str) -> Option<u32> {
+    text.parse().ok()
+}
+
+/// numstat 的输出折成「工作区相对路径 -> (增, 删)」。
+///
+/// 越界的直接跳过：工作区只是仓库的子目录时 git 仍会报整个仓库的改动，口径和
+/// `parse_status` 一致。未跟踪的文件不会出现在 numstat 里（`git diff` 看不见它们），
+/// 它们的计数天然是 None。
+fn counts_by_path(raw: &[u8], prefix: &str) -> HashMap<String, (Option<u32>, Option<u32>)> {
+    let mut map = HashMap::new();
+    for (path, added, removed) in parse_numstat(raw) {
+        let Some(relative) = path.strip_prefix(prefix) else {
+            continue;
+        };
+        let relative = relative.trim_end_matches('/');
+        if relative.is_empty() {
+            continue;
+        }
+        map.insert(relative.to_string(), (added, removed));
+    }
+    map
 }
 
 /// 只读查询当前工作区的 git 状态。抽出来给写命令复用：写完之后直接回传新状态，
@@ -454,6 +524,26 @@ fn status_of(root: &Path) -> Result<GitStatus, String> {
     .ok_or("git status 执行失败")?;
 
     let mut status = parse_status(&raw, &prefix, root);
+
+    // 增删行数 porcelain 里没有，得另跑两次 numstat。没有改动时直接跳过，
+    // 别为一次空结果白起两个进程
+    if !status.files.is_empty() {
+        let unstaged = run_git(root, &["diff", "--numstat", "-z"])?.unwrap_or_default();
+        let staged = run_git(root, &["diff", "--cached", "--numstat", "-z"])?.unwrap_or_default();
+        let unstaged_counts = counts_by_path(&unstaged, &prefix);
+        let staged_counts = counts_by_path(&staged, &prefix);
+        for file in &mut status.files {
+            if let Some((added, removed)) = unstaged_counts.get(&file.relative) {
+                file.unstaged_added = *added;
+                file.unstaged_removed = *removed;
+            }
+            if let Some((added, removed)) = staged_counts.get(&file.relative) {
+                file.staged_added = *added;
+                file.staged_removed = *removed;
+            }
+        }
+    }
+
     // 合并状态得另查：porcelain v2 不暴露 MERGE_HEAD
     status.merging = is_merging(root)?;
     Ok(status)
@@ -2806,4 +2896,78 @@ mod tests {
 
         cleanup(&top);
     }
+
+    // ---- 增删行数 ----
+
+    #[test]
+    fn numstat_parses_plain_renames_and_binary() {
+        let parsed = parse_numstat(&output(&["2\t1\tsrc/a.ts"]));
+        assert_eq!(parsed, vec![("src/a.ts".to_string(), Some(2), Some(1))]);
+
+        // 重命名：路径字段是空的，后面另跟旧、新两个 token，取新路径
+        let parsed = parse_numstat(&output(&["0\t0\t", "old.txt", "new.txt"]));
+        assert_eq!(parsed, vec![("new.txt".to_string(), Some(0), Some(0))]);
+
+        // 二进制两列都是 `-`，转成 None（界面上不显示，别显示成 0）
+        let parsed = parse_numstat(&output(&["-\t-\tlogo.png"]));
+        assert_eq!(parsed, vec![("logo.png".to_string(), None, None)]);
+    }
+
+    #[test]
+    fn numstat_counts_skip_paths_outside_a_nested_workspace() {
+        // 工作区只是仓库的 sub/ 时，git 仍会报仓库里别处的改动
+        let raw = output(&["1\t0\tsub/inside.txt", "1\t0\tsubber.txt", "1\t0\telsewhere.txt"]);
+        let counts = counts_by_path(&raw, "sub/");
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts.get("inside.txt"), Some(&(Some(1), Some(0))));
+    }
+
+    #[test]
+    fn status_reports_added_and_removed_lines() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("app.ts"), "a\nb\nc\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        // 未暂存：改了 1 行、加了 2 行
+        fs::write(repo.join("app.ts"), "a\nB\nc\nd\ne\n").unwrap();
+        let status = status_of(&repo).unwrap();
+        let file = &status.files[0];
+        assert_eq!((file.unstaged_added, file.unstaged_removed), (Some(3), Some(1)));
+        // 暂存区还没动，这一侧不该有数字
+        assert_eq!((file.staged_added, file.staged_removed), (None, None));
+
+        // 暂存之后再问：这次落在暂存那一侧
+        stage_paths(&repo, &None).unwrap();
+        let status = status_of(&repo).unwrap();
+        let file = &status.files[0];
+        assert_eq!((file.staged_added, file.staged_removed), (Some(3), Some(1)));
+        assert_eq!((file.unstaged_added, file.unstaged_removed), (None, None));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn untracked_files_get_no_line_counts() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("brandnew.txt"), "x\n").unwrap();
+        // 未跟踪的文件 numstat 看不见它，计数只能是 None——界面上显示成「?」
+        let status = status_of(&repo).unwrap();
+        assert_eq!(status.files.len(), 1);
+        let file = &status.files[0];
+        assert_eq!(
+            (file.staged_added, file.unstaged_added),
+            (None, None)
+        );
+        cleanup(&top);
+    }
+
 }

@@ -362,6 +362,33 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * 行尾的 `+N -M`。两侧都没有数字时什么都不画（二进制、未跟踪文件统计不出来，
+ * 显示「+0 -0」会让人误以为没改动）。
+ *
+ * 两个数字各自固定占位（`min-w-[3ch]` + 右对齐）：不然 `+9` 和 `+12` 会让整列的
+ * 删除数左右错开，扫下来很乱。
+ */
+function LineCounts({
+  added,
+  removed,
+}: {
+  added: number | null;
+  removed: number | null;
+}) {
+  if (added === null && removed === null) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1 font-mono text-[10px]">
+      {added !== null && added > 0 && (
+        <span className="min-w-[3ch] text-right text-ok">+{added}</span>
+      )}
+      {removed !== null && removed > 0 && (
+        <span className="min-w-[3ch] text-right text-danger">-{removed}</span>
+      )}
+    </span>
+  );
+}
+
 function ChangeRow({
   change,
   staged,
@@ -392,6 +419,9 @@ function ChangeRow({
   const mark = markOfColumn(staged ? change.index : change.worktree);
   // 文件已经被删了就没什么可打开的——点「打开文件」会读到一个不存在的路径
   const exists = mark.kind !== "deleted";
+  // 行数也按分组取：同一个 `MM` 文件在两个组里改动的量本来就不一样
+  const added = staged ? change.stagedAdded : change.unstagedAdded;
+  const removed = staged ? change.stagedRemoved : change.unstagedRemoved;
 
   return (
     <div
@@ -459,6 +489,9 @@ function ChangeRow({
             <IconPencil className="h-3 w-3" />
           </button>
         )}
+        {/* 行数压在操作按钮和徽标之间：悬停时按钮显形会挤动它，但它本来就是
+            靠右固定的，徽标在最右不跟着动 */}
+        <LineCounts added={added} removed={removed} />
         <GitMarkBadge mark={mark} className="text-[10px]" />
       </div>
     </div>
