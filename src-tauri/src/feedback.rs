@@ -30,6 +30,10 @@ const CLI: &str = "gitee";
 
 /// npm 包装层里入口脚本相对垫片所在目录的位置。垫片内容就是
 /// `node <pkgroot>/bin/index.js %*`，只是它得经 cmd.exe 才跑得起来，会被换行截断。
+///
+/// 只有 Windows 版 `shim_to_node` 用它（别的平台垫片自己就能跑），跟着一起 cfg，
+/// 否则在 macOS / Linux 上会因「当前平台用不到」报 dead_code。
+#[cfg(windows)]
 const NPM_ENTRY: &str = "node_modules/@gitee/gitee-cli/bin/index.js";
 
 /// 单次调用的超时。CLI 是本地进程，正常几百毫秒内返回。

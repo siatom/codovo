@@ -24,6 +24,9 @@ struct Entry {
     args: Vec<String>,
 }
 
+/// 候选表里逐条构造 `Entry` 的简写。只有 Windows 的 `table()` 用得上——
+/// unix 的候选来自 /etc/shells，名字、图标、启动参数都得一个个现算。
+#[cfg(windows)]
 fn entry(id: &str, name: &str, kind: &str, label: &str, program: &str, args: &[&str]) -> Entry {
     Entry {
         info: ShellInfo {
