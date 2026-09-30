@@ -14,6 +14,7 @@ import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
+import { IconArrowDownToLine } from "./icons";
 
 /**
  * 走 Tauri 的 clipboard 插件读写系统剪贴板，不用 `navigator.clipboard`：
@@ -79,6 +80,8 @@ export const TerminalSession = forwardRef<
   const fitRef = useRef<FitAddon | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exited, setExited] = useState(false);
+  // 视口是否停在最新输出上：滚离底部时浮出「回到最新输出」按钮。每个会话各一份，互不影响
+  const [atBottom, setAtBottom] = useState(true);
   const [sessionKey, setSessionKey] = useState(0);
   const { theme, palette } = useTheme();
   const { settings } = useSettings();
@@ -158,6 +161,17 @@ export const TerminalSession = forwardRef<
 
     termRef.current = term;
     fitRef.current = fit;
+
+    /**
+     * 视口是否停在最新输出上。滚动会触发 onScroll，但**追加新输出**只改 baseY、
+     * 不一定触发 onScroll，所以 onWriteParsed 也得校正一次，否则按钮会出现/消失不及时。
+     */
+    const syncAtBottom = () => {
+      const buffer = term.buffer.active;
+      setAtBottom(buffer.viewportY >= buffer.baseY);
+    };
+    const scrollDisposable = term.onScroll(syncAtBottom);
+    const writeParsedDisposable = term.onWriteParsed(syncAtBottom);
 
     let cancelled = false;
 
@@ -286,6 +300,8 @@ export const TerminalSession = forwardRef<
       window.clearTimeout(resizeTimer);
       observer.disconnect();
       dataDisposable.dispose();
+      scrollDisposable.dispose();
+      writeParsedDisposable.dispose();
       container.removeEventListener("keydown", onKeyDown, true);
       container.removeEventListener("contextmenu", onContextMenu);
       ptyRef.current?.kill();
@@ -336,7 +352,12 @@ export const TerminalSession = forwardRef<
     const frame = requestAnimationFrame(() => {
       const term = termRef.current;
       const fit = fitRef.current;
-      if (!term || !fit || !containerRef.current?.clientWidth) return;
+      if (!term || !fit) return;
+      // 藏起来时收不到滚动事件，这一帧顺带校正一次按钮显隐（放在尺寸判断之前，
+      // 免得容器还没量出宽度时被跳过）
+      const buffer = term.buffer.active;
+      setAtBottom(buffer.viewportY >= buffer.baseY);
+      if (!containerRef.current?.clientWidth) return;
       try {
         fit.fit();
       } catch {
@@ -384,6 +405,22 @@ export const TerminalSession = forwardRef<
             重开
           </button>
         </div>
+      )}
+      {/* 滚离底部时才浮出。点一下回尾部，并顺手把焦点还给终端，免得之后打字落到按钮上 */}
+      {!atBottom && (
+        <button
+          type="button"
+          title="回到最新输出"
+          aria-label="回到最新输出"
+          onClick={() => {
+            termRef.current?.scrollToBottom();
+            termRef.current?.focus();
+            setAtBottom(true);
+          }}
+          className="absolute right-3 bottom-3 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-line-strong bg-surface text-fg-dim shadow-lg hover:bg-hover hover:text-fg"
+        >
+          <IconArrowDownToLine className="h-4 w-4" />
+        </button>
       )}
     </div>
   );
