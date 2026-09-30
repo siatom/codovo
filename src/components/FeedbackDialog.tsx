@@ -243,10 +243,12 @@ export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
         onClick={onClose}
       >
+        {/* 高度写死，跟设置面板一致：内容少的 tab 不缩、多的滚动，切 tab 面板不跳大小。
+            max-h-full 留着，窗口比面板还矮时还能压下来 */}
         <div
           role="dialog"
           aria-modal="true"
-          className="flex max-h-full w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-lg"
+          className="flex h-[620px] max-h-full w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-lg"
           onClick={(event) => event.stopPropagation()}
         >
           <header className="flex shrink-0 items-center gap-2 border-b border-line px-4 py-3">
