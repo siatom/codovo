@@ -655,6 +655,43 @@ fn commit_staged(root: &Path, message: &str) -> Result<GitStatus, String> {
     status_of(root)
 }
 
+/// 用当前暂存区的内容改写 HEAD 那条提交，`--no-edit` 时沿用原来的提交信息。
+///
+/// 会改写历史：已经推上去的提交 amend 之后本地和远程就分叉了。界面据此在提交过
+/// 的内容上给确认框（见 GitChangesPane 的 pendingAmend）。
+fn amend_commit(root: &Path, message: Option<&str>) -> Result<GitStatus, String> {
+    match message.map(str::trim).filter(|text| !text.is_empty()) {
+        Some(text) => run_git_checked(root, &["commit", "--amend", "-m", text])?,
+        None => run_git_checked(root, &["commit", "--amend", "--no-edit"])?,
+    };
+    status_of(root)
+}
+
+/// 撤销最近一条提交：HEAD 退回上一个提交，改动原样留在暂存区（`--soft`），
+/// 工作区一个字节都不动。再点一次「提交」就能把它改完重提。
+fn undo_commit(root: &Path) -> Result<GitStatus, String> {
+    // 先判有没有 HEAD：空仓库（从未提交）走不到下面，报「没有可撤销的提交」
+    // 比「游离 HEAD」准确。注意空仓库的 `rev-parse --abbrev-ref HEAD` 也会输出
+    // 字面量 HEAD 并非 0 退出，所以这两个检查的先后不能反
+    if run_git(root, &["rev-parse", "--verify", "--quiet", "HEAD"])?.is_none() {
+        return Err("还没有提交可以撤销".to_string());
+    }
+    // 游离 HEAD 下没有分支可退，而且下面那条 `update-ref -d HEAD` 会把 `.git/HEAD`
+    // 这个**文件**直接删掉，仓库当场变成 `not a git repository`（实测 git 2.54）。
+    // 这不是「撤销提交」该干的事，先挡住
+    if current_branch(root)?.is_none() {
+        return Err("游离 HEAD 状态下不能撤销提交，先切到一个分支上".to_string());
+    }
+    // 唯一那条提交没有父提交可退，退到 HEAD~1 会报 unknown revision。
+    // 直接删掉分支引用，仓库回到「还没提交过」的状态，index 原样留着
+    if run_git(root, &["rev-parse", "--verify", "--quiet", "HEAD~1"])?.is_none() {
+        run_git_checked(root, &["update-ref", "-d", "HEAD"])?;
+        return status_of(root);
+    }
+    run_git_checked(root, &["reset", "--soft", "HEAD~1"])?;
+    status_of(root)
+}
+
 /// 工作区相对仓库根的前缀（仓库根就是工作区时是空串）。
 /// `Ok(None)` 表示这个目录不是仓库——`rev-parse --show-prefix` 非 0 退出。
 fn repo_prefix(root: &Path) -> Result<Option<String>, String> {
@@ -1169,6 +1206,23 @@ pub fn git_commit(
     message: String,
 ) -> Result<GitStatus, String> {
     commit_staged(&state.checked_root(&root)?, &message)
+}
+
+/// 修正最近一次提交：把当前暂存区的内容并进去，并可选地改提交信息。
+#[tauri::command(async)]
+pub fn git_amend(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    message: Option<String>,
+) -> Result<GitStatus, String> {
+    amend_commit(&state.checked_root(&root)?, message.as_deref())
+}
+
+/// 撤销最近一次提交，改动留在暂存区。它会把 HEAD 指回去，已经推出去的提交撤销后
+/// 本地就和远程分叉了——所以界面那边要过确认框。
+#[tauri::command(async)]
+pub fn git_undo_commit(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
+    undo_commit(&state.checked_root(&root)?)
 }
 
 /// 一个改动文件的两侧内容，给编辑器的差异视图用。

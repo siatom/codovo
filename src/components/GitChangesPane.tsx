@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   gitAddToIgnore,
+  gitAmend,
   gitCommit,
   gitCommitFiles,
   gitDiscard,
@@ -22,6 +23,7 @@ import {
   gitPull,
   gitPush,
   gitStage,
+  gitUndoCommit,
   gitUnstage,
   gitUnpushed,
   pathKey,
@@ -300,15 +302,20 @@ const ROW_ACTION =
 const ROW_DANGER =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-danger focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 disabled:opacity-0";
 
-/** 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
+/**
+ * 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
  *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。
- *  fetch/pull/push/merge 是网络操作，跑起来可能要几分钟，更不能叠着发。 */
+ *  fetch/pull/push/merge 是网络操作，跑起来可能要几分钟，更不能叠着发。
+ *  amend/undo/branch 都改写 HEAD，和 commit 归同一类。
+ */
 type Busy =
   | null
   | "stage"
   | "unstage"
   | "discard"
   | "commit"
+  | "amend"
+  | "undo"
   | "generate"
   | "fetch"
   | "pull"
@@ -735,6 +742,8 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
   /** 中止合并会丢掉整次合并尝试，和放弃修改一样先过确认框 */
   const [pendingMergeAbort, setPendingMergeAbort] = useState(false);
+  /** amend 会改写历史（已推送的话本地就和远程分叉了），落手前先确认 */
+  const [pendingAmend, setPendingAmend] = useState(false);
   /**
    * null = 随内容长高（也就是默认的一行）；拖过之后是固定高度（px），内容多了自己滚动。
    * 高度不落盘：每次进应用都从一行起步，省得某次拖高之后再也回不到默认。
@@ -871,6 +880,32 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
       return payload;
     });
   }, [message, run]);
+
+  /**
+   * 修正上一次提交。提交框里写了信息就用它当新的提交信息，没写就沿用原来的。
+   *
+   * 只暂存了内容、没改信息时，走 `--no-edit`（而不是把空串当信息传下去）。
+   * 提交完清空提交框、重拉历史（提交号变了）。
+   */
+  const confirmAmend = useCallback(() => {
+    setPendingAmend(false);
+    const next = message.trim() ? message : undefined;
+    void run("amend", async () => {
+      const payload = await gitAmend(root, next);
+      setMessage("");
+      setLogRevision((revision) => revision + 1);
+      return payload;
+    });
+  }, [message, run, root]);
+
+  /** 撤销上一次提交：改动回到暂存区，提交框里的信息也跟着填回去，方便改完重提 */
+  const undoCommit = useCallback(() => {
+    void run("undo", async () => {
+      const payload = await gitUndoCommit(root);
+      setLogRevision((revision) => revision + 1);
+      return payload;
+    });
+  }, [run, root]);
 
   /**
    * 让 AI 生成提交信息填进框里由用户自己确认，不自动提交。
@@ -1509,6 +1544,31 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
               提交
             </button>
           )}
+
+          {/* 修正 / 撤销上一次提交。两个都改写历史，所以只有「有 HEAD」时才给；
+              合并期间藏起来——那会儿该先收尾，动 HEAD 会让合并状态更乱 */}
+          {snapshot.head && !snapshot.merging && (
+            <div className="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setPendingAmend(true)}
+                disabled={busy !== null}
+                title="修正上一次提交（把已暂存的改动并进去，提交框里有信息就顺便改掉）"
+                className={HEADER_ACTION}
+              >
+                <IconPencil className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={undoCommit}
+                disabled={busy !== null}
+                title="撤销上一次提交（改动回到暂存区，再提交一次就是重提）"
+                className={HEADER_ACTION}
+              >
+                <IconUndo className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </div>
 
         {commitHint && (
@@ -1765,6 +1825,17 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
           confirmLabel="中止合并"
           onConfirm={confirmMergeAbort}
           onCancel={() => setPendingMergeAbort(false)}
+        />
+      )}
+
+      {pendingAmend && (
+        <ConfirmDialog
+          message={`修正上一次提交？${
+            message.trim() ? "提交信息会换成输入框里的内容，" : "提交信息保持不变，"
+          }已暂存的改动会并进那条提交。提交号会变——如果它已经推送到远程，本地就和远程分叉了。`}
+          confirmLabel="修正提交"
+          onConfirm={confirmAmend}
+          onCancel={() => setPendingAmend(false)}
         />
       )}
 

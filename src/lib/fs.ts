@@ -343,6 +343,16 @@ export function gitUnpushed(root: string): Promise<string[]> {
   return invoke<string[]>("git_unpushed", { root });
 }
 
+/** 修正最近一次提交：把暂存区并进去，`message` 给了就顺便改提交信息 */
+export function gitAmend(root: string, message?: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_amend", { root, message: message ?? null });
+}
+
+/** 撤销最近一次提交，改动留在暂存区 */
+export function gitUndoCommit(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_undo_commit", { root });
+}
+
 /**
  * 从远程取回引用，不动工作区。成功后 ahead/behind 才是最新的。
  * 耗时按网络算，后端给了 3 分钟超时。
