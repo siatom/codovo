@@ -179,8 +179,19 @@
   --c-selected: #3b5878; --c-line: #353c4a; --c-line-strong: #434c5e;
   --c-line-hover: #4c566a; --c-fg: #d8dee9; --c-fg-muted: #c2cad8;
   --c-fg-dim: #9aa5b8; --c-fg-faint: #6f7a8d; --c-fg-icon: #8b96a8;
-  --c-accent: #88c0d0; --c-accent-soft: #a8d5e0; --c-accent-strong: #5e81ac;
-  --c-accent-line: #3d5a75; --c-scroll: #434c5e; --c-scroll-hover: #4c566a;
+  --c-accent: #8fbcbb; --c-accent-soft: #aed9d8; --c-accent-strong: #5e8f8e;
+  --c-accent-line: #3d5f5e; --c-scroll: #434c5e; --c-scroll-hover: #4c566a;
+}
+
+/* Solarized Dark：跟 Light 同一套 16 色，只是 base 明暗互换 */
+:root[data-palette="solarized-dark"] {
+  --c-app: #002b36; --c-panel: #002b36; --c-surface: #002b36;
+  --c-raised: #073642; --c-hover: #0c3d4a; --c-active: #12505f;
+  --c-selected: #10485f; --c-line: #073642; --c-line-strong: #0e4a58;
+  --c-line-hover: #586e75; --c-fg: #93a1a1; --c-fg-muted: #839496;
+  --c-fg-dim: #657b83; --c-fg-faint: #586e75; --c-fg-icon: #6e7f7f;
+  --c-accent: #268bd2; --c-accent-soft: #4aa3e0; --c-accent-strong: #1a6fa8;
+  --c-accent-line: #17526f; --c-scroll: #073642; --c-scroll-hover: #0e4a58;
 }
 
 :root[data-palette="solarized-light"] {

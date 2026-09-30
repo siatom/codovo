@@ -8,7 +8,7 @@ import {
 } from "react";
 
 /** 用户的选择，`system` 表示跟着操作系统走 */
-export type Theme = "dark" | "light" | "system" | "vscode" | "vscode-light" | "one-dark" | "dracula" | "github-dark" | "github-light" | "material-nova" | "neon-green" | "tokyo-night" | "catppuccin-mocha" | "nord" | "solarized-light" | "monokai";
+export type Theme = "dark" | "light" | "system" | "vscode" | "vscode-light" | "one-dark" | "dracula" | "github-dark" | "github-light" | "material-nova" | "neon-green" | "tokyo-night" | "catppuccin-mocha" | "nord" | "solarized-dark" | "solarized-light" | "monokai";
 /** 真正落到界面上的主题，只可能是这两个 */
 export type ResolvedTheme = "dark" | "light";
 
@@ -21,7 +21,7 @@ export const DEFAULT_THEME: Theme = "dark";
 export function readSavedTheme(): Theme {
   try {
     const saved = window.localStorage.getItem(THEME_KEY);
-    return saved === "light" || saved === "system" || saved === "vscode" || saved === "vscode-light" || saved === "one-dark" || saved === "dracula" || saved === "github-dark" || saved === "github-light" || saved === "material-nova" || saved === "neon-green" || saved === "tokyo-night" || saved === "catppuccin-mocha" || saved === "nord" || saved === "solarized-light" || saved === "monokai" ? saved : DEFAULT_THEME;
+    return saved === "light" || saved === "system" || saved === "vscode" || saved === "vscode-light" || saved === "one-dark" || saved === "dracula" || saved === "github-dark" || saved === "github-light" || saved === "material-nova" || saved === "neon-green" || saved === "tokyo-night" || saved === "catppuccin-mocha" || saved === "nord" || saved === "solarized-dark" || saved === "solarized-light" || saved === "monokai" ? saved : DEFAULT_THEME;
   } catch {
     return DEFAULT_THEME;
   }

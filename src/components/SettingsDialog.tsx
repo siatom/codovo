@@ -91,6 +91,7 @@ const THEME_OPTIONS: { value: Theme; label: string; swatch: [string, string] }[]
   { value: "tokyo-night", label: "Tokyo Night", swatch: ["#1a1b26", "#c0caf5"] },
   { value: "catppuccin-mocha", label: "Catppuccin Mocha", swatch: ["#1e1e2e", "#cdd6f4"] },
   { value: "nord", label: "Nord", swatch: ["#2e3440", "#d8dee9"] },
+  { value: "solarized-dark", label: "Solarized Dark", swatch: ["#002b36", "#93a1a1"] },
   { value: "solarized-light", label: "Solarized Light", swatch: ["#fdf6e3", "#073642"] },
   { value: "monokai", label: "Monokai", swatch: ["#272822", "#f8f8f2"] },
 ];

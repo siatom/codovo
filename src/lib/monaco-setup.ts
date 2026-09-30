@@ -44,7 +44,7 @@ window.MonacoEnvironment = {
 export const DARK_THEME = "codedock-dark";
 export const LIGHT_THEME = "codedock-light";
 export function monacoThemeFor(preference: Theme, theme: "dark" | "light") {
-  return preference === "vscode" || preference === "vscode-light" || preference === "one-dark" || preference === "dracula" || preference === "github-dark" || preference === "github-light" || preference === "material-nova" || preference === "neon-green" || preference === "tokyo-night" || preference === "catppuccin-mocha" || preference === "nord" || preference === "solarized-light" || preference === "monokai"
+  return preference === "vscode" || preference === "vscode-light" || preference === "one-dark" || preference === "dracula" || preference === "github-dark" || preference === "github-light" || preference === "material-nova" || preference === "neon-green" || preference === "tokyo-night" || preference === "catppuccin-mocha" || preference === "nord" || preference === "solarized-dark" || preference === "solarized-light" || preference === "monokai"
     ? `codedock-${preference}`
     : theme === "light" ? LIGHT_THEME : DARK_THEME;
 }
@@ -113,7 +113,8 @@ export function setupMonacoTheme() {
     "neon-green": ["vs-dark", "#0e1813", "#d9ffe2", "#122019", "#39ff88", "#174d32"],
     "tokyo-night": ["vs-dark", "#1a1b26", "#c0caf5", "#1f2335", "#7aa2f7", "#283457"],
     "catppuccin-mocha": ["vs-dark", "#1e1e2e", "#cdd6f4", "#252537", "#cba6f7", "#3e3358"],
-    nord: ["vs-dark", "#2e3440", "#d8dee9", "#3b4252", "#88c0d0", "#3b5878"],
+    nord: ["vs-dark", "#2e3440", "#d8dee9", "#3b4252", "#8fbcbb", "#3b5878"],
+    "solarized-dark": ["vs-dark", "#002b36", "#93a1a1", "#073642", "#268bd2", "#10485f"],
     "solarized-light": ["vs", "#fdf6e3", "#073642", "#f2ecda", "#268bd2", "#d6e8f2"],
     monokai: ["vs-dark", "#272822", "#f8f8f2", "#31322b", "#66d9ef", "#3a4a4a"],
   } as const;
