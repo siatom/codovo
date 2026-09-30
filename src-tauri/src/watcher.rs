@@ -331,24 +331,26 @@ mod tests {
     #[test]
     fn refreshes_on_structure_changes_but_not_on_content_edits() {
         use notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
+        // 同一个文件要喂给四次断言，借它的引用而不是 clone 出一个单元素数组
+        use std::slice::from_ref;
 
         let file = under(&["src", "main.rs"]);
         let content = EventKind::Modify(ModifyKind::Data(DataChange::Content));
 
         assert!(should_refresh(
             &EventKind::Create(CreateKind::File),
-            &[file.clone()]
+            from_ref(&file)
         ));
         assert!(should_refresh(
             &EventKind::Remove(RemoveKind::File),
-            &[file.clone()]
+            from_ref(&file)
         ));
         assert!(should_refresh(
             &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
-            &[file.clone()]
+            from_ref(&file)
         ));
         // 编辑器保存正文不影响文件树
-        assert!(!should_refresh(&content, &[file]));
+        assert!(!should_refresh(&content, from_ref(&file)));
     }
 
     #[test]
