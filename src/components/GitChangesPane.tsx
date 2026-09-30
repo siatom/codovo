@@ -7,8 +7,10 @@ import {
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type UIEvent as ReactUIEvent,
 } from "react";
 import {
+  gitAddToIgnore,
   gitCommit,
   gitCommitFiles,
   gitDiscard,
@@ -21,6 +23,7 @@ import {
   gitPush,
   gitStage,
   gitUnstage,
+  gitUnpushed,
   pathKey,
   toDisplayPath,
 } from "../lib/fs";
@@ -34,7 +37,8 @@ import {
 } from "../lib/git";
 import { explainChange, generateCommitMessage, useEffectiveAiConfig } from "../lib/ai";
 import { useSettings } from "../lib/settings";
-import { matchesShortcut } from "../lib/shortcuts";
+import { formatShortcut, matchesShortcut } from "../lib/shortcuts";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { DiffSource } from "../lib/tabs";
 import type { GitCommit, GitCommitFile, GitStatusPayload, DiscardSource } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
@@ -47,11 +51,13 @@ import {
   IconBranch,
   IconChevronDown,
   IconChevronRight,
+  IconClose,
   IconCloudDownload,
   IconFolder,
   IconList,
   IconMerge,
   IconMinus,
+  IconPencil,
   IconPlus,
   IconRefresh,
   IconSparkle,
@@ -66,6 +72,8 @@ interface GitChangesPaneProps {
   git: GitController;
   /** 点改动项 / 提交里的文件：打开差异视图，source 决定跟谁比 */
   onOpen: (path: string, source: DiffSource) => void;
+  /** 点行内的「打开文件」：开文件内容（不是差异），用来跳回去看上下文 */
+  onOpenFile: (path: string) => void;
 }
 
 /** 待确认的放弃修改。确认框弹出前先把要放弃的东西记在这里 */
@@ -136,6 +144,14 @@ const VIEW_KEY = "codedock.gitChangesView.";
 
 /** 改动列表的两种排法：平铺，或按目录层级收起来 */
 type ChangeView = "list" | "tree";
+
+/**
+ * 两边改动加起来到这个数才显示筛选框。
+ *
+ * 少了它，一两条改动的面板上会多出一个几乎总用不上的输入框，把提交框和列表挤开；
+ * 而真到了几十条、找起来费劲的时候它才出现。
+ */
+const FILTER_MIN_CHANGES = 10;
 
 /** 树视图每一层缩进多少像素。和 FileTreeNode 用同一个值，两处观感一致 */
 const INDENT = 12;
@@ -327,10 +343,24 @@ const SYNC_NOTICE = {
   mergeContinue: "正在完成合并…",
 } as const;
 
-/** 右键菜单：只有一项，宽高按文案量出来，用来贴着窗口边缘收一收 */
-const MENU_W = 132;
-const MENU_H = 34;
+/** 右键菜单：宽度按最长的一项量，高度按项数算出来，用来贴着窗口边缘收一收 */
+const MENU_W = 148;
+/** 一项 24px 上下内边距 + 文字，再加上容器自己的 py-1 */
+const MENU_ITEM_H = 24;
+const MENU_PAD = 8;
+const MENU_MAX_ITEMS = 4;
+const MENU_H = MENU_ITEM_H * MENU_MAX_ITEMS + MENU_PAD;
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+
+/** 写系统剪贴板。走插件而不是 navigator.clipboard：WebView2 会弹系统授权框 */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function ChangeRow({
   change,
@@ -338,6 +368,7 @@ function ChangeRow({
   busy,
   depth,
   onOpen,
+  onOpenFile,
   onToggle,
   onDiscard,
   onMenu,
@@ -349,6 +380,7 @@ function ChangeRow({
   /** 树视图里的层级；null = 列表视图（不缩进、不画文件图标、名字后面补目录） */
   depth: number | null;
   onOpen: (path: string, source: DiffSource) => void;
+  onOpenFile: (path: string) => void;
   onToggle: (path: string) => void;
   onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
@@ -358,6 +390,8 @@ function ChangeRow({
   const dir = slash === -1 ? "" : change.relative.slice(0, slash);
   // 暂存组看 X 列，未暂存组看 Y 列：`AM` 在两组里该显示成不同的字母
   const mark = markOfColumn(staged ? change.index : change.worktree);
+  // 文件已经被删了就没什么可打开的——点「打开文件」会读到一个不存在的路径
+  const exists = mark.kind !== "deleted";
 
   return (
     <div
@@ -393,7 +427,8 @@ function ChangeRow({
           徽标压在最后（最右）：它每行都在、按钮是悬停才显形，这样同一列的
           徽标在每行都对齐，扫下来不用左右找 */}
       <div className="flex shrink-0 items-center gap-0.5">
-        {/* 放弃修改排在暂存按钮左边（和 VS Code 一致）。它带确认，误点还能取消 */}
+        {/* 打开文件排在更右边、放弃修改在左边，中间留给暂存/取消暂存，
+            和行内既有的一串操作连起来读就是「放弃 → 暂存 → 打开」 */}
         {canDiscard(change, staged) && (
           <button
             type="button"
@@ -414,6 +449,16 @@ function ChangeRow({
         >
           {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
         </button>
+        {exists && (
+          <button
+            type="button"
+            onClick={() => onOpenFile(change.path)}
+            title="打开文件（看完整内容，不开差异）"
+            className={ROW_ACTION}
+          >
+            <IconPencil className="h-3 w-3" />
+          </button>
+        )}
         <GitMarkBadge mark={mark} className="text-[10px]" />
       </div>
     </div>
@@ -460,6 +505,8 @@ interface ChangeRowActions {
   staged: boolean;
   busy: boolean;
   onOpen: (path: string, source: DiffSource) => void;
+  /** 行内「打开文件」：开文件内容而不是差异 */
+  onOpenFile: (path: string) => void;
   onToggle: (path: string) => void;
   onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
@@ -470,6 +517,18 @@ interface ChangeTreeActions extends ChangeRowActions {
   collapsedDirs: ReadonlySet<string>;
   onToggleDir: (path: string) => void;
 }
+
+/**
+ * 改动列表的两个分组。
+ *
+ * 折叠状态按组各存一份：同一批文件里的 `MM` 会同时出现在两组，但两组的排序、
+ * 层级、操作都不一样，共用一个集合会出现「在暂存组收起 src/，未暂存组里同名目录
+ * 也跟着塌掉」——那边的目录下有什么用户根本没看见。
+ */
+type ChangeGroup = "staged" | "unstaged";
+
+/** 每组一份的折叠状态。空集合 = 全展开，正好是默认要的样子 */
+type CollapsedDirs = Record<ChangeGroup, ReadonlySet<string>>;
 
 /** 递归渲染一棵改动树：目录行 + 缩进的子层，文件行复用 ChangeRow */
 function ChangeTree({
@@ -513,18 +572,25 @@ function ChangeTree({
 /**
  * 改动列表。两种视图只是排法不同，行本身和行内操作完全一样：
  * 列表视图平铺，树视图按目录层级收起来（默认全展开，点目录才收）。
+ *
+ * `group` 决定用哪一份折叠状态，也决定收放时该改哪一份（见 ChangeGroup）。
  */
 function ChangeList({
+  group,
   changes,
   tree,
   view,
   collapsedDirs,
   onToggleDir,
   ...rowActions
-}: ChangeTreeActions & {
+}: ChangeRowActions & {
+  group: ChangeGroup;
   changes: readonly GitChange[];
   tree: readonly ChangeTreeNode[];
   view: ChangeView;
+  /** 两组的折叠状态，按 group 取自己那份 */
+  collapsedDirs: CollapsedDirs;
+  onToggleDir: (group: ChangeGroup, path: string) => void;
 }) {
   if (view === "list") {
     return (
@@ -539,8 +605,8 @@ function ChangeList({
     <ChangeTree
       nodes={tree}
       depth={0}
-      collapsedDirs={collapsedDirs}
-      onToggleDir={onToggleDir}
+      collapsedDirs={collapsedDirs[group]}
+      onToggleDir={(path) => onToggleDir(group, path)}
       {...rowActions}
     />
   );
@@ -554,6 +620,7 @@ function CommitRow({
   commit,
   expanded,
   files,
+  unpushed,
   onToggle,
   onOpen,
 }: {
@@ -561,6 +628,8 @@ function CommitRow({
   expanded: boolean;
   /** undefined = 还没拉到 */
   files: GitCommitFile[] | undefined;
+  /** 还没推送到上游。标一下，省得用户去数 ahead 有几个 */
+  unpushed: boolean;
   onToggle: () => void;
   onOpen: (path: string, source: DiffSource) => void;
 }) {
@@ -579,6 +648,13 @@ function CommitRow({
         )}
         <span className="shrink-0 font-mono text-fg-faint">{commit.short}</span>
         <span className="min-w-0 flex-1 truncate text-fg-muted">{commit.subject}</span>
+        {/* 未推送的单独给个向上的箭头：和 header 上那个 ↑N 是同一套语汇 */}
+        {unpushed && (
+          <span className="shrink-0 text-fg-faint" title="还没推送到上游">
+            ↑
+          </span>
+        )}
+        <span className="shrink-0 text-[10px] text-fg-faint">{formatTime(commit.time)}</span>
       </button>
 
       {expanded && files === undefined && (
@@ -618,7 +694,7 @@ function CommitRow({
  * 目录不是仓库（或系统里没有 git）时整个不渲染——工具列表那边已经把这行置灰了，
  * 这里的早退只是兜底。
  */
-export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
+export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPaneProps) {
   const { settings } = useSettings();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
@@ -647,16 +723,29 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
   /** null = 还没拉到 */
   const [commits, setCommits] = useState<GitCommit[] | null>(null);
   const [logError, setLogError] = useState<string | null>(null);
-  /** 展开的那条提交 */
-  const [openCommit, setOpenCommit] = useState<string | null>(null);
+  /**
+   * 展开的那些提交。**可以同时展开多条**：比对两条提交改了同一批文件里的哪些，
+   * 是这儿的常见动作，一次只许展开一条就得来回点、记住上一屏的内容。
+   */
+  const [openCommits, setOpenCommits] = useState<ReadonlySet<string>>(new Set());
   const [commitFiles, setCommitFiles] = useState<ReadonlyMap<string, GitCommitFile[]>>(new Map());
+  /** 还没推送到上游的提交号（完整 hash）。和提交列表一起拉，一起换 */
+  const [unpushed, setUnpushed] = useState<ReadonlySet<string>>(new Set());
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
   const [logRevision, setLogRevision] = useState(0);
 
   /** 改动列表怎么排：平铺还是按目录收起来。选择落盘，下次进应用照旧 */
   const [view, setView] = useState<ChangeView>(() => readChangeView(root));
-  /** 树视图里收起来的目录。空集合就是全展开，正好是默认要的样子 */
-  const [collapsedDirs, setCollapsedDirs] = useState<ReadonlySet<string>>(new Set());
+  /** 树视图里各分组收起来的目录，按组各一份（见 ChangeGroup） */
+  const [collapsedDirs, setCollapsedDirs] = useState<CollapsedDirs>(() => ({
+    staged: new Set<string>(),
+    unstaged: new Set<string>(),
+  }));
+  /**
+   * 改动列表的路径筛选。不落盘：属于「这次看的时候顺手找一下」的临时状态，
+   * 下次进应用还得重新收一遍反而碍事（同 collapsedDirs）。
+   */
+  const [filter, setFilter] = useState("");
 
   /** 右键的那一行。staged 决定解读时跟谁比（暂存看 HEAD、未暂存看 index） */
   const [menu, setMenu] = useState<{
@@ -683,9 +772,28 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
 
   const staged = useMemo(() => changes.filter(isStaged), [changes]);
   const unstaged = useMemo(() => changes.filter(isUnstaged), [changes]);
-  // 两棵树只在树视图里用得上，但提前算好——改动列表通常就几十条，不值当再懒一层
-  const stagedTree = useMemo(() => buildChangeTree(staged), [staged]);
-  const unstagedTree = useMemo(() => buildChangeTree(unstaged), [unstaged]);
+
+  /** 筛选词归一化一次，供两条列表和「有没有筛掉东西」的判断共用 */
+  const needle = filter.trim().toLowerCase();
+  /**
+   * 只按路径过滤。**不影响任何写操作**：下面「全部暂存 / 全部放弃」照旧作用于整个
+   * 分组，筛选纯粹是「先在屏幕上找出来」，不承担选择语义——不然批量按钮的含义会
+   * 随着筛选框里打了什么字而变，太容易误伤。
+   */
+  const stagedShown = useMemo(
+    () => (needle ? staged.filter((item) => item.relative.toLowerCase().includes(needle)) : staged),
+    [staged, needle],
+  );
+  const unstagedShown = useMemo(
+    () =>
+      needle ? unstaged.filter((item) => item.relative.toLowerCase().includes(needle)) : unstaged,
+    [unstaged, needle],
+  );
+
+  // 两棵树只在树视图里用得上，但提前算好——改动列表通常就几十条，不值当再懒一层。
+  // 用筛过的那份建树：树视图里同样只留命中的行
+  const stagedTree = useMemo(() => buildChangeTree(stagedShown), [stagedShown]);
+  const unstagedTree = useMemo(() => buildChangeTree(unstagedShown), [unstagedShown]);
   // 「全部放弃」只覆盖能放弃的那些，新文件不在内（见 canDiscard）
   const stagedDiscardable = useMemo(
     () => staged.filter((change) => canDiscard(change, true)),
@@ -695,6 +803,12 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
     () => unstaged.filter((change) => canDiscard(change, false)),
     [unstaged],
   );
+  /** 筛完之后两边都没东西了（但改动本身还在），值得单独说一句 */
+  const filteredOut =
+    needle.length > 0 &&
+    (staged.length > 0 || unstaged.length > 0) &&
+    stagedShown.length === 0 &&
+    unstagedShown.length === 0;
 
   /** 写操作统一走这里：全程禁用其它写按钮，失败就把 git 的报错摆出来 */
   const run = useCallback(
@@ -795,6 +909,36 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
     setExplain(null);
   }, []);
 
+  /** 复制失败就借已有的错误条说一声——剪贴板不可用是环境问题，不值得单开一个提示位 */
+  const copyPath = useCallback(async (text: string) => {
+    setMenu(null);
+    setError(null);
+    if (!(await copyText(text))) setError("复制失败：系统剪贴板不可用");
+  }, []);
+
+  /**
+   * 把这一行加进工作区根的 .gitignore。
+   *
+   * 只对未跟踪（`?`）的文件给这一项：已经跟踪的文件加规则不生效（git 的语义如此），
+   * 列出来只会让人以为点了没反应。
+   *
+   * 加完要 refresh 一次而不是等轮询：状态里那条已经该消失了，让用户盯着它多待 2 秒
+   * 会以为没生效。
+   */
+  const addToIgnore = useCallback(
+    async (change: GitChange) => {
+      setMenu(null);
+      setError(null);
+      try {
+        await gitAddToIgnore(root, change.path);
+        refresh();
+      } catch (reason) {
+        setError(String(reason));
+      }
+    },
+    [refresh, root],
+  );
+
   /** 手动刷新：状态和历史一起重拉，省得再放一个按钮 */
   const reloadAll = useCallback(() => {
     refresh();
@@ -893,13 +1037,13 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
     }
   };
 
-  /** 收起 / 展开一个目录。这个不落盘：属于"这次看的时候顺手收起"的临时状态 */
-  const toggleDir = useCallback((path: string) => {
+  /** 收起 / 展开某个分组里的一个目录。不落盘：属于"这次看的时候顺手收起"的临时状态 */
+  const toggleDir = useCallback((group: ChangeGroup, path: string) => {
     setCollapsedDirs((current) => {
-      const next = new Set(current);
+      const next = new Set(current[group]);
       if (next.has(path)) next.delete(path);
       else next.add(path);
-      return next;
+      return { ...current, [group]: next };
     });
   }, []);
 
@@ -1000,26 +1144,72 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
     };
   }, [logCollapsed, logLimit, logRevision, snapshot.isRepo, snapshot.head]);
 
-  // 展开某条提交时才去拉它的文件列表，拉过就留着
+  /**
+   * 未推送清单单独拉一份，不和 gitLog 挤在同一个 effect 里：它只跟 ahead 有关，
+   * 合进去会让每次 HEAD 变化都多带一个无关请求，反过来 ahead 归零（推送完）时
+   * 又会白重拉一遍提交列表——那份内容这时其实没变。
+   *
+   * 失败就当空集合：没有上游时后端本来就回空列表，真出错（git 挂了）也只是少几个标记，
+   * 不该让提交历史跟着变成错误态。
+   */
   useEffect(() => {
-    if (!openCommit || commitFiles.has(openCommit)) return;
+    if (logCollapsed || !snapshot.isRepo) return;
     let cancelled = false;
-    void gitCommitFiles(root, openCommit)
+    void gitUnpushed(root)
       .then((list) => {
-        if (!cancelled) setCommitFiles((current) => new Map(current).set(openCommit, list));
+        if (!cancelled) setUnpushed(new Set(list));
       })
       .catch(() => {
-        // 拿不到就当空列表，展开的那行会显示"没有文件改动"
-        if (!cancelled) setCommitFiles((current) => new Map(current).set(openCommit, []));
+        if (!cancelled) setUnpushed(new Set());
       });
     return () => {
       cancelled = true;
     };
-  }, [openCommit, commitFiles]);
+  }, [logCollapsed, logRevision, snapshot.isRepo, snapshot.head, snapshot.ahead]);
+
+  // 展开某条提交时才去拉它的文件列表，拉过就留着。
+  // 展开是多选，所以一次可能有好几条要拉——已经拉到的不再请求，只补缺的那些
+  useEffect(() => {
+    const missing = [...openCommits].filter((hash) => !commitFiles.has(hash));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    for (const hash of missing) {
+      void gitCommitFiles(root, hash)
+        .then((list) => {
+          if (!cancelled) setCommitFiles((current) => new Map(current).set(hash, list));
+        })
+        .catch(() => {
+          // 拿不到就当空列表，展开的那行会显示"没有文件改动"
+          if (!cancelled) setCommitFiles((current) => new Map(current).set(hash, []));
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [openCommits, commitFiles, root]);
 
   const toggleCommit = useCallback((hash: string) => {
-    setOpenCommit((current) => (current === hash ? null : hash));
+    setOpenCommits((current) => {
+      const next = new Set(current);
+      if (next.has(hash)) next.delete(hash);
+      else next.add(hash);
+      return next;
+    });
   }, []);
+
+  /**
+   * 提交历史滚到底就自动加载下一页。
+   *
+   * 只在真有滚动事件时触发：内容本来就不够高、滚不动时不会自己一直往下加载
+   * （那样会把 500 条上限一口气拉满）。滚不动的情形留给「加载更多」按钮。
+   */
+  const onLogScroll = (event: ReactUIEvent<HTMLDivElement>) => {
+    if (commits === null || commits.length < logLimit) return;
+    const el = event.currentTarget;
+    // 留 48px 余量：真正贴到底之前就开始拉，滚动手感上不会断
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 48) return;
+    setLogLimit((limit) => limit + LOG_PAGE);
+  };
 
   const onMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter 留给换行（提交信息常常是多行），提交走可配置的快捷键（默认 Ctrl/Cmd+Enter）
@@ -1089,6 +1279,14 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
     busy === "mergeContinue"
       ? SYNC_NOTICE[busy]
       : null;
+  /**
+   * 「提交」灰着时的原因。按钮是 disabled，WebView 不会给 disabled 控件发鼠标事件，
+   * 所以 title 那套悬停提示在这儿不可靠——直接写成一行字摆出来。
+   * 只有「有暂存、但还没写消息」这一种要解释：别的禁用原因（没有暂存）旁边那条
+   * 空列表提示已经说清了。
+   */
+  const commitHint =
+    staged.length > 0 && busy === null && !message.trim() ? "填好提交信息就能提交" : null;
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
@@ -1199,7 +1397,7 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
               if (error) setError(null);
             }}
             onKeyDown={onMessageKeyDown}
-            placeholder="消息（Ctrl+Enter）"
+            placeholder={`消息（${formatShortcut(settings.shortcuts["git.commit"])}）`}
             style={messageHeight === null ? undefined : { height: messageHeight }}
             className={`${TEXT_INPUT} block resize-none pr-8 leading-4`}
           />
@@ -1274,11 +1472,15 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
               {busy === "push" ? "推送中…" : `推送变更 ${snapshot.ahead} 个`}
             </button>
           ) : (
-            <button type="button" disabled className={PRIMARY_BUTTON}>
+            <button type="button" disabled className={PRIMARY_BUTTON} title="还没有暂存的更改">
               提交
             </button>
           )}
         </div>
+
+        {commitHint && (
+          <p className="shrink-0 px-1 text-[11px] text-fg-faint">{commitHint}</p>
+        )}
 
         {snapshot.merging && (
           <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
@@ -1299,16 +1501,49 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
           </p>
         )}
 
+        {/* 路径筛选。放在列表正上方而不是塞进 header：它只作用在这块列表上，
+            贴着列表才不会被误认成整个面板的搜索框。
+            改动不多时（两边加起来不到 10 条）不显示，省得占地方 */}
+        {staged.length + unstaged.length >= FILTER_MIN_CHANGES && (
+          <div className="relative shrink-0">
+            <input
+              type="text"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder="按路径筛选"
+              className={`${TEXT_INPUT} pr-7`}
+            />
+            {filter && (
+              <button
+                type="button"
+                onClick={() => setFilter("")}
+                title="清空筛选"
+                className="absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+              >
+                <IconClose className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-auto">
           {staged.length === 0 && unstaged.length === 0 && (
             <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的更改</p>
           )}
 
-          {staged.length > 0 && (
+          {filteredOut && (
+            <p className="px-1 py-1 text-[11px] text-fg-faint">
+              没有匹配「{filter.trim()}」的更改
+            </p>
+          )}
+
+          {/* 筛掉的分组整个不画：只留一个空标题行反而让人以为里面没东西 */}
+          {stagedShown.length > 0 && (
             <>
               <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  暂存的更改 ({staged.length})
+                  暂存的更改 ({stagedShown.length}
+                  {stagedShown.length === staged.length ? "" : `/${staged.length}`})
                 </span>
                 {stagedDiscardable.length > 0 && (
                   <button
@@ -1332,7 +1567,8 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
                 </button>
               </div>
               <ChangeList
-                changes={staged}
+                group="staged"
+                changes={stagedShown}
                 tree={stagedTree}
                 view={view}
                 staged
@@ -1340,6 +1576,7 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
                 collapsedDirs={collapsedDirs}
                 onToggleDir={toggleDir}
                 onOpen={onOpen}
+                onOpenFile={onOpenFile}
                 onToggle={(path) => void run("unstage", () => gitUnstage(root, [path]))}
                 onDiscard={(change) =>
                   discard([change.path], { mode: "staged" }, change.relative)
@@ -1349,11 +1586,12 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
             </>
           )}
 
-          {unstaged.length > 0 && (
+          {unstagedShown.length > 0 && (
             <>
               <div className="flex items-center gap-1 px-1 pt-1.5 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  更改 ({unstaged.length})
+                  更改 ({unstagedShown.length}
+                  {unstagedShown.length === unstaged.length ? "" : `/${unstaged.length}`})
                 </span>
                 {unstagedDiscardable.length > 0 && (
                   <button
@@ -1377,7 +1615,8 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
                 </button>
               </div>
               <ChangeList
-                changes={unstaged}
+                group="unstaged"
+                changes={unstagedShown}
                 tree={unstagedTree}
                 view={view}
                 staged={false}
@@ -1385,6 +1624,7 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
                 collapsedDirs={collapsedDirs}
                 onToggleDir={toggleDir}
                 onOpen={onOpen}
+                onOpenFile={onOpenFile}
                 onToggle={(path) => void run("stage", () => gitStage(root, [path]))}
                 onDiscard={(change) =>
                   discard([change.path], { mode: "unstaged" }, change.relative)
@@ -1439,7 +1679,7 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
         </button>
 
         {!logCollapsed && (
-          <div className="min-h-0 flex-1 overflow-auto px-1 pb-2">
+          <div className="min-h-0 flex-1 overflow-auto px-1 pb-2" onScroll={onLogScroll}>
             {logError && <p className="px-1 py-1 text-[11px] text-danger">{logError}</p>}
             {commits === null && !logError && (
               <p className="px-1 py-1 text-[11px] text-fg-faint">加载中…</p>
@@ -1452,13 +1692,15 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
               <CommitRow
                 key={commit.hash}
                 commit={commit}
-                expanded={openCommit === commit.hash}
+                expanded={openCommits.has(commit.hash)}
                 files={commitFiles.get(commit.hash)}
+                unpushed={unpushed.has(commit.hash)}
                 onToggle={() => toggleCommit(commit.hash)}
                 onOpen={onOpen}
               />
             ))}
 
+            {/* 滚到底会自动加载；这个按钮留给「内容不够高、滚不动」的情形 */}
             {commits && commits.length >= logLimit && (
               <button
                 type="button"
@@ -1521,6 +1763,31 @@ export function GitChangesPane({ root, git, onOpen }: GitChangesPaneProps) {
             >
               AI 变更解读
             </button>
+            <button
+              type="button"
+              onClick={() => void copyPath(menu.change.path)}
+              className={MENU_ITEM}
+            >
+              复制路径
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyPath(menu.change.relative)}
+              className={MENU_ITEM}
+            >
+              复制相对路径
+            </button>
+            {/* 已经跟踪的文件加 .gitignore 不生效（规则只管未跟踪的），不给这一项 */}
+            {markOfColumn(menu.staged ? menu.change.index : menu.change.worktree).kind ===
+              "untracked" && (
+              <button
+                type="button"
+                onClick={() => void addToIgnore(menu.change)}
+                className={MENU_ITEM}
+              >
+                加入 .gitignore
+              </button>
+            )}
           </div>
         </>
       )}

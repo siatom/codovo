@@ -338,6 +338,11 @@ export function gitCommitFiles(root: string, rev: string): Promise<GitCommitFile
   return invoke<GitCommitFile[]>("git_commit_files", { root, rev });
 }
 
+/** 提交历史里哪些提交还没推送到上游（完整提交号）。没有上游时是空数组 */
+export function gitUnpushed(root: string): Promise<string[]> {
+  return invoke<string[]>("git_unpushed", { root });
+}
+
 /**
  * 从远程取回引用，不动工作区。成功后 ahead/behind 才是最新的。
  * 耗时按网络算，后端给了 3 分钟超时。

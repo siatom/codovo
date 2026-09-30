@@ -197,7 +197,12 @@ export function ToolPane({
               )}
               {/* 收起是藏起来、不是卸载：提交草稿、历史加载到第几页、拖过的高度都还在 */}
               <div className={collapsed ? "hidden" : "min-h-0 flex-1"}>
-                <GitChangesPane root={item} git={gitByRoot[item]} onOpen={onOpenDiff} />
+                <GitChangesPane
+                  root={item}
+                  git={gitByRoot[item]}
+                  onOpen={onOpenDiff}
+                  onOpenFile={onSelectFile}
+                />
               </div>
             </div>
           );

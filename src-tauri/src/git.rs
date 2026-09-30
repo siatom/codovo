@@ -782,6 +782,29 @@ fn log_of(root: &Path, limit: u32) -> Result<Vec<Commit>, String> {
     Ok(parse_log(&raw))
 }
 
+/// 还没推送到上游的提交号（HEAD 有、上游没有的那几条），界面拿它在历史里标出来。
+///
+/// 交给 git 算，不在前端按 `ahead` 的条数从前往后数：合并进来的提交同样算 ahead，
+/// 而它们在 `git log` 里和已推送的提交是交错排的；两边都有新提交（分叉）时上游那条
+/// 根本不在 HEAD 的历史里，就更数不出来了。
+///
+/// 没有上游时 `@{u}` 解析不了，git 非 0 退出 → `run_git` 给 None → 空列表，
+/// 不是错误（`ahead` 那时也是 0，界面上本来就没有要标的东西）。
+fn unpushed_of(root: &Path) -> Result<Vec<String>, String> {
+    if repo_prefix(root)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(raw) = run_git(root, &["log", "--format=%H", "@{u}..HEAD"])? else {
+        return Ok(Vec::new());
+    };
+    Ok(String::from_utf8_lossy(&raw)
+        .lines()
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 /// 解析 `--name-status -z` 的输出：`<状态>\0<路径>\0` 交替出现。
 /// 重命名/复制多一个 token，是 `<R100>\0<原路径>\0<新路径>\0`。
 fn parse_name_status(raw: &[u8], prefix: &str, root: &Path) -> Vec<CommitFile> {
@@ -1087,6 +1110,16 @@ pub fn git_commit_files(
     rev: String,
 ) -> Result<Vec<CommitFile>, String> {
     files_of(&state.checked_root(&root)?, &rev)
+}
+
+/// 提交历史里哪些提交还没推送到上游。
+///
+/// 单独一个命令而不是塞进 `git_status`：status 每 2 秒轮询一次，这份结果只在
+/// 提交历史重拉时用得上（HEAD 变了 / 手动刷新 / 推完之后 ahead 归零），
+/// 没必要让每次轮询都多起一个 git 进程。
+#[tauri::command(async)]
+pub fn git_unpushed(state: tauri::State<'_, FsState>, root: String) -> Result<Vec<String>, String> {
+    unpushed_of(&state.checked_root(&root)?)
 }
 
 /// 从远程取回引用，不动工作区。
@@ -2299,6 +2332,52 @@ mod tests {
             "r"
         );
 
+        cleanup(&top);
+    }
+
+    #[test]
+    fn unpushed_lists_commits_the_upstream_does_not_have() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        let remote_url = bare_remote(&top).to_string_lossy().to_string();
+        assert!(git(&repo, &["remote", "add", "origin", &remote_url]));
+
+        // 还没有上游：问不出来，给空列表而不是报错
+        assert!(unpushed_of(&repo).unwrap().is_empty());
+
+        fs::write(repo.join("app.ts"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let pushed = commit_staged(&repo, "init").unwrap().head.unwrap();
+        push_remote(&repo).unwrap();
+        // 刚推完，HEAD 和上游是同一条
+        assert!(unpushed_of(&repo).unwrap().is_empty());
+
+        fs::write(repo.join("app.ts"), "a\nb\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let second = commit_staged(&repo, "local 1").unwrap().head.unwrap();
+        fs::write(repo.join("app.ts"), "a\nb\nc\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let third = commit_staged(&repo, "local 2").unwrap().head.unwrap();
+
+        // 最新的在最前，已经推上去的那条不能在里面
+        assert_eq!(unpushed_of(&repo).unwrap(), vec![third, second]);
+        assert!(!unpushed_of(&repo).unwrap().contains(&pushed));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn unpushed_leaves_out_the_remote_side_of_a_divergence() {
+        if !git_available() {
+            return;
+        }
+        // 两边各有新提交：只有本地那一条算未推送，远程那条不该被标上
+        let (repo, top, _remote_url) = diverged_repo("from-remote.txt");
+        let head = status_of(&repo).unwrap().head.unwrap();
+        assert_eq!(unpushed_of(&repo).unwrap(), vec![head]);
         cleanup(&top);
     }
 
