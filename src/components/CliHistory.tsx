@@ -17,7 +17,6 @@ import {
   AgentLogo,
   IconChevronDown,
   IconChevronRight,
-  IconRefresh,
 } from "./icons";
 
 interface CliHistoryProps {
@@ -101,7 +100,7 @@ export function CliHistory({
   const provider = cliProvider(value, current?.name ?? "");
   const providerKey = provider?.key ?? "";
 
-  // 切项目 / 换 CLI / 展开 / 手动刷新 / 自动刷新都走这里
+  // 切项目 / 换 CLI / 展开 / 自动刷新都走这里
   useEffect(() => {
     // 自动刷新不显示加载态：列表本来就有内容，每 20 秒让刷新按钮转一下太吵。
     // 先消费掉标记，免得被折叠 / 切项目这些早退路径留在原地
@@ -128,8 +127,7 @@ export function CliHistory({
         setError(String(reason));
       })
       .finally(() => {
-        // 这里不区分 silent：静默刷新时它本来就是 false，重置一次无副作用；
-        // 反倒是手动刷新被静默刷新顶掉时，得靠它把转圈收回来
+        // 静默刷新时它本来就是 false，重置一次无副作用
         if (!cancelled) setLoading(false);
       });
     // 丢掉作废请求的迟到结果（换项目后旧的慢请求可能后回来）
@@ -280,7 +278,14 @@ export function CliHistory({
         <span className="absolute inset-x-0 -top-1 -bottom-1" />
       </div>
 
-      <div className="flex h-8 shrink-0 items-center gap-1 px-2">
+      {/* 分组标题，样式照抄侧栏的「项目」标题：让人一眼看出这块是会话历史，
+          而不是又一排工具按钮。收起按钮靠标题右缘——它管的就是下面这一整块，
+          跟标题同排比跟选择器挤一行更顺。折叠时标题和按钮都常显 */}
+      <div className="flex h-7 shrink-0 items-center gap-1 pr-2 pl-4">
+        <span className="text-[11px] font-medium tracking-wide text-fg-faint">
+          对话历史
+        </span>
+        <span className="flex-1" />
         <button
           type="button"
           onClick={() => setOpen((on) => !on)}
@@ -293,31 +298,27 @@ export function CliHistory({
             <IconChevronRight className="h-3.5 w-3.5" />
           )}
         </button>
-
-        <button
-          type="button"
-          onClick={(event) => openPicker(event.currentTarget)}
-          disabled={commands.length === 0}
-          title="选择要查看哪家的会话历史"
-          className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-        >
-          <AgentLogo name={current?.name ?? ""} command={value} className="h-3.5 w-3.5" />
-          <span className="min-w-0 flex-1 truncate">
-            {current?.name || provider?.label || value}
-          </span>
-          <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setNonce((n) => n + 1)}
-          disabled={loading || !provider}
-          title="刷新会话列表"
-          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-        >
-          <IconRefresh className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-        </button>
       </div>
+
+      {/* 折叠时连这一整行一起收起，只留上面的标题 + 箭头：收起来就该是一条干净的分组头。
+          刷新按钮已去掉——列表本来就每 20 秒自动拉一次，窗口切回来也会拉，手动那颗纯属多余 */}
+      {open && (
+        <div className="flex h-8 shrink-0 items-center gap-1 px-2">
+          <button
+            type="button"
+            onClick={(event) => openPicker(event.currentTarget)}
+            disabled={commands.length === 0}
+            title="选择要查看哪家的会话历史"
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            <AgentLogo name={current?.name ?? ""} command={value} className="h-3.5 w-3.5" />
+            <span className="min-w-0 flex-1 truncate">
+              {current?.name || provider?.label || value}
+            </span>
+            <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+          </button>
+        </div>
+      )}
 
       {/* 自己管住高度：侧边栏根是 flex-col、上面的项目列表是 flex-1，
           这里不封顶的话条目一多就把项目列表挤没了。高度可拖（见上边缘的拖动条） */}
