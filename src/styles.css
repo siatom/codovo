@@ -347,6 +347,47 @@ body.codedock-dragging-row * {
   max-width: none;
 }
 
+/* 「AI解读」弹窗里的 markdown。不去改 .agent-text——那是智能体气泡在用的，
+   动它会波及对话面板。这里同样去掉预览用的内边距、底色和限宽（留白由卡片自己给），
+   另把段落和列表的间距收紧：卡片宽度有限，太散会显得空。 */
+.markdown-body.dialog-text {
+  padding: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.markdown-body.dialog-text > * {
+  max-width: none;
+}
+
+.markdown-body.dialog-text p {
+  margin: 0.75em 0;
+}
+
+/* 列表缩进比预览小一档，但项目之间要留缝，多行条目才不会糊成一块 */
+.markdown-body.dialog-text ul,
+.markdown-body.dialog-text ol {
+  margin: 0.75em 0;
+  padding-left: 1.4em;
+}
+
+.markdown-body.dialog-text li + li {
+  margin-top: 0.35em;
+}
+
+/* 项目符号跟标题栏那颗火花同一色系，扫一眼就知道是 AI 分段出来的 */
+.markdown-body.dialog-text li::marker {
+  color: var(--c-accent-soft);
+}
+
+/* 行内代码在窄卡片里容易糊住，边框提亮半档 */
+.markdown-body.dialog-text code {
+  padding: 0.12em 0.4em;
+  border-color: var(--c-line-strong);
+  font-size: 0.86em;
+}
+
 .markdown-body h1,
 .markdown-body h2 {
   margin: 1.4em 0 0.7em;

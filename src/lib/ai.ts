@@ -63,14 +63,16 @@ export function generateCommitMessage(root: string, config: AiConfig): Promise<s
 }
 
 /**
- * 让大模型解释一个改动文件里改了什么，返回 markdown 正文。
- * `source` 决定跟谁比，和编辑器的差异视图同一个枚举。
+ * 让大模型解释一个文件，返回 markdown 正文。
+ *
+ * `source` 决定看什么：给了就解释那次改动（diff），和编辑器的差异视图同一个
+ * 枚举；传 `null` 就解释**整个文件**的职责与实现逻辑，不依赖 git，只读。
  */
 export function explainChange(
   root: string,
   config: AiConfig,
   path: string,
-  source: DiffSource,
+  source: DiffSource | null,
 ): Promise<string> {
   return invoke<string>("ai_explain_change", { root, config, path, source });
 }

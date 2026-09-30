@@ -11,6 +11,10 @@ use crate::git::{self, DiffSource};
 /// 这个量级，再大只是把 token 烧在无关的大文件上。
 const MAX_DIFF_CHARS: usize = 24_000;
 
+/// 单次喂给模型的整个文件内容的字符上限。和 diff 同量级：文件比 diff 更容易超，
+/// 但截掉后面一截总好过把 token 全烧在一个超大文件上。
+const MAX_FILE_CHARS: usize = 24_000;
+
 /// 接口冷启动 + 大模型首包可能很慢，给足时间；超时只作废这一次生成。
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -204,30 +208,50 @@ pub async fn ai_generate_commit_message(
     Ok(message)
 }
 
-/// 让大模型解释一个改动文件里到底改了什么。产物是 markdown 正文，直接交给
-/// 界面渲染，所以**不做** clean_message 那套去围栏处理——代码块本来就要留着。
+/// 让大模型解释一个文件。产物是 markdown 正文，直接交给界面渲染，所以
+/// **不做** clean_message 那套去围栏处理——代码块本来就要留着。
+///
+/// `source` 决定看什么：给了就解释那次改动（diff），传 `null` 就解释整个文件
+/// 的职责与实现逻辑（只读、不依赖 git，非仓库里也能用）。两种解读共用同一个
+/// 命令与 HTTP/错误处理，只是喂给模型的正文和 system 提示不同。
 #[tauri::command]
 pub async fn ai_explain_change(
     state: tauri::State<'_, FsState>,
     root: String,
     config: AiConfig,
     path: String,
-    source: git::DiffSource,
+    source: Option<git::DiffSource>,
 ) -> Result<String, String> {
-    // 同 ai_generate_commit_message：覆盖必须早于 resolve()
+    // 同 ai_generate_commit_message：覆盖必须早于 resolve()，钥匙串那次同步读也赶在 await 之前
     let mut config = config;
     config.apply(&dev::read_overrides());
     config.resolve()?;
 
-    // 同 ai_generate_commit_message：git 是同步阻塞的，先跑完再 await
+    // 同 ai_generate_commit_message：git / 读文件是同步阻塞的，先跑完再 await
     let root = state.checked_root(&root)?;
-    let diff = git::file_diff_text(&root, &path, &source)?;
-    if diff.trim().is_empty() {
-        return Err("这个文件没有可解读的改动".to_string());
-    }
-
-    let (system, user) = build_explain_prompt(&root, &path, &source, &diff);
-    // 解释要按事实说，温度低一点免得编出 diff 里没有的行为
+    let (system, user) = match &source {
+        Some(source) => {
+            let diff = git::file_diff_text(&root, &path, source)?;
+            if diff.trim().is_empty() {
+                return Err("这个文件没有可解读的改动".to_string());
+            }
+            build_explain_prompt(&root, &path, source, &diff)
+        }
+        None => {
+            // 沙箱校验、大小上限、二进制判定都在 read_text_file 里
+            let content = crate::fs_api::read_text_file(&root, &path)?;
+            if content.trim().is_empty() {
+                return Err("这个文件是空的".to_string());
+            }
+            // 显示用工作区相对路径：绝对路径那串前缀在提示里只是噪音
+            let display = Path::new(&path)
+                .strip_prefix(&root)
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| path.clone());
+            build_file_prompt(&display, &content)
+        }
+    };
+    // 解释要按事实说，温度低一点免得编出 diff / 文件里没有的行为
     let raw = chat(&config, &system, &user, 0.2).await?;
 
     let text = raw.trim().to_string();
@@ -281,6 +305,33 @@ fn build_explain_prompt(
     }
 
     (EXPLAIN_SYSTEM_PROMPT.to_string(), user)
+}
+
+/// 解析整个文件的系统提示。同样按固定结构输出 markdown，省得模型自由发挥时
+/// 把结论埋在废话里。
+const FILE_SYSTEM_PROMPT: &str = "\
+你是代码解析助手，负责说明一个文件的职责和它的实现逻辑。
+
+按下面的结构输出 markdown，不要加额外的前言、结尾或代码围栏：
+1. 第一行一句话说清这个文件是做什么的。
+2. 然后用一段话讲它的实现逻辑：关键的函数、类型、数据流。提到标识符时用反引号包起来。
+3. 如果发现了值得注意的地方（对外入口、副作用、外部依赖、边界情况），另起一段以「注意：」开头列出；没有就不写这段。
+
+规则：
+1. 用中文，直接讲文件做什么和怎么做的，不要复述原文，也不要贴大段代码。
+2. 只依据文件内容里看得到的事实，推断不出来的一律不提。
+3. 整篇控制在 500 字以内，不写「本文件」「我们」这类空话。";
+
+/// 拼解析文件用的 system / user 两条消息。单独抽出来是为了能直接跑单测。
+fn build_file_prompt(display: &str, content: &str) -> (String, String) {
+    let mut user = format!("文件：{display}\n\n文件内容：\n");
+    user.push_str(&truncate(content, MAX_FILE_CHARS));
+    if content.chars().count() > MAX_FILE_CHARS {
+        // 告诉模型文件被截过，免得它以为文件就这么长、漏掉后面的部分
+        user.push_str("\n…（文件过大，此处已截断）");
+    }
+
+    (FILE_SYSTEM_PROMPT.to_string(), user)
 }
 
 /// 拼 system / user 两条消息。单独抽出来是为了能直接跑单测。
@@ -599,6 +650,23 @@ mod tests {
             branch: Some("main".to_string()),
             recent_subjects: vec!["feat: 上一件事".to_string()],
         }
+    }
+
+    #[test]
+    fn build_file_prompt_carries_the_path_and_content() {
+        let (system, user) = build_file_prompt("src/lib/ai.ts", "export const x = 1;");
+        assert!(system.contains("代码解析助手"));
+        assert!(user.contains("src/lib/ai.ts"));
+        assert!(user.contains("export const x = 1;"));
+        // 没超限就不该出现截断提示，否则模型会以为文件没写完
+        assert!(!user.contains("已截断"));
+    }
+
+    #[test]
+    fn build_file_prompt_flags_an_oversized_file() {
+        let content = "a".repeat(MAX_FILE_CHARS + 1);
+        let (_, user) = build_file_prompt("big.ts", &content);
+        assert!(user.contains("文件过大"), "超限时要告诉模型被截过");
     }
 
     #[test]

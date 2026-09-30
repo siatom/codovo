@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { explainChange, useEffectiveAiConfig } from "../lib/ai";
 import {
   createDirectory,
   createFile,
@@ -26,6 +27,7 @@ import {
   type TreeController,
 } from "./FileTreeNode";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -63,9 +65,9 @@ const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
 const ICON_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
-/** 右键菜单：宽度和高度按 5 项算出来，用来贴着窗口边缘收一收 */
+/** 右键菜单：宽度和高度按最多 6 项算出来，用来贴着窗口边缘收一收 */
 const MENU_W = 132;
-const MENU_H = 143;
+const MENU_H = 170;
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /** 所在目录。改名/删除之后要重新列的就是它 */
@@ -197,6 +199,17 @@ export function ExplorerPane({
   /** 改名 / 删除失败的原因，挂在树顶上 */
   const [actionError, setActionError] = useState<string | null>(null);
 
+  /** AI 文件解析的结果弹窗；null = 没开 */
+  const [explain, setExplain] = useState<{
+    title: string;
+    text: string | null;
+    error: string | null;
+  } | null>(null);
+  /** 关掉弹窗后迟到的响应不该把它弹回来，用序号丢弃（同 GitChangesPane） */
+  const explainSeq = useRef(0);
+
+  const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
+
   // 搜索：输入框开着 + 有关键词才进入过滤模式
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
@@ -259,6 +272,9 @@ export function ExplorerPane({
     setMenu(null);
     setPendingDelete(null);
     setActionError(null);
+    // 解析弹窗里是上一个工作区的内容，序号推进掉在途的请求
+    explainSeq.current += 1;
+    setExplain(null);
 
     // 上一个工作区的请求可能还在飞，它回来时已经属于旧工作区了，必须丢掉：
     // 否则后端会按新工作区校验旧路径，把"路径越界"盖到刚加载好的新目录上
@@ -440,6 +456,49 @@ export function ExplorerPane({
     },
     [roots, refreshDir],
   );
+
+  /**
+   * 让 AI 说明这个文件的职责与实现逻辑，结果摆在弹窗里。只读：不动文件内容。
+   *
+   * 配置不全时不发请求，直接把设置页的提示放进弹窗——和「变更解读」那边一个口径。
+   */
+  const startExplainFile = useCallback(
+    (entry: FileEntry) => {
+      setMenu(null);
+      const title = relativePath(entry.path);
+      if (!aiReady) {
+        setExplain({
+          title,
+          text: null,
+          error: "请先在「设置 → AI」里填写接口地址、模型和密钥",
+        });
+        return;
+      }
+      const owner = ownerRoot(roots, entry.path);
+      if (!owner) {
+        setExplain({ title, text: null, error: "这个路径不在任何源文件夹里" });
+        return;
+      }
+
+      const seq = (explainSeq.current += 1);
+      setExplain({ title, text: null, error: null });
+      // source 传 null：解读整个文件，而不是某次改动
+      void explainChange(owner, aiConfig, entry.path, null)
+        .then((text) => {
+          if (explainSeq.current === seq) setExplain({ title, text, error: null });
+        })
+        .catch((reason) => {
+          if (explainSeq.current === seq) setExplain({ title, text: null, error: String(reason) });
+        });
+    },
+    [aiConfig, aiReady, relativePath, roots],
+  );
+
+  const closeExplain = useCallback(() => {
+    // 序号先推进：请求这时才回来的话，不要再把弹窗弹回来
+    explainSeq.current += 1;
+    setExplain(null);
+  }, []);
 
   const startRename = useCallback((entry: FileEntry) => {
     setMenu(null);
@@ -970,6 +1029,18 @@ export function ExplorerPane({
         />
       )}
 
+      {/* AI 解读结果，和「变更解读」共用同一个弹窗外壳 */}
+      {explain && (
+        <ExplainChangeDialog
+          title={explain.title}
+          text={explain.text}
+          error={explain.error}
+          onClose={closeExplain}
+          titlePrefix="文件解读"
+          loadingText="正在解读这个文件…"
+        />
+      )}
+
       {/* 右键菜单。用 fixed 定位而不是绝对定位：树本身是滚动容器，
           绝对定位的菜单会被 overflow 裁掉，靠底部的行就看不到菜单了 */}
       {menu && (
@@ -992,6 +1063,16 @@ export function ExplorerPane({
               top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
             }}
           >
+            {/* 解读要读文件全文，目录没有内容可解读，只给文件 */}
+            {!menu.entry.isDir && (
+              <button
+                type="button"
+                onClick={() => startExplainFile(menu.entry)}
+                className={MENU_ITEM}
+              >
+                AI 解读文件
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void copyPath(menu.entry.path)}

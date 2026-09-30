@@ -429,6 +429,24 @@ pub fn fs_read_file(
     })
 }
 
+/// 按「文本文件」的规矩读一个文件的全文，读不了就直接报错。
+///
+/// 与 `fs_read_file` 的分工：那个要回三态（空文本 + 标志位），给编辑器自己判怎么显示；
+/// 这里只服务于一次性拿全文的调用方（如让大模型解析文件），拿不到就让它失败，
+/// 判定（沙箱、大小上限、二进制）和 `fs_read_file` 完全一致，不另起一套。
+pub(crate) fn read_text_file(root: &Path, raw: &str) -> Result<String, String> {
+    let file = resolve(root, raw)?;
+    let meta = fs::metadata(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
+    if meta.len() > MAX_TEXT_SIZE {
+        return Err("文件太大（超过 2 MB），无法解析".to_string());
+    }
+    let bytes = fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
+    if looks_binary(&bytes) {
+        return Err("这不是文本文件，无法解析".to_string());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// 能直接渲染的图片扩展名 → MIME。**`svg` 故意不在列**：它是文本，编辑器里已经当
 /// xml 打开、能编辑能高亮，挪去图片预览反而是倒退；`tif` 这类浏览器不认。
 fn image_mime(path: &Path) -> Option<&'static str> {
