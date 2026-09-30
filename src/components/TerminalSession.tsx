@@ -9,16 +9,11 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { isPrimaryModifier } from "../lib/keys";
 import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
-
-/**
- * 只看 UA 就够：这里的用途仅仅是决定复制/粘贴认 Cmd 还是 Ctrl。
- * mac 上 Ctrl+C 必须留给 shell 发 SIGINT，所以不能一律按 Ctrl 认。
- */
-const IS_MAC = /mac/i.test(navigator.userAgent);
 
 /**
  * 走 Tauri 的 clipboard 插件读写系统剪贴板，不用 `navigator.clipboard`：
@@ -60,6 +55,11 @@ interface TerminalSessionProps {
    * （由后端按平台挑）。两者得分开，否则在下拉里点「自动」会被设置里的具体 shell 顶掉。
    */
   shell?: string;
+  /**
+   * 焦点在这个会话里时按了「关闭当前标签」的快捷键。谁管标签栏谁来关——
+   * 会话自己不知道自己是第几个，也不知道关掉后该切到谁。
+   */
+  onRequestClose?: () => void;
 }
 
 /**
@@ -69,7 +69,10 @@ interface TerminalSessionProps {
 export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
->(function TerminalSession({ root, active, visible = active, initialCommand, shell }, ref) {
+>(function TerminalSession(
+  { root, active, visible = active, initialCommand, shell, onRequestClose },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyRef = useRef<PtyHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -93,6 +96,10 @@ export const TerminalSession = forwardRef<
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+  // 建实例的 effect 依赖是 [sessionKey, root]，塞不进这个回调：它每次渲染都变，
+  // 进了依赖就等于「每关一个标签就重开 shell」。用 ref 存最新的那份。
+  const onRequestCloseRef = useRef(onRequestClose);
+  onRequestCloseRef.current = onRequestClose;
 
   // 要自动敲的那条命令只在"这个会话被创建"那一次算数，所以用 useState 的初始化
   // 把它定死、不跟着 prop 走（用户手动点「重开」或 cwd 变化重建 shell 时不该重放
@@ -225,13 +232,13 @@ export const TerminalSession = forwardRef<
     };
 
     /**
-     * 复制/粘贴的按键认领。用捕获阶段 + stopPropagation 抢在 xterm 自己的 textarea
-     * 监听之前处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被发成 \x03（中断）。
+     * 快捷键认领：复制/粘贴，以及关闭当前标签页。用捕获阶段 + stopPropagation 抢在
+     * xterm 自己的 textarea 监听之前处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被
+     * 发成 \x03（中断）、Ctrl+W 会变成 \x17 发给 shell（删词）。
      * 认领条件都带前缀键，普通输入不受影响。
      */
     const onKeyDown = (event: KeyboardEvent) => {
-      const primary = IS_MAC ? event.metaKey : event.ctrlKey;
-      if (!primary || event.altKey) return;
+      if (!isPrimaryModifier(event)) return;
       const key = event.key.toLowerCase();
       if (key === "c") {
         // 没选区时不认领，让它落到 shell 上发 SIGINT —— 这是终端的肌肉记忆
@@ -243,6 +250,10 @@ export const TerminalSession = forwardRef<
         event.preventDefault();
         event.stopPropagation();
         pasteFromClipboard();
+      } else if (key === "w") {
+        event.preventDefault();
+        event.stopPropagation();
+        onRequestCloseRef.current?.();
       }
     };
     container.addEventListener("keydown", onKeyDown, true);

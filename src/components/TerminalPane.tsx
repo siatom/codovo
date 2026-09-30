@@ -395,6 +395,9 @@ export function TerminalPane({
                   root={root}
                   // undefined = 跟随设置里的默认；只有在下拉里明确选过 shell 的会话才有值
                   shell={shellByIdRef.current.get(id)}
+                  // Ctrl/Cmd+W 关的是「当前这个」标签；只剩一个时会换新会话顶上，
+                  // 和标签上的关闭按钮同一套语义
+                  onRequestClose={() => closeSession(id)}
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
                   // 并列模式显示全部会话；标签模式只显示当前会话。active 仍只负责焦点和补尺寸。
