@@ -5,12 +5,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
   type Ref,
 } from "react";
 import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
 import { renderMarkdown } from "../lib/markdown";
+import { isPrimaryModifier } from "../lib/keys";
 import {
   gitFileDiff,
   isPathInside,
@@ -917,6 +919,22 @@ export function EditorPane({
     [dirtyPaths, onClose, disposeModels, forgetKeys],
   );
 
+  /**
+   * Ctrl/Cmd+W 关掉当前标签（文件标签和差异标签同一根标签栏，走同一套逻辑）。
+   *
+   * 挂在编辑器区最外层、**捕获阶段**：焦点在标签栏按钮上、或落在 Monaco 里都收得到，
+   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。所以只有焦点在编辑器区内才生效，
+   * 焦点在文件树/终端时按不到这儿。
+   */
+  const onPaneKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (!isPrimaryModifier(event) || event.key.toLowerCase() !== "w") return;
+    const current = activeRef.current;
+    if (!current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeTab(current);
+  };
+
   const isDiffTab = active?.kind === "diff";
   const activeKey = active ? tabKey(active) : null;
 
@@ -972,7 +990,7 @@ export function EditorPane({
   const overlay: Status = isDiffTab ? diffStatus : status;
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-surface">
+    <section className="flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
         <div
           ref={tabsScrollRef}
