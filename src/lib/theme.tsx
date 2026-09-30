@@ -8,7 +8,7 @@ import {
 } from "react";
 
 /** 用户的选择，`system` 表示跟着操作系统走 */
-export type Theme = "dark" | "light" | "system";
+export type Theme = "dark" | "light" | "system" | "vscode" | "one-dark" | "dracula" | "github-light" | "material-nova" | "neon-green";
 /** 真正落到界面上的主题，只可能是这两个 */
 export type ResolvedTheme = "dark" | "light";
 
@@ -21,7 +21,7 @@ export const DEFAULT_THEME: Theme = "dark";
 export function readSavedTheme(): Theme {
   try {
     const saved = window.localStorage.getItem(THEME_KEY);
-    return saved === "light" || saved === "system" ? saved : DEFAULT_THEME;
+    return saved === "light" || saved === "system" || saved === "vscode" || saved === "one-dark" || saved === "dracula" || saved === "github-light" || saved === "material-nova" || saved === "neon-green" ? saved : DEFAULT_THEME;
   } catch {
     return DEFAULT_THEME;
   }
@@ -29,13 +29,14 @@ export function readSavedTheme(): Theme {
 
 /** 把三态偏好解析成实际主题；首帧渲染前要用它，所以得是纯函数 */
 export function resolveTheme(theme: Theme): ResolvedTheme {
-  if (theme !== "system") return theme;
+  if (theme !== "system") return theme === "light" || theme === "github-light" ? "light" : "dark";
   return window.matchMedia(MEDIA).matches ? "dark" : "light";
 }
 
 /** 主题挂在 <html data-theme> 上，CSS 变量按它整组切。 */
-export function applyTheme(theme: ResolvedTheme) {
-  document.documentElement.dataset.theme = theme;
+export function applyTheme(theme: Theme) {
+  document.documentElement.dataset.theme = resolveTheme(theme);
+  document.documentElement.dataset.palette = theme;
 }
 
 interface ThemeValue {
@@ -65,10 +66,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => media.removeEventListener("change", onChange);
   }, []);
 
-  const theme: ResolvedTheme = preference === "system" ? systemTheme : preference;
+  const theme: ResolvedTheme = preference === "system" ? systemTheme : resolveTheme(preference);
 
   useEffect(() => {
-    applyTheme(theme);
+    applyTheme(preference);
     try {
       window.localStorage.setItem(THEME_KEY, preference);
     } catch {

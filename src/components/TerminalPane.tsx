@@ -13,10 +13,21 @@ import {
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
 import { listShells, type ShellInfo } from "../lib/pty";
+import { usePaneSizes } from "../lib/use-pane-sizes";
 import type { EditorLocation } from "../lib/types";
 import { AgentPane, type AgentPaneHandle } from "./AgentPane";
 import { FullscreenButton } from "./FullscreenButton";
-import { IconBot, IconChevronDown, IconClose, IconPlus, IconTerminal, ShellIcon } from "./icons";
+import {
+  IconBot,
+  IconChevronDown,
+  IconClose,
+  IconLayoutColumns,
+  IconLayoutRows,
+  IconLayoutSingle,
+  IconPlus,
+  IconTerminal,
+  ShellIcon,
+} from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
 const SHELL_MENU_W = 200;
@@ -74,6 +85,7 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
+  const [layout, setLayout] = useState<"tabs" | "horizontal" | "vertical">("tabs");
   /**
    * 新建标签时要自动敲进去的命令，按会话 id 记。和 sessions 在同一次事件里更新，
    * 新会话第一次渲染就带着它——不存在"先挂载、后补命令"的时间窗。
@@ -89,6 +101,14 @@ export function TerminalPane({
   /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
   const shellByIdRef = useRef(new Map<number, string>());
   const addButtonRef = useRef<HTMLDivElement>(null);
+  /** 并列布局的容器：拖分隔条时按它的尺寸换算比例 */
+  const splitRef = useRef<HTMLDivElement>(null);
+  const {
+    sizes: paneSizes,
+    onHandleDown,
+    onHandleMove,
+    onHandleUp,
+  } = usePaneSizes(sessions.length, layout === "horizontal" ? "row" : "column", splitRef);
   const [shellMenuOpen, setShellMenuOpen] = useState(false);
   const [shellOptions, setShellOptions] = useState<ShellInfo[]>([]);
   const [shellMenuPos, setShellMenuPos] = useState<{ left: number; top: number } | null>(
@@ -300,25 +320,119 @@ export function TerminalPane({
               </button>
             </div>
           </div>
-          {/* 全屏开关放在标签滚动区之外：标签横向滚动时它不跟着滑走 */}
-          <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
+          {/* 三个布局按钮 + 全屏按钮同一排，gap 一致——之前布局按钮裹了一圈边框，
+              和外面全屏按钮间距对不上，去掉边框后四个按钮等距 */}
+          <div className="flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => setLayout("tabs")}
+              title="单终端"
+              aria-label="单终端"
+              className={`flex h-6 w-6 items-center justify-center rounded ${
+                layout === "tabs" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+              }`}
+            >
+              <IconLayoutSingle className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setLayout("horizontal")}
+              title="左右并列"
+              aria-label="左右并列"
+              className={`flex h-6 w-6 items-center justify-center rounded ${
+                layout === "horizontal" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+              }`}
+            >
+              <IconLayoutColumns className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setLayout("vertical")}
+              title="上下并列"
+              aria-label="上下并列"
+              className={`flex h-6 w-6 items-center justify-center rounded ${
+                layout === "vertical" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+              }`}
+            >
+              <IconLayoutRows className="h-3.5 w-3.5" />
+            </button>
+            {/* 全屏开关放最右，且在标签滚动区之外：标签横向滚动时它不跟着滑走 */}
+            <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
+          </div>
         </div>
 
-        <div className="relative min-h-0 flex-1">
-          {sessions.map((id) => (
-            <TerminalSession
-              key={id}
-              ref={attachHandle(id)}
-              root={root}
-              // undefined = 跟随设置里的默认；只有在下拉里明确选过 shell 的会话才有值
-              shell={shellByIdRef.current.get(id)}
-              // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
-              initialCommand={launchFor?.id === id ? launchFor.command : undefined}
-              // 和 view、项目可见性都挂钩：切回终端或切回这个项目时，TerminalSession 的
-              // active effect 会补一次 fit + resize + focus，藏起来量不到尺寸的问题就解决了
-              active={visible && view === "terminal" && id === activeId}
-            />
-          ))}
+        {/* 容器元素始终是同一种标签，只换 className：切布局时各会话的包裹层按 key 复用，
+            不重建 TerminalSession（重建会杀掉 shell） */}
+        <div
+          ref={splitRef}
+          className={
+            layout === "tabs"
+              ? "relative min-h-0 flex-1"
+              : `flex min-h-0 flex-1 ${layout === "horizontal" ? "flex-row" : "flex-col"}`
+          }
+        >
+          {sessions.flatMap((id, index) => {
+            const cell = (
+              <div
+                key={id}
+                className={
+                  layout === "tabs"
+                    ? id === activeId
+                      ? "absolute inset-0"
+                      : "hidden"
+                    : "relative min-h-0 min-w-0 overflow-hidden"
+                }
+                // 并列模式按拖出来的比例分配：basis 0 + grow 之比 = 尺寸之比
+                style={
+                  layout === "tabs"
+                    ? undefined
+                    : { flexBasis: 0, flexGrow: paneSizes[index] ?? 1, flexShrink: 1 }
+                }
+                onMouseDown={() => setActiveId(id)}
+              >
+                <TerminalSession
+                  ref={attachHandle(id)}
+                  root={root}
+                  // undefined = 跟随设置里的默认；只有在下拉里明确选过 shell 的会话才有值
+                  shell={shellByIdRef.current.get(id)}
+                  // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
+                  initialCommand={launchFor?.id === id ? launchFor.command : undefined}
+                  // 并列模式显示全部会话；标签模式只显示当前会话。active 仍只负责焦点和补尺寸。
+                  visible={visible && view === "terminal" && (layout !== "tabs" || id === activeId)}
+                  active={visible && view === "terminal" && id === activeId}
+                />
+              </div>
+            );
+            // 第一个 pane 前面没有分隔条；其余每个前面插一条，拖动改它和左边/上面那个的比例
+            if (layout === "tabs" || index === 0) return [cell];
+            return [
+              <div
+                key={`sep-${id}`}
+                role="separator"
+                aria-orientation={layout === "horizontal" ? "vertical" : "horizontal"}
+                aria-label="拖动调整终端大小"
+                onPointerDown={(event) => onHandleDown(index - 1, event)}
+                onPointerMove={onHandleMove}
+                onPointerUp={onHandleUp}
+                onPointerCancel={onHandleUp}
+                className={`relative z-10 shrink-0 bg-line-strong transition-colors hover:bg-line-hover ${
+                  layout === "horizontal"
+                    ? "w-px cursor-col-resize"
+                    : "h-px cursor-row-resize"
+                }`}
+              >
+                {/* 加宽命中区，视觉上仍是一条细线 */}
+                <span
+                  className={
+                    layout === "horizontal"
+                      ? "absolute inset-y-0 -left-1 -right-1"
+                      : "absolute inset-x-0 -top-1 -bottom-1"
+                  }
+                />
+              </div>,
+              cell,
+            ];
+          })}
         </div>
       </div>
 

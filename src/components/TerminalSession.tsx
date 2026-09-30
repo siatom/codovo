@@ -51,6 +51,8 @@ interface TerminalSessionProps {
   root: string;
   /** 是否是当前显示的那个会话：从后台切回来要重新量尺寸并聚焦 */
   active: boolean;
+  /** 是否在当前布局中显示；显示多个终端时不等同于焦点会话 */
+  visible?: boolean;
   /** shell 起来后自动敲进去的一条命令（resume 会话用）。只在建实例那一次生效 */
   initialCommand?: string;
   /**
@@ -67,7 +69,7 @@ interface TerminalSessionProps {
 export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
->(function TerminalSession({ root, active, initialCommand, shell }, ref) {
+>(function TerminalSession({ root, active, visible = active, initialCommand, shell }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyRef = useRef<PtyHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -75,12 +77,14 @@ export const TerminalSession = forwardRef<
   const [error, setError] = useState<string | null>(null);
   const [exited, setExited] = useState(false);
   const [sessionKey, setSessionKey] = useState(0);
-  const { theme } = useTheme();
+  const { theme, preference } = useTheme();
   const { settings } = useSettings();
 
   // 建实例的 effect 只认挂载那一刻的主题，切换主题走下面的 effect 单独更新
   const themeRef = useRef(theme);
   themeRef.current = theme;
+  const preferenceRef = useRef(preference);
+  preferenceRef.current = preference;
   const fontSizeRef = useRef(settings.terminalFontSize);
   fontSizeRef.current = settings.terminalFontSize;
   const fontFamilyRef = useRef(settings.terminalFontFamily);
@@ -124,7 +128,7 @@ export const TerminalSession = forwardRef<
       scrollback: 5000,
       // 右键在我们这儿是复制/粘贴，别让它顺带按词选中，不然会先把选区改掉再复制
       rightClickSelectsWord: false,
-      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current),
+      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current, preferenceRef.current),
     });
 
     const fit = new FitAddon();
@@ -287,10 +291,10 @@ export const TerminalSession = forwardRef<
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme);
+    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme, preference);
     // 只改 options 时 WebGL 渲染器不保证重画整屏，显式刷一遍底色才跟着换
     term.refresh(0, Math.max(0, term.rows - 1));
-  }, [theme, settings.terminalTheme]);
+  }, [theme, preference, settings.terminalTheme]);
 
   // 字体/字号/字重同理，改完补一次 fit，把新的行列数告诉 PTY
   useEffect(() => {
@@ -333,12 +337,24 @@ export const TerminalSession = forwardRef<
     return () => cancelAnimationFrame(frame);
   }, [active, sessionKey]);
 
+  // FitAddon 只按整数行列铺，容器高度是像素分数，底部会剩不到一行的空当。
+  // 把它涂成终端自己的底色，否则会露出外面面板的底色——上下并列时那道空当
+  // 正好贴在分割线上方，看着像一条平行的白色阴影。
+  const terminalBg = resolveTerminalTheme(
+    settings.terminalTheme,
+    theme,
+    preference,
+  ).background;
+
   return (
     // overflow-clip 是必须的：输入法合成时 xterm 的 .composition-view 会按光标位置
     // 画到行尾之外，浏览器为了让这个"焦点附近"的内容可见，会去横向滚动最近的可滚动祖先
     // （分栏面板是 overflow:hidden，照样能被程序滚动），整块终端就被推左再弹回，看着在抖。
     // 用 clip 而不是 hidden：clip 连程序滚动都不允许，溢出到此为止。
-    <div className={active ? "absolute inset-0 overflow-clip" : "hidden"}>
+    <div
+      className={visible ? "absolute inset-0 overflow-clip" : "hidden"}
+      style={{ backgroundColor: terminalBg }}
+    >
       {/* FitAddon 只减 xterm 自身的 padding、不减父元素 padding，所以容器不能留内边距 */}
       <div ref={containerRef} className="absolute inset-0" />
       {error && (

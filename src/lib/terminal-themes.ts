@@ -1,6 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
 import xtermThemes from "xterm-theme";
-import type { ResolvedTheme } from "./theme";
+import type { ResolvedTheme, Theme } from "./theme";
 
 /**
  * 「跟随界面主题」时用的内置配色。和 styles.css 里的 --c-* 对齐，
@@ -95,7 +95,11 @@ export const TERMINAL_THEME_OPTIONS = COMMON_KEYS.map((key) => ({
 export function resolveTerminalTheme(
   key: string,
   fallback: ResolvedTheme,
+  preference?: Theme,
 ): ITheme {
-  if (!key) return BUILTIN[fallback];
+  if (!key) {
+    const palette = preference === "vscode" ? "Default_Dark" : preference === "one-dark" ? "Atom" : preference === "dracula" ? "Dracula" : preference === "github-light" ? "Github" : preference === "material-nova" ? "MaterialDark" : preference === "neon-green" ? "Monokai_Vivid" : "";
+    return palette && xtermThemes[palette] ? xtermThemes[palette] : BUILTIN[fallback];
+  }
   return xtermThemes[key] ?? BUILTIN[fallback];
 }

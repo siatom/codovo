@@ -491,6 +491,27 @@ export const IconFullscreenExit = icon(
   </>,
 );
 
+/**
+ * 终端分栏的三个布局图标。以前这几个用的是 ▣ ◫ ▤ 这些字符，字形深浅不一、
+ * 和旁边的线条图标也不搭，且「上下并列」那个字符在不同字体下看起来像标题栏。
+ * 统一自绘画出来，三个只在分隔线上不同，一眼能对上。
+ */
+export const IconLayoutSingle = icon(<rect x="3" y="4" width="18" height="16" rx="2" />);
+
+export const IconLayoutColumns = icon(
+  <>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M12 4v16" />
+  </>,
+);
+
+export const IconLayoutRows = icon(
+  <>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M3 12h18" />
+  </>,
+);
+
 const CLOSE_PATH = "M18 6 6 18M6 6l12 12";
 
 export const IconClose = icon(<path d={CLOSE_PATH} />);
