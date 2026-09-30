@@ -706,6 +706,120 @@ fn current_branch(root: &Path) -> Result<Option<String>, String> {
         .filter(|name| !name.is_empty() && name != "HEAD"))
 }
 
+// ---- 分支 ----
+
+/// 给分支下拉用的一条本地分支。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    /// 短名，如 main / feature/x
+    name: String,
+    /// 上游短名，如 origin/main；没配上游时是 None
+    upstream: Option<String>,
+    /// 相对上游领先/落后的条数；没上游时都是 0
+    ahead: u32,
+    behind: u32,
+    /// 上游被删了（`[gone]`）——这时 ahead/behind 没有意义，界面只提示一下
+    gone: bool,
+    /// 是不是当前所在的分支
+    current: bool,
+}
+
+/// 解析 `%(upstream:track)`：形如 `[ahead 1, behind 2]` / `[gone]` / 空串（与上游同步）。
+/// 没配上游时这一列同样是空串，靠 upstream 那一列是不是空来区分。
+fn parse_track(text: &str) -> (u32, u32, bool) {
+    let gone = text.contains("gone");
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in text.trim_matches(['[', ']']).split(',') {
+        let part = part.trim();
+        if let Some(value) = part.strip_prefix("ahead ") {
+            ahead = value.trim().parse().unwrap_or(0);
+        } else if let Some(value) = part.strip_prefix("behind ") {
+            behind = value.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind, gone)
+}
+
+/// 解析 `for-each-ref` 的输出。字段之间 `%x1f`，记录结尾 `%x00`（后面还跟着
+/// for-each-ref 自己的换行，所以每条都 trim 一下）。
+fn parse_branches(raw: &[u8]) -> Vec<BranchInfo> {
+    let mut branches = Vec::new();
+    for record in raw.split(|byte| *byte == 0) {
+        let text = String::from_utf8_lossy(record);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let mut fields = text.split('\u{1f}');
+        let name = fields.next().unwrap_or("").trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let upstream = fields.next().unwrap_or("").trim();
+        let (ahead, behind, gone) = parse_track(fields.next().unwrap_or(""));
+        let current = fields.next().unwrap_or("").trim() == "*";
+        branches.push(BranchInfo {
+            name,
+            upstream: (!upstream.is_empty()).then(|| upstream.to_string()),
+            ahead,
+            behind,
+            gone,
+            current,
+        });
+    }
+    branches
+}
+
+/// 本地分支清单。只列 `refs/heads`——远程分支要切必须先建出本地跟踪分支，
+/// 那是另一件事，不进这一版。
+fn branches_of(root: &Path) -> Result<Vec<BranchInfo>, String> {
+    // 分隔符用 `%1f` 而不是 `%x1f`：**ref-filter 这套格式是 `%NN` 两位十六进制**，
+    // 写 `%x1f` 会原样输出这五个字符（`git log` 的 `%x1f` 才是那个写法，别混）。
+    // HEAD 那一列是 `*`（当前分支）或空格，用来标出当前所在的那条
+    const FORMAT: &str =
+        "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track)%1f%(HEAD)%00";
+    let Some(raw) = run_git(root, &["for-each-ref", FORMAT, "refs/heads"])? else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_branches(&raw))
+}
+
+/// 分支名先过一遍这两道，再交给 git。
+///
+/// 以 `-` 开头的名字会被 git 当成选项（`switch -b` 之类），必须挡掉；
+/// 合法性交给 `check-ref-format`，它报错比 `switch` 的「not a valid object name」
+/// 直白得多。返回值直接拼进错误文案。
+fn check_branch_name(root: &Path, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("分支名不能为空".to_string());
+    }
+    if name.starts_with('-') {
+        return Err(format!("分支名不能以 - 开头：{name}"));
+    }
+    if run_git(root, &["check-ref-format", "--branch", name])?.is_none() {
+        return Err(format!("分支名不合法：{name}"));
+    }
+    Ok(())
+}
+
+fn switch_branch(root: &Path, name: &str) -> Result<GitStatus, String> {
+    let name = name.trim();
+    check_branch_name(root, name)?;
+    // 用 switch 而不是 checkout：checkout 还能接受路径，语义太杂，容易把分支名
+    // 当成文件。工作区有未提交改动时 git 自己会拒绝或带走，报错原文透传给用户
+    run_git_checked(root, &["switch", name])?;
+    status_of(root)
+}
+
+fn create_branch(root: &Path, name: &str) -> Result<GitStatus, String> {
+    let name = name.trim();
+    check_branch_name(root, name)?;
+    run_git_checked(root, &["switch", "-c", name])?;
+    status_of(root)
+}
+
 /// 仓库是不是正卡在一次没结束的合并里（有冲突待解决，或已解决但还没提交）。
 ///
 /// 用 MERGE_HEAD 而不是解析 status：porcelain v2 根本不暴露合并状态，而且
@@ -1223,6 +1337,35 @@ pub fn git_amend(
 #[tauri::command(async)]
 pub fn git_undo_commit(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     undo_commit(&state.checked_root(&root)?)
+}
+
+/// 本地分支清单，给分支下拉用。
+#[tauri::command(async)]
+pub fn git_branches(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<BranchInfo>, String> {
+    branches_of(&state.checked_root(&root)?)
+}
+
+/// 切到已有的本地分支。
+#[tauri::command(async)]
+pub fn git_switch_branch(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    name: String,
+) -> Result<GitStatus, String> {
+    switch_branch(&state.checked_root(&root)?, &name)
+}
+
+/// 从当前 HEAD 建一条新分支并切过去。
+#[tauri::command(async)]
+pub fn git_create_branch(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    name: String,
+) -> Result<GitStatus, String> {
+    create_branch(&state.checked_root(&root)?, &name)
 }
 
 /// 一个改动文件的两侧内容，给编辑器的差异视图用。
@@ -3144,6 +3287,90 @@ mod tests {
         // 和游离 HEAD 撞在一起。这两条检查的先后顺序决定了用户看到哪句话
         let error = undo_commit(&repo).unwrap_err();
         assert!(error.contains("还没有提交"), "{error}");
+
+        cleanup(&top);
+    }
+
+    // ---- 分支 ----
+
+    #[test]
+    fn branch_list_marks_the_current_one_and_creates_switches() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        let list = branches_of(&repo).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "main");
+        assert!(list[0].current);
+        assert_eq!(list[0].upstream, None, "还没推过，没有上游");
+
+        let created = create_branch(&repo, "feature/x").unwrap();
+        assert_eq!(created.branch.as_deref(), Some("feature/x"));
+        let list = branches_of(&repo).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.iter().any(|item| item.name == "main" && !item.current));
+        assert!(list.iter().any(|item| item.name == "feature/x" && item.current));
+
+        let switched = switch_branch(&repo, "main").unwrap();
+        assert_eq!(switched.branch.as_deref(), Some("main"));
+
+        // 以 - 开头会被 git 当成选项，必须自己挡掉；带空格的不是合法分支名
+        assert!(switch_branch(&repo, "-bad").is_err());
+        assert!(create_branch(&repo, "bad name").is_err());
+        assert!(create_branch(&repo, "").is_err());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn branch_list_reports_upstream_and_divergence() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _url) = diverged_repo("from-remote.txt");
+        // 不 fetch 的话 behind 还是陈旧的
+        fetch_remote(&repo).unwrap();
+
+        let list = branches_of(&repo).unwrap();
+        let main = list.iter().find(|item| item.name == "main").unwrap();
+        assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((main.ahead, main.behind), (1, 1));
+        assert!(!main.gone);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn switching_branches_replaces_the_working_tree() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("on-main.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        create_branch(&repo, "feature").unwrap();
+        // 在 feature 上另提交一个文件
+        fs::write(repo.join("on-feature.txt"), "2\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "feature work").unwrap();
+        assert!(repo.join("on-feature.txt").exists());
+
+        // 切回 main：feature 上那个文件该从工作区消失（这正是要提醒用户的地方）
+        switch_branch(&repo, "main").unwrap();
+        assert!(repo.join("on-main.txt").exists());
+        assert!(
+            !repo.join("on-feature.txt").exists(),
+            "切分支该把工作区换成那条分支的内容"
+        );
 
         cleanup(&top);
     }

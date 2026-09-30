@@ -50,6 +50,18 @@ export interface GitFileStatus {
   unstagedRemoved: number | null;
 }
 
+/** 分支下拉里的一条本地分支 */
+export interface GitBranch {
+  name: string;
+  /** 上游短名，如 origin/main；没配上游时是 null */
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  /** 上游被删了（`[gone]`），这时 ahead/behind 没有意义 */
+  gone: boolean;
+  current: boolean;
+}
+
 export interface GitStatusPayload {
   isRepo: boolean;
   branch: string | null;

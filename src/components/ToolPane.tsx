@@ -59,6 +59,14 @@ interface ToolPaneProps {
   onSelectFile: (path: string) => void;
   /** 改动列表 / 提交历史里点一个文件：打开差异视图 */
   onOpenDiff: (path: string, source: DiffSource) => void;
+  /**
+   * 变更面板里切了分支：工作区整个换了，打开着的文件和差异视图的基线都得作废。
+   * 编辑器那边有 watcher 兜底（改动过的文件会重读），但被删除的文件收不到事件，
+   * 所以要在这一层显式清一次。
+   */
+  onBranchChanged: () => void;
+  /** 切分支前的落盘；返回 false 表示有文件没存成功，切换要中止 */
+  onBeforeBranchSwitch: () => Promise<boolean>;
   /** 搜索结果里点一条：打开文件并定位到那一行那一列 */
   onOpenMatch: (path: string, line: number, column: number, length: number) => void;
   /** 替换前的落盘；返回 false 表示有文件没存成功，替换要中止 */
@@ -93,6 +101,8 @@ export function ToolPane({
   onSelectFile,
   onOpenDiff,
   onOpenMatch,
+  onBranchChanged,
+  onBeforeBranchSwitch,
   onBeforeReplace,
   onAfterReplace,
   onBeforeRename,
@@ -202,6 +212,8 @@ export function ToolPane({
                   git={gitByRoot[item]}
                   onOpen={onOpenDiff}
                   onOpenFile={onSelectFile}
+                  onBeforeBranchSwitch={onBeforeBranchSwitch}
+                  onBranchChanged={onBranchChanged}
                 />
               </div>
             </div>

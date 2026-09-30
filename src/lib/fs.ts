@@ -7,6 +7,7 @@ import type {
   FileContent,
   FileDiff,
   FileEntry,
+  GitBranch,
   GitCommit,
   GitCommitFile,
   GitStatusPayload,
@@ -353,6 +354,20 @@ export function gitUndoCommit(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_undo_commit", { root });
 }
 
+/** 本地分支清单，给分支下拉用 */
+export function gitBranches(root: string): Promise<GitBranch[]> {
+  return invoke<GitBranch[]>("git_branches", { root });
+}
+
+/** 切到已有的本地分支 */
+export function gitSwitchBranch(root: string, name: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_switch_branch", { root, name });
+}
+
+/** 从当前 HEAD 建一条新分支并切过去 */
+export function gitCreateBranch(root: string, name: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_create_branch", { root, name });
+}
 /**
  * 从远程取回引用，不动工作区。成功后 ahead/behind 才是最新的。
  * 耗时按网络算，后端给了 3 分钟超时。

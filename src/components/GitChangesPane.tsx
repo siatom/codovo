@@ -12,8 +12,10 @@ import {
 import {
   gitAddToIgnore,
   gitAmend,
+  gitBranches,
   gitCommit,
   gitCommitFiles,
+  gitCreateBranch,
   gitDiscard,
   gitFetch,
   gitLog,
@@ -23,6 +25,7 @@ import {
   gitPull,
   gitPush,
   gitStage,
+  gitSwitchBranch,
   gitUndoCommit,
   gitUnstage,
   gitUnpushed,
@@ -42,7 +45,13 @@ import { useSettings } from "../lib/settings";
 import { formatShortcut, matchesShortcut } from "../lib/shortcuts";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { DiffSource } from "../lib/tabs";
-import type { GitCommit, GitCommitFile, GitStatusPayload, DiscardSource } from "../lib/types";
+import type {
+  DiscardSource,
+  GitBranch,
+  GitCommit,
+  GitCommitFile,
+  GitStatusPayload,
+} from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
@@ -51,6 +60,7 @@ import {
   IconArrowDownToLine,
   IconArrowUpFromLine,
   IconBranch,
+  IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconClose,
@@ -76,6 +86,17 @@ interface GitChangesPaneProps {
   onOpen: (path: string, source: DiffSource) => void;
   /** 点行内的「打开文件」：开文件内容（不是差异），用来跳回去看上下文 */
   onOpenFile: (path: string) => void;
+  /**
+   * 切分支**之前**调。编辑器里可能有没保存的改动，它只活在内存里、git 看不见：
+   * 落盘之后 git 才能正确判断能不能安全切换，也免得切完用户一保存就把旧分支的
+   * 内容写进新分支。返回 false = 有文件没存成功，这次切换要中止。
+   */
+  onBeforeBranchSwitch: () => Promise<boolean>;
+  /**
+   * 切分支成功之后调一次。工作区整个被换掉，上层那些按旧内容缓存下来的东西
+   * （打开的文件、差异视图的基线）都得作废——见 ProjectWorkspace 的实现。
+   */
+  onBranchChanged: () => void;
 }
 
 /** 待确认的放弃修改。确认框弹出前先把要放弃的东西记在这里 */
@@ -316,6 +337,7 @@ type Busy =
   | "commit"
   | "amend"
   | "undo"
+  | "branch"
   | "generate"
   | "fetch"
   | "pull"
@@ -734,7 +756,14 @@ function CommitRow({
  * 目录不是仓库（或系统里没有 git）时整个不渲染——工具列表那边已经把这行置灰了，
  * 这里的早退只是兜底。
  */
-export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPaneProps) {
+export function GitChangesPane({
+  root,
+  git,
+  onOpen,
+  onOpenFile,
+  onBeforeBranchSwitch,
+  onBranchChanged,
+}: GitChangesPaneProps) {
   const { settings } = useSettings();
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
@@ -789,6 +818,12 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
    */
   const [filter, setFilter] = useState("");
 
+  // 分支下拉：null = 没开着。列表每次打开都重拉，切完分支/新建完都会自动重拉
+  const [branchMenu, setBranchMenu] = useState(false);
+  const [branches, setBranches] = useState<GitBranch[]>([]);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  /** 新建分支的输入框：null = 没在输入 */
+  const [newBranch, setNewBranch] = useState<string | null>(null);
   /** 右键的那一行。staged 决定解读时跟谁比（暂存看 HEAD、未暂存看 index） */
   const [menu, setMenu] = useState<{
     change: GitChange;
@@ -906,6 +941,63 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
       return payload;
     });
   }, [run, root]);
+
+  /**
+   * 打开分支下拉时现拉一次列表。
+   *
+   * 不用轮询：分支列表只在面板上摆一会儿，切分支/新建分支之后这个函数会被再调一次。
+   * 失败就当空列表，把原因摆在菜单里——不值得弹全局错误。
+   */
+  const loadBranches = useCallback(() => {
+    setBranchError(null);
+    setNewBranch(null);
+    void gitBranches(root)
+      .then(setBranches)
+      .catch((reason) => {
+        setBranches([]);
+        setBranchError(String(reason));
+      });
+  }, [root]);
+
+  const openBranchMenu = useCallback(() => {
+    loadBranches();
+    setBranchMenu(true);
+  }, [loadBranches]);
+
+  /**
+   * 切分支。切之前先把编辑器里没保存的改动落盘（理由见 onBeforeBranchSwitch），
+   * 切完工作区整个换掉，得让上层清掉那些「按旧内容缓存下来」的东西（见 onBranchChanged）。
+   */
+  const switchTo = useCallback(
+    (name: string) => {
+      setBranchMenu(false);
+      void run("branch", async () => {
+        if (!(await onBeforeBranchSwitch())) {
+          throw new Error("有文件没保存成功，已取消切换分支");
+        }
+        const payload = await gitSwitchBranch(root, name);
+        setLogRevision((revision) => revision + 1); // 历史整个换了
+        onBranchChanged();
+        return payload;
+      });
+    },
+    [run, root, onBranchChanged, onBeforeBranchSwitch],
+  );
+
+  const createBranchAndSwitch = useCallback(() => {
+    const name = (newBranch ?? "").trim();
+    if (!name) return;
+    setBranchMenu(false);
+    void run("branch", async () => {
+      if (!(await onBeforeBranchSwitch())) {
+        throw new Error("有文件没保存成功，已取消新建分支");
+      }
+      const payload = await gitCreateBranch(root, name);
+      setLogRevision((revision) => revision + 1);
+      onBranchChanged();
+      return payload;
+    });
+  }, [newBranch, run, root, onBranchChanged, onBeforeBranchSwitch]);
 
   /**
    * 让 AI 生成提交信息填进框里由用户自己确认，不自动提交。
@@ -1359,13 +1451,106 @@ export function GitChangesPane({ root, git, onOpen, onOpenFile }: GitChangesPane
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
       <header className="flex h-8 shrink-0 items-center gap-1.5 border-b border-line px-3">
-        <IconBranch className="h-3 w-3 text-fg-dim" />
-        <span
-          className="min-w-0 flex-1 truncate text-[11px] text-fg-dim"
-          title={snapshot.branch ?? "游离 HEAD"}
-        >
-          {snapshot.branch ?? "游离 HEAD"}
-        </span>
+        {/* 分支名点开是分支菜单：切分支 / 建新分支。下拉的写法照 SettingsDialog 的
+            ThemePicker：锚在按钮上，另铺一层透明遮罩接住外部点击 */}
+        <div className="relative flex min-w-0 flex-1 items-center gap-1">
+          <button
+            type="button"
+            onClick={() => (branchMenu ? setBranchMenu(false) : openBranchMenu())}
+            disabled={busy !== null}
+            title={`当前分支：${snapshot.branch ?? "游离 HEAD"}（点击切换）`}
+            className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40"
+          >
+            <IconBranch className="h-3 w-3 shrink-0" />
+            <span className="min-w-0 truncate">{snapshot.branch ?? "游离 HEAD"}</span>
+            <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+          </button>
+
+          {branchMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setBranchMenu(false)} />
+              <div
+                className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+              >
+                {branchError && (
+                  <p className="px-3 py-1 text-[11px] whitespace-pre-wrap text-danger">
+                    {branchError}
+                  </p>
+                )}
+                {branches.length === 0 && !branchError && (
+                  <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
+                )}
+                {branches.map((item) => (
+                  <button
+                    key={item.name}
+                    type="button"
+                    onClick={() => switchTo(item.name)}
+                    disabled={item.current || busy !== null}
+                    title={
+                      item.gone
+                        ? `上游 ${item.upstream} 已经不存在了`
+                        : item.upstream
+                          ? `上游 ${item.upstream}`
+                          : "还没有上游分支"
+                    }
+                    className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
+                  >
+                    <span className="flex w-3 shrink-0 justify-center">
+                      {item.current && <IconCheck className="h-3 w-3 text-ok" />}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                    {item.gone ? (
+                      <span className="shrink-0 text-[10px] text-danger">已删除</span>
+                    ) : (
+                      <span className="flex shrink-0 items-center gap-1 text-[10px] text-fg-faint">
+                        {item.ahead > 0 && <span>↑{item.ahead}</span>}
+                        {item.behind > 0 && <span>↓{item.behind}</span>}
+                      </span>
+                    )}
+                  </button>
+                ))}
+
+                {/* 新建分支：点开输入框，回车或点 ✓ 建出来并切过去。
+                    不用 window.prompt（WKWebView 不支持），和重命名那套一致 */}
+                <div className="mt-1 border-t border-line pt-1">
+                  {newBranch === null ? (
+                    <button
+                      type="button"
+                      onClick={() => setNewBranch("")}
+                      className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+                    >
+                      <IconPlus className="h-3 w-3 shrink-0" />
+                      新建分支
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1 px-2 py-0.5">
+                      <input
+                        autoFocus
+                        value={newBranch}
+                        onChange={(event) => setNewBranch(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") createBranchAndSwitch();
+                          if (event.key === "Escape") setNewBranch(null);
+                        }}
+                        placeholder="新分支名"
+                        className={`${TEXT_INPUT} min-w-0 flex-1`}
+                      />
+                      <button
+                        type="button"
+                        onClick={createBranchAndSwitch}
+                        disabled={!newBranch.trim() || busy !== null}
+                        title="新建并切换"
+                        className={HEADER_ACTION}
+                      >
+                        <IconCheck className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* 领先/落后上游的提交数：只在非零时出现（没有上游时天然是 0），
             紧挨着拉取/推送按钮，一眼能看出该点哪个 */}
