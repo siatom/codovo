@@ -51,8 +51,11 @@ const TOKENIZER: monaco.languages.IMonarchLanguage = {
 
       // 后面跟冒号的引号串当键；字符串只接受 JSON5 定义的转义序列。
       // 单行规则让未闭合字符串止于本行，不会把后续内容吞进字符串状态。
-      [/"(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\\r\n])*"(?=\s*:)/, "string.key"],
-      [/'(?:\\(?:['\\/bfnrt]|u[0-9a-fA-F]{4})|[^'\\\r\n])*'(?=\s*:)/, "string.key"],
+      // 键名 token 用 `key` 而不是 `string.key`：Monaco 内置主题只定义了带 `.json` 后缀的
+      // `string.key.json`，而 Monarch 会自动加 `.json5/.jsonc` 后缀，`string.key` 匹配不上、
+      // 回退到 `string` 规则，导致键和值同色；根级的 `key` 规则各主题都有，能拿到区分色。
+      [/"(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\\r\n])*"(?=\s*:)/, "key"],
+      [/'(?:\\(?:['\\/bfnrt]|u[0-9a-fA-F]{4})|[^'\\\r\n])*'(?=\s*:)/, "key"],
       [/"(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\\r\n])*"/, "string"],
       [/'(?:\\(?:['\\/bfnrt]|u[0-9a-fA-F]{4})|[^'\\\r\n])*'/, "string"],
       // 闭合串中的非法转义单独标错，其他部分仍保留字符串颜色。
@@ -67,8 +70,8 @@ const TOKENIZER: monaco.languages.IMonarchLanguage = {
 
       [/\b(?:true|false|null)\b/, "keyword"],
 
-      // 裸键（JSON5 特有）：后面跟冒号的标识符
-      [/[A-Za-z_$][\w$]*(?=\s*:)/, "string.key"],
+      // 裸键（JSON5 特有）：后面跟冒号的标识符（token 同样用 `key`，理由见上）
+      [/[A-Za-z_$][\w$]*(?=\s*:)/, "key"],
       [/[A-Za-z_$][\w$]*/, "identifier"],
 
       [/[{}]/, "delimiter.curly"],
