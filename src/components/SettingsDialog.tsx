@@ -275,7 +275,12 @@ function Select<T extends string>({
       {open && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
+          {/* 滚轮别冒泡到内容区：否则会连带滚动设置项、到边界还会翻分类。
+              overscroll-contain 再挡住浮层滚到底后的链式滚动 */}
+          <div
+            onWheel={(event) => event.stopPropagation()}
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col overflow-auto overscroll-contain rounded border border-line-strong bg-raised py-1 shadow-lg"
+          >
             {options.map((item) => (
               <button
                 key={item.value}
@@ -406,7 +411,12 @@ function TerminalThemeSelect({
         <>
           {/* 铺一层透明遮罩接住外部点击；它在设置面板内部，点击不会冒到最外层把面板关掉 */}
           <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
+          {/* 滚轮别冒泡到内容区：否则会连带滚动设置项、到边界还会翻分类。
+              overscroll-contain 再挡住浮层滚到底后的链式滚动 */}
+          <div
+            onWheel={(event) => event.stopPropagation()}
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col overflow-auto overscroll-contain rounded border border-line-strong bg-raised py-1 shadow-lg"
+          >
             {option("", "跟随界面主题")}
             {TERMINAL_THEME_OPTIONS.map((item) => option(item.key, item.label))}
           </div>
@@ -525,7 +535,8 @@ function ThemeSelect() {
             ref={listRef}
             role="listbox"
             onMouseLeave={() => previewTheme(null)}
-            className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+            onWheel={(event) => event.stopPropagation()}
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-full flex-col overflow-auto overscroll-contain rounded border border-line-strong bg-raised py-1 shadow-lg"
           >
             {THEME_OPTIONS.map((item, index) => (
               <button
