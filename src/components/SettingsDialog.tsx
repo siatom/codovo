@@ -134,6 +134,9 @@ const HEAD_ACTION =
 const RESET_BUTTON =
   "rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:border-danger-line hover:bg-danger-bg hover:text-danger";
 
+/** 两次边界滚轮事件间隔小于它，就当作触控板的同一次惯性滑动：只有停手后再滑才算新的一下 */
+const EDGE_GAP_MS = 200;
+
 /** 标签在上、控件在下：字体名可能很长，横排放不下。
     action 放在标签那一行的右端，省掉列表下面单独占一行的操作按钮。 */
 function Field({
@@ -1707,6 +1710,9 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   } | null>(null);
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
   const lastFlipRef = useRef(0);
+  // 到边界后攒够两下才翻页：一到底就跳走太容易误触。
+  // dir 记方向，count 记已完成的独立滑动次数，last 记上一次边界事件的时刻
+  const edgeRef = useRef({ dir: 0, count: 0, last: 0 });
   /** null = 还没拖过，按类名给的默认尺寸居中摆；拖过之后是具体像素 */
   const [box, setBox] = useState<DialogBox | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -1845,13 +1851,33 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     setTab(next.id);
   };
 
-  /** 滚到两头还接着滚，就翻到相邻的分类；内容不足一屏时两头都算到底，一格就翻 */
+  /** 滚到两头后要再滚两下才翻分类：第一下只算「预备」，第二下才翻，避免一到底就跳走。
+      按「滑动」计数而不是按事件数：触控板一次惯性会连抛很多事件，只有停手后再滑
+      （与上一次边界事件的间隔超过 EDGE_GAP_MS）才算新的一下。离开边界或翻页后清零重攒；
+      内容不足一屏时两头都算到底，同样两下才翻 */
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.deltaY === 0) return;
     const el = event.currentTarget;
-    if (event.deltaY > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1) {
-      flipTab(1);
-    } else if (event.deltaY < 0 && el.scrollTop <= 0) {
-      flipTab(-1);
+    const dir = event.deltaY > 0 ? 1 : -1;
+    const atEdge =
+      dir > 0
+        ? el.scrollTop + el.clientHeight >= el.scrollHeight - 1
+        : el.scrollTop <= 0;
+    if (!atEdge) {
+      edgeRef.current = { dir: 0, count: 0, last: 0 };
+      return;
+    }
+    const now = Date.now();
+    // 与上一次边界事件离得太近，视为同一次滑动（触控板惯性），只刷新时刻、不计数
+    if (edgeRef.current.dir === dir && now - edgeRef.current.last <= EDGE_GAP_MS) {
+      edgeRef.current.last = now;
+      return;
+    }
+    const count = edgeRef.current.dir === dir ? edgeRef.current.count + 1 : 1;
+    edgeRef.current = { dir, count, last: now };
+    if (count >= 2) {
+      edgeRef.current = { dir: 0, count: 0, last: 0 };
+      flipTab(dir);
     }
   };
 
