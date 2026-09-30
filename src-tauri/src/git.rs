@@ -3024,4 +3024,128 @@ mod tests {
         cleanup(&top);
     }
 
+    // ---- 修正 / 撤销提交 ----
+
+    #[test]
+    fn amend_folds_the_index_into_the_last_commit() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let first = commit_staged(&repo, "first").unwrap().head.unwrap();
+
+        fs::write(repo.join("a.txt"), "1\n2\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let amended = amend_commit(&repo, Some("first (fixed)")).unwrap();
+
+        assert_ne!(amended.head.as_deref(), Some(first.as_str()), "提交号该变了");
+        assert!(amended.files.is_empty(), "改动已经被并进提交里，列表该空了");
+        // 还是只有一条提交，`--amend` 不是新加一条
+        let count = run_git(&repo, &["rev-list", "--count", "HEAD"]).unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&count).trim(), "1");
+        // 提交信息也换成新的了
+        let subject = run_git(&repo, &["log", "-1", "--format=%s"]).unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&subject).trim(), "first (fixed)");
+
+        // 不带信息时沿用原来那条
+        fs::write(repo.join("a.txt"), "1\n2\n3\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        amend_commit(&repo, None).unwrap();
+        let subject = run_git(&repo, &["log", "-1", "--format=%s"]).unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&subject).trim(), "first (fixed)");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn undo_commit_keeps_the_changes_staged() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let first = commit_staged(&repo, "first").unwrap().head.unwrap();
+
+        fs::write(repo.join("b.txt"), "x\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "second").unwrap();
+
+        let undone = undo_commit(&repo).unwrap();
+        assert_eq!(undone.head.as_deref(), Some(first.as_str()), "HEAD 该退回上一条");
+        // --soft：改动留在暂存区，工作区不动
+        let added = undone
+            .files
+            .iter()
+            .find(|file| file.relative == "b.txt")
+            .expect("b.txt 该回到改动列表里");
+        assert_eq!((added.index, added.worktree), ('A', '.'));
+        assert!(repo.join("b.txt").exists(), "工作区文件不该被删");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn undo_the_only_commit_returns_to_an_unborn_branch() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "only").unwrap();
+
+        // 唯一一条提交没有父提交可以退，得走 update-ref 那条路
+        let undone = undo_commit(&repo).unwrap();
+        assert!(undone.head.is_none(), "该回到「还没提交过」的状态");
+        assert_eq!(undone.files.len(), 1);
+        assert_eq!((undone.files[0].index, undone.files[0].worktree), ('A', '.'));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn undo_is_refused_on_a_detached_head() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let first = commit_staged(&repo, "first").unwrap().head.unwrap();
+
+        // 游离在唯一那条提交上：HEAD~1 不存在，会走到 update-ref 那条路。
+        // 实测那条命令会把 `.git/HEAD` 文件删掉、仓库变成 not a git repository，
+        // 所以必须在这里就被挡住
+        assert!(git(&repo, &["checkout", "--detach", &first]));
+        let error = undo_commit(&repo).unwrap_err();
+        assert!(error.contains("游离"), "{error}");
+        // 仓库还是好的
+        assert!(repo_prefix(&repo).unwrap().is_some(), "仓库不该被搞坏");
+        assert!(repo.join(".git/HEAD").exists(), ".git/HEAD 不该被删掉");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn undo_in_an_empty_repository_says_there_is_nothing_to_undo() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        // 空仓库：`rev-parse --abbrev-ref HEAD` 会输出字面量 HEAD 并非 0 退出，
+        // 和游离 HEAD 撞在一起。这两条检查的先后顺序决定了用户看到哪句话
+        let error = undo_commit(&repo).unwrap_err();
+        assert!(error.contains("还没有提交"), "{error}");
+
+        cleanup(&top);
+    }
+
 }
