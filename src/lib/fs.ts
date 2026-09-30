@@ -10,6 +10,7 @@ import type {
   GitBranch,
   GitCommit,
   GitCommitFile,
+  GitStash,
   GitStatusPayload,
   ImageContent,
   ReplaceResult,
@@ -368,6 +369,32 @@ export function gitSwitchBranch(root: string, name: string): Promise<GitStatusPa
 export function gitCreateBranch(root: string, name: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_create_branch", { root, name });
 }
+
+/** 已存下的 stash 列表，最新的在最前 */
+export function gitStashList(root: string): Promise<GitStash[]> {
+  return invoke<GitStash[]>("git_stash_list", { root });
+}
+
+/** 把当前改动收进 stash（不含未跟踪的新文件） */
+export function gitStashPush(root: string, message?: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_stash_push", { root, message: message ?? null });
+}
+
+/** 恢复并删掉那条 stash */
+export function gitStashPop(root: string, index: number): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_stash_pop", { root, index });
+}
+
+/** 恢复那条 stash，记录留着 */
+export function gitStashApply(root: string, index: number): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_stash_apply", { root, index });
+}
+
+/** 丢掉那条 stash（只动记录，不碰工作区） */
+export function gitStashDrop(root: string, index: number): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_stash_drop", { root, index });
+}
+
 /**
  * 从远程取回引用，不动工作区。成功后 ahead/behind 才是最新的。
  * 耗时按网络算，后端给了 3 分钟超时。

@@ -25,6 +25,11 @@ import {
   gitPull,
   gitPush,
   gitStage,
+  gitStashApply,
+  gitStashDrop,
+  gitStashList,
+  gitStashPop,
+  gitStashPush,
   gitSwitchBranch,
   gitUndoCommit,
   gitUnstage,
@@ -34,6 +39,7 @@ import {
 } from "../lib/fs";
 import {
   isStaged,
+  isStashable,
   isUnstaged,
   markOfColumn,
   type GitChange,
@@ -50,6 +56,7 @@ import type {
   GitBranch,
   GitCommit,
   GitCommitFile,
+  GitStash,
   GitStatusPayload,
 } from "../lib/types";
 import { GitMarkBadge } from "./GitMarkBadge";
@@ -74,6 +81,7 @@ import {
   IconRefresh,
   IconSparkle,
   IconSync,
+  IconTrash,
   IconTree,
   IconUndo,
 } from "./icons";
@@ -338,6 +346,7 @@ type Busy =
   | "amend"
   | "undo"
   | "branch"
+  | "stash"
   | "generate"
   | "fetch"
   | "pull"
@@ -773,6 +782,8 @@ export function GitChangesPane({
   const [pendingMergeAbort, setPendingMergeAbort] = useState(false);
   /** amend 会改写历史（已推送的话本地就和远程分叉了），落手前先确认 */
   const [pendingAmend, setPendingAmend] = useState(false);
+  /** 放弃 stash：只删记录，但丢了就找不回来，照样确认一下 */
+  const [pendingStashDrop, setPendingStashDrop] = useState<GitStash | null>(null);
   /**
    * null = 随内容长高（也就是默认的一行）；拖过之后是固定高度（px），内容多了自己滚动。
    * 高度不落盘：每次进应用都从一行起步，省得某次拖高之后再也回不到默认。
@@ -824,6 +835,15 @@ export function GitChangesPane({
   const [branchError, setBranchError] = useState<string | null>(null);
   /** 新建分支的输入框：null = 没在输入 */
   const [newBranch, setNewBranch] = useState<string | null>(null);
+
+  // stash：null = 还没拉到
+  const [stashes, setStashes] = useState<GitStash[] | null>(null);
+  const [stashCollapsed, setStashCollapsed] = useState(false);
+  /** 收 stash 时的说明，留空就让 git 自己生成 WIP on <branch>: ... */
+  const [stashMessage, setStashMessage] = useState("");
+  /** 每次动完 stash +1，用来重拉列表（不靠 payload，它只带 git 状态不带 stash 清单） */
+  const [stashRevision, setStashRevision] = useState(0);
+
   /** 右键的那一行。staged 决定解读时跟谁比（暂存看 HEAD、未暂存看 index） */
   const [menu, setMenu] = useState<{
     change: GitChange;
@@ -886,10 +906,27 @@ export function GitChangesPane({
     (staged.length > 0 || unstaged.length > 0) &&
     stagedShown.length === 0 &&
     unstagedShown.length === 0;
+  /**
+   * 真正能被 `git stash push` 收走的那些改动。
+   *
+   * 不能用 `staged.length + unstaged.length` 代替：未跟踪的新文件也算在 unstaged 里，
+   * 但它们不在 stash 的默认范围内。只有未跟踪文件时 git 会「成功退出但什么也没存」，
+   * 界面就表现成一个点了没反应的按钮。
+   */
+  const stashable = useMemo(() => changes.filter(isStashable), [changes]);
 
-  /** 写操作统一走这里：全程禁用其它写按钮，失败就把 git 的报错摆出来 */
+  /**
+   * 写操作统一走这里：全程禁用其它写按钮，失败就把 git 的报错摆出来。
+   *
+   * 再上一层重入保护：按钮都带 `disabled={busy !== null}`，但**不是所有入口都过按钮**
+   * （比如储藏说明框上回车直接调 stash），一律放过会两个写命令叠着发、撞上自己的
+   * index.lock。`busy` 是 state，在 useCallback 闭包里会读到旧值，所以另用 ref 兜住。
+   */
+  const busyRef = useRef(false);
   const run = useCallback(
     async (kind: Exclude<Busy, null>, task: () => Promise<GitStatusPayload | void>) => {
+      if (busyRef.current) return;
+      busyRef.current = true;
       setBusy(kind);
       setError(null);
       try {
@@ -900,6 +937,7 @@ export function GitChangesPane({
       } catch (reason) {
         setError(String(reason));
       } finally {
+        busyRef.current = false;
         setBusy(null);
       }
     },
@@ -998,6 +1036,98 @@ export function GitChangesPane({
       return payload;
     });
   }, [newBranch, run, root, onBranchChanged, onBeforeBranchSwitch]);
+
+  // ---- stash ----
+
+  /**
+   * 拉 stash 列表。
+   *
+   * 依赖里**不能放 `stashes` 自己**：每次 `.then(setStashes)` 都会给一个新数组，
+   * 自引用会让 effect 无限重跑、把 git 子进程刷爆（实测会一直起进程）。要重拉就动
+   * `stashRevision`。
+   */
+  useEffect(() => {
+    if (!snapshot.isRepo) return;
+    let cancelled = false;
+    void gitStashList(root)
+      .then((list) => {
+        if (!cancelled) setStashes(list);
+      })
+      .catch(() => {
+        // 拉不到就当没有：stash 区块本来就不是主路径，不值得让它变成错误态
+        if (!cancelled) setStashes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root, stashRevision, snapshot.isRepo]);
+
+  /**
+   * 把列表里那条 stash 换算成它**此刻**的下标。
+   *
+   * `stash@{n}` 的 n 是「当前列表里的位置」而不是稳定身份：终端里再 stash 一条、
+   * 或者 drop 掉一条，留在面板上的旧下标就会指向别人（实测拿旧下标 pop 会 pop 出
+   * 另一条改动）。所以执行前按 hash 重新定位一次；找不到就说明它已经不在了。
+   */
+  const resolveStash = useCallback(
+    async (entry: GitStash): Promise<number> => {
+      const list = await gitStashList(root);
+      setStashes(list);
+      const found = list.find((item) => item.hash === entry.hash);
+      if (!found) {
+        throw new Error("这条储藏已经不存在了（可能被别的操作删掉了）");
+      }
+      return found.index;
+    },
+    [root],
+  );
+
+  const stash = useCallback(() => {
+    void run("stash", async () => {
+      const text = stashMessage.trim();
+      const payload = await gitStashPush(root, text || undefined);
+      setStashMessage("");
+      setStashRevision((revision) => revision + 1);
+      return payload;
+    });
+  }, [run, root, stashMessage]);
+
+  /** 恢复并删掉那条。先按 hash 换算出此刻的下标，免得拿旧下标 pop 到别人 */
+  const stashBack = useCallback(
+    (entry: GitStash) => {
+      void run("stash", async () => {
+        const index = await resolveStash(entry);
+        const payload = await gitStashPop(root, index);
+        setStashRevision((revision) => revision + 1);
+        return payload;
+      });
+    },
+    [run, root, resolveStash],
+  );
+
+  const applyStash = useCallback(
+    (entry: GitStash) => {
+      void run("stash", async () => {
+        const index = await resolveStash(entry);
+        const payload = await gitStashApply(root, index);
+        setStashRevision((revision) => revision + 1);
+        return payload;
+      });
+    },
+    [run, root, resolveStash],
+  );
+
+  const confirmStashDrop = useCallback(() => {
+    const entry = pendingStashDrop;
+    if (!entry) return;
+    setPendingStashDrop(null);
+    void run("stash", async () => {
+      const index = await resolveStash(entry);
+      const payload = await gitStashDrop(root, index);
+      setStashRevision((revision) => revision + 1);
+      return payload;
+    });
+  }, [pendingStashDrop, run, root, resolveStash]);
 
   /**
    * 让 AI 生成提交信息填进框里由用户自己确认，不自动提交。
@@ -1779,6 +1909,111 @@ export function GitChangesPane({
           </p>
         )}
 
+        {/* stash：把手上这摊改动先收起来去做别的事。
+            门禁用 changes.length 而不是 stashable.length：只有未跟踪的新文件时
+            也要把这块画出来，好在那句说明里告诉用户为什么收不了——按 stashable
+            判的话这种情形整块都不渲染，提示就没地方放了 */}
+        {(stashes === null || stashes.length > 0 || changes.length > 0) && (
+          <div className="shrink-0">
+            <div className="flex items-center gap-1 px-1">
+              <button
+                type="button"
+                onClick={() => setStashCollapsed((value) => !value)}
+                className="flex min-w-0 flex-1 items-center gap-1 text-left text-[11px] text-fg-faint hover:text-fg"
+              >
+                {stashCollapsed ? (
+                  <IconChevronRight className="h-3 w-3 shrink-0" />
+                ) : (
+                  <IconChevronDown className="h-3 w-3 shrink-0" />
+                )}
+                <span>储藏</span>
+                {stashes && stashes.length > 0 && <span>{stashes.length}</span>}
+              </button>
+              {/* 有可收的改动时才给按钮。判据用 stashable 而不是改动总数：
+                  未跟踪的新文件收不走，只按总数判会给出一个点了没反应的按钮 */}
+              {stashable.length > 0 && (
+                <button
+                  type="button"
+                  onClick={stash}
+                  disabled={busy !== null}
+                  title={`把当前 ${stashable.length} 处改动收进 stash（未跟踪的新文件不在此列）`}
+                  className={GROUP_ACTION}
+                >
+                  储藏改动
+                </button>
+              )}
+            </div>
+
+            {!stashCollapsed && (
+              <div className="mt-0.5 flex flex-col gap-0.5">
+                {/* 说明留空就让 git 自己生成 WIP on <branch>: ... */}
+                {stashable.length > 0 && (
+                  <input
+                    value={stashMessage}
+                    onChange={(event) => setStashMessage(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") stash();
+                    }}
+                    disabled={busy !== null}
+                    placeholder="说明（可留空）"
+                    className={`${TEXT_INPUT} mx-1 w-auto`}
+                  />
+                )}
+                {stashes?.map((entry) => (
+                  <div
+                    key={entry.index}
+                    className="group flex items-center gap-1 rounded px-1 py-[3px] text-[11px] hover:bg-hover"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-fg-muted" title={entry.message}>
+                      {entry.message}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-fg-faint">
+                      {formatTime(entry.time)}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        type="button"
+                        onClick={() => stashBack(entry)}
+                        disabled={busy !== null}
+                        title="恢复并删掉这条记录"
+                        className={ROW_ACTION}
+                      >
+                        <IconArrowDownToLine className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => applyStash(entry)}
+                        disabled={busy !== null}
+                        title="恢复，但保留记录（可以再应用到别的分支）"
+                        className={ROW_ACTION}
+                      >
+                        <IconCheck className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPendingStashDrop(entry)}
+                        disabled={busy !== null}
+                        title="丢掉这条储藏（不动工作区）"
+                        className={ROW_DANGER}
+                      >
+                        <IconTrash className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {stashes?.length === 0 && stashable.length === 0 && (
+                  <p className="px-2 py-0.5 text-[11px] text-fg-faint">
+                    {/* 有改动但都收不走时把原因说出来，别让人对着空的储藏区发愣 */}
+                    {staged.length + unstaged.length > 0
+                      ? "当前只有未跟踪的新文件，储藏收不走它们"
+                      : "没有储藏"}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 路径筛选。放在列表正上方而不是塞进 header：它只作用在这块列表上，
             贴着列表才不会被误认成整个面板的搜索框。
             改动不多时（两边加起来不到 10 条）不显示，省得占地方 */}
@@ -2024,6 +2259,14 @@ export function GitChangesPane({
         />
       )}
 
+      {pendingStashDrop && (
+        <ConfirmDialog
+          message={`丢掉这条储藏记录？「${pendingStashDrop.message}」里的改动将无法恢复（工作区不受影响）。`}
+          confirmLabel="丢掉"
+          onConfirm={confirmStashDrop}
+          onCancel={() => setPendingStashDrop(null)}
+        />
+      )}
       {/* 右键菜单。和文件树那边同一套画法：透明遮罩接住外部点击，fixed 定位
           免得被面板的滚动容器裁掉 */}
       {menu && (

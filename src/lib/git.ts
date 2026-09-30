@@ -104,6 +104,18 @@ export function isUnstaged(change: GitChange): boolean {
 }
 
 /**
+ * 这条改动能不能被 `git stash push` 收走。
+ *
+ * 未跟踪的新文件（`?`）**不在** stash 的默认范围内（要收得加 `-u`，那会让文件从
+ * 工作区消失，见后端 stash_push 的说明）。关键在于：只有未跟踪文件时 `git stash
+ * push` 会打印 `No local changes to save` 却**以 0 退出**——不判一下的话，界面会
+ * 给出一个点了什么也不发生的按钮。
+ */
+export function isStashable(change: GitChange): boolean {
+  return isStaged(change) || (isUnstaged(change) && change.worktree !== "?");
+}
+
+/**
  * 同一路径可能同时出现在多条记录里（`git rm --cached` 之后既算删除又算未跟踪），
  * 只留最显眼的那条
  */

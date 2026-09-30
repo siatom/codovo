@@ -62,6 +62,16 @@ export interface GitBranch {
   current: boolean;
 }
 
+/** 一条 stash 记录 */
+export interface GitStash {
+  /** `stash@{n}` 里的那个 n，恢复 / 丢弃时要原样带回去 */
+  index: number;
+  message: string;
+  hash: string;
+  /** 创建时间，Unix 秒 */
+  time: number;
+}
+
 export interface GitStatusPayload {
   isRepo: boolean;
   branch: string | null;

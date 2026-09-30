@@ -820,6 +820,112 @@ fn create_branch(root: &Path, name: &str) -> Result<GitStatus, String> {
     status_of(root)
 }
 
+// ---- stash ----
+
+/// 一条 stash 记录。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    /// `stash@{n}` 里的那个 n，恢复 / 丢弃时要原样带回去
+    index: u32,
+    /// git 自己生成的说明，形如 `WIP on main: abc1234 上一条提交`
+    message: String,
+    /// stash 本身是个提交，点开能当提交看
+    hash: String,
+    /// 创建时间（Unix 秒）
+    time: i64,
+}
+
+fn parse_stashes(raw: &[u8]) -> Vec<StashEntry> {
+    let mut out = Vec::new();
+    for record in raw.split(|byte| *byte == 0) {
+        let text = String::from_utf8_lossy(record);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let mut fields = text.split('\u{1f}');
+        // %gd 给的是 `stash@{0}`，只要里面那个数字
+        let selector = fields.next().unwrap_or("");
+        let Some(index) = selector
+            .trim()
+            .trim_start_matches("stash@{")
+            .trim_end_matches('}')
+            .parse::<u32>()
+            .ok()
+        else {
+            continue;
+        };
+        out.push(StashEntry {
+            index,
+            hash: fields.next().unwrap_or("").trim().to_string(),
+            time: fields.next().unwrap_or("").trim().parse().unwrap_or(0),
+            message: fields.next().unwrap_or("").to_string(),
+        });
+    }
+    out
+}
+
+/// 已存下的 stash，最新的在最前（`stash@{0}`）。
+fn stashes_of(root: &Path) -> Result<Vec<StashEntry>, String> {
+    const FORMAT: &str = "--format=%gd%x1f%H%x1f%ct%x1f%s%x00";
+    // 没有 stash 时 git 正常返回空输出，退出码是 0
+    let Some(raw) = run_git(root, &["stash", "list", FORMAT])? else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_stashes(&raw))
+}
+
+/// 把当前改动收进 stash。
+///
+/// **不收未跟踪的新文件**（不给 `--include-untracked`）：默认语义下新文件会留在原地，
+/// 这比「文件突然从工作区消失」安全；界面上按钮的 title 写明了这一点。
+///
+/// 只有未跟踪文件时 git 会打印 `No local changes to save` 但**以 0 退出**——照原样
+/// 返回的话界面会以为成功了，而实际什么也没发生（用户点了按钮看不到反应）。所以
+/// 用「stash 条数有没有变多」判一次，没变多就如实报错。
+fn stash_push(root: &Path, message: Option<&str>) -> Result<GitStatus, String> {
+    let before = stashes_of(root)?.len();
+
+    let mut args = vec!["stash", "push"];
+    let text = message.map(str::trim).filter(|text| !text.is_empty());
+    if let Some(text) = text {
+        args.push("-m");
+        args.push(text);
+    }
+    run_git_checked(root, &args)?;
+
+    if stashes_of(root)?.len() <= before {
+        return Err(
+            "没有可以储藏的改动（未跟踪的新文件不在储藏范围内，先暂存它或手动处理）"
+                .to_string(),
+        );
+    }
+    status_of(root)
+}
+
+/// `stash@{index}` 的字面写法。`format!` 里花括号要写两遍
+fn stash_ref(index: u32) -> String {
+    format!("stash@{{{index}}}")
+}
+
+/// 恢复并删掉那条 stash。冲突时 git 不删记录，报错原文透传。
+fn stash_pop(root: &Path, index: u32) -> Result<GitStatus, String> {
+    run_git_checked(root, &["stash", "pop", &stash_ref(index)])?;
+    status_of(root)
+}
+
+/// 只恢复、保留记录（同一条可以 apply 到多个分支上）
+fn stash_apply(root: &Path, index: u32) -> Result<GitStatus, String> {
+    run_git_checked(root, &["stash", "apply", &stash_ref(index)])?;
+    status_of(root)
+}
+
+fn stash_drop(root: &Path, index: u32) -> Result<GitStatus, String> {
+    run_git_checked(root, &["stash", "drop", &stash_ref(index)])?;
+    status_of(root)
+}
+
 /// 仓库是不是正卡在一次没结束的合并里（有冲突待解决，或已解决但还没提交）。
 ///
 /// 用 MERGE_HEAD 而不是解析 status：porcelain v2 根本不暴露合并状态，而且
@@ -1366,6 +1472,55 @@ pub fn git_create_branch(
     name: String,
 ) -> Result<GitStatus, String> {
     create_branch(&state.checked_root(&root)?, &name)
+}
+
+/// 已存下的 stash 列表。
+#[tauri::command(async)]
+pub fn git_stash_list(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<StashEntry>, String> {
+    stashes_of(&state.checked_root(&root)?)
+}
+
+/// 把当前改动收进 stash。不收未跟踪的新文件（理由见 stash_push）。
+#[tauri::command(async)]
+pub fn git_stash_push(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    message: Option<String>,
+) -> Result<GitStatus, String> {
+    stash_push(&state.checked_root(&root)?, message.as_deref())
+}
+
+/// 恢复并删掉那条 stash。
+#[tauri::command(async)]
+pub fn git_stash_pop(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    index: u32,
+) -> Result<GitStatus, String> {
+    stash_pop(&state.checked_root(&root)?, index)
+}
+
+/// 恢复那条 stash，记录留着。
+#[tauri::command(async)]
+pub fn git_stash_apply(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    index: u32,
+) -> Result<GitStatus, String> {
+    stash_apply(&state.checked_root(&root)?, index)
+}
+
+/// 丢掉那条 stash（只动 stash 记录，不碰工作区）。
+#[tauri::command(async)]
+pub fn git_stash_drop(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    index: u32,
+) -> Result<GitStatus, String> {
+    stash_drop(&state.checked_root(&root)?, index)
 }
 
 /// 一个改动文件的两侧内容，给编辑器的差异视图用。
@@ -3375,4 +3530,114 @@ mod tests {
         cleanup(&top);
     }
 
+    // ---- stash ----
+
+    #[test]
+    fn stash_round_trips_through_push_and_pop() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        fs::write(repo.join("a.txt"), "1\n2\n").unwrap();
+        let pushed = stash_push(&repo, Some("wip")).unwrap();
+        assert!(pushed.files.is_empty(), "收进 stash 之后工作区该干净了");
+
+        let list = stashes_of(&repo).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].index, 0);
+        assert!(list[0].message.contains("wip"), "{}", list[0].message);
+        assert_eq!(list[0].hash.len(), 40);
+
+        let popped = stash_pop(&repo, 0).unwrap();
+        assert_eq!(popped.files.len(), 1);
+        assert!(stashes_of(&repo).unwrap().is_empty(), "pop 之后记录该没了");
+        // 内容原样回来（抹平行尾，本机 autocrlf 会改行尾）
+        assert_eq!(read_text(&repo.join("a.txt")), "1\n2\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn stash_apply_keeps_the_record_while_drop_removes_it() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        fs::write(repo.join("a.txt"), "1\n2\n").unwrap();
+        stash_push(&repo, None).unwrap();
+
+        let applied = stash_apply(&repo, 0).unwrap();
+        assert_eq!(applied.files.len(), 1);
+        assert_eq!(stashes_of(&repo).unwrap().len(), 1, "apply 不该删记录");
+
+        // drop 只删记录，工作区里的改动留着
+        let dropped = stash_drop(&repo, 0).unwrap();
+        assert!(stashes_of(&repo).unwrap().is_empty());
+        assert_eq!(dropped.files.len(), 1, "drop 不动工作区");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn stash_push_leaves_untracked_files_alone() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("tracked.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        // 一个改动 + 一个未跟踪的新文件
+        fs::write(repo.join("tracked.txt"), "1\n2\n").unwrap();
+        fs::write(repo.join("brandnew.txt"), "x\n").unwrap();
+        let pushed = stash_push(&repo, None).unwrap();
+
+        // 未跟踪的那个不参与 stash，仍在工作区里（默认语义，也免得文件突然消失）
+        assert!(
+            repo.join("brandnew.txt").exists(),
+            "未跟踪文件不该被收走"
+        );
+        assert_eq!(pushed.files.len(), 1);
+        assert_eq!(pushed.files[0].relative, "brandnew.txt");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn stash_push_reports_a_no_op_instead_of_succeeding_silently() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("tracked.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        // 只剩未跟踪文件：git 打印 "No local changes to save" 但**以 0 退出**。
+        // 不判这一下的话界面会以为成功，实际什么都没发生
+        fs::write(repo.join("brandnew.txt"), "x\n").unwrap();
+        let error = stash_push(&repo, Some("空的")).unwrap_err();
+        assert!(error.contains("没有可以储藏"), "{error}");
+        assert!(stashes_of(&repo).unwrap().is_empty(), "不该凭空多出一条");
+        assert!(repo.join("brandnew.txt").exists(), "工作区也不该被动");
+
+        // 工作区完全干净时同理
+        fs::remove_file(repo.join("brandnew.txt")).unwrap();
+        assert!(stash_push(&repo, None).is_err());
+
+        cleanup(&top);
+    }
 }
