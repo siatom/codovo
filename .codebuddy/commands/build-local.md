@@ -1,6 +1,6 @@
 ---
 description: "本地构建安装：提交改动 → 构建 NSIS 安装包 → 装到本机（不 push）"
-allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate
+allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate, AskUserQuestion
 ---
 
 按顺序执行下面三步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做提交 / 构建 / 安装，不改任何源代码。
@@ -78,10 +78,13 @@ echo "expected=$expected"; echo "actual=$actual"
 产物：`src-tauri/target/release/bundle/nsis/CodeDock_<version>_x64-setup.exe`，`<version>` 取 `package.json` 的 `version`。
 先确认它的修改时间是本次构建，别装到上一次的旧包。
 
-1. **关掉正在运行的发布版**（不关装不进去）。用 PowerShell 工具按 CommandLine 区分：
-   只有 `C:\Users\xiang\AppData\Local\CodeDock\codedock.exe` 是发布版、要关；
+1. **安装前先检查发布版是否在运行**。用 PowerShell 工具按 CommandLine 区分：
+   只有 `C:\Users\xiang\AppData\Local\CodeDock\codedock.exe` 是发布版；
    `src-tauri\target\debug\codedock.exe` 是 dev 版，**别动**。
-   关闭用 `(Get-Process -Id <pid>).CloseMainWindow()` 走窗口关闭流程（子进程会被回收，比 taskkill 干净），然后确认进程真的退出了再继续。
+   - **没在运行**：直接进入第 2 步。
+   - **在运行**：**用 AskUserQuestion 问用户要不要关闭它，不要擅自关**。
+     - 用户同意关闭 → 用 `(Get-Process -Id <pid>).CloseMainWindow()` 走窗口关闭流程（子进程会被回收，比 taskkill 干净），确认进程真的退出了再继续。若关窗后进程仍驻留（应用收进托盘时不退出），把情况告诉用户，请用户手动退出后再继续。
+     - 用户拒绝 → 停下报告，**不要安装**。
 2. 静默安装（安装器是 currentUser 模式，不弹 UAC）。用 **PowerShell 工具**执行（Windows 一律走 PowerShell，别用 Bash）：
 
    ```powershell
@@ -92,4 +95,4 @@ echo "expected=$expected"; echo "actual=$actual"
    用 PowerShell 不必管 `MSYS_NO_PATHCONV`；之所以强调别用 Git Bash，就是 Git Bash 会把 `/S` 当路径转成 `C:/Program Files/Git/S`，安装器收不到静默参数、弹出图形安装界面卡住。
 3. 报告结果：安装位置 `%LOCALAPPDATA%\CodeDock\codedock.exe`、装进去的版本号与构建标识（即 2c 校验通过的那个）。**不要自动启动应用**，让用户自己开。
 
-补充：安装器在静默模式下自身也会用 RestartManager 关掉占用该 exe 的进程；第 1 步是为了让它走优雅关闭，两者不冲突。
+补充：安装器在静默模式下自身也会用 RestartManager 关掉占用该 exe 的进程；第 1 步先问用户、走优雅关闭，是为了不擅自打断用户正在进行的会话。
