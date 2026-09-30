@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
@@ -74,10 +75,24 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
-const THEME_OPTIONS: { value: Theme; label: string }[] = [
-  { value: "dark", label: "深色" },
-  { value: "light", label: "浅色" },
-  { value: "system", label: "跟随系统" },
+/** 下拉里的双色圆点用 [背景, 前景]，跟 styles.css / monaco 里那套色值对齐 */
+const THEME_OPTIONS: { value: Theme; label: string; swatch: [string, string] }[] = [
+  { value: "dark", label: "深色", swatch: ["#0f1115", "#d7dce5"] },
+  { value: "light", label: "浅色", swatch: ["#ffffff", "#1f2430"] },
+  { value: "system", label: "跟随系统", swatch: ["#0f1115", "#eef0f3"] },
+  { value: "vscode", label: "VS Code Dark", swatch: ["#1f1f1f", "#cccccc"] },
+  { value: "vscode-light", label: "VS Code Light", swatch: ["#ffffff", "#333333"] },
+  { value: "one-dark", label: "One Dark", swatch: ["#282c34", "#abb2bf"] },
+  { value: "dracula", label: "Dracula", swatch: ["#282a36", "#f8f8f2"] },
+  { value: "github-dark", label: "GitHub Dark", swatch: ["#0d1117", "#e6edf3"] },
+  { value: "github-light", label: "GitHub Light", swatch: ["#ffffff", "#1f2328"] },
+  { value: "material-nova", label: "Material Nova", swatch: ["#1f2430", "#d8dee9"] },
+  { value: "neon-green", label: "Neon Green", swatch: ["#0b1210", "#d9ffe2"] },
+  { value: "tokyo-night", label: "Tokyo Night", swatch: ["#1a1b26", "#c0caf5"] },
+  { value: "catppuccin-mocha", label: "Catppuccin Mocha", swatch: ["#1e1e2e", "#cdd6f4"] },
+  { value: "nord", label: "Nord", swatch: ["#2e3440", "#d8dee9"] },
+  { value: "solarized-light", label: "Solarized Light", swatch: ["#fdf6e3", "#073642"] },
+  { value: "monokai", label: "Monokai", swatch: ["#272822", "#f8f8f2"] },
 ];
 
 const WEIGHT_OPTIONS: { value: boolean; label: string }[] = [
@@ -268,11 +283,14 @@ function Select<T extends string>({
                   setOpen(false);
                   onChange(item.value);
                 }}
-                className={`px-3 py-1.5 text-left text-[12px] hover:bg-hover hover:text-fg ${
-                  value === item.value ? "text-fg" : "text-fg-muted"
+                className={`flex items-center gap-2 border-l-2 px-3 py-1.5 text-left text-[12px] ${
+                  value === item.value ? "border-accent bg-accent/30 text-accent" : "border-transparent text-fg-muted hover:bg-accent/20 hover:text-fg"
                 }`}
               >
-                {item.label}
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {value === item.value && (
+                  <IconCheck className="h-3.5 w-3.5 shrink-0 text-accent" />
+                )}
               </button>
             ))}
           </div>
@@ -325,19 +343,22 @@ function TerminalShellSelect({
 function TerminalThemeSelect({
   value,
   fallback,
+  preference,
   onChange,
 }: {
   /** 空串表示跟随界面主题 */
   value: string;
-  /** 跟随界面主题时按哪套内置配色取色 */
+  /** 跟随界面主题时按哪套内置配色兜底 */
   fallback: ResolvedTheme;
+  /** 当前界面配色；「跟随界面主题」项的色块按它取色，跟外面保持一致 */
+  preference?: Theme;
   onChange: (next: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const current = TERMINAL_THEME_OPTIONS.find((option) => option.key === value);
 
   const swatch = (key: string) => {
-    const theme = resolveTerminalTheme(key, fallback);
+    const theme = resolveTerminalTheme(key, fallback, preference);
     return (
       <span
         className="h-3 w-3 shrink-0 rounded-full border border-line-strong"
@@ -356,12 +377,13 @@ function TerminalThemeSelect({
         setOpen(false);
         onChange(key);
       }}
-      className={`flex items-center gap-2 px-3 py-1.5 text-left text-[12px] hover:bg-hover hover:text-fg ${
-        value === key ? "text-fg" : "text-fg-muted"
+      className={`flex items-center gap-2 border-l-2 px-3 py-1.5 text-left text-[12px] ${
+        value === key ? "border-accent bg-accent/30 text-accent" : "border-transparent text-fg-muted hover:bg-accent/20 hover:text-fg"
       }`}
     >
       {swatch(key)}
       <span className="min-w-0 flex-1 truncate">{label}</span>
+      {value === key && <IconCheck className="h-3.5 w-3.5 shrink-0 text-accent" />}
     </button>
   );
 
@@ -390,6 +412,157 @@ function TerminalThemeSelect({
         </>
       )}
     </div>
+  );
+}
+
+/** 主题下拉：悬停或按 ↑↓ 都能实时预览整套配色（界面 + 终端 + 编辑器），
+    移开或关闭即还原，点到 / 回车才真正落盘 */
+function ThemeSelect() {
+  const { preference, setPreference, previewTheme } = useTheme();
+  const [open, setOpen] = useState(false);
+  /** 键盘高亮的下标；-1 表示还没用键盘选过 */
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const current = THEME_OPTIONS.find((item) => item.value === preference);
+
+  // 面板卸载时兜底清掉预览，免得没选就关掉、配色还停在预览那套
+  useEffect(() => () => previewTheme(null), [previewTheme]);
+
+  // 键盘把高亮移出可视区时，把那一项滚回来
+  useEffect(() => {
+    if (!open || activeIndex < 0) return;
+    (listRef.current?.children[activeIndex] as HTMLElement | undefined)?.scrollIntoView({
+      block: "nearest",
+    });
+  }, [open, activeIndex]);
+
+  const close = () => {
+    setOpen(false);
+    setActiveIndex(-1);
+    previewTheme(null);
+  };
+
+  const openList = () => {
+    setOpen(true);
+    // 打开即高亮当前项，按 ↑↓ 从它两边接着走
+    setActiveIndex(THEME_OPTIONS.findIndex((item) => item.value === preference));
+  };
+
+  /** 高亮某一项并预览它；鼠标悬停和键盘上下键都走这里 */
+  const highlight = (index: number) => {
+    setActiveIndex(index);
+    previewTheme(THEME_OPTIONS[index].value);
+  };
+
+  const pick = (value: Theme) => {
+    setPreference(value);
+    close();
+  };
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!open) {
+      // 关着时 ↓ / 回车直接展开，省一次点击
+      if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openList();
+      }
+      return;
+    }
+    const last = THEME_OPTIONS.length - 1;
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        highlight(activeIndex >= last ? 0 : activeIndex + 1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        highlight(activeIndex <= 0 ? last : activeIndex - 1);
+        break;
+      case "Home":
+        event.preventDefault();
+        highlight(0);
+        break;
+      case "End":
+        event.preventDefault();
+        highlight(last);
+        break;
+      case "Enter":
+        event.preventDefault();
+        if (activeIndex >= 0) pick(THEME_OPTIONS[activeIndex].value);
+        break;
+      case "Escape":
+        event.preventDefault();
+        // 设置面板在 window 上也监听 Esc 关整个面板，这里拦一下，只关下拉
+        event.stopPropagation();
+        close();
+        break;
+      default:
+        break;
+    }
+  };
+
+  return (
+    // 键盘事件挂在外层：打开时焦点在触发按钮上，事件冒泡到这里统一处理
+    <div className="relative w-full" onKeyDown={onKeyDown}>
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => (open ? close() : openList())}
+        className={`${TEXT_INPUT} flex items-center gap-2 text-left hover:border-line-hover`}
+      >
+        {current && <ThemeSwatch swatch={current.swatch} />}
+        <span className="min-w-0 flex-1 truncate">{current?.label ?? ""}</span>
+        <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
+      </button>
+
+      {open && (
+        <>
+          {/* 铺一层透明遮罩接住外部点击；它在设置面板内部，点击不会冒到最外层把面板关掉 */}
+          <div className="fixed inset-0 z-30" onClick={close} />
+          <div
+            ref={listRef}
+            role="listbox"
+            onMouseLeave={() => previewTheme(null)}
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+          >
+            {THEME_OPTIONS.map((item, index) => (
+              <button
+                key={item.value}
+                type="button"
+                role="option"
+                aria-selected={preference === item.value}
+                onMouseEnter={() => highlight(index)}
+                onClick={() => pick(item.value)}
+                className={`flex items-center gap-2 border-l-2 px-3 py-1.5 text-left text-[12px] ${
+                  preference === item.value
+                    ? "border-accent bg-accent/30 text-accent"
+                    : activeIndex === index
+                      ? "border-transparent bg-accent/20 text-fg"
+                      : "border-transparent text-fg-muted hover:bg-accent/20 hover:text-fg"
+                }`}
+              >
+                <ThemeSwatch swatch={item.swatch} />
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {preference === item.value && (
+                  <IconCheck className="h-3.5 w-3.5 shrink-0 text-accent" />
+                )}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** 主题下拉里的小圆点：一半背景一半前景，一眼看出明暗与主色 */
+function ThemeSwatch({ swatch }: { swatch: [string, string] }) {
+  return (
+    <span
+      className="h-3 w-3 shrink-0 rounded-full border border-line-strong"
+      style={{ background: `linear-gradient(135deg, ${swatch[0]} 50%, ${swatch[1]} 50%)` }}
+    />
   );
 }
 
@@ -1503,7 +1676,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     devAi.model ? "模型" : "",
     devAi.apiKeySet ? "API 密钥" : "",
   ].filter((label) => label !== "");
-  const { theme, preference, setPreference } = useTheme();
+  const { theme, palette, setPreference } = useTheme();
   const [tab, setTab] = useState<TabId>("appearance");
   /** 「智能体」分类的作用域：全局层还是当前项目的层 */
   const [agentScope, setAgentScope] = useState<"global" | "project">("global");
@@ -1891,22 +2064,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
               {tab === "appearance" && (
                 <>
                   <Field label="主题">
-                    <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
-                      {THEME_OPTIONS.map((item) => (
-                        <button
-                          key={item.value}
-                          type="button"
-                          onClick={() => setPreference(item.value)}
-                          className={`rounded-md px-2.5 py-1 text-[12px] ${
-                            preference === item.value
-                              ? "bg-selected text-fg"
-                              : "text-fg-dim hover:bg-hover hover:text-fg"
-                          }`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                    </div>
+                    <ThemeSelect />
                   </Field>
                   <p className="text-[11px] leading-relaxed text-fg-faint">
                     右边栏：关掉的模块不再出现在图标条上，至少留一个。
@@ -1974,6 +2132,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     <TerminalThemeSelect
                       value={settings.terminalTheme}
                       fallback={theme}
+                      preference={palette}
                       onChange={(terminalTheme) => update({ terminalTheme })}
                     />
                   </Field>

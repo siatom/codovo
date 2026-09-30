@@ -7,7 +7,7 @@ import {
   useState,
   type Ref,
 } from "react";
-import { monaco, DARK_THEME, LIGHT_THEME } from "../lib/monaco-setup";
+import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
 import { renderMarkdown } from "../lib/markdown";
@@ -217,12 +217,14 @@ export function EditorPane({
   const floatRef = useRef<HTMLDivElement>(null);
   /** 标签栏的横向滚动容器，用来在切换标签时把激活标签滚进可视区 */
   const tabsScrollRef = useRef<HTMLDivElement | null>(null);
-  const { theme } = useTheme();
+  const { theme, palette } = useTheme();
   const { settings } = useSettings();
 
   // 建 editor 的 effect 只认挂载那一刻的主题，切换主题走下面的 effect 单独更新
   const themeRef = useRef(theme);
   themeRef.current = theme;
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
   // 浮窗的鼠标回调也建在「只跑一次」的建 editor effect 里，读 root 同样得走 ref
   const rootRef = useRef(root);
   rootRef.current = root;
@@ -629,7 +631,7 @@ export function EditorPane({
     const container = containerRef.current;
     if (!container) return;
 
-    const themeName = themeRef.current === "light" ? LIGHT_THEME : DARK_THEME;
+    const themeName = monacoThemeFor(paletteRef.current, themeRef.current);
     monaco.editor.setTheme(themeName);
     const editor = monaco.editor.create(container, {
       theme: themeName,
@@ -692,8 +694,8 @@ export function EditorPane({
 
   // 切主题不重建 editor，只换配色（差分编辑器共用全局主题）
   useEffect(() => {
-    monaco.editor.setTheme(theme === "light" ? LIGHT_THEME : DARK_THEME);
-  }, [theme]);
+    monaco.editor.setTheme(monacoThemeFor(palette, theme));
+  }, [palette, theme]);
 
   // 字体/字号/字重同理。换字体后要让 Monaco 重新量一遍字宽，否则列宽还是旧字体的
   useEffect(() => {

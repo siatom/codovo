@@ -71,6 +71,138 @@
   --c-scroll-hover: #aeb6c2;
 }
 
+/* IDE 配色覆盖语义色，组件仍只依赖同一组变量。 */
+:root[data-palette="vscode"] {
+  --c-app: #181818; --c-panel: #181818; --c-surface: #1f1f1f;
+  --c-raised: #252526; --c-hover: #2a2d2e; --c-active: #37373d;
+  --c-selected: #04395e; --c-line: #2b2b2b; --c-line-strong: #3c3c3c;
+  --c-line-hover: #555555; --c-fg: #cccccc; --c-fg-muted: #b3b3b3;
+  --c-fg-dim: #969696; --c-fg-faint: #777777; --c-fg-icon: #858585;
+  --c-accent: #3794ff; --c-accent-soft: #75baff; --c-accent-strong: #007acc;
+  --c-accent-line: #16466b; --c-scroll: #424242; --c-scroll-hover: #686868;
+}
+
+/* VS Code Light+：跟上面那套同源，只是深浅相反 */
+:root[data-palette="vscode-light"] {
+  --c-app: #f3f3f3; --c-panel: #f3f3f3; --c-surface: #ffffff;
+  --c-raised: #f8f8f8; --c-hover: #e8e8e8; --c-active: #e0e0e0;
+  --c-selected: #d6ebff; --c-line: #e7e7e7; --c-line-strong: #cecece;
+  --c-line-hover: #a0a0a0; --c-fg: #333333; --c-fg-muted: #616161;
+  --c-fg-dim: #767676; --c-fg-faint: #999999; --c-fg-icon: #717171;
+  --c-accent: #006ab1; --c-accent-soft: #1a85cc; --c-accent-strong: #007acc;
+  --c-accent-line: #a8d0ea; --c-scroll: #c1c1c1; --c-scroll-hover: #a8a8a8;
+}
+
+:root[data-palette="one-dark"] {
+  --c-app: #21252b; --c-panel: #21252b; --c-surface: #282c34;
+  --c-raised: #2c313a; --c-hover: #323842; --c-active: #3e4451;
+  --c-selected: #334255; --c-line: #303640; --c-line-strong: #3e4451;
+  --c-line-hover: #5c6370; --c-fg: #abb2bf; --c-fg-muted: #9da5b4;
+  --c-fg-dim: #828997; --c-fg-faint: #636a77; --c-fg-icon: #828997;
+  --c-accent: #61afef; --c-accent-soft: #8bc5f5; --c-accent-strong: #528fbd;
+  --c-accent-line: #344c61; --c-scroll: #3e4451; --c-scroll-hover: #5c6370;
+}
+
+:root[data-palette="dracula"] {
+  --c-app: #21222c; --c-panel: #21222c; --c-surface: #282a36;
+  --c-raised: #303241; --c-hover: #343746; --c-active: #44475a;
+  --c-selected: #44475a; --c-line: #343746; --c-line-strong: #44475a;
+  --c-line-hover: #6272a4; --c-fg: #f8f8f2; --c-fg-muted: #d7d8e2;
+  --c-fg-dim: #aeb2c7; --c-fg-faint: #8a90a8; --c-fg-icon: #aeb2c7;
+  --c-accent: #bd93f9; --c-accent-soft: #d3b6ff; --c-accent-strong: #9f70e0;
+  --c-accent-line: #594778; --c-scroll: #44475a; --c-scroll-hover: #6272a4;
+}
+
+:root[data-palette="github-dark"] {
+  --c-app: #010409; --c-panel: #0d1117; --c-surface: #0d1117;
+  --c-raised: #161b22; --c-hover: #1c2128; --c-active: #262c36;
+  --c-selected: #16345a; --c-line: #21262d; --c-line-strong: #30363d;
+  --c-line-hover: #484f58; --c-fg: #e6edf3; --c-fg-muted: #b1bac4;
+  --c-fg-dim: #8b949e; --c-fg-faint: #6e7681; --c-fg-icon: #7d8590;
+  --c-accent: #58a6ff; --c-accent-soft: #79c0ff; --c-accent-strong: #1f6feb;
+  --c-accent-line: #1f4b82; --c-scroll: #30363d; --c-scroll-hover: #484f58;
+}
+
+:root[data-palette="github-light"] {
+  --c-app: #f6f8fa; --c-panel: #f6f8fa; --c-surface: #ffffff;
+  --c-raised: #f6f8fa; --c-hover: #eaeef2; --c-active: #dfe5eb;
+  --c-selected: #ddf4ff; --c-line: #d8dee4; --c-line-strong: #afb8c1;
+  --c-line-hover: #8c959f; --c-fg: #1f2328; --c-fg-muted: #424a53;
+  --c-fg-dim: #59636e; --c-fg-faint: #818b98; --c-fg-icon: #656d76;
+  --c-accent: #0969da; --c-accent-soft: #0550ae; --c-accent-strong: #0969da;
+  --c-accent-line: #b6d7fa; --c-scroll: #c8d1da; --c-scroll-hover: #aeb8c2;
+}
+
+:root[data-palette="material-nova"] {
+  --c-app: #1b1f27; --c-panel: #1f2430; --c-surface: #232936;
+  --c-raised: #292e39; --c-hover: #303746; --c-active: #3b4352;
+  --c-selected: #344052; --c-line: #303746; --c-line-strong: #414a5b;
+  --c-line-hover: #596579; --c-fg: #d8dee9; --c-fg-muted: #b8c0cf;
+  --c-fg-dim: #8f9bad; --c-fg-faint: #697587; --c-fg-icon: #8290a5;
+  --c-accent: #82aaff; --c-accent-soft: #a9c4ff; --c-accent-strong: #5f8fe8;
+  --c-accent-line: #405477; --c-scroll: #414a5b; --c-scroll-hover: #596579;
+}
+
+:root[data-palette="neon-green"] {
+  --c-app: #080d0a; --c-panel: #0b1210; --c-surface: #0e1813;
+  --c-raised: #122019; --c-hover: #172a20; --c-active: #1d3828;
+  --c-selected: #174d32; --c-line: #193025; --c-line-strong: #25503a;
+  --c-line-hover: #357451; --c-fg: #d9ffe2; --c-fg-muted: #a8e6b8;
+  --c-fg-dim: #78b98b; --c-fg-faint: #4e805f; --c-fg-icon: #68a77a;
+  --c-accent: #39ff88; --c-accent-soft: #83ffb2; --c-accent-strong: #16d866;
+  --c-accent-line: #1d7044; --c-scroll: #25503a; --c-scroll-hover: #357451;
+}
+
+:root[data-palette="tokyo-night"] {
+  --c-app: #16161e; --c-panel: #1a1b26; --c-surface: #1a1b26;
+  --c-raised: #1f2335; --c-hover: #24283b; --c-active: #343b58;
+  --c-selected: #283457; --c-line: #23273a; --c-line-strong: #3b4261;
+  --c-line-hover: #545c7e; --c-fg: #c0caf5; --c-fg-muted: #a9b1d6;
+  --c-fg-dim: #787c99; --c-fg-faint: #565f89; --c-fg-icon: #737aa2;
+  --c-accent: #7aa2f7; --c-accent-soft: #9ab8ff; --c-accent-strong: #3d59a1;
+  --c-accent-line: #2f3f6b; --c-scroll: #3b4261; --c-scroll-hover: #545c7e;
+}
+
+:root[data-palette="catppuccin-mocha"] {
+  --c-app: #11111b; --c-panel: #181825; --c-surface: #1e1e2e;
+  --c-raised: #252537; --c-hover: #313244; --c-active: #45475a;
+  --c-selected: #3e3358; --c-line: #2a2a3c; --c-line-strong: #45475a;
+  --c-line-hover: #585b70; --c-fg: #cdd6f4; --c-fg-muted: #bac2de;
+  --c-fg-dim: #9399b2; --c-fg-faint: #6c7086; --c-fg-icon: #7f849c;
+  --c-accent: #cba6f7; --c-accent-soft: #e0c8ff; --c-accent-strong: #a37ce0;
+  --c-accent-line: #59497a; --c-scroll: #45475a; --c-scroll-hover: #585b70;
+}
+
+:root[data-palette="nord"] {
+  --c-app: #242933; --c-panel: #2e3440; --c-surface: #2e3440;
+  --c-raised: #3b4252; --c-hover: #434c5e; --c-active: #4c566a;
+  --c-selected: #3b5878; --c-line: #353c4a; --c-line-strong: #434c5e;
+  --c-line-hover: #4c566a; --c-fg: #d8dee9; --c-fg-muted: #c2cad8;
+  --c-fg-dim: #9aa5b8; --c-fg-faint: #6f7a8d; --c-fg-icon: #8b96a8;
+  --c-accent: #88c0d0; --c-accent-soft: #a8d5e0; --c-accent-strong: #5e81ac;
+  --c-accent-line: #3d5a75; --c-scroll: #434c5e; --c-scroll-hover: #4c566a;
+}
+
+:root[data-palette="solarized-light"] {
+  --c-app: #eee8d5; --c-panel: #f7f1de; --c-surface: #fdf6e3;
+  --c-raised: #f2ecda; --c-hover: #e9e2cc; --c-active: #ded8c4;
+  --c-selected: #d6e8f2; --c-line: #e4ddc9; --c-line-strong: #d3ccb8;
+  --c-line-hover: #b3ac98; --c-fg: #073642; --c-fg-muted: #3c5a62;
+  --c-fg-dim: #657b83; --c-fg-faint: #93a1a1; --c-fg-icon: #839496;
+  --c-accent: #268bd2; --c-accent-soft: #1a6fa8; --c-accent-strong: #268bd2;
+  --c-accent-line: #a8cbe6; --c-scroll: #d3ccb8; --c-scroll-hover: #b3ac98;
+}
+
+:root[data-palette="monokai"] {
+  --c-app: #1e1f1c; --c-panel: #272822; --c-surface: #272822;
+  --c-raised: #31322b; --c-hover: #383930; --c-active: #49483e;
+  --c-selected: #3a4a4a; --c-line: #35362e; --c-line-strong: #49483e;
+  --c-line-hover: #75715e; --c-fg: #f8f8f2; --c-fg-muted: #d8d8d0;
+  --c-fg-dim: #a6a28c; --c-fg-faint: #75715e; --c-fg-icon: #9a9785;
+  --c-accent: #66d9ef; --c-accent-soft: #a6e8f5; --c-accent-strong: #2f9fb8;
+  --c-accent-line: #2d5b66; --c-scroll: #49483e; --c-scroll-hover: #75715e;
+}
+
 /* 把语义色注册给 Tailwind，组件里就能写 bg-surface / text-fg-dim 这样的类。
    值本身是 var()，所以主题一换整片跟着变。 */
 @theme {
@@ -302,7 +434,8 @@ body.codedock-dragging-row * {
   border: 1px solid var(--c-line);
   border-radius: 4px;
   background: var(--c-raised);
-  font-family: "Cascadia Mono", Consolas, "JetBrains Mono", Menlo, monospace;
+  font-family:
+    "FiraCode Nerd Font", "Microsoft YaHei", Consolas, "Courier New", monospace;
   font-size: 0.9em;
 }
 

@@ -77,14 +77,14 @@ export const TerminalSession = forwardRef<
   const [error, setError] = useState<string | null>(null);
   const [exited, setExited] = useState(false);
   const [sessionKey, setSessionKey] = useState(0);
-  const { theme, preference } = useTheme();
+  const { theme, palette } = useTheme();
   const { settings } = useSettings();
 
   // 建实例的 effect 只认挂载那一刻的主题，切换主题走下面的 effect 单独更新
   const themeRef = useRef(theme);
   themeRef.current = theme;
-  const preferenceRef = useRef(preference);
-  preferenceRef.current = preference;
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
   const fontSizeRef = useRef(settings.terminalFontSize);
   fontSizeRef.current = settings.terminalFontSize;
   const fontFamilyRef = useRef(settings.terminalFontFamily);
@@ -128,7 +128,7 @@ export const TerminalSession = forwardRef<
       scrollback: 5000,
       // 右键在我们这儿是复制/粘贴，别让它顺带按词选中，不然会先把选区改掉再复制
       rightClickSelectsWord: false,
-      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current, preferenceRef.current),
+      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current, paletteRef.current),
     });
 
     const fit = new FitAddon();
@@ -291,10 +291,10 @@ export const TerminalSession = forwardRef<
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme, preference);
+    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme, palette);
     // 只改 options 时 WebGL 渲染器不保证重画整屏，显式刷一遍底色才跟着换
     term.refresh(0, Math.max(0, term.rows - 1));
-  }, [theme, preference, settings.terminalTheme]);
+  }, [theme, palette, settings.terminalTheme]);
 
   // 字体/字号/字重同理，改完补一次 fit，把新的行列数告诉 PTY
   useEffect(() => {
@@ -343,7 +343,7 @@ export const TerminalSession = forwardRef<
   const terminalBg = resolveTerminalTheme(
     settings.terminalTheme,
     theme,
-    preference,
+    palette,
   ).background;
 
   return (

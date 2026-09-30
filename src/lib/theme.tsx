@@ -8,7 +8,7 @@ import {
 } from "react";
 
 /** 用户的选择，`system` 表示跟着操作系统走 */
-export type Theme = "dark" | "light" | "system" | "vscode" | "one-dark" | "dracula" | "github-light" | "material-nova" | "neon-green";
+export type Theme = "dark" | "light" | "system" | "vscode" | "vscode-light" | "one-dark" | "dracula" | "github-dark" | "github-light" | "material-nova" | "neon-green" | "tokyo-night" | "catppuccin-mocha" | "nord" | "solarized-light" | "monokai";
 /** 真正落到界面上的主题，只可能是这两个 */
 export type ResolvedTheme = "dark" | "light";
 
@@ -21,7 +21,7 @@ export const DEFAULT_THEME: Theme = "dark";
 export function readSavedTheme(): Theme {
   try {
     const saved = window.localStorage.getItem(THEME_KEY);
-    return saved === "light" || saved === "system" || saved === "vscode" || saved === "one-dark" || saved === "dracula" || saved === "github-light" || saved === "material-nova" || saved === "neon-green" ? saved : DEFAULT_THEME;
+    return saved === "light" || saved === "system" || saved === "vscode" || saved === "vscode-light" || saved === "one-dark" || saved === "dracula" || saved === "github-dark" || saved === "github-light" || saved === "material-nova" || saved === "neon-green" || saved === "tokyo-night" || saved === "catppuccin-mocha" || saved === "nord" || saved === "solarized-light" || saved === "monokai" ? saved : DEFAULT_THEME;
   } catch {
     return DEFAULT_THEME;
   }
@@ -29,7 +29,7 @@ export function readSavedTheme(): Theme {
 
 /** 把三态偏好解析成实际主题；首帧渲染前要用它，所以得是纯函数 */
 export function resolveTheme(theme: Theme): ResolvedTheme {
-  if (theme !== "system") return theme === "light" || theme === "github-light" ? "light" : "dark";
+  if (theme !== "system") return theme === "light" || theme === "github-light" || theme === "solarized-light" || theme === "vscode-light" ? "light" : "dark";
   return window.matchMedia(MEDIA).matches ? "dark" : "light";
 }
 
@@ -42,17 +42,24 @@ export function applyTheme(theme: Theme) {
 interface ThemeValue {
   /** 实际生效的主题：终端和编辑器按它选调色板 */
   theme: ResolvedTheme;
-  /** 用户的原始选择，可能是 `system` */
+  /** 用户的原始选择，可能是 `system`；只认它、不认预览 */
   preference: Theme;
+  /** 当前渲染所用的那套配色：有悬停预览时是预览值，否则等于 `preference` */
+  palette: Theme;
   setPreference: (theme: Theme) => void;
   /** 在深色/浅色之间翻一下；从 `system` 出发就翻当前生效的那个 */
   toggle: () => void;
+  /** 悬停预览：只改渲染、不落盘；传 `null` 恢复成 `preference` */
+  previewTheme: (theme: Theme | null) => void;
 }
 
 const ThemeContext = createContext<ThemeValue | null>(null);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [preference, setPreference] = useState<Theme>(readSavedTheme);
+  // 主题下拉悬停时的临时配色：盖住 preference 但不写 localStorage，
+  // 松开（选中或移开）就清掉，用户没真正选过的东西不该留在偏好里
+  const [preview, setPreview] = useState<Theme | null>(null);
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() =>
     resolveTheme("system"),
   );
@@ -66,16 +73,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => media.removeEventListener("change", onChange);
   }, []);
 
-  const theme: ResolvedTheme = preference === "system" ? systemTheme : resolveTheme(preference);
+  const palette = preview ?? preference;
+  const theme: ResolvedTheme = palette === "system" ? systemTheme : resolveTheme(palette);
 
   useEffect(() => {
-    applyTheme(preference);
+    applyTheme(palette);
+    // 预览只是看一眼，别把它写进偏好
+    if (preview !== null) return;
     try {
       window.localStorage.setItem(THEME_KEY, preference);
     } catch {
       // 隐私模式等场景写不进去，忽略即可，只是下次启动回到深色
     }
-  }, [preference, theme]);
+  }, [palette, preference, preview]);
 
   // 另一个窗口切了主题就跟着走。storage 事件只在别的 document 触发，
   // 不会自己回灌自己
@@ -92,8 +102,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setPreference(theme === "dark" ? "light" : "dark");
   }, [theme]);
 
+  const previewTheme = useCallback((next: Theme | null) => setPreview(next), []);
+
   return (
-    <ThemeContext.Provider value={{ theme, preference, setPreference, toggle }}>
+    <ThemeContext.Provider value={{ theme, preference, palette, setPreference, toggle, previewTheme }}>
       {children}
     </ThemeContext.Provider>
   );
