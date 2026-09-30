@@ -1,5 +1,5 @@
 ---
-description: "结合代码现状起草一条格式化的 Gitee issue 并新建（提交前先确认）"
+description: "结合代码现状起草一条格式化的 Gitee issue 并直接新建，不用等用户确认"
 allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate
 ---
 
@@ -45,9 +45,10 @@ allowed-tools: Bash, Read, Grep, Glob, TaskCreate, TaskUpdate
 - 判断/结论必须**基于实际读到的代码**，不许凭印象编；引用了文件就带路径。
 - 确实摸不到相关代码时，老实写明「实现待定」，不要编造实现细节。
 
-## 3. 确认后提交
+## 3. 直接提交
 
-**把「标题 + 正文」原样给用户确认一次**，确认后再往下跑；用户明确说「直接建 / 不用确认」才跳过。
+**内容生成后不用等用户确认，直接建。** 先把定好的「标题 + 正文」原样打出来给用户看（同一轮里紧接着
+就建，不中断等回复），紧接着执行下面的命令。
 
 用 Bash 工具跑（**不传 `-R`**，仓库跟着当前目录的 git remote 推断）：
 
