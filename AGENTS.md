@@ -40,23 +40,23 @@ git push --follow-tags            # 连 tag 一起推
 
 - 终端输出传**原始字节**、后端不解码（`read()` 会截断多字节 UTF-8）；非当前会话 `display:none` 藏而不卸载
   （卸载会杀 shell）；换工作区靠重开 shell、前后端根目录一起换；容器不设 padding 且 `overflow-clip`。
-- **单窗口多项目**：一个窗口里同时开着多个项目，侧栏点哪个、右侧（终端 / 智能体 / 右边栏）就切到哪个。
-  切走的项目**在后台继续跑**（shell 不杀、opencode 不停），切回来时终端会话、编辑器标签、文件树展开态
-  原样还原。做法是**每个项目挂一个 `ProjectWorkspace` 实例**，非当前的 `display:none` 藏着不卸载——
+- **单窗口多工作区**：一个窗口里同时开着多个工作区，侧栏点哪个、右侧（终端 / 智能体 / 右边栏）就切到哪个。
+  切走的工作区**在后台继续跑**（shell 不杀、opencode 不停），切回来时终端会话、编辑器标签、文件树展开态
+  原样还原。做法是**每个工作区挂一个 `WorkspacePane` 实例**，非当前的 `display:none` 藏着不卸载——
   和 TerminalSession 的会话切换同一套路，状态天然保留，所以**别用 `key={root}` 之类重置它**。
-- 后端状态**一律按项目 root 分片**（`FsState` / `WatchState` / `AgentState` / `PtyState`），命令显式收
+- 后端状态**一律按工作区 root 分片**（`FsState` / `WatchState` / `AgentState` / `PtyState`），命令显式收
   `root: String`；`FsState` 只认「登记过的根」当白名单，否则前端能拿任意路径去读写。事件走全局 `emit`，
   agent 的 payload 是 `{root, event}`，前端按 root 路由。agent 的 `config_dir` 用
-  `project_dir_name(root)`（非法字符替换 + 稳定 hash）：共用一份会让两个 opencode 争用，而且收掉某个
-  项目时的 `remove_dir_all` 会删掉别项目的目录。关项目走 `project_close`，一次收掉它的 shell、opencode
-  与目录监听。目录监听**只跟当前项目**，切项目时整体换掉。
-- 持久化的分层：**窗口级偏好存 sessionStorage**（侧栏折叠、CLI 选择）；**项目级的按 root 作 key**
+  `workspace_dir_name(root)`（非法字符替换 + 稳定 hash）：共用一份会让两个 opencode 争用，而且收掉某个
+  工作区时的 `remove_dir_all` 会删掉别工作区的目录。关工作区走 `workspace_close`，一次收掉它的 shell、opencode
+  与目录监听。目录监听**只跟当前工作区**，切工作区时整体换掉。
+- 持久化的分层：**窗口级偏好存 sessionStorage**（侧栏折叠、CLI 选择）；**工作区级的按 root 作 key**
   （右栏模块、浏览器地址、提交历史视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
   （设置、主题、工作区列表、别名）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
   列表类一律「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别处刚写进去的。
-- 多项目下的前端约定：git 状态**只轮询当前项目**（`useGitStatus(root, visible)`，隐藏的项目停轮询但
+- 多工作区下的前端约定：git 状态**只轮询当前工作区**（`useGitStatus(root, visible)`，隐藏的工作区停轮询但
   保留状态）；Monaco 从隐藏切回可见要补一次 `layout()`（隐藏期间容器尺寸是 0）；侧栏命令、编辑器浮窗
-  这类「打到当前项目实例」的动作，走 App 里的 `root -> handle` 表路由。
+  这类「打到当前工作区实例」的动作，走 App 里的 `root -> handle` 表路由。
 - 文件路径一律词法归一化 + 前缀校验，已存在的再 `canonicalize` 挡软链接逃逸；文件树改名 / 删除
   要带着编辑器标签一起换或关，改名前先落盘；工作区根禁改禁删。
 - 目录监听只推「哪个父目录变了」，编辑器重读另走 `fs-file-changed`；防抖 300ms 并跳过 `SKIP_DIRS`。
