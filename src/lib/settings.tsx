@@ -165,10 +165,12 @@ export function emptyAgentLayer(): AgentLayer {
 }
 
 const DEFAULTS: Settings = {
+  // name 用各家的规范写法（与 lib/cli-sessions.ts 的 CLI_PROVIDERS.label 对齐），
+  // command 才是实际会跑的可执行文件名
   aiCommands: [
-    { name: "claude", command: "claude" },
-    { name: "codebuddy", command: "codebuddy" },
-    { name: "codex", command: "codex --no-daemon" },
+    { name: "Claude Code", command: "claude" },
+    { name: "CodeBuddy", command: "codebuddy" },
+    { name: "Codex", command: "codex --no-daemon" },
     { name: "opencode", command: "opencode" },
   ],
   // 不预置任何厂商：提供商和模型都由用户自己加
