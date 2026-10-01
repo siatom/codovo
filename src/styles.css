@@ -33,6 +33,16 @@
   --c-warn-line: #3a3220;
   --c-warn-line-strong: #5a4a28;
   --c-ok: #7ed08c;
+  /* 提交历史的泳道配色：和语义色无关的一组固定色，只求相邻泳道分得开。
+     深色主题用亮色，浅色主题（下面那块）用同色系压暗版。 */
+  --c-graph-1: #4f9cf9;
+  --c-graph-2: #f14c4c;
+  --c-graph-3: #e2b93d;
+  --c-graph-4: #4ec26a;
+  --c-graph-5: #b072f0;
+  --c-graph-6: #e06bb4;
+  --c-graph-7: #4fc7cf;
+  --c-graph-8: #e08a4c;
   --c-scroll: #2a313d;
   --c-scroll-hover: #39414f;
 }
@@ -67,6 +77,15 @@
   --c-warn-line: #eddfb8;
   --c-warn-line-strong: #dcc68c;
   --c-ok: #1f7a3d;
+  /* 泳道配色：深色那组的压暗版，白底上对比度够 */
+  --c-graph-1: #0969da;
+  --c-graph-2: #cf222e;
+  --c-graph-3: #9a6700;
+  --c-graph-4: #1a7f37;
+  --c-graph-5: #8250df;
+  --c-graph-6: #bf3989;
+  --c-graph-7: #1b7c83;
+  --c-graph-8: #bc4c00;
   --c-scroll: #c9cfd8;
   --c-scroll-hover: #aeb6c2;
 }
@@ -244,6 +263,14 @@
   --color-warn-line: var(--c-warn-line);
   --color-warn-line-strong: var(--c-warn-line-strong);
   --color-ok: var(--c-ok);
+  --color-graph-1: var(--c-graph-1);
+  --color-graph-2: var(--c-graph-2);
+  --color-graph-3: var(--c-graph-3);
+  --color-graph-4: var(--c-graph-4);
+  --color-graph-5: var(--c-graph-5);
+  --color-graph-6: var(--c-graph-6);
+  --color-graph-7: var(--c-graph-7);
+  --color-graph-8: var(--c-graph-8);
 }
 
 html,

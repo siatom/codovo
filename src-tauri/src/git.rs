@@ -150,6 +150,16 @@ pub struct FileHunks {
     hunks: Vec<PatchHunk>,
 }
 
+/// 挂在某个提交上的引用（分支 / 远程分支 / 标签）。图形化历史拿它画行内的标签 chip。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitRef {
+    /// 短名，去掉 refs/heads、refs/remotes、refs/tags 前缀
+    name: String,
+    /// "head"（当前分支，HEAD 指向）/ "branch" / "remote" / "tag"
+    kind: String,
+}
+
 /// 提交历史里的一条。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +170,21 @@ pub struct Commit {
     /// Unix 秒，界面自己折算成"多久前"
     time: i64,
     subject: String,
+    /// 提交信息里主题之后的正文（原样，含换行），悬停浮框要展示；没有正文时为空串
+    body: String,
+    /// 父提交的完整 hash。画泳道连线要用；根提交为空
+    parents: Vec<String>,
+    /// 这个提交上挂的引用（分支 / 远程 / 标签）
+    refs: Vec<CommitRef>,
+}
+
+/// 一条提交的改动规模，悬停浮框上显示「N 个文件，N 行插入，N 行删除」。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitStat {
+    files: u32,
+    insertions: u32,
+    deletions: u32,
 }
 
 /// 某个提交里改动的一个文件。
@@ -1226,30 +1251,113 @@ fn checked_rev(raw: &str) -> Result<String, String> {
 
 // ---- 提交历史 ----
 
-/// `%x1f` 分隔字段、`%x00` 结尾。字段里可能带空格（作者名、提交信息），
-/// 所以不能用空格或换行当分隔符。
-const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x00";
+/// `%x1f` 分隔字段、`%x00` 结尾。字段里可能带空格（作者名、提交信息、装饰名），
+/// 所以不能用空格或换行当分隔符。`%P` 是父 hash（空格分隔，可能多个）、`%D` 是引用装饰、
+/// `%b` 是正文（多行，所以放最后，解析时取剩余部分）。
+const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%an%x1f%at%x1f%P%x1f%D%x1f%s%x1f%b%x00";
 
 /// 一次拉多少条。界面上还有「加载更多」，所以给个够用的默认值就行。
 const LOG_PAGE: u32 = 50;
 const LOG_MAX: u32 = 500;
 
+/// 解析 `%D` 的装饰串（配合 `--decorate=full`，形如
+/// `HEAD -> refs/heads/main, refs/remotes/origin/main, refs/tags/v1.0`）。
+///
+/// 分类靠 refs 前缀；万一某版 git 的 `%D` 不受 `--decorate=full` 影响、给的是短名，
+/// 就退化成「含 `/` 视为远程」的兜底判断——本地分支带斜杠时会被误判，属于可接受的降级。
+fn parse_decorations(raw: &str) -> Vec<CommitRef> {
+    let mut refs = Vec::new();
+    for token in raw.split(", ") {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        // `HEAD -> <ref>`：HEAD 指向的分支，单独标成 head
+        if let Some(target) = token.strip_prefix("HEAD -> ") {
+            refs.push(CommitRef {
+                name: short_ref_name(target),
+                kind: "head".to_string(),
+            });
+            continue;
+        }
+        if token == "HEAD" {
+            refs.push(CommitRef {
+                name: "HEAD".to_string(),
+                kind: "head".to_string(),
+            });
+            continue;
+        }
+        // 短名形态的标签带 `tag: ` 前缀
+        if let Some(name) = token.strip_prefix("tag: ") {
+            refs.push(CommitRef {
+                name: name.to_string(),
+                kind: "tag".to_string(),
+            });
+            continue;
+        }
+        let kind = if token.starts_with("refs/tags/") {
+            "tag"
+        } else if token.starts_with("refs/heads/") {
+            "branch"
+        } else if token.starts_with("refs/remotes/") {
+            "remote"
+        } else if token.contains('/') {
+            // 兜底：拿不到全名时，带斜杠的当远程分支
+            "remote"
+        } else {
+            "branch"
+        };
+        refs.push(CommitRef {
+            name: short_ref_name(token),
+            kind: kind.to_string(),
+        });
+    }
+    refs
+}
+
+/// 去掉 `refs/heads/`、`refs/remotes/`、`refs/tags/` 前缀，只留显示用的短名。
+fn short_ref_name(reference: &str) -> String {
+    reference
+        .strip_prefix("refs/heads/")
+        .or_else(|| reference.strip_prefix("refs/remotes/"))
+        .or_else(|| reference.strip_prefix("refs/tags/"))
+        .unwrap_or(reference)
+        .to_string()
+}
+
 fn parse_log(raw: &[u8]) -> Vec<Commit> {
     raw.split(|byte| *byte == 0)
         .filter(|record| !record.is_empty())
         .filter_map(|record| {
-            let text = String::from_utf8_lossy(record);
+            let owned = String::from_utf8_lossy(record);
+            // git 会在每条记录之间插一个换行，落在 `%x00` 后面；不剥掉的话它会粘到
+            // 下一条记录的 `%H` 上（`%H` 在最前），父 hash 就对不上了、泳道全散开
+            let text = owned.trim_start_matches(['\n', '\r']);
             let mut fields = text.split('\u{1f}');
             let hash = fields.next()?.to_string();
             let short = fields.next()?.to_string();
             let author = fields.next()?.to_string();
             let time = fields.next()?.parse().unwrap_or(0);
+            let parents = fields
+                .next()
+                .unwrap_or_default()
+                .split(' ')
+                .filter(|parent| !parent.is_empty())
+                .map(str::to_string)
+                .collect();
+            let refs = parse_decorations(fields.next().unwrap_or_default());
+            let subject = fields.next().unwrap_or_default().to_string();
+            // 正文放最后，取剩余全部：它本身是多行文本，里面再有分隔符也不会被切断
+            let body = fields.collect::<Vec<_>>().join("\u{1f}");
             Some(Commit {
                 hash,
                 short,
                 author,
                 time,
-                subject: fields.next().unwrap_or_default().to_string(),
+                subject,
+                body: body.trim().to_string(),
+                parents,
+                refs,
             })
         })
         .collect()
@@ -1262,8 +1370,14 @@ fn log_of(root: &Path, limit: u32) -> Result<Vec<Commit>, String> {
 
     let count = limit.clamp(1, LOG_MAX).to_string();
     let arg = format!("--max-count={count}");
-    // 空仓库（还没有任何提交）时 git log 非 0 退出，那不是错误，给空列表
-    let raw = run_git(root, &["log", &arg, LOG_FORMAT])?.unwrap_or_default();
+    // 空仓库（还没有任何提交）时 git log 非 0 退出，那不是错误，给空列表。
+    // `--topo-order` 保证父提交一定排在子提交之后（画泳道图的前提，默认的时间序做不到）；
+    // `--decorate=full` 让 `%D` 给出 refs/… 全名，好把分支 / 远程 / 标签分开。
+    let raw = run_git(
+        root,
+        &["log", &arg, "--topo-order", "--decorate=full", LOG_FORMAT],
+    )?
+    .unwrap_or_default();
     Ok(parse_log(&raw))
 }
 
@@ -1335,6 +1449,34 @@ fn files_of(root: &Path, rev: &str) -> Result<Vec<CommitFile>, String> {
     let raw = run_git(root, &["show", "--name-status", "-z", "--format=", &rev])?
         .ok_or("git show 执行失败")?;
     Ok(parse_name_status(&raw, &prefix, root))
+}
+
+/// 一条提交的改动规模，悬停浮框上显示。
+///
+/// 走 `--numstat` 而不是 `--shortstat`：后者是给人看的、会随 locale 变（"2 files changed…"
+/// 有翻译），数值反而不好取；`--numstat` 每行是 `增\t删\t路径`，二进制给 `-\t-`，语言无关。
+/// 和 `files_of` 一样按 `git show` 的默认口径（合并提交是空 diff），两边对得上。
+fn stat_of(root: &Path, rev: &str) -> Result<CommitStat, String> {
+    let rev = checked_rev(rev)?;
+    let raw = run_git(root, &["show", "--numstat", "--format=", &rev])?
+        .ok_or("git show 执行失败")?;
+    let text = String::from_utf8_lossy(&raw);
+    let mut stat = CommitStat {
+        files: 0,
+        insertions: 0,
+        deletions: 0,
+    };
+    for line in text.lines() {
+        let mut columns = line.split('\t');
+        let (Some(added), Some(removed)) = (columns.next(), columns.next()) else {
+            continue;
+        };
+        // 二进制文件给的是 `-`，只算文件数、不计行数
+        stat.files += 1;
+        stat.insertions += added.parse::<u32>().unwrap_or(0);
+        stat.deletions += removed.parse::<u32>().unwrap_or(0);
+    }
+    Ok(stat)
 }
 
 /// 生成提交信息要喂给大模型的原料。放在 git 模块里取，是因为 `GitStatus`
@@ -1711,6 +1853,16 @@ pub fn git_commit_files(
     rev: String,
 ) -> Result<Vec<CommitFile>, String> {
     files_of(&state.checked_root(&root)?, &rev)
+}
+
+/// 某个提交改了多少文件、增删多少行。悬停浮框用：按需拉，前端按 hash 缓存。
+#[tauri::command(async)]
+pub fn git_commit_stat(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    rev: String,
+) -> Result<CommitStat, String> {
+    stat_of(&state.checked_root(&root)?, &rev)
 }
 
 /// 提交历史里哪些提交还没推送到上游。
@@ -4012,5 +4164,91 @@ mod tests {
         assert!(stash_push(&repo, None).is_err());
 
         cleanup(&top);
+    }
+
+    /// 按 `%x1f` 分隔字段、`%x00` 结尾的真实形态拼一条提交记录
+    fn log_record(fields: &[&str]) -> Vec<u8> {
+        let mut raw = fields.join("\u{1f}").into_bytes();
+        raw.push(0);
+        raw
+    }
+
+    #[test]
+    fn parses_parents_and_decorations_from_log() {
+        let mut raw = log_record(&[
+            "aaaa",
+            "a1",
+            "张三",
+            "1700000000",
+            "bbbb cccc",
+            "HEAD -> refs/heads/main, refs/remotes/origin/main, refs/tags/v1.0",
+            "主题 带 空格",
+            "- 正文第一行\n- 正文第二行\n",
+        ]);
+        // 第二条：无装饰、根提交（没有父）。记录之间那个 `\n` 是 git 自己插的，
+        // 必须剥掉，否则会粘到下一条的 `%H` 上、父 hash 匹配不上
+        raw.push(b'\n');
+        raw.extend(log_record(&["bbbb", "b1", "李四", "1699990000", "", "", "根提交", ""]));
+
+        let commits = parse_log(&raw);
+        assert_eq!(commits.len(), 2);
+
+        let first = &commits[0];
+        assert_eq!(first.hash, "aaaa");
+        assert_eq!(first.parents, vec!["bbbb", "cccc"]);
+        // 主题里的空格不能被当成字段分隔符
+        assert_eq!(first.subject, "主题 带 空格");
+        // 正文是多行的，末尾的换行要剥掉
+        assert_eq!(first.body, "- 正文第一行\n- 正文第二行");
+        let refs: Vec<(&str, &str)> = first
+            .refs
+            .iter()
+            .map(|r| (r.name.as_str(), r.kind.as_str()))
+            .collect();
+        assert_eq!(
+            refs,
+            vec![("main", "head"), ("origin/main", "remote"), ("v1.0", "tag")]
+        );
+
+        let root = &commits[1];
+        assert_eq!(root.hash, "bbbb");
+        assert!(root.parents.is_empty());
+        assert!(root.refs.is_empty());
+        assert!(root.body.is_empty(), "没有正文时是空串，不是缺字段");
+    }
+
+    #[test]
+    fn commit_stat_counts_files_and_lines() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("a.txt"), "1\n2\n3\n").unwrap();
+        fs::write(repo.join("b.txt"), "x\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let stat = stat_of(&repo, &rev).unwrap();
+        assert_eq!(stat.files, 2);
+        assert_eq!(stat.insertions, 4);
+        assert_eq!(stat.deletions, 0);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn decorations_fall_back_to_short_names() {
+        // 万一某版 git 的 %D 给的是短名（不受 --decorate=full 影响）
+        let refs = parse_decorations("HEAD -> main, origin/main, tag: v1.0");
+        let pairs: Vec<(&str, &str)> = refs
+            .iter()
+            .map(|r| (r.name.as_str(), r.kind.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("main", "head"), ("origin/main", "remote"), ("v1.0", "tag")]
+        );
     }
 }

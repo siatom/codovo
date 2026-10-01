@@ -644,6 +644,22 @@ export const IconMerge = icon(
   </>,
 );
 
+/** 一条提交：竖线上串一个节点。悬停浮框里标提交号用 */
+export const IconCommit = icon(
+  <>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M3 12h6M15 12h6" />
+  </>,
+);
+
+/** 提交作者。悬停浮框第一行的署名 */
+export const IconPerson = icon(
+  <>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1" />
+  </>,
+);
+
 /** 从远程取回引用：云 + 下箭头。刻意不用 IconRefresh 那个回转箭头，免得和"刷新"混淆 */
 export const IconCloudDownload = icon(
   <>

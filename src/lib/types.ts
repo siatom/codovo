@@ -97,6 +97,14 @@ export interface FileDiff {
   tooLarge: boolean;
 }
 
+/** 挂在某个提交上的引用，图形化历史里画成行内的标签 chip */
+export interface CommitRef {
+  /** 短名，已去掉 refs/heads、refs/remotes、refs/tags 前缀 */
+  name: string;
+  /** head = 当前分支（HEAD 指向）；branch / remote / tag */
+  kind: "head" | "branch" | "remote" | "tag";
+}
+
 /** 提交历史里的一条 */
 export interface GitCommit {
   hash: string;
@@ -105,6 +113,19 @@ export interface GitCommit {
   /** Unix 秒 */
   time: number;
   subject: string;
+  /** 主题之后的正文（原样，含换行）；没有正文时是空串 */
+  body: string;
+  /** 父提交的完整 hash（合并提交有多个）；根提交为空 */
+  parents: string[];
+  /** 这个提交上挂的引用 */
+  refs: CommitRef[];
+}
+
+/** 一条提交的改动规模，悬停浮框上显示 */
+export interface CommitStat {
+  files: number;
+  insertions: number;
+  deletions: number;
 }
 
 /** 某个提交里改动的一个文件 */

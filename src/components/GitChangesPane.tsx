@@ -16,6 +16,7 @@ import {
   gitBranches,
   gitCommit,
   gitCommitFiles,
+  gitCommitStat,
   gitCreateBranch,
   gitDiscard,
   gitFetch,
@@ -55,6 +56,8 @@ import { formatShortcut, matchesShortcut } from "../lib/shortcuts";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { DiffSource } from "../lib/tabs";
 import type {
+  CommitRef,
+  CommitStat,
   DiscardSource,
   FileHunks,
   GitBranch,
@@ -63,7 +66,10 @@ import type {
   GitStash,
   GitStatusPayload,
 } from "../lib/types";
+import { graphTextInset, LANE_W, layoutGraph, type GraphRow } from "../lib/gitGraph";
 import { GitMarkBadge, GitMarkDot } from "./GitMarkBadge";
+import { CommitGraph } from "./GitGraph";
+import { CommitTooltip } from "./CommitTooltip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
@@ -120,6 +126,20 @@ interface PendingDiscard {
 
 /** 提交历史一次拉多少条，「加载更多」再叠加 */
 const LOG_PAGE = 50;
+
+/**
+ * 提交行里最多平铺几个引用 chip，多出来的收成「+N」。
+ * chip 是 `shrink-0` 的，不封顶的话 HEAD 那条（main / origin/main / origin/HEAD）
+ * 会把 `flex-1` 的提交主题挤成 0 宽，整行就只剩标签、看不到主题了。
+ */
+const MAX_REF_CHIPS = 2;
+
+/**
+ * 提交历史的后台重拉间隔。
+ * 只盯 HEAD 的话，终端里 `fetch` / `tag` 这类不改 HEAD 的操作会漏掉——远程分支、
+ * 标签这些行内装饰就一直是旧的。挂个比 status（2 秒）慢的轮询兜底。
+ */
+const LOG_POLL_MS = 5000;
 
 /** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
 const MESSAGE_MAX_ROWS = 5;
@@ -930,78 +950,173 @@ function ChangeList({
   );
 }
 
+/** 引用 chip 的 kind -> 中文说明，只用在 title 上 */
+const REF_KIND_LABEL: Record<CommitRef["kind"], string> = {
+  head: "当前分支",
+  branch: "分支",
+  remote: "远程分支",
+  tag: "标签",
+};
+
+/** 提交行里的引用标签：当前分支填色、标签用警示色，其余描边，和 VS Code 的语汇一致 */
+function RefChip({ reference }: { reference: CommitRef }) {
+  const tone =
+    reference.kind === "head"
+      ? "bg-accent-strong text-app"
+      : reference.kind === "tag"
+        ? "border border-warn-line text-warn"
+        : reference.kind === "remote"
+          ? "border border-line text-fg-faint"
+          : "border border-line-strong text-fg-muted";
+  return (
+    <span
+      title={`${REF_KIND_LABEL[reference.kind]}：${reference.name}`}
+      className={`shrink-0 max-w-[9rem] truncate rounded px-1 text-[10px] leading-4 ${tone}`}
+    >
+      {reference.name}
+    </span>
+  );
+}
+
 /**
- * 一条提交：点一下就地展开它改了哪些文件，再点收起。
+ * 一条提交：左侧是泳道图，点一下就地展开它改了哪些文件，再点收起。
  * 展开的文件点进去看的是「这个提交 vs 它的父提交」的差异。
  */
 function CommitRow({
   commit,
+  graph,
+  graphWidth,
   expanded,
   files,
+  stat,
   unpushed,
   onToggle,
   onOpen,
+  onStat,
 }: {
   commit: GitCommit;
+  graph: GraphRow;
+  /** 图列的统一宽度，各行一致，后面的文字才左对齐 */
+  graphWidth: number;
   expanded: boolean;
   /** undefined = 还没拉到 */
   files: GitCommitFile[] | undefined;
+  /** undefined = 还没拉到。悬停浮框上的改动规模 */
+  stat: CommitStat | undefined;
   /** 还没推送到上游。标一下，省得用户去数 ahead 有几个 */
   unpushed: boolean;
   onToggle: () => void;
   onOpen: (path: string, source: DiffSource) => void;
+  /** 鼠标进到这一行时喊一声，上层按需去拉改动规模 */
+  onStat: () => void;
 }) {
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={onToggle}
-        title={`${commit.subject}\n${commit.author} · ${formatTime(commit.time)}\n${commit.hash}`}
-        className="flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[11px] hover:bg-hover"
-      >
-        {expanded ? (
-          <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
-        ) : (
-          <IconChevronRight className="h-3 w-3 shrink-0 text-fg-faint" />
-        )}
-        <span className="shrink-0 font-mono text-fg-faint">{commit.short}</span>
-        <span className="min-w-0 flex-1 truncate text-fg-muted">{commit.subject}</span>
-        {/* 未推送的单独给个向上的箭头：和 header 上那个 ↑N 是同一套语汇 */}
-        {unpushed && (
-          <span className="shrink-0 text-fg-faint" title="还没推送到上游">
-            ↑
-          </span>
-        )}
-        <span className="shrink-0 text-[10px] text-fg-faint">{formatTime(commit.time)}</span>
-      </button>
+  /** 悬停浮框贴着的那个矩形；null = 不显示 */
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const hideTimer = useRef<number | null>(null);
 
-      {expanded && files === undefined && (
-        <p className="py-[3px] pl-6 text-[11px] text-fg-faint">加载中…</p>
-      )}
-      {expanded && files?.length === 0 && (
-        <p className="py-[3px] pl-6 text-[11px] text-fg-faint">这个提交没有文件更改</p>
-      )}
-      {expanded && files && files.length > 0 && (
-        <ul>
-          {files.map((file) => (
-            <li key={file.path}>
-              <button
-                type="button"
-                onClick={() => onOpen(file.path, { mode: "commit", rev: commit.hash })}
-                title={file.relative}
-                className="flex w-full items-center gap-1.5 rounded py-[3px] pr-1 pl-6 text-left text-[11px] hover:bg-hover"
-              >
-                <span className="min-w-0 truncate text-fg-muted">{baseName(file.relative)}</span>
-                {dirOf(file.relative) && (
-                  <span className="min-w-0 truncate text-[10px] text-fg-faint">
-                    {dirOf(file.relative)}
-                  </span>
-                )}
-                <GitMarkBadge mark={statusMark(file.status)} className="text-[10px]" />
-              </button>
-            </li>
-          ))}
-        </ul>
+  // 浮框和提交行之间隔了 GAP，鼠标穿过去时会先离开这一行，所以藏要延迟一下；
+  // 真正移进浮框（它是本行的后代）时再把这次藏取消掉
+  const cancelHide = () => {
+    if (hideTimer.current === null) return;
+    window.clearTimeout(hideTimer.current);
+    hideTimer.current = null;
+  };
+  const hide = () => {
+    cancelHide();
+    hideTimer.current = window.setTimeout(() => setAnchor(null), 180);
+  };
+  useEffect(() => cancelHide, []);
+
+  return (
+    <div
+      className="flex"
+      onMouseEnter={(event) => {
+        cancelHide();
+        setAnchor(event.currentTarget.getBoundingClientRect());
+        onStat();
+      }}
+      onMouseLeave={hide}
+      // 滚动时行会跑掉、浮框留在原地，干脆收起来
+      onWheel={hide}
+    >
+      <CommitGraph row={graph} width={graphWidth} />
+      {/* 负 margin：文字贴住本行圆圈，图列右边没线的那截让它盖上去 */}
+      <div className="min-w-0 flex-1" style={{ marginLeft: graphTextInset(graph, graphWidth) }}>
+        <button
+          type="button"
+          onClick={onToggle}
+          className="@container flex h-[22px] w-full items-center gap-1.5 rounded px-1 text-left text-[11px] hover:bg-hover"
+        >
+          {/* 引用标签按行宽显隐：窄了整组收起来，把宽度让给提交主题，别把主题挤成 0 宽 */}
+          {commit.refs.length > 0 && (
+            <span className="hidden min-w-0 items-center gap-1.5 @min-[18rem]:flex">
+              {commit.refs.slice(0, MAX_REF_CHIPS).map((reference) => (
+                <RefChip key={`${reference.kind}:${reference.name}`} reference={reference} />
+              ))}
+              {commit.refs.length > MAX_REF_CHIPS && (
+                <span
+                  title={commit.refs
+                    .slice(MAX_REF_CHIPS)
+                    .map((reference) => `${REF_KIND_LABEL[reference.kind]}：${reference.name}`)
+                    .join("\n")}
+                  className="shrink-0 rounded border border-line px-1 text-[10px] leading-4 text-fg-faint"
+                >
+                  +{commit.refs.length - MAX_REF_CHIPS}
+                </span>
+              )}
+            </span>
+          )}
+          <span className="min-w-0 flex-1 truncate text-fg-muted">{commit.subject}</span>
+          <span className="shrink-0 max-w-[40%] truncate text-[10px] text-fg-faint">
+            {commit.author}
+          </span>
+          {/* 未推送的单独给个向上的箭头：和 header 上那个 ↑N 是同一套语汇 */}
+          {unpushed && (
+            <span className="shrink-0 text-fg-faint" title="还没推送到上游">
+              ↑
+            </span>
+          )}
+          <span className="shrink-0 text-[10px] text-fg-faint">{formatTime(commit.time)}</span>
+        </button>
+
+        {expanded && files === undefined && (
+          <p className="py-[3px] pl-6 text-[11px] text-fg-faint">加载中…</p>
+        )}
+        {expanded && files?.length === 0 && (
+          <p className="py-[3px] pl-6 text-[11px] text-fg-faint">这个提交没有文件更改</p>
+        )}
+        {expanded && files && files.length > 0 && (
+          <ul>
+            {files.map((file) => (
+              <li key={file.path}>
+                <button
+                  type="button"
+                  onClick={() => onOpen(file.path, { mode: "commit", rev: commit.hash })}
+                  title={file.relative}
+                  className="flex w-full items-center gap-1.5 rounded py-[3px] pr-1 pl-6 text-left text-[11px] hover:bg-hover"
+                >
+                  <span className="min-w-0 truncate text-fg-muted">{baseName(file.relative)}</span>
+                  {dirOf(file.relative) && (
+                    <span className="min-w-0 truncate text-[10px] text-fg-faint">
+                      {dirOf(file.relative)}
+                    </span>
+                  )}
+                  <GitMarkBadge mark={statusMark(file.status)} className="text-[10px]" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* 挂在本行里（fixed 定位，不受列表滚动容器裁剪）：鼠标能移进来点复制 */}
+      {anchor && (
+        <CommitTooltip
+          commit={commit}
+          relative={formatTime(commit.time)}
+          stat={stat ?? null}
+          anchor={anchor}
+        />
       )}
     </div>
   );
@@ -1070,6 +1185,13 @@ export function GitChangesPane({
    */
   const [openCommits, setOpenCommits] = useState<ReadonlySet<string>>(new Set());
   const [commitFiles, setCommitFiles] = useState<ReadonlyMap<string, GitCommitFile[]>>(new Map());
+  /**
+   * 各提交的改动规模，悬停浮框上用。和 commitFiles 一样是「拉到就留着」的懒加载缓存——
+   * 悬停很频繁，不缓存的话鼠标划过去就是一片 git 进程。
+   */
+  const [commitStats, setCommitStats] = useState<ReadonlyMap<string, CommitStat>>(new Map());
+  /** 已经在飞的 hash，别重复拉（失败会从这里删掉，允许再试） */
+  const statRequests = useRef(new Set<string>());
   /** 还没推送到上游的提交号（完整 hash）。和提交列表一起拉，一起换 */
   const [unpushed, setUnpushed] = useState<ReadonlySet<string>>(new Set());
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
@@ -1770,6 +1892,13 @@ export function GitChangesPane({
     };
   }, [logCollapsed, logLimit, logRevision, snapshot.isRepo, snapshot.head]);
 
+  // 后台自动重拉：见 LOG_POLL_MS 的说明。收起时不起定时器，和上面那个 effect 一致
+  useEffect(() => {
+    if (logCollapsed || !snapshot.isRepo) return;
+    const timer = window.setInterval(() => setLogRevision((revision) => revision + 1), LOG_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [logCollapsed, snapshot.isRepo]);
+
   /**
    * 未推送清单单独拉一份，不和 gitLog 挤在同一个 effect 里：它只跟 ahead 有关，
    * 合进去会让每次 HEAD 变化都多带一个无关请求，反过来 ahead 归零（推送完）时
@@ -1814,6 +1943,21 @@ export function GitChangesPane({
     };
   }, [openCommits, commitFiles, root]);
 
+  /**
+   * 悬停某条提交时才去拉它的改动规模。不走 effect：这是「鼠标划过」触发的，
+   * 挂在状态上会多一层没必要的同步。失败就不缓存，下次悬停再试。
+   */
+  const ensureStat = useCallback(
+    (hash: string) => {
+      if (commitStats.has(hash) || statRequests.current.has(hash)) return;
+      statRequests.current.add(hash);
+      void gitCommitStat(root, hash)
+        .then((stat) => setCommitStats((current) => new Map(current).set(hash, stat)))
+        .catch(() => statRequests.current.delete(hash));
+    },
+    [commitStats, root],
+  );
+
   const toggleCommit = useCallback((hash: string) => {
     setOpenCommits((current) => {
       const next = new Set(current);
@@ -1822,6 +1966,13 @@ export function GitChangesPane({
       return next;
     });
   }, []);
+
+  /**
+   * 泳道布局。列表一变就整段重排——每翻一页也是从头算，图不会跳变。
+   * `rows[i]` 和 `commits[i]` 一一对应，取行直接用下标即可。
+   */
+  const graph = useMemo(() => layoutGraph(commits ?? []), [commits]);
+  const graphWidth = graph.laneCount * LANE_W;
 
   /**
    * 提交历史滚到底就自动加载下一页。
@@ -2534,15 +2685,19 @@ export function GitChangesPane({
               <p className="px-1 py-1 text-[11px] text-fg-faint">还没有提交</p>
             )}
 
-            {commits?.map((commit) => (
+            {commits?.map((commit, index) => (
               <CommitRow
                 key={commit.hash}
                 commit={commit}
+                graph={graph.rows[index]}
+                graphWidth={graphWidth}
                 expanded={openCommits.has(commit.hash)}
                 files={commitFiles.get(commit.hash)}
+                stat={commitStats.get(commit.hash)}
                 unpushed={unpushed.has(commit.hash)}
                 onToggle={() => toggleCommit(commit.hash)}
                 onOpen={onOpen}
+                onStat={() => ensureStat(commit.hash)}
               />
             ))}
 

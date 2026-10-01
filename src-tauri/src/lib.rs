@@ -88,6 +88,7 @@ pub fn run() {
             git::git_file_diff,
             git::git_log,
             git::git_commit_files,
+            git::git_commit_stat,
             git::git_unpushed,
             git::git_fetch,
             git::git_pull,

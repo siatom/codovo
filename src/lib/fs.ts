@@ -11,6 +11,7 @@ import type {
   GitBranch,
   GitCommit,
   GitCommitFile,
+  CommitStat,
   GitStash,
   GitStatusPayload,
   HunkAction,
@@ -238,6 +239,11 @@ export function gitLog(root: string, limit?: number): Promise<GitCommit[]> {
 /** 某个提交改了哪些文件 */
 export function gitCommitFiles(root: string, rev: string): Promise<GitCommitFile[]> {
   return invoke<GitCommitFile[]>("git_commit_files", { root, rev });
+}
+
+/** 某个提交的改动规模（文件数 / 增行 / 删行）。悬停浮框按需拉 */
+export function gitCommitStat(root: string, rev: string): Promise<CommitStat> {
+  return invoke<CommitStat>("git_commit_stat", { root, rev });
 }
 
 /** 提交历史里哪些提交还没推送到上游（完整提交号）。没有上游时是空数组 */
