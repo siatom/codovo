@@ -34,7 +34,7 @@ git log --oneline -20    # 对齐最近的提交风格
 **中文 Conventional Commits**：`type(scope): 标题`，标题单行、简洁，说清做了什么。
 
 - `type`：`feat`（新功能）/ `fix`（修复）/ `refactor`（重构）/ `style`（样式、格式）/ `docs`（文档）/ `chore`（杂务、构建、命令脚本）。
-- `scope`：动到的模块，小写。参考：`explorer`（文件树）/ `sidebar` / `settings` / `theme` / `terminal` / `git`（变更）/ `search` / `editor`（编辑器）/ `browser` / `agent`（智能体）/ `project`（项目模型）/ `backend`（Rust 通用）/ `installer`（依赖）/ `cli` / `commands`（`.codebuddy` 命令）/ `readme`；确实跨多块或不好归类的可以省略 scope。
+- `scope`：动到的模块，小写。参考：`explorer`（文件树）/ `sidebar` / `settings` / `theme` / `terminal` / `git`（变更）/ `search` / `editor`（编辑器）/ `browser` / `agent`（智能体）/ `workspace`（工作区模型）/ `backend`（Rust 通用）/ `installer`（依赖）/ `cli` / `commands`（`.codebuddy` 命令）/ `readme`；确实跨多块或不好归类的可以省略 scope。
 - 标题语言和历史一致（中文）；**正文可选**，用来说**为什么**这么改、踩了哪个坑，不重复标题里已说的「做了什么」。
 
 提交用 HEREDOC，避免引号与换行出问题：
