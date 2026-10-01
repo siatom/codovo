@@ -8,7 +8,11 @@ import {
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  readImage,
+  readText,
+  writeText,
+} from "@tauri-apps/plugin-clipboard-manager";
 import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
@@ -34,6 +38,22 @@ async function readClipboard(): Promise<string | null> {
     return await readText();
   } catch {
     return null;
+  }
+}
+
+/**
+ * 剪贴板里有没有图片。CLI（CodeBuddy / Codex 这类）粘图靠「收到原始 Ctrl+V 后
+ * 自己去读系统剪贴板」，不是靠终端把图片数据送进去；所以我们只要判断出「没文本、
+ * 但有图」，把 Ctrl+V 原样透传给 PTY 就行，图片由 CLI 自己取。
+ */
+async function hasClipboardImage(): Promise<boolean> {
+  try {
+    // readImage 拿到的是资源句柄，必须显式 close，否则每探一次泄一个
+    const image = await readImage();
+    await image.close();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -244,9 +264,20 @@ export const TerminalSession = forwardRef<
 
     // 粘贴走 term.paste()：它会按当前是否开启 bracketed paste 决定包不包 ESC[200~，
     // 多行内容才不会被 shell 逐行当命令执行。
+    //
+    // 剪贴板里没有文本时，可能是张图片：CLI 粘图要的是「原始 Ctrl+V」这个触发信号，
+    // 自己再去读系统剪贴板。所以把 \x16 原样写进 PTY，别自己读图片——终端里的程序
+    // 拿到的是字节流，我们读出来的图它也收不到。
     const pasteFromClipboard = () => {
       void readClipboard().then((text) => {
-        if (!cancelled && text) term.paste(text);
+        if (cancelled) return;
+        if (text) {
+          term.paste(text);
+          return;
+        }
+        void hasClipboardImage().then((image) => {
+          if (!cancelled && image) ptyRef.current?.write("\x16");
+        });
       });
     };
 
