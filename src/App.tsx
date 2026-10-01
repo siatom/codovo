@@ -9,7 +9,7 @@ import {
   type WorkspaceHandles,
 } from "./components/ProjectWorkspace";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
-import { AgentSessionProvider, useDropAgentSession } from "./lib/agent-session";
+import { AgentSessionProvider, useDropAgentSession, useNewChatAt } from "./lib/agent-session";
 import {
   isPathInside,
   onFilesChanged,
@@ -65,6 +65,8 @@ function Shell() {
 
   /** 关项目时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
+  /** 给还没切过去的项目「新建对话」用 */
+  const newChatAt = useNewChatAt();
 
   const { settings, update } = useSettings();
   /** 关窗口的确认框：开着项目、又还没记住选择时才弹 */
@@ -142,7 +144,7 @@ function Shell() {
    * 每次都要 activate：后端的目录监听是一组根的**整体替换**，只跟当前项目——
    * 切过去时不重新登记，新项目的根就没人盯着。
    */
-  const openProject = useCallback(async (project: Project) => {
+  const openProject = useCallback(async (project: Project): Promise<Project | null> => {
     try {
       const resolved = await projectActivate(project.roots);
       // 活动根要落到 canonical 后的路径上，否则后端按它查白名单会落空
@@ -157,10 +159,31 @@ function Shell() {
       setActiveId(next.id);
       saveLastProjectId(next.id);
       setNotice(null);
+      // 返回 canonical 之后的项目：调用方（新建对话）要拿它落定的活动根当会话状态的 key
+      return next;
     } catch (reason) {
       setNotice(`这个目录打不开了：${reason}`);
+      return null;
     }
   }, []);
+
+  /**
+   * 侧栏项目行的「+」：新建一条对话。项目还没打开、或不是当前项目时，先打开并切过去，
+   * 再把它切成 GUI、挂上新建请求——「添加对话」这一步顺带把项目带成打开状态。
+   */
+  const newChat = useCallback(
+    async (project: Project) => {
+      let root = project.activeRoot;
+      if (activeIdRef.current !== project.id) {
+        const next = await openProject(project);
+        // 目录打不开时 openProject 已经提示过，这里不再建请求
+        if (!next) return;
+        root = next.activeRoot;
+      }
+      newChatAt(root);
+    },
+    [openProject, newChatAt],
+  );
 
   /** 「创建项目」提交：新建一个项目并打开它 */
   const createProject = useCallback(
@@ -380,6 +403,7 @@ function Shell() {
           activeRoot={activeRoot}
           opened={opened}
           onSelect={(project) => void openProject(project)}
+          onNewChat={(project) => void newChat(project)}
           onCreate={() => setDialog({ mode: "create" })}
           onEdit={(project) => setDialog({ mode: "edit", project })}
           onRemove={setPendingRemove}

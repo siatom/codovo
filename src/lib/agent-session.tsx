@@ -73,6 +73,8 @@ interface Store {
   refOf: (root: string) => RefObject<string | null>;
   /** 项目关掉了，把它的那份状态丢掉，下次打开是干净的 */
   drop: (root: string) => void;
+  /** 把某个项目切成 GUI 并挂上「新建对话」请求（侧栏给还没切过去的项目点 + 时用） */
+  newChatAt: (root: string) => void;
 }
 
 const AgentSessionContext = createContext<Store | null>(null);
@@ -115,9 +117,15 @@ export function AgentSessionProvider({ children }: { children: ReactNode }) {
     refs.current.delete(root);
   }, []);
 
+  // 新建对话必落在 GUI 侧，所以连 mode 一起切（单设 requestedNew 而停在 TUI 是看不到的）
+  const newChatAt = useCallback(
+    (root: string) => patch(root, { mode: "agent", requestedNew: true }),
+    [patch],
+  );
+
   const store = useMemo(
-    () => ({ byRoot, patch, refOf, drop }),
-    [byRoot, patch, refOf, drop],
+    () => ({ byRoot, patch, refOf, drop, newChatAt }),
+    [byRoot, patch, refOf, drop, newChatAt],
   );
 
   return (
@@ -174,4 +182,14 @@ export function useDropAgentSession(): (root: string) => void {
   const store = useContext(AgentSessionContext);
   if (!store) throw new Error("useDropAgentSession 必须在 AgentSessionProvider 内使用");
   return store.drop;
+}
+
+/**
+ * 只拿「把某个项目切成 GUI 并请求新建对话」这一个入口。
+ * 侧栏给还没切过去的项目点 + 时用：此刻当前活动根还不是它，够不着 `useAgentSession(activeRoot)`。
+ */
+export function useNewChatAt(): (root: string) => void {
+  const store = useContext(AgentSessionContext);
+  if (!store) throw new Error("useNewChatAt 必须在 AgentSessionProvider 内使用");
+  return store.newChatAt;
 }

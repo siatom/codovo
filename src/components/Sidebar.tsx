@@ -51,6 +51,8 @@ interface SidebarProps {
   /** 已经打开（挂着工作区实例、后台仍在跑）的项目 id，用来在列表里点出「已打开」 */
   opened: string[];
   onSelect: (project: Project) => void;
+  /** 项目行的「+」：新建对话。项目还没打开时由 App 先把它打开再新建 */
+  onNewChat: (project: Project) => void;
   /** 「打开项目」：新建一个项目 */
   onCreate: () => void;
   onEdit: (project: Project) => void;
@@ -101,6 +103,9 @@ const FOOTER_BUTTON =
 const ROW_ACTION =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100";
 
+/** 项目行右侧的「+」：和「⋯」一样平时藏着，悬停整行才露出；多一层底色，和主按钮悬停同色 */
+const ROW_PLUS = `${ROW_ACTION} hover:bg-active`;
+
 /** 项目行「⋯」弹出来的菜单项 */
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
@@ -137,6 +142,7 @@ export function Sidebar({
   activeRoot,
   opened,
   onSelect,
+  onNewChat,
   onCreate,
   onEdit,
   onRemove,
@@ -184,7 +190,6 @@ export function Sidebar({
     currentId: sessionId,
     requestSession,
     requestDelete,
-    requestNew,
     requestRename,
   } = useAgentSession(activeRoot);
   // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
@@ -438,25 +443,31 @@ export function Sidebar({
                       />
                     )}
                   </button>
-                  <button
-                    type="button"
-                    onClick={(event) => openMenu(project, event.currentTarget)}
-                    title="更多操作"
-                    className={ROW_ACTION}
-                  >
-                    <IconMore className="h-3.5 w-3.5" />
-                  </button>
-                  {/* 新建对话和折叠按钮贴在项目名右侧，只在当前项目且停在 GUI 时才出现 */}
-                  {isCurrent && guiActive && (
-                    <>
+                  {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={(event) => openMenu(project, event.currentTarget)}
+                      title="更多操作"
+                      className={ROW_ACTION}
+                    >
+                      <IconMore className="h-3.5 w-3.5" />
+                    </button>
+                    {/* 新建对话：当前项目停在 GUI 时给；别的项目（含还没打开的）也给——点了
+                        会先把它打开并切到 GUI，等价于「添加对话即打开项目」。当前项目停在 TUI
+                        时不出现，那个位置留给下面启动 AI CLI 的 + */}
+                    {(guiActive || (!isCurrent && settings.agentEnabled)) && (
                       <button
                         type="button"
-                        onClick={requestNew}
+                        onClick={() => onNewChat(project)}
                         title="新建对话"
-                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
+                        className={ROW_PLUS}
                       >
                         <IconPlus className="h-3.5 w-3.5" />
                       </button>
+                    )}
+                    {/* 折叠按钮只对当前项目且停在 GUI 时有意义（对话历史就挂它下面） */}
+                    {isCurrent && guiActive && (
                       <button
                         type="button"
                         onClick={() => setHistoryOpen((open) => !open)}
@@ -469,25 +480,25 @@ export function Sidebar({
                           <IconChevronRight className="h-3.5 w-3.5" />
                         )}
                       </button>
-                    </>
-                  )}
-                  {/* TUI 下同一个位置放 AI CLI 的入口：新开一个终端标签启动它。
-                      配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
-                  {isCurrent && !guiActive && (
-                    <button
-                      type="button"
-                      onClick={(event) => launchAi(event.currentTarget)}
-                      disabled={aiCommands.length === 0}
-                      title={
-                        aiCommands.length === 0
-                          ? "还没配置 AI CLI 命令，去设置里加一个"
-                          : "新开终端标签启动 AI CLI"
-                      }
-                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
-                    >
-                      <IconPlus className="h-3.5 w-3.5" />
-                    </button>
-                  )}
+                    )}
+                    {/* TUI 下同一个位置放 AI CLI 的入口：新开一个终端标签启动它。
+                        配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
+                    {isCurrent && !guiActive && (
+                      <button
+                        type="button"
+                        onClick={(event) => launchAi(event.currentTarget)}
+                        disabled={aiCommands.length === 0}
+                        title={
+                          aiCommands.length === 0
+                            ? "还没配置 AI CLI 命令，去设置里加一个"
+                            : "新开终端标签启动 AI CLI"
+                        }
+                        className={`${ROW_PLUS} disabled:cursor-not-allowed disabled:hover:bg-transparent`}
+                      >
+                        <IconPlus className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* 对话历史挂当前项目下，由项目行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
