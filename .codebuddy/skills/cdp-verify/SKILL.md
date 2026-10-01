@@ -12,28 +12,56 @@ description: >-
 `scripts/cdp-check.cjs` 连到运行中应用的 WebView2 调试端口，用 CDP 派发真实输入并回读结果。
 **它验证的是「界面真的能用」，不是「代码看起来对」。** 本技能不重复脚本，只讲清楚前提、选项和坑。
 
-## 1. 前提：只有 Windows，且先起带 CDP 的 dev
+## 1. 前提：只有 Windows，且先有带 CDP 的 dev
 
 **平台**：WebView2 才有 CDP 端口。macOS 是 WKWebView、Linux 是 WebKitGTK，脚本在这两端跑不通——
 改界面要么换回 Windows 验证，要么用各平台自带开发者工具。
 
-**先确认应用起来了**：脚本只能连「已经在跑」的应用，启动 dev 是另一件事（见 `/dev-local`）。
+**脚本只连「已经在跑」的应用**：先按 1a 探有没有现成的带 CDP 实例，有就复用，没有才按 1b 启动
+（启动细节见 `/dev-local`）。
 
-### 1a. 用 CDP 端口启动 dev
+### 1a. 启动前先探：已经有带 CDP 的 dev 就复用，别再起
 
-dev 默认不开调试端口，必须显式带环境变量启动。**用 `scripts/dev-local.sh` 包一层**（详见 `/dev-local`），
-别直接 `nohup pnpm tauri dev`：
+**别上来就启动。** 同 identifier 的 dev 受 `tauri-plugin-single-instance` 约束：再起一个不会新开窗口、
+只会把现有的唤到前台。所以现有那个要是没带 CDP，新起的这次等于白起。启动前先看有没有现成的：
+
+```bash
+# ① 9222 有没有在听 ② 听的是不是 CodeDock dev（dev 窗口加载的是 devUrl: localhost:5273）
+netstat -ano | grep ":9222" | grep -i LISTENING \
+  && curl -s http://127.0.0.1:9222/json | grep -o '"url": *"[^"]*"'
+```
+
+- **列出了 `localhost:5273` 的 page** → 现有实例就带 CDP，**直接复用，跳到第 2 节**，别再启动。
+- **9222 没在听（命令没输出）** → 没有可用实例，按 1b 起一个。
+- **9222 在听、但里面没有 CodeDock 的 page** → 端口被别的程序占了，按 1b 换端口起。
+
+> 若 5273（vite）已被占、9222 却没开，多半是上一个**没带 CDP** 的 dev 还开着（旧版本起的）。交给
+> `/dev-local` 处理即可：它启动前会探测到那个 dev，**用 AskUserQuestion 问用户是否关闭**，同意才关掉重起
+> （`/dev-local` Windows 上固定带 CDP，所以重起后 9222 就在了）。**退出 dev 实例是安全的；唯一别动的是
+> 安装版**（见 1c）。别自己去点关闭按钮——dev 的关窗口只会把它收进托盘、进程还在，反而挡住重起。
+
+### 1b. 没有现成实例时，按 `/dev-local` 启动
+
+**Windows 上 `/dev-local` 启动的 dev 默认就带 CDP**（`--remote-debugging-port=9222`），直接照它的 1b
+启动即可，**不用再自己拼环境变量**。做法是 `scripts/dev-local.sh` 包一层（它顺带做退出清场），别直接
+`nohup pnpm tauri dev`——完整步骤见 `/dev-local`。
+
+端口被别的东西占了就换：启动时显式覆盖端口，之后调脚本带上对应的 `port`：
 
 ```
-WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup bash scripts/dev-local.sh > "$TEMP/codedock-dev.log" 2>&1 &
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9223" nohup bash scripts/dev-local.sh > "$TEMP/codedock-dev.log" 2>&1 &
+# 调脚本时：node scripts/cdp-check.cjs '{"port":"9223","shot":"ui.png"}'
 ```
 
-### 1b. 两个前置条件，不满足就连不上
+### 1c. 检查应用起没起（**不要关安装版**）
 
-- **发布版必须关掉**：发布版和 dev 版共用同一个 WebView2 浏览器进程，发布版开着时 9222 不会监听。
-  请用户手动关（**别**自己 taskkill）。
+- **安装版和 dev 天然并存，别去动它**：两者 identifier 不同——安装版是 `com.codedock`，dev 由
+  `build.rs` 在 debug profile 下 patch 成 `com.codedock.dev`。WebView2 的 user data folder 按
+  identifier 分开，各跑各的 browser 进程，互不干扰；9222 只属于 dev 那一组，安装版开着照样监听。
+  所以**看到安装版在跑不要 taskkill，也不要叫用户关**——它是用户的真实实例，可能压着没保存的
+  状态和正在跑的会话。
 - **应用真的起来了**：看 9222 是否在监听——`netstat -ano | grep ":9222" | grep LISTENING`。
-  脚本报「没有找到 page 目标」基本就是应用没起或端口没开。
+  脚本报「没有找到 page 目标」基本就是 dev 没起、或 dev 不是经 `/dev-local` 起的（它才带 CDP 参数）。
 
 ## 2. 用法
 
@@ -105,9 +133,9 @@ node scripts/cdp-check.cjs '{"cdp":{"method":"Emulation.setEmulatedMedia","param
 
 | 症状 | 原因 / 处理 |
 |---|---|
-| `没有找到 page 目标` | 应用没起，或 9222 没开。先查 `netstat -ano \| grep ":9222"`；没监听多半是发布版没关 |
+| `没有找到 page 目标` | 应用没起，或 9222 没开。先查 `netstat -ano \| grep ":9222"`；没监听多半是 dev 不是经 `/dev-local` 起的（它才带 CDP 参数），按 1b 重起 |
 | `没有匹配 target=...` 的窗口 | `target` 子串写错；报错里会列出当前所有窗口标题，照抄一个 |
 | 命令全打在空白页 | 目标选到了 about:blank 内部 target，用 `target` 指定真实窗口 |
 | 拖拽抛 `NotFoundError` | 用了合成 PointerEvent，改走 `drag` |
 | Monaco 里输入没反应 | 用了 `keys`，改成 `insertText` |
-| 连不上且端口在监听 | dev 和发布版抢 WebView2 进程，让用户关掉发布版 |
+| 连不上、9222 没监听，且日志里有 `WEBVIEW2` 报错 | user data folder 被占。**仍不要动安装版**，给 dev 单独指一个目录再起（`WEBVIEW2_USER_DATA_FOLDER=...`） |
