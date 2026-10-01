@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- dev 版应用图标的源文件：和 icon.svg 只差前景色——尖括号用琥珀橙，安装版是蓝色，
+       两者并排（任务栏 / 托盘 / exe 图标）时一眼能分清哪个是开发构建。
+       改完用 `npx tauri icon src-tauri/icons/icon-dev.svg -o src-tauri/icons/dev` 重新生成，
+       再 `touch src-tauri/build.rs` 让 tauri-build 重跑。build.rs 的 debug 分支会把
+       bundle.icon 指到 icons/dev/ 这一套。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a212b" />
+      <stop offset="1" stop-color="#0b0d11" />
+    </linearGradient>
+    <linearGradient id="fg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fcd34d" />
+      <stop offset="1" stop-color="#f59e0b" />
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)" />
+  <g fill="none" stroke="url(#fg)" stroke-width="88" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M347 360 L222 512 L347 664" />
+    <path d="M566 350 L458 674" />
+    <path d="M677 360 L802 512 L677 664" />
+  </g>
+</svg>

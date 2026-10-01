@@ -30,8 +30,8 @@ git push --follow-tags            # 连 tag 一起推
   以前是三处硬编码（`package.json` / `tauri.conf.json` / `Cargo.toml`），必然漂移。
   界面上显示的其实是 `<version>+<git 短 hash>[.dirty]`：**版本号是发布里程碑、平时不动，
   后面那串才是「这一次构建」的身份**，用来核对装的是哪一次（`.dirty` = 这个包含未提交的改动）。
-  那串标识**不进**版本号本身——Windows 的 exe 版本资源只接受纯 `x.y.z`；dev 构建另在
-  窗口标题和版本后面带 `(dev)` 标记，和安装版一眼区分。
+  那串标识**不进**版本号本身——Windows 的 exe 版本资源只接受纯 `x.y.z`；dev 构建另带两处标记：
+  窗口标题与版本号后的 `(dev)`、侧栏头部的 `dev` 上标——和安装版并存时一眼区分。
 - 没有用户明确允许，不要 `git push` / 开 PR / 推分支；提交留在本地等确认。
 
 ## 关键实现决定
@@ -83,6 +83,11 @@ git push --follow-tags            # 连 tag 一起推
   debug profile 下用 `TAURI_CONFIG` 把 identifier patch 成 `com.codedock.dev`（CLI 可能也设了这个
   环境变量，得先读出来叠加、别整个覆盖），release 保持原值。改动的是**编译期配置**，所以直接
   `cargo build`/`cargo test` 也是 `.dev`。
+- **dev / 安装版图标配色区分**：同一处 debug 分支还 patch 了 `bundle.icon`，指向 `icons/dev/` 那套
+  （琥珀橙尖括号，源文件 `icons/icon-dev.svg`），安装版用 `icons/` 下的蓝色。exe 资源图标与窗口图标
+  都取自 `bundle.icon`，所以任务栏 / 托盘一眼能分清哪个是开发构建。改了 `icon-dev.svg` 要
+  `npx tauri icon icons/icon-dev.svg -o icons/dev` 重新生成，并 `touch build.rs`（tauri-build 的
+  rerun-if-changed 不覆盖 icons 目录）。
 
 ## 验证
 

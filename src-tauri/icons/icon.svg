@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- CodeDock 应用图标的源文件：改完用 `npx tauri icon src-tauri/icons/icon.svg` 重新生成整套。
+  <!-- 安装版（release）应用图标的源文件，蓝色尖括号；dev 版是 icon-dev.svg（琥珀橙）。
+       改完用 `npx tauri icon src-tauri/icons/icon.svg` 重新生成整套。
        生成后必须 `touch src-tauri/build.rs` 再构建一次，否则 tauri-build 不会重跑，
        exe / 安装包里还是旧图标（它的 rerun-if-changed 没覆盖 icons 目录）。
        深色圆角底 + 蓝色尖括号，配色取自前端 styles.css 的语义色 c-app / c-accent 一系。

@@ -38,8 +38,12 @@ import {
   IconSun,
   IconTrash,
 } from "./icons";
-// 应用图标。直接用 tauri 打包用的那份，省得在前端再存一份重复资源
-import appLogo from "../../src-tauri/icons/128x128.png";
+// 应用图标。直接用 tauri 打包用的那份，省得在前端再存一份重复资源。
+// dev 构建用琥珀橙那套（src-tauri/icons/dev/），跟 exe / 托盘图标的区分保持一致
+import appLogoRelease from "../../src-tauri/icons/128x128.png";
+import appLogoDev from "../../src-tauri/icons/dev/128x128.png";
+
+const appLogo = import.meta.env.DEV ? appLogoDev : appLogoRelease;
 
 interface SidebarProps {
   /** 全部工作区，最近创建/打开的排在最前 */
@@ -388,12 +392,15 @@ export function Sidebar({
     >
       {/* 标题栏只放 CodeDock，顶部高度与右侧保持一致 */}
       <header className="flex h-11 shrink-0 items-center px-2">
-        {/* Beta 当上标用：内联元素照常占位，靠相对位移浮到 CodeDock 右上角 */}
         <span className="shrink-0 px-2 text-[16px] font-semibold text-fg">
           CodeDock
-          <span className="relative -top-2 ml-1 rounded border border-accent-line px-1 text-[9px] font-medium leading-[13px] text-accent">
-            Beta
-          </span>
+          {/* dev 构建挂一枚 dev 上标（内联元素靠相对位移浮到右上角）：和装好的正式版
+              同时开着时，不用翻设置也一眼分得清 */}
+          {import.meta.env.DEV && (
+            <span className="relative -top-2 ml-1 rounded border border-warn-line-strong px-1 text-[9px] font-medium leading-[13px] text-warn">
+              dev
+            </span>
+          )}
         </span>
       </header>
 
