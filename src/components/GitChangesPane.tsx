@@ -81,7 +81,6 @@ import {
   IconMinus,
   IconPencil,
   IconPlus,
-  IconRefresh,
   IconSparkle,
   IconSync,
   IconTrash,
@@ -1425,12 +1424,6 @@ export function GitChangesPane({
     [refresh, root],
   );
 
-  /** 手动刷新：状态和历史一起重拉，省得再放一个按钮 */
-  const reloadAll = useCallback(() => {
-    refresh();
-    setLogRevision((revision) => revision + 1);
-  }, [refresh]);
-
   /** 只取回引用，不动工作区，所以提交历史不用重拉 */
   const fetch = useCallback(() => {
     void run("fetch", () => gitFetch(root));
@@ -1859,10 +1852,12 @@ export function GitChangesPane({
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
-      <header className="flex h-8 shrink-0 items-center gap-1.5 border-b border-line px-3">
+      <header className="flex shrink-0 flex-col gap-0.5 border-b border-line px-3 py-1">
+        {/* 头部拆两行：第一行只留分支选择，第二行放领先/落后与远程/视图按钮——
+            全挤一行按钮太密，分开后每行都有呼吸空间 */}
         {/* 分支名点开是分支菜单：切分支 / 建新分支。下拉的写法照 SettingsDialog 的
             ThemePicker：锚在按钮上，另铺一层透明遮罩接住外部点击 */}
-        <div className="relative flex min-w-0 flex-1 items-center gap-1">
+        <div className="relative flex min-w-0 items-center gap-1">
           <button
             type="button"
             onClick={() => (branchMenu ? setBranchMenu(false) : openBranchMenu())}
@@ -1961,6 +1956,8 @@ export function GitChangesPane({
           )}
         </div>
 
+        {/* 第二行：左边领先/落后，右边远程/视图按钮 */}
+        <div className="flex items-center gap-1.5">
         {/* 领先/落后上游的提交数：只在非零时出现（没有上游时天然是 0），
             紧挨着拉取/推送按钮，一眼能看出该点哪个 */}
         {snapshot.ahead > 0 && (
@@ -1974,11 +1971,11 @@ export function GitChangesPane({
           </span>
         )}
 
-        {/* 远程/视图这几个图标按钮单独成组：header 的 gap-1.5 对它们太松，
-            组内压到 gap-0.5 更像一组操作；命中区仍是 24px，不为了紧凑牺牲点击。
+        {/* 远程/视图这几个图标按钮单独成组：组内压到 gap-0.5 更像一组操作；
+            命中区仍是 24px，不为了紧凑牺牲点击。ml-auto 让它贴行尾对齐。
             合并期间远程操作语义未定（push 会推合并前的 HEAD），一律禁掉，
             只留下面主按钮区的「完成合并 / 中止合并」 */}
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             onClick={fetch}
@@ -2035,15 +2032,7 @@ export function GitChangesPane({
               <IconTree className="h-3.5 w-3.5" />
             )}
           </button>
-
-          <button
-            type="button"
-            onClick={reloadAll}
-            title="刷新"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-          >
-            <IconRefresh className="h-3.5 w-3.5" />
-          </button>
+        </div>
         </div>
       </header>
 
