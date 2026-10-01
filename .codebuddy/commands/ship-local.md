@@ -1,11 +1,14 @@
 ---
-description: "本地构建安装：提交改动 → 构建安装包 → 装到本机（不 push）"
+description: "本地构建安装：构建安装包 → 装到本机（不 push）"
 allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate, AskUserQuestion
 ---
 
-按顺序执行下面三步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做提交 / 构建 / 安装，不改任何源代码。
+按顺序执行下面两步。**任一步失败就停下来报告原因，不要跳步往下走。** 全程只做构建 / 安装，不改任何源代码。
 
-开工前先用 TaskCreate 建三条待办：`提交改动` / `构建安装包` / `装到本机`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
+**前置条件：工作区必须干净。** 有未提交改动就停下报告，让用户先走 `/git-commit`——或用
+`/commit-ship-local` 把提交和本命令串起来跑。**不要**带着未提交改动构建（否则产物带 `.dirty`、装上去的东西和提交对不上）。
+
+开工前先用 TaskCreate 建两条待办：`构建安装包` / `装到本机`。每进入一步就把它置为 `in_progress`、做完置 `completed`；失败时保持 `in_progress` 并报告，别标记完成。
 
 ## 0. 命令环境（先按系统选对再动手）
 
@@ -17,24 +20,11 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate, AskUs
 
 下文凡是给出 shell 片段的地方，**Windows 看 PowerShell 版、macOS/Linux 看 Bash 版**；只给一份的时候默认是 Bash，macOS 上记得包 `zsh -lc`。
 
-## 1. 提交改动（规则同 /commit）
-
-*（进入本节先把「提交改动」标为 `in_progress`，完成后再标 `completed`。）*
-
-先 `git status --short` 并通读完整 diff，然后**按主题拆成多个 commit**，不要 `git add -A` 合成一条：
-
-- 按功能切主题（后端命令 / 前端接线 / 文档各自成题），不按文件、不按时间切。
-- 同一文件里不同主题的 hunk 用 `git apply --cached` 手工切；同一 hunk 内两个主题交错的可以并成一条，并在提交信息里说明。
-- 纯文档更新单独一条 `docs:` 提交。
-- 提交信息用 Conventional Commits（`feat` / `fix` / `chore` / `docs` …）。
-- **只提交，不 push**——push 要用户明确同意。
-- 工作区本来就干净时跳过本节。
-
-## 2. 构建安装包
+## 1. 构建安装包
 
 *（进入本节先把「构建安装包」标为 `in_progress`，完成后再标 `completed`。）*
 
-### 2a. 构建前校验
+### 1a. 构建前校验
 
 先确认工作区干净，再记下当前 HEAD：
 
@@ -43,9 +33,10 @@ git status --porcelain
 git rev-parse --short HEAD
 ```
 
-`git status --porcelain` **必须一行输出都没有**。有输出说明第 1 步没提交干净——回去补提交，**不要**带着未提交改动构建（否则产物带 `.dirty`、装上去的东西和提交对不上）。
+`git status --porcelain` **必须一行输出都没有**。有输出说明还有未提交改动——先停下报告，让用户走
+`/git-commit`（或改用 `/commit-ship-local`），**不要**带着未提交改动构建。
 
-### 2b. 构建
+### 1b. 构建
 
 本项目**只为本机出包**，三端的产物各不相同，`--bundles` 选错会白编译一遍。按当前系统选：
 
@@ -75,7 +66,7 @@ git rev-parse --short HEAD
 - 命令行参数不改仓库配置，正常发版仍是全量（`targets: "all"`）。
 - 类型错误、rust 编译失败就停下报告，别继续装。
 
-### 2c. 构建后校验
+### 1c. 构建后校验
 
 Vite 会把 `<version>+<git 短 hash>[.dirty]` 注入前端产物，核对它和当前 HEAD 是否一致（防止装到用旧 commit 构建的包）。
 
@@ -96,15 +87,15 @@ $actual = (Select-String -Path dist/assets/*.js -Pattern '[0-9]+\.[0-9]+\.[0-9]+
 
 - 两者**必须相等**，且 `actual` 只应有一个值。不一致就停下报告，**不要**继续安装——说明 dist 是旧的，或构建用的不是当前 commit。
 - 出现 `.dirty` 后缀同样算失败。
-- 把通过校验的标识记下来，第 3 步报告时用。
+- 把通过校验的标识记下来，第 2 步报告时用。
 
-## 3. 装到本机
+## 2. 装到本机
 
 *（进入本节先把「装到本机」标为 `in_progress`，完成后再标 `completed`。）*
 
 `<version>` 取 `package.json` 的 `version`。**先确认产物的修改时间是本次构建**，别装到上一次的旧包。三端产物与安装方式如下，只做当前系统那一条。
 
-### 3a. 安装前先检查发布版是否在运行
+### 2a. 安装前先检查发布版是否在运行
 
 跑着的进程会占用旧文件，覆盖安装可能失败或让用户手上的会话突然断掉。**先判断再问，不要擅自关**：
 
@@ -119,7 +110,7 @@ $actual = (Select-String -Path dist/assets/*.js -Pattern '[0-9]+\.[0-9]+\.[0-9]+
 - **macOS（Bash）**：`pgrep -f 'CodeDock.app/Contents/MacOS'`。关闭用 `osascript -e 'quit app "CodeDock"'`。
 - **Linux（Bash）**：`pgrep -af codedock`，过滤掉路径里带 `target/debug` 的 dev 版。关闭用 `pkill -TERM -f '/usr/bin/codedock|codedock.AppImage'`。
 
-### 3b. Windows
+### 2b. Windows
 
 产物：`src-tauri/target/release/bundle/nsis/CodeDock_<version>_x64-setup.exe`（x64 以外架构文件名里的后缀不同，按实际取）。
 
@@ -134,7 +125,7 @@ $actual = (Select-String -Path dist/assets/*.js -Pattern '[0-9]+\.[0-9]+\.[0-9]+
 
 安装位置：`%LOCALAPPDATA%\CodeDock\codedock.exe`。
 
-### 3c. macOS
+### 2c. macOS
 
 产物：`src-tauri/target/release/bundle/macos/CodeDock.app`。
 
@@ -152,9 +143,9 @@ xattr -dr com.apple.quarantine "$dst"
 - 覆盖安装前若 `/Applications/CodeDock.app` 不存在，`rm -rf` 是空操作，不用特判。
 - 安装位置：`/Applications/CodeDock.app`。
 
-### 3d. Linux
+### 2d. Linux
 
-按 2b 选定的 `bundle` 走对应分支。**deb / rpm 走系统包管理器、需要 sudo**（会提示输密码，别静默吞掉失败）；AppImage 不需要 sudo。
+按 1b 选定的 `bundle` 走对应分支。**deb / rpm 走系统包管理器、需要 sudo**（会提示输密码，别静默吞掉失败）；AppImage 不需要 sudo。
 
 - **deb**（产物 `src-tauri/target/release/bundle/deb/CodeDock_<version>_<arch>.deb`）：
   ```
@@ -176,8 +167,8 @@ xattr -dr com.apple.quarantine "$dst"
 
 - 安装位置：deb / rpm 装到 `/usr/bin/codedock`，AppImage 是 `~/.local/bin/codedock.AppImage`。
 
-### 3e. 报告
+### 2e. 报告
 
-报告安装位置（见各小节末尾）、装进去的版本号与构建标识（即 2c 校验通过的那个）。**不要自动启动应用**，让用户自己开。
+报告安装位置（见各小节末尾）、装进去的版本号与构建标识（即 1c 校验通过的那个）。**不要自动启动应用**，让用户自己开。
 
-补充：Windows 安装器在静默模式下自身也会用 RestartManager 关掉占用该 exe 的进程；3a 先问用户、走优雅关闭，是为了不擅自打断用户正在进行的会话。macOS / Linux 的覆盖安装不会自动收掉旧进程，3a 的检查更不能省。
+补充：Windows 安装器在静默模式下自身也会用 RestartManager 关掉占用该 exe 的进程；2a 先问用户、走优雅关闭，是为了不擅自打断用户正在进行的会话。macOS / Linux 的覆盖安装不会自动收掉旧进程，2a 的检查更不能省。
