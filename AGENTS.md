@@ -87,7 +87,8 @@ git push --follow-tags            # 连 tag 一起推
 ## 验证
 
 前端改完至少跑 `pnpm build`（Vite dev 不做类型检查）；界面改动走 `scripts/cdp-check.cjs`（WebView2 的
-CDP 端口做截图 / 求值 / 输入）；要指定窗口可以传 `"target":"<标题片段>"`，脚本会跳过 WebView2 那个
+CDP 端口做截图 / 求值 / 输入）——**用法见 `.codebuddy/skills/cdp-verify/` 技能（前提、选项表、配方、排障）**；
+要指定窗口可以传 `"target":"<标题片段>"`，脚本会跳过 WebView2 那个
 内部的 about:blank target，**别拿 `pages[0]` 当目标窗口**，否则命令全打在空白页上。注意：`localStorage`
 是用户真实状态、验证后要还原；拖动必须走 `drag`
 而非合成 PointerEvent（应用用 `setPointerCapture`）；应用起没起来看 9222 端口。dev 下改工作区内任意
