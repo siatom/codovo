@@ -69,6 +69,25 @@ git push --follow-tags            # 连 tag 一起推
 - git 状态走 `status --porcelain=v2 --branch -z`；工作区可能只是仓库子目录，先 `rev-parse --show-prefix`；
   轮询命令带 `--no-optional-locks`（写操作不带）、Windows 上加 `CREATE_NO_WINDOW`；暂存带
   `--literal-pathspecs`、「全部暂存」给 `.`。
+- 提交历史是**图形化的泳道图**（`lib/gitGraph.ts` 排泳道 + `components/GitGraph.tsx` 画线）：后端
+  `git log` 带 `--topo-order`（父必须排在子之后，否则泳道接不上）与 `--decorate=full`（`%D` 给
+  `refs/heads|remotes|tags/…` 全名，好把分支 / 远程 / 标签分开），`%P` 出父 hash 供连线。泳道按
+  「第一父留在原泳道、其余父各占新泳道」记账；颜色是**独立于语义色**的固定调色板（`--c-graph-1…8`，
+  深/浅各一套，见 `styles.css`），只求相邻泳道分得开、不跟主题走。图列里 `through` 的泳道用**满高
+  竖线**（`self-stretch`）而不是只画提交行那么高——提交展开出文件列表时行会变高，只画行高的话下面
+  就缺一截、行与行之间会断线。但**本行才起始的泳道**（分支尖端、合并的第二父）不能算 `through`：
+  它上方还没有线，按满高画会在提交点上方多出一截无主出头线；这类归 `tail`，只从提交行底（22px）
+  往下延伸。分页每次都拿完整列表从头重排，图不跳变。
+- 提交行排版有两处刻意的例外：**标题不左对齐**，用 `graphTextInset` 让它贴住本行的圆圈（右侧还有
+  泳道线时才让到线外，`tail` 不算——它的线在提交行下方，压不到标题）；**引用标签按行宽显隐**，
+  行上用容器查询（`@container` + `@min-[18rem]:flex`），窄了整组收起、把宽度让给主题。右栏默认只有
+  185px，标签和主题同时摆会有一个被挤成 0 宽。
+- 提交悬停浮框（`components/CommitTooltip.tsx`）：正文来自 `git log` 的 `%b`（和主题一起拉，
+  不额外请求）；改动规模走 `git_commit_stat` 按 hash 懒加载并缓存——悬停很频繁，不缓存就是一片
+  git 进程。浮框挂在本行 DOM 里、`fixed` 定位（列表是 `overflow-auto`，绝对定位会被裁），
+  和行之间留了 GAP，所以藏要延迟、移进浮框再取消。滚动时收起，免得浮框留在原地。
+- 提交历史**会自动重拉**：只盯 HEAD 的话，终端里 `fetch` / `tag` 这类不改 HEAD 的操作会漏掉
+  （远程分支、标签这些行内装饰会变），所以挂了个比 status 慢的轮询（`LOG_POLL_MS`，收起时不起）。
 - AI / 智能体：HTTP 与 SSE 全走 Rust 代理，前端不直连 opencode；规则 / 记忆 / 技能 / Agents
   存 localStorage、启动时才物化；兼容两代接口、按接口探测（判据是响应里有 `version` 字段）。
 - API 密钥进**操作系统凭据库**（`secrets.rs` + keyring），localStorage 只留 `apiKeySet` 布尔位，
