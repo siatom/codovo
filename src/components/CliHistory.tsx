@@ -31,7 +31,7 @@ interface CliHistoryProps {
   onResume: (command: string, title: string) => void;
 }
 
-/** 选择器菜单宽度（px）。比项目行的菜单宽：名字前面多一个 logo */
+/** 选择器菜单宽度（px）。比工作区行的菜单宽：名字前面多一个 logo */
 const CLI_MENU_W = 160;
 
 const CLI_MENU_ITEM =
@@ -50,7 +50,7 @@ const MIN_HEIGHT = 80;
 const MAX_HEIGHT = 600;
 const DEFAULT_HEIGHT = 224;
 
-/** 上面至少要留出来的高度：侧边栏标题 + 打开项目 + 项目列表两三行 */
+/** 上面至少要留出来的高度：侧边栏标题 + 新建工作区 + 工作区列表两三行 */
 const RESERVED_ABOVE = 200;
 
 function readHeight(): number {
@@ -69,7 +69,7 @@ function readHeight(): number {
  * 侧边栏底部的「当前 AI CLI 的会话历史」。
  *
  * 数据来自 CLI 自己写在磁盘上的会话记录（后端 cli_list_sessions），点一条就新开
- * 一个终端标签跑 resume。只在终端（TUI）模式下出现——GUI 那边项目行下面已经有
+ * 一个终端标签跑 resume。只在终端（TUI）模式下出现——GUI 那边工作区行下面已经有
  * opencode 自己的对话历史，两套同时出现会打架。
  */
 export function CliHistory({
@@ -100,10 +100,10 @@ export function CliHistory({
   const provider = cliProvider(value, current?.name ?? "");
   const providerKey = provider?.key ?? "";
 
-  // 切项目 / 换 CLI / 展开 / 自动刷新都走这里
+  // 切工作区 / 换 CLI / 展开 / 自动刷新都走这里
   useEffect(() => {
     // 自动刷新不显示加载态：列表本来就有内容，每 20 秒让刷新按钮转一下太吵。
-    // 先消费掉标记，免得被折叠 / 切项目这些早退路径留在原地
+    // 先消费掉标记，免得被折叠 / 切工作区这些早退路径留在原地
     const silent = pollRef.current;
     pollRef.current = false;
     // 折叠着就别去读盘了
@@ -130,7 +130,7 @@ export function CliHistory({
         // 静默刷新时它本来就是 false，重置一次无副作用
         if (!cancelled) setLoading(false);
       });
-    // 丢掉作废请求的迟到结果（换项目后旧的慢请求可能后回来）
+    // 丢掉作废请求的迟到结果（换工作区后旧的慢请求可能后回来）
     return () => {
       cancelled = true;
     };
@@ -161,7 +161,7 @@ export function CliHistory({
 
   const openPicker = (target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
-    // 触发按钮横跨整条侧边栏，锚左边缘更自然（项目行的菜单锚右边缘，是因为
+    // 触发按钮横跨整条侧边栏，锚左边缘更自然（工作区行的菜单锚右边缘，是因为
     // 那边的触发按钮贴着右侧）；再夹住视口，别跑到屏幕外
     setPicker({
       x: Math.min(Math.max(8, rect.left), window.innerWidth - CLI_MENU_W - 8),
@@ -186,7 +186,7 @@ export function CliHistory({
   const onHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
-    // 上限还要看侧边栏本身有多高，否则能把上面的项目列表挤没
+    // 上限还要看侧边栏本身有多高，否则能把上面的工作区列表挤没
     const room = (rootRef.current?.parentElement?.clientHeight ?? 0) - RESERVED_ABOVE;
     const limit = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, room));
     // 面板贴底，往上拖是变高，位移取反
@@ -280,7 +280,7 @@ export function CliHistory({
         <span className="absolute inset-x-0 -top-1 -bottom-1" />
       </div>
 
-      {/* 分组标题，样式照抄侧栏的「项目」标题：让人一眼看出这块是会话历史，
+      {/* 分组标题，样式照抄侧栏的「工作区」标题：让人一眼看出这块是会话历史，
           而不是又一排工具按钮。收起按钮靠标题右缘——它管的就是下面这一整块，
           跟标题同排比跟选择器挤一行更顺。折叠时标题和按钮都常显 */}
       <div className="flex h-7 shrink-0 items-center gap-1 pr-2 pl-4">
@@ -322,8 +322,8 @@ export function CliHistory({
         </div>
       )}
 
-      {/* 自己管住高度：侧边栏根是 flex-col、上面的项目列表是 flex-1，
-          这里不封顶的话条目一多就把项目列表挤没了。高度可拖（见上边缘的拖动条） */}
+      {/* 自己管住高度：侧边栏根是 flex-col、上面的工作区列表是 flex-1，
+          这里不封顶的话条目一多就把工作区列表挤没了。高度可拖（见上边缘的拖动条） */}
       {open && (
         <div className="min-h-0 shrink-0 overflow-auto px-2 pb-2" style={{ height }}>
           {body()}

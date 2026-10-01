@@ -75,7 +75,7 @@ export function listCliSessions(
   return invoke<CliSessionInfo[]>("cli_list_sessions", { provider, cwd, command });
 }
 
-/** 项目路径 -> 用户上次在这个项目里选的命令行。只认非空字符串，读坏了当没存过 */
+/** 工作区路径 -> 用户上次在这个工作区里选的命令行。只认非空字符串，读坏了当没存过 */
 function readCliChoices(): Record<string, string> {
   try {
     const raw = window.localStorage.getItem(CLI_CHOICE_KEY);

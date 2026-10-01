@@ -2,7 +2,7 @@
 name: cdp-verify
 description: >-
   用 WebView2 的 CDP 驱动正在运行的 CodeDock 做界面验证——截图、求值、模拟按键 / 点击 / 拖拽，
-  确认改动能真跑通，而不是只看代码。当需要验证界面改动、复现 UI 交互（切项目、拖面板、敲终端、
+  确认改动能真跑通，而不是只看代码。当需要验证界面改动、复现 UI 交互（切工作区、拖面板、敲终端、
   编辑 Monaco、看主题）或检查应用起没起来时使用。脚本是 scripts/cdp-check.cjs，本技能只说怎么用它。
   仅 Windows 可用（macOS 的 WKWebView / Linux 的 WebKitGTK 没有这套 CDP 端口）。
 ---
@@ -66,7 +66,7 @@ node scripts/cdp-check.cjs '{"wait":1500,"target":"CodeDock","keys":"git status\
 
 ## 3. 关键坑（都踩过，别绕回去）
 
-- **`target` 认的是窗口标题**：App 把标题设成 `CodeDock — <项目名>`，多项目 / 多窗口时按项目名挑。
+- **`target` 认的是窗口标题**：App 把标题设成 `CodeDock — <工作区名>`，多工作区 / 多窗口时按工作区名挑。
   不传就取第一个 page。
 - **别拿 `pages[0]` 当目标**：WebView2 会挂一个 `about:blank` 的内部 target，脚本已过滤掉它，
   你手动用其它工具时也要跳过，否则命令全打在空白页上。
@@ -85,8 +85,8 @@ node scripts/cdp-check.cjs '{"wait":1500,"target":"CodeDock","keys":"git status\
 # 截图看当前界面
 node scripts/cdp-check.cjs '{"shot":"ui.png"}'
 
-# 多窗口里挑「某项目」那个窗口
-node scripts/cdp-check.cjs '{"target":"我的项目","shot":"proj.png"}'
+# 多窗口里挑「某工作区」那个窗口
+node scripts/cdp-check.cjs '{"target":"我的工作区","shot":"proj.png"}'
 
 # 在终端敲命令并回读
 node scripts/cdp-check.cjs '{"keys":"git status\r","shot":"term.png"}'

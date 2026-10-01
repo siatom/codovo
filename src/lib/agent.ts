@@ -37,7 +37,7 @@ export interface AgentLaunchConfig {
   providers: AgentProviderConfig[];
   /** 全局默认模型，形如 `provider/model`；空则后端取第一个可用项 */
   defaultModel: string;
-  /** 生效的规则 / 记忆正文（全局 + 项目已合并），见 lib/agent-profiles.ts */
+  /** 生效的规则 / 记忆正文（全局 + 工作区已合并），见 lib/agent-profiles.ts */
   rules: string;
   memory: string;
   skills: AgentSkill[];
@@ -47,7 +47,7 @@ export interface AgentLaunchConfig {
 }
 
 /**
- * 后端推来的事件都带着项目 root：单窗口下会同时开着多个项目、每个一个 opencode
+ * 后端推来的事件都带着工作区 root：单窗口下会同时开着多个工作区、每个一个 opencode
  * 进程，不带 root 就分不清这条事件是谁的。
  */
 interface Tagged<T> {
@@ -55,7 +55,7 @@ interface Tagged<T> {
   event: T;
 }
 
-/** 启动智能体服务。幂等：同一个项目已经在跑就直接复用。 */
+/** 启动智能体服务。幂等：同一个工作区已经在跑就直接复用。 */
 export function startAgent(root: string, config: AgentLaunchConfig): Promise<AgentInfo> {
   return invoke<AgentInfo>("agent_start", { root, config });
 }
@@ -64,7 +64,7 @@ export function agentStatus(root: string): Promise<AgentStatus> {
   return invoke<AgentStatus>("agent_status", { root });
 }
 
-/** 停掉某个项目的服务。关闭项目、退出前都要调。 */
+/** 停掉某个工作区的服务。关闭工作区、退出前都要调。 */
 export function stopAgent(root: string): Promise<void> {
   return invoke<void>("agent_stop", { root });
 }
@@ -80,7 +80,7 @@ export function fetchAgentMessages(root: string, sessionId: string): Promise<unk
 
 /**
  * 列出 opencode 里的所有会话。
- * 它是全局存的、把各个项目的会话混在一起返回，调用方还得用 parseSessions 按工作区筛。
+ * 它是全局存的、把各个工作区的会话混在一起返回，调用方还得用 parseSessions 按工作区筛。
  */
 export function listAgentSessions(root: string): Promise<unknown> {
   return invoke<unknown>("agent_list_sessions", { root });
@@ -126,14 +126,14 @@ export function renameAgentSession(
   return invoke<void>("agent_rename_session", { root, sessionId, title });
 }
 
-/** 订阅某个项目的智能体事件；别的项目的事件会被过滤掉 */
+/** 订阅某个工作区的智能体事件；别的工作区的事件会被过滤掉 */
 export function onAgentEvent(
   handler: (root: string, event: AgentEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<Tagged<AgentEvent>>(EVENT_NAME, (e) => handler(e.payload.root, e.payload.event));
 }
 
-/** 订阅子进程退出。事件里带着项目 root 与退出码。 */
+/** 订阅子进程退出。事件里带着工作区 root 与退出码。 */
 export function onAgentExit(
   handler: (root: string, code: number) => void,
 ): Promise<UnlistenFn> {
@@ -378,7 +378,7 @@ export function formatTime(ms: number): string {
 
 /**
  * 把会话列表收成摘要数组，按最后活动时间倒序。
- * opencode 的会话不分项目，不过滤目录的话会把别的仓库的对话也列出来。
+ * opencode 的会话不分工作区，不过滤目录的话会把别的仓库的对话也列出来。
  *
  * 目录字段两代位置不同：v1 在顶层 `directory`，v2 挪进了 `location.directory`。
  * 时间都还在 `time.updated`。

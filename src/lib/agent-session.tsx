@@ -13,10 +13,10 @@ import type { AgentSessionSummary } from "./types";
 /** 终端区停在哪一侧：TUI（终端）还是 GUI（智能体对话） */
 export type AgentView = "terminal" | "agent";
 
-/** 一个项目自己的那一份会话状态 */
-interface ProjectSessionState {
+/** 一个工作区自己的那一份会话状态 */
+interface WorkspaceSessionState {
   mode: AgentView;
-  /** 该项目的会话列表，最近活动在前 */
+  /** 该工作区的会话列表，最近活动在前 */
   sessions: AgentSessionSummary[];
   /** 正在打开的会话 id（响应式，给界面高亮用） */
   currentId: string | null;
@@ -30,7 +30,7 @@ interface ProjectSessionState {
   requestedRename: { id: string; title: string } | null;
 }
 
-const EMPTY: ProjectSessionState = {
+const EMPTY: WorkspaceSessionState = {
   mode: "terminal",
   sessions: [],
   currentId: null,
@@ -40,7 +40,7 @@ const EMPTY: ProjectSessionState = {
   requestedRename: null,
 };
 
-/** 绑定好某个项目之后，对外暴露的那一份 */
+/** 绑定好某个工作区之后，对外暴露的那一份 */
 export interface AgentSessionValue {
   /** 终端区当前显示哪一侧。设置里关掉智能体后，消费方要自己当 "terminal" 处理 */
   mode: AgentView;
@@ -66,14 +66,14 @@ export interface AgentSessionValue {
 }
 
 interface Store {
-  byRoot: Record<string, ProjectSessionState>;
-  /** 按项目改一份状态 */
-  patch: (root: string, next: Partial<ProjectSessionState>) => void;
-  /** 某个项目的 currentId ref（SSE 处理器要读最新值） */
+  byRoot: Record<string, WorkspaceSessionState>;
+  /** 按工作区改一份状态 */
+  patch: (root: string, next: Partial<WorkspaceSessionState>) => void;
+  /** 某个工作区的 currentId ref（SSE 处理器要读最新值） */
   refOf: (root: string) => RefObject<string | null>;
-  /** 项目关掉了，把它的那份状态丢掉，下次打开是干净的 */
+  /** 工作区关掉了，把它的那份状态丢掉，下次打开是干净的 */
   drop: (root: string) => void;
-  /** 把某个项目切成 GUI 并挂上「新建对话」请求（侧栏给还没切过去的项目点 + 时用） */
+  /** 把某个工作区切成 GUI 并挂上「新建对话」请求（侧栏给还没切过去的工作区点 + 时用） */
   newChatAt: (root: string) => void;
 }
 
@@ -83,15 +83,15 @@ const AgentSessionContext = createContext<Store | null>(null);
  * 终端区的 TUI/GUI 模式、会话列表、当前会话这些状态原先关在 TerminalPane / AgentPane
  * 内部，侧边栏要展示对话历史就得共享出来。
  *
- * **按项目 root 分片**：一个窗口里会同时开着多个项目，每个项目一套会话列表和当前
- * 会话；切项目时各看各的，不会串。状态一直留在 Provider 里，切走的项目不丢。
+ * **按工作区 root 分片**：一个窗口里会同时开着多个工作区，每个工作区一套会话列表和当前
+ * 会话；切工作区时各看各的，不会串。状态一直留在 Provider 里，切走的工作区不丢。
  */
 export function AgentSessionProvider({ children }: { children: ReactNode }) {
-  const [byRoot, setByRoot] = useState<Record<string, ProjectSessionState>>({});
+  const [byRoot, setByRoot] = useState<Record<string, WorkspaceSessionState>>({});
   // ref 版本单独存：SSE 处理器只订阅一次，读 state 会拿到挂载那一刻的旧值
   const refs = useRef(new Map<string, { current: string | null }>());
 
-  const patch = useCallback((root: string, next: Partial<ProjectSessionState>) => {
+  const patch = useCallback((root: string, next: Partial<WorkspaceSessionState>) => {
     setByRoot((current) => ({
       ...current,
       [root]: { ...(current[root] ?? EMPTY), ...next },
@@ -133,10 +133,10 @@ export function AgentSessionProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** 没有项目时（root 为 null）用一个占位 key，状态本身没人看 */
+/** 没有工作区时（root 为 null）用一个占位 key，状态本身没人看 */
 const NO_ROOT = "";
 
-/** 取某个项目的那一份会话状态与操作。`root` 变了就自动看新项目的 */
+/** 取某个工作区的那一份会话状态与操作。`root` 变了就自动看新工作区的 */
 export function useAgentSession(root: string | null): AgentSessionValue {
   const store = useContext(AgentSessionContext);
   if (!store) throw new Error("useAgentSession 必须在 AgentSessionProvider 内使用");
@@ -177,7 +177,7 @@ export function useAgentSession(root: string | null): AgentSessionValue {
   );
 }
 
-/** 关闭项目时清掉它那份会话状态。返回的函数可以直接用 */
+/** 关闭工作区时清掉它那份会话状态。返回的函数可以直接用 */
 export function useDropAgentSession(): (root: string) => void {
   const store = useContext(AgentSessionContext);
   if (!store) throw new Error("useDropAgentSession 必须在 AgentSessionProvider 内使用");
@@ -185,8 +185,8 @@ export function useDropAgentSession(): (root: string) => void {
 }
 
 /**
- * 只拿「把某个项目切成 GUI 并请求新建对话」这一个入口。
- * 侧栏给还没切过去的项目点 + 时用：此刻当前活动根还不是它，够不着 `useAgentSession(activeRoot)`。
+ * 只拿「把某个工作区切成 GUI 并请求新建对话」这一个入口。
+ * 侧栏给还没切过去的工作区点 + 时用：此刻当前活动根还不是它，够不着 `useAgentSession(activeRoot)`。
  */
 export function useNewChatAt(): (root: string) => void {
   const store = useContext(AgentSessionContext);

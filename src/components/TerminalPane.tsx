@@ -58,9 +58,9 @@ export interface TerminalPaneHandle {
 }
 
 interface TerminalPaneProps {
-  /** 这个终端区属于哪个项目（工作区根）。PTY 会话按它归属，关项目时要能收干净 */
+  /** 这个终端区属于哪个工作区（工作区根）。PTY 会话按它归属，关工作区时要能收干净 */
   root: string;
-  /** 是不是当前显示的项目。隐藏时只是不显示，shell 照跑 */
+  /** 是不是当前显示的工作区。隐藏时只是不显示，shell 照跑 */
   visible: boolean;
   /** 左侧这一列（终端与智能体）是否已全屏展示 */
   fullscreen: boolean;
@@ -93,7 +93,7 @@ export function TerminalPane({
    */
   const [launchFor, setLaunchFor] = useState<{ id: number; command: string } | null>(null);
   // TUI/GUI 的选择提到了 AgentSessionContext：侧边栏要在 GUI 模式下才列对话历史。
-  // 按项目取——一个窗口里同时开着多个项目，各有各的模式和会话列表
+  // 按工作区取——一个窗口里同时开着多个工作区，各有各的模式和会话列表
   const { mode, setMode } = useAgentSession(root);
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());

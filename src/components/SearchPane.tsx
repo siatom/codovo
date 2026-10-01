@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ownerRoot, pathKey, replaceAll, replaceOne, searchContents, toDisplayPath } from "../lib/fs";
-import { folderName } from "../lib/projects";
+import { folderName } from "../lib/workspaces";
 import type { SearchFile, SearchMatch, SearchOptions } from "../lib/types";
 import {
   IconChevronDown,
@@ -48,7 +48,7 @@ const HEADER_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
 /**
- * 一次搜索的结果，**按源文件夹分组**：一个项目可能挂着多个根，每根各搜一趟，
+ * 一次搜索的结果，**按工作目录分组**：一个工作区可能挂着多个根，每根各搜一趟，
  * 回来按组分开展示——不然两个根里的同名文件只能靠路径前缀猜，跟文件树也对不上。
  */
 interface SearchGroups {
@@ -69,11 +69,11 @@ interface SearchPaneProps {
   /** 替换完让编辑器重新从磁盘加载这些文件 */
   onAfterReplace: (paths: string[]) => void;
   /**
-   * 搜哪些源文件夹。一个项目可以挂多个根，每根各搜一趟再合并——
+   * 搜哪些工作目录。一个工作区可以挂多个根，每根各搜一趟再合并——
    * 后端的 `fs_search_content` 一次只认一个沙箱根
    */
   roots: string[];
-  /** 是不是当前显示的项目。隐藏时不发起搜索，切回来会重跑一遍 */
+  /** 是不是当前显示的工作区。隐藏时不发起搜索，切回来会重跑一遍 */
   visible: boolean;
 }
 
@@ -96,7 +96,7 @@ export function SearchPane({
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ kind: "error" | "note"; text: string } | null>(null);
-  /** 结果里被整块收起的源文件夹分组（归一化路径） */
+  /** 结果里被整块收起的工作目录分组（归一化路径） */
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(new Set());
   /** 收起单个文件自己的匹配行 */
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -155,7 +155,7 @@ export function SearchPane({
     : 0;
   const totalFiles = result ? result.groups.reduce((sum, group) => sum + group.files.length, 0) : 0;
 
-  /** 收起 / 展开一个源文件夹的整组结果 */
+  /** 收起 / 展开一个工作目录的整组结果 */
   const toggleGroup = (root: string) => {
     const key = pathKey(root);
     setCollapsedGroups((current) => {
@@ -254,7 +254,7 @@ export function SearchPane({
       if (!(await prepare())) return;
       const owner = ownerRoot(roots, file.path);
       if (!owner) {
-        setMessage({ kind: "error", text: "这个文件不在任何源文件夹里" });
+        setMessage({ kind: "error", text: "这个文件不在任何工作目录里" });
         return;
       }
       await replaceOne({
@@ -426,7 +426,7 @@ export function SearchPane({
                 );
                 return (
                   <li key={group.root}>
-                    {/* 项目挂了多个源文件夹就给标题（哪怕只有一组命中，也得让人知道
+                    {/* 工作区挂了多个工作目录就给标题（哪怕只有一组命中，也得让人知道
                         这批结果出自哪个根）；单根下它就是多余的一行 */}
                     {roots.length > 1 && (
                       <button

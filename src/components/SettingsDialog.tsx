@@ -24,7 +24,7 @@ import {
 } from "../lib/settings";
 import {
   isValidAgentName,
-  projectLayer,
+  workspaceLayer,
   withLayer,
 } from "../lib/agent-profiles";
 import {
@@ -61,7 +61,7 @@ import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconPlus
 
 interface SettingsDialogProps {
   onClose: () => void;
-  /** 当前工作区路径；「智能体」分类的项目层按它分桶，没开工作区时为 null */
+  /** 当前工作区路径；「智能体」分类的工作区层按它分桶，没开工作区时为 null */
   cwd?: string | null;
 }
 
@@ -108,7 +108,7 @@ const VISIBLE_OPTIONS: { value: boolean; label: string }[] = [
   { value: false, label: "隐藏" },
 ];
 
-/** 开着项目时关窗口：直接收进托盘，还是每次都问一句 */
+/** 开着工作区时关窗口：直接收进托盘，还是每次都问一句 */
 const CLOSE_OPTIONS: { value: boolean; label: string }[] = [
   { value: false, label: "每次询问" },
   { value: true, label: "收进托盘" },
@@ -1436,10 +1436,10 @@ function defaultPatch(settings: Settings): Partial<Settings> {
   return { aiDefaultProvider: resolved.providerId, aiDefaultModel: resolved.modelId };
 }
 
-/** 有多少个 Agent 绑在这个提供商的模型上（全局层 + 所有项目层） */
+/** 有多少个 Agent 绑在这个提供商的模型上（全局层 + 所有工作区层） */
 function countAgentRefs(settings: Settings, providerId: string): number {
   const prefix = modelRef(providerId, "");
-  const layers = [settings.agentGlobal, ...Object.values(settings.agentProjects)];
+  const layers = [settings.agentGlobal, ...Object.values(settings.agentWorkspaces)];
   return layers.reduce(
     (total, layer) =>
       total +
@@ -1561,7 +1561,7 @@ function AgentEditor({
   );
 }
 
-/** 一层智能体配置的编辑区：规则 / 记忆 / 技能 / Agents。全局层与项目层共用 */
+/** 一层智能体配置的编辑区：规则 / 记忆 / 技能 / Agents。全局层与工作区层共用 */
 function LayerEditor({
   layer,
   modelOptions,
@@ -1778,8 +1778,8 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   ].filter((label) => label !== "");
   const { theme, palette, setPreference } = useTheme();
   const [tab, setTab] = useState<TabId>("appearance");
-  /** 「智能体」分类的作用域：全局层还是当前项目的层 */
-  const [agentScope, setAgentScope] = useState<"global" | "project">("global");
+  /** 「智能体」分类的作用域：全局层还是当前工作区的层 */
+  const [agentScope, setAgentScope] = useState<"global" | "workspace">("global");
   /** 等确认的「恢复默认」；非空时弹确认框 */
   const [confirmReset, setConfirmReset] = useState(false);
   /** 提供商列表的手风琴：一次只展开一条，和技能 / Agent 一个交互 */
@@ -2236,7 +2236,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   </Field>
                   <Field
                     label="关闭窗口"
-                    hint="开着项目时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
+                    hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
                   >
                     <BoolToggle
                       value={settings.closeToTray}
@@ -2469,7 +2469,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                 <>
                   <Section
                     title="基础运行环境"
-                    hint="这些工具用于文件变更、终端和本机 AI 命令。已安装的项目会显示版本。"
+                    hint="这些工具用于文件变更、终端和本机 AI 命令。已安装的会显示版本。"
                     action={
                       <span className="text-[11px] text-fg-faint">
                         {Object.values(dependencyStatuses).filter((status) => status.installed).length}/7 已就绪
@@ -2682,14 +2682,14 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   <Section
                     title="指令与扩展"
                     hint={
-                      agentScope === "project" && !cwd
-                        ? "先打开一个工作区，才能编辑项目层"
-                        : "启动时注入 / 加载；项目层覆盖同名全局项，改动下次启动生效"
+                      agentScope === "workspace" && !cwd
+                        ? "先打开一个工作区，才能编辑工作区层"
+                        : "启动时注入 / 加载；工作区层覆盖同名全局项，改动下次启动生效"
                     }
                     action={
                       <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
-                        {(["global", "project"] as const).map((scope) => {
-                          const disabled = scope === "project" && !cwd;
+                        {(["global", "workspace"] as const).map((scope) => {
+                          const disabled = scope === "workspace" && !cwd;
                           return (
                             <button
                               key={scope}
@@ -2706,7 +2706,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                                   : ""
                               }`}
                             >
-                              {scope === "global" ? "全局" : "本项目"}
+                              {scope === "global" ? "全局" : "本工作区"}
                             </button>
                           );
                         })}
@@ -2717,7 +2717,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       layer={
                         agentScope === "global"
                           ? settings.agentGlobal
-                          : projectLayer(settings, cwd)
+                          : workspaceLayer(settings, cwd)
                       }
                       modelOptions={modelOptions}
                       onChange={(next) => update(withLayer(settings, agentScope, cwd, next))}

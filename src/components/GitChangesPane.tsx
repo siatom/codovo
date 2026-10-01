@@ -89,7 +89,7 @@ import {
 } from "./icons";
 
 interface GitChangesPaneProps {
-  /** 这个面板属于哪个项目：所有 git / ai 命令都带着它，后端按它定位工作区 */
+  /** 这个面板属于哪个工作区：所有 git / ai 命令都带着它，后端按它定位工作区 */
   root: string;
   git: GitController;
   /** 点改动项 / 提交里的文件：打开差异视图，source 决定跟谁比 */
@@ -104,7 +104,7 @@ interface GitChangesPaneProps {
   onBeforeBranchSwitch: () => Promise<boolean>;
   /**
    * 切分支成功之后调一次。工作区整个被换掉，上层那些按旧内容缓存下来的东西
-   * （打开的文件、差异视图的基线）都得作废——见 ProjectWorkspace 的实现。
+   * （打开的文件、差异视图的基线）都得作废——见 WorkspacePane 的实现。
    */
   onBranchChanged: () => void;
 }

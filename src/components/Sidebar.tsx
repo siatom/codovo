@@ -9,7 +9,7 @@ import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import { toDisplayPath } from "../lib/fs";
-import type { Project } from "../lib/projects";
+import type { Workspace } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
 import type { AgentSessionSummary } from "../lib/types";
@@ -42,26 +42,26 @@ import {
 import appLogo from "../../src-tauri/icons/128x128.png";
 
 interface SidebarProps {
-  /** 全部项目，最近创建/打开的排在最前 */
-  projects: Project[];
-  /** 当前项目的 id；null 表示还没选 */
+  /** 全部工作区，最近创建/打开的排在最前 */
+  workspaces: Workspace[];
+  /** 当前工作区的 id；null 表示还没选 */
   currentId: string | null;
-  /** 当前项目的活动根。会话历史 / 设置 / CLI 选择这些还按根记的东西用它 */
+  /** 当前工作区的活动根。会话历史 / 设置 / CLI 选择这些还按根记的东西用它 */
   activeRoot: string | null;
-  /** 已经打开（挂着工作区实例、后台仍在跑）的项目 id，用来在列表里点出「已打开」 */
+  /** 已经打开（挂着工作区实例、后台仍在跑）的工作区 id，用来在列表里点出「已打开」 */
   opened: string[];
-  onSelect: (project: Project) => void;
-  /** 项目行的「+」：新建对话。项目还没打开时由 App 先把它打开再新建 */
-  onNewChat: (project: Project) => void;
-  /** 「打开项目」：新建一个项目 */
+  onSelect: (workspace: Workspace) => void;
+  /** 工作区行的「+」：新建对话。工作区还没打开时由 App 先把它打开再新建 */
+  onNewChat: (workspace: Workspace) => void;
+  /** 「新建工作区」：新建一个工作区 */
   onCreate: () => void;
-  onEdit: (project: Project) => void;
+  onEdit: (workspace: Workspace) => void;
   /** 只从列表里去掉，不碰磁盘上的目录 */
-  onRemove: (project: Project) => void;
-  /** 关掉已打开的项目：收进程、丢实例，但保留在列表里 */
-  onClose: (project: Project) => void;
-  /** 切换置顶：置顶的项目排在列表最前 */
-  onTogglePin: (project: Project) => void;
+  onRemove: (workspace: Workspace) => void;
+  /** 关掉已打开的工作区：收进程、丢实例，但保留在列表里 */
+  onClose: (workspace: Workspace) => void;
+  /** 切换置顶：置顶的工作区排在列表最前 */
+  onTogglePin: (workspace: Workspace) => void;
   /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端。
    *  title 是 CLI 名，作新标签的标题 */
   onRunAiCommand: (command: string, title: string) => void;
@@ -78,7 +78,7 @@ const WIDTH_KEY = "codedock.sidebarWidth";
 /** 展开态默认宽度，和原来写死的 w-60 一致 */
 const DEFAULT_WIDTH = 240;
 
-/** 再窄项目名和会话标题就没法看了 */
+/** 再窄工作区名和会话标题就没法看了 */
 const MIN_WIDTH = 180;
 
 /** 上限还得看窗口：占掉一半就快没地方给编辑器了 */
@@ -103,17 +103,17 @@ const FOOTER_BUTTON =
 const ROW_ACTION =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100";
 
-/** 项目行右侧的「+」：和「⋯」一样平时藏着，悬停整行才露出；多一层底色，和主按钮悬停同色 */
+/** 工作区行右侧的「+」：和「⋯」一样平时藏着，悬停整行才露出；多一层底色，和主按钮悬停同色 */
 const ROW_PLUS = `${ROW_ACTION} hover:bg-active`;
 
-/** 项目行「⋯」弹出来的菜单项 */
+/** 工作区行「⋯」弹出来的菜单项 */
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /** 菜单宽度（px），贴着按钮右边缘往左排时要拿它算 left */
 const MENU_W = 112;
 
-/** 项目菜单比别处宽：里面要列出源文件夹的完整路径 */
-const PROJECT_MENU_W = 320;
+/** 工作区菜单比别处宽：里面要列出工作目录的完整路径 */
+const WORKSPACE_MENU_W = 320;
 
 /** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
 const AI_MENU_W = 150;
@@ -137,7 +137,7 @@ function readWidth(): number {
 }
 
 export function Sidebar({
-  projects,
+  workspaces,
   currentId,
   activeRoot,
   opened,
@@ -160,15 +160,15 @@ export function Sidebar({
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  /** 当前项目的对话历史是否展开；默认展开 */
+  /** 当前工作区的对话历史是否展开；默认展开 */
   const [historyOpen, setHistoryOpen] = useState(true);
   /** 等待确认删除的会话；非空时弹确认框 */
   const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
-  /** 「⋯」菜单开在哪个项目上，以及贴着按钮的位置 */
-  const [menu, setMenu] = useState<{ project: Project; x: number; y: number } | null>(null);
-  /** AI CLI 菜单开在哪儿；配了多个命令时才用得上，位置同项目菜单 */
+  /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
+  const [menu, setMenu] = useState<{ workspace: Workspace; x: number; y: number } | null>(null);
+  /** AI CLI 菜单开在哪儿；配了多个命令时才用得上，位置同工作区菜单 */
   const [aiMenu, setAiMenu] = useState<{ x: number; y: number } | null>(null);
-  /** 会话行的「⋯」菜单开在哪条会话上，位置同项目菜单 */
+  /** 会话行的「⋯」菜单开在哪条会话上，位置同工作区菜单 */
   const [histMenu, setHistMenu] = useState<{
     item: AgentSessionSummary;
     x: number;
@@ -205,12 +205,12 @@ export function Sidebar({
     aiCommands[0]?.command ??
     "";
 
-  // 换项目要跟着换回这个项目上次选的 CLI
+  // 换工作区要跟着换回这个工作区上次选的 CLI
   useEffect(() => {
     setCliChoice(readCliChoice(activeRoot));
   }, [activeRoot]);
 
-  /** 选 CLI：改状态并按活动根落盘。项目行的 + 和底部选择器共用它 */
+  /** 选 CLI：改状态并按活动根落盘。工作区行的 + 和底部选择器共用它 */
   const pickCli = (command: string) => {
     setCliChoice(command);
     saveCliChoice(activeRoot, command);
@@ -271,9 +271,9 @@ export function Sidebar({
     });
   };
 
-  const openMenu = (project: Project, target: HTMLElement) => {
+  const openMenu = (workspace: Workspace, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
-    setMenu({ project, x: rect.right, y: rect.bottom });
+    setMenu({ workspace, x: rect.right, y: rect.bottom });
   };
 
   const openHistMenu = (item: AgentSessionSummary, target: HTMLElement) => {
@@ -281,7 +281,7 @@ export function Sidebar({
     setHistMenu({ item, x: rect.right, y: rect.bottom });
   };
 
-  /** 点项目行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
+  /** 点工作区行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
   const launchAi = (target: HTMLElement) => {
     if (aiCommands.length === 1) {
       // 顺便把底部会话历史的选择器切过去，两边始终看同一家
@@ -305,7 +305,7 @@ export function Sidebar({
     requestRename(id, title);
   };
 
-  // 收起后留一个图标宽的竖条：常用入口（打开项目、主题）仍然够得着，
+  // 收起后留一个图标宽的竖条：常用入口（新建工作区、主题）仍然够得着，
   // 顶上那个按钮负责展开。
   // 每段的上下留白都照展开态来（头部同高、导航行同高、底部同边距），
   // 这样来回切换时图标只横向挪位，不会上下跳。
@@ -324,7 +324,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onCreate}
-            title="打开项目"
+            title="新建工作区"
             className={`flex w-7 ${ROW_H} items-center justify-center rounded-lg text-fg-dim hover:bg-hover hover:text-fg`}
           >
             <IconFolderPlus />
@@ -374,10 +374,10 @@ export function Sidebar({
     );
   }
 
-  // 置顶的项目排最前；置顶组与普通组内部各自维持原有顺序（sort 自 ES2019 起稳定）。
-  // 显式 `=== true` 归一：新建 / 迁移出来的项目没有 pinned 字段，直接 Number(undefined)
-  // 是 NaN，比较器返回 NaN 会被当 0，新项目反而不让位、留在置顶项上面。
-  const ordered = [...projects].sort(
+  // 置顶的工作区排最前；置顶组与普通组内部各自维持原有顺序（sort 自 ES2019 起稳定）。
+  // 显式 `=== true` 归一：新建 / 迁移出来的工作区没有 pinned 字段，直接 Number(undefined)
+  // 是 NaN，比较器返回 NaN 会被当 0，新工作区反而不让位、留在置顶项上面。
+  const ordered = [...workspaces].sort(
     (a, b) => Number(b.pinned === true) - Number(a.pinned === true),
   );
 
@@ -400,45 +400,45 @@ export function Sidebar({
       <nav className="flex shrink-0 flex-col gap-0.5 px-2 pb-1">
         <button type="button" onClick={onCreate} className={ROW}>
           <IconFolderPlus />
-          <span className="truncate">打开项目</span>
+          <span className="truncate">新建工作区</span>
         </button>
       </nav>
 
       <p className="shrink-0 px-4 pt-3 pb-1 text-[11px] font-medium tracking-wide text-fg-faint">
-        项目
+        工作区
       </p>
       <ul className="min-h-0 flex-1 overflow-auto px-2 pb-2">
         {ordered.length === 0 && (
-          <li className="px-2 py-1 text-[12px] text-fg-faint">还没有项目</li>
+          <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
         )}
-        {ordered.map((project) => {
-          const isCurrent = project.id === currentId;
-          // 已打开 = 后台挂着工作区实例的项目，和「只在列表里」区分开
-          const isOpen = opened.includes(project.id);
+        {ordered.map((workspace) => {
+          const isCurrent = workspace.id === currentId;
+          // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
+          const isOpen = opened.includes(workspace.id);
           return (
-            <li key={project.id}>
+            <li key={workspace.id}>
               {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
               <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
                 <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
                   <button
                     type="button"
-                    onClick={() => onSelect(project)}
-                    title={project.roots.map((root) => toDisplayPath(root)).join("\n")}
+                    onClick={() => onSelect(workspace)}
+                    title={workspace.roots.map((root) => toDisplayPath(root)).join("\n")}
                     className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
                   >
-                    {/* 已打开的项目（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
+                    {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
                     {isOpen ? <IconFolderOpen /> : <IconFolder />}
-                    <span className="truncate">{project.name}</span>
-                    {/* 置顶的项目在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
-                    {project.pinned && (
+                    <span className="truncate">{workspace.name}</span>
+                    {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
+                    {workspace.pinned && (
                       <span title="已置顶" className="shrink-0 text-fg-faint">
                         <IconPin className="h-3 w-3" />
                       </span>
                     )}
-                    {/* 已打开的项目在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
+                    {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
                     {isOpen && (
                       <span
-                        title="项目已打开"
+                        title="工作区已打开"
                         className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
                       />
                     )}
@@ -447,26 +447,26 @@ export function Sidebar({
                   <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
-                      onClick={(event) => openMenu(project, event.currentTarget)}
+                      onClick={(event) => openMenu(workspace, event.currentTarget)}
                       title="更多操作"
                       className={ROW_ACTION}
                     >
                       <IconMore className="h-3.5 w-3.5" />
                     </button>
-                    {/* 新建对话：当前项目停在 GUI 时给；别的项目（含还没打开的）也给——点了
-                        会先把它打开并切到 GUI，等价于「添加对话即打开项目」。当前项目停在 TUI
+                    {/* 新建对话：当前工作区停在 GUI 时给；别的工作区（含还没打开的）也给——点了
+                        会先把它打开并切到 GUI，等价于「添加对话即打开工作区」。当前工作区停在 TUI
                         时不出现，那个位置留给下面启动 AI CLI 的 + */}
                     {(guiActive || (!isCurrent && settings.agentEnabled)) && (
                       <button
                         type="button"
-                        onClick={() => onNewChat(project)}
+                        onClick={() => onNewChat(workspace)}
                         title="新建对话"
                         className={ROW_PLUS}
                       >
                         <IconPlus className="h-3.5 w-3.5" />
                       </button>
                     )}
-                    {/* 折叠按钮只对当前项目且停在 GUI 时有意义（对话历史就挂它下面） */}
+                    {/* 折叠按钮只对当前工作区且停在 GUI 时有意义（对话历史就挂它下面） */}
                     {isCurrent && guiActive && (
                       <button
                         type="button"
@@ -501,7 +501,7 @@ export function Sidebar({
                   </div>
                 </div>
 
-                {/* 对话历史挂当前项目下，由项目行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
+                {/* 对话历史挂当前工作区下，由工作区行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
                 {isCurrent &&
                   guiActive &&
                   historyOpen &&
@@ -577,7 +577,7 @@ export function Sidebar({
         })}
       </ul>
 
-      {/* 当前 AI CLI 的会话历史。只在 TUI 下出现：GUI 那边项目行下面已经有
+      {/* 当前 AI CLI 的会话历史。只在 TUI 下出现：GUI 那边工作区行下面已经有
           opencode 自己的对话历史了，两套同时出现会打架 */}
       {activeRoot && !guiActive && aiCommands.length > 0 && (
         <CliHistory
@@ -589,7 +589,7 @@ export function Sidebar({
         />
       )}
 
-      {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面项目列表的空间 */}
+      {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面工作区列表的空间 */}
       <footer className="flex shrink-0 items-center gap-1 border-t border-line px-2 py-2">
         <button
           type="button"
@@ -645,9 +645,9 @@ export function Sidebar({
         />
       )}
 
-      {/* 项目行的「⋯」菜单：项目名 + 各源文件夹 + 编辑/关闭。用 fixed 定位而不是
-          绝对定位：项目列表是滚动容器，绝对定位的菜单会被 overflow 裁掉，
-          靠窗口底部的项目就看不见菜单了 */}
+      {/* 工作区行的「⋯」菜单：工作区名 + 各工作目录 + 编辑/关闭。用 fixed 定位而不是
+          绝对定位：工作区列表是滚动容器，绝对定位的菜单会被 overflow 裁掉，
+          靠窗口底部的工作区就看不见菜单了 */}
       {menu && (
         <>
           {/* 铺一层透明遮罩接住外部点击 */}
@@ -655,23 +655,23 @@ export function Sidebar({
           <div
             className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
-              width: PROJECT_MENU_W,
-              left: Math.max(4, menu.x - PROJECT_MENU_W),
-              // 条目数随源文件夹数量变，按实际行数折算高度，免得贴底时被顶出可视区
+              width: WORKSPACE_MENU_W,
+              left: Math.max(4, menu.x - WORKSPACE_MENU_W),
+              // 条目数随工作目录数量变，按实际行数折算高度，免得贴底时被顶出可视区
               top: Math.min(
                 menu.y + 4,
-                window.innerHeight - (menu.project.roots.length * 24 + 140),
+                window.innerHeight - (menu.workspace.roots.length * 24 + 140),
               ),
             }}
           >
             <div className="flex items-center gap-2 px-3 py-1">
               <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
               <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">
-                {menu.project.name}
+                {menu.workspace.name}
               </span>
               <button
                 type="button"
-                onClick={() => openInSystem(menu.project.roots[0])}
+                onClick={() => openInSystem(menu.workspace.roots[0])}
                 title="在文件管理器中打开"
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:text-fg"
               >
@@ -679,7 +679,7 @@ export function Sidebar({
               </button>
             </div>
             <div className="my-1 border-t border-line" />
-            {menu.project.roots.map((root) => (
+            {menu.workspace.roots.map((root) => (
               <div key={root} className="flex items-center gap-2 px-3 py-1">
                 <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
                 <span
@@ -694,35 +694,35 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => {
-                const { project } = menu;
+                const { workspace } = menu;
                 setMenu(null);
-                onTogglePin(project);
+                onTogglePin(workspace);
               }}
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconPin className="h-3.5 w-3.5 shrink-0" />
-              {menu.project.pinned ? "取消置顶" : "置顶"}
+              {menu.workspace.pinned ? "取消置顶" : "置顶"}
             </button>
             <button
               type="button"
               onClick={() => {
-                const { project } = menu;
+                const { workspace } = menu;
                 setMenu(null);
-                onEdit(project);
+                onEdit(workspace);
               }}
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconPencil className="h-3.5 w-3.5 shrink-0" />
               编辑
             </button>
-            {/* 只对已打开的项目露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
-            {opened.includes(menu.project.id) && (
+            {/* 只对已打开的工作区露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
+            {opened.includes(menu.workspace.id) && (
               <button
                 type="button"
                 onClick={() => {
-                  const { project } = menu;
+                  const { workspace } = menu;
                   setMenu(null);
-                  onClose(project);
+                  onClose(workspace);
                 }}
                 className={`${MENU_ITEM} flex items-center gap-2`}
               >
@@ -733,9 +733,9 @@ export function Sidebar({
             <button
               type="button"
               onClick={() => {
-                const { project } = menu;
+                const { workspace } = menu;
                 setMenu(null);
-                onRemove(project);
+                onRemove(workspace);
               }}
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
@@ -746,7 +746,7 @@ export function Sidebar({
         </>
       )}
 
-      {/* 会话行的「⋯」菜单。同样 fixed 定位，理由见上面项目菜单 */}
+      {/* 会话行的「⋯」菜单。同样 fixed 定位，理由见上面工作区菜单 */}
       {histMenu && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setHistMenu(null)} />
@@ -784,7 +784,7 @@ export function Sidebar({
         </>
       )}
 
-      {/* AI CLI 菜单。同样 fixed 定位，理由见上面项目菜单 */}
+      {/* AI CLI 菜单。同样 fixed 定位，理由见上面工作区菜单 */}
       {aiMenu && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setAiMenu(null)} />

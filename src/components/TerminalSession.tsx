@@ -44,7 +44,7 @@ export interface TerminalSessionHandle {
 }
 
 interface TerminalSessionProps {
-  /** 这个会话属于哪个项目；shell 就落在这个目录，后端也按它归属会话 */
+  /** 这个会话属于哪个工作区；shell 就落在这个目录，后端也按它归属会话 */
   root: string;
   /** 是否是当前显示的那个会话：从后台切回来要重新量尺寸并聚焦 */
   active: boolean;

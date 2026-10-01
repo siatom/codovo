@@ -24,7 +24,7 @@ export async function listShells(): Promise<ShellInfo[]> {
 }
 
 export async function spawnPty(options: {
-  /** 这个会话属于哪个项目；没选工作区时传空串（后端用它按项目收 shell） */
+  /** 这个会话属于哪个工作区；没选工作区时传空串（后端用它按工作区收 shell） */
   root: string;
   cwd?: string;
   /** 选中的 shell 候选 id；不传走自动 */

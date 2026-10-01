@@ -20,157 +20,35 @@ import type {
   SearchResult,
 } from "./types";
 
-const WORKSPACE_KEY = "codedock.workspace";
-const WORKSPACES_KEY = "codedock.workspaces";
-const WORKSPACE_NAMES_KEY = "codedock.workspaceNames";
-
 /**
- * 打开 / 切换项目：后端登记这个项目的**全部源文件夹**、把目录监听整体换成这一组，
+ * 打开 / 切换工作区：后端登记这个工作区的**全部工作目录**、把目录监听整体换成这一组，
  * 返回 canonical 后的路径（顺序跟传入一致，`roots[0]` 是主要根）。
  *
- * 之后每条命令都带着某个 root——单窗口下会同时开着多个项目，后端靠 root 分辨是谁。
+ * 之后每条命令都带着某个 root——单窗口下会同时开着多个工作区，后端靠 root 分辨是谁。
  */
-export function projectActivate(roots: string[]): Promise<string[]> {
-  return invoke<string[]>("project_activate", { roots });
+export function workspaceActivate(roots: string[]): Promise<string[]> {
+  return invoke<string[]>("workspace_activate", { roots });
 }
 
 /**
- * 只登记源文件夹、**不换目录监听**：编辑一个「开着、但不是当前显示」的项目时用。
- * 监听只跟当前项目，给后台项目改根不能顺手 activate，否则会把监听抢过去。
+ * 只登记工作目录、**不换目录监听**：编辑一个「开着、但不是当前显示」的工作区时用。
+ * 监听只跟当前工作区，给后台工作区改根不能顺手 activate，否则会把监听抢过去。
  */
-export function projectRegister(roots: string[]): Promise<string[]> {
-  return invoke<string[]>("project_register", { roots });
+export function workspaceRegister(roots: string[]): Promise<string[]> {
+  return invoke<string[]>("workspace_register", { roots });
 }
 
-/** 关闭项目：收掉它每个源文件夹的终端与智能体进程、停掉各自的目录监听，并从后端白名单里摘掉 */
-export function projectClose(roots: string[]): Promise<void> {
-  return invoke("project_close", { roots });
+/** 关闭工作区：收掉它每个工作目录的终端与智能体进程、停掉各自的目录监听，并从后端白名单里摘掉 */
+export function workspaceClose(roots: string[]): Promise<void> {
+  return invoke("workspace_close", { roots });
 }
 
-/** 弹目录选择框，返回选中的路径；用户取消时返回 null */
-export async function pickFolder(): Promise<string | null> {
-  const picked = await open({ directory: true, multiple: false, title: "选择工作目录" });
-  return typeof picked === "string" ? picked : null;
-}
-
-export function readSavedWorkspace(): string | null {
-  try {
-    return window.localStorage.getItem(WORKSPACE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function saveWorkspace(path: string) {
-  try {
-    window.localStorage.setItem(WORKSPACE_KEY, path);
-  } catch {
-    // 隐私模式等场景写不进去，忽略即可，只是下次启动不会自动打开
-  }
-}
-
-export function clearSavedWorkspace() {
-  try {
-    window.localStorage.removeItem(WORKSPACE_KEY);
-  } catch {
-    // 同上
-  }
-}
-
-/** 用过的目录，最近打开的排在最前。 */
-export function readSavedWorkspaces(): string[] {
-  try {
-    const raw = window.localStorage.getItem(WORKSPACES_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === "string");
-  } catch {
-    return [];
-  }
-}
-
-export function saveWorkspaces(paths: string[]) {
-  try {
-    window.localStorage.setItem(WORKSPACES_KEY, JSON.stringify(paths));
-  } catch {
-    // 同 saveWorkspace
-  }
-}
-
-/**
- * 把一个目录提到历史最前并写回，返回新的列表。
- *
- * 写之前先读一遍最新的：多窗口共享同一份 localStorage，直接拿本窗口记的列表
- * 覆盖，会把别的窗口刚打开的项目抹掉。Windows 上大小写、分隔符不同也算同一个
- * 目录，只比字符串会把同一个目录存成两条。
- */
-export function addSavedWorkspace(path: string): string[] {
-  const list = [path, ...readSavedWorkspaces()].filter(
-    (item, index, all) => all.findIndex((other) => samePath(other, item)) === index,
-  );
-  saveWorkspaces(list);
-  return list;
-}
-
-/** 从历史里去掉一个目录，同样先读最新再写，返回新的列表 */
-export function dropSavedWorkspace(path: string): string[] {
-  const list = readSavedWorkspaces().filter((item) => !samePath(item, path));
-  saveWorkspaces(list);
-  return list;
-}
-
-/**
- * 项目在 CodeDock 里的显示名（别名），按目录路径存。
- * 只是界面上的名字，**不改磁盘上的文件夹名**；没有别名的目录直接用目录名。
- */
-export function readWorkspaceNames(): Record<string, string> {
-  try {
-    const raw = window.localStorage.getItem(WORKSPACE_NAMES_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const names: Record<string, string> = {};
-    for (const [path, name] of Object.entries(parsed)) {
-      if (typeof name === "string" && name.trim()) names[path] = name;
-    }
-    return names;
-  } catch {
-    return {};
-  }
-}
-
-export function saveWorkspaceNames(names: Record<string, string>) {
-  try {
-    window.localStorage.setItem(WORKSPACE_NAMES_KEY, JSON.stringify(names));
-  } catch {
-    // 同 saveWorkspace
-  }
-}
-
-/**
- * 订阅「工作区列表被别的窗口改了」。返回取消订阅的函数。
- * storage 事件只在别的 document 触发，正好用来做跨窗口同步，不会自己回灌自己。
- */
-export function onWorkspacesChanged(handler: (list: string[]) => void): () => void {
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== WORKSPACES_KEY) return;
-    handler(readSavedWorkspaces());
-  };
-  window.addEventListener("storage", onStorage);
-  return () => window.removeEventListener("storage", onStorage);
-}
-
-/** 订阅「项目别名被别的窗口改了」。返回取消订阅的函数 */
-export function onWorkspaceNamesChanged(
-  handler: (names: Record<string, string>) => void,
-): () => void {
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== WORKSPACE_NAMES_KEY) return;
-    handler(readWorkspaceNames());
-  };
-  window.addEventListener("storage", onStorage);
-  return () => window.removeEventListener("storage", onStorage);
+/** 弹目录选择框（可多选），返回选中的路径数组；用户取消时返回空数组 */
+export async function pickFolder(): Promise<string[]> {
+  const picked = await open({ directory: true, multiple: true, title: "选择工作目录" });
+  // 多选返回数组、单选返回字符串，取消都是 null；统一收敛成数组给调用方
+  if (Array.isArray(picked)) return picked;
+  return typeof picked === "string" ? [picked] : [];
 }
 
 export function listDir(root: string, path: string): Promise<FileEntry[]> {
@@ -273,7 +151,7 @@ export function onFilesChanged(handler: (paths: string[]) => void): Promise<Unli
   return listen<string[]>("fs-file-changed", (event) => handler(event.payload));
 }
 
-/** 某个项目的 git 状态；目录不是仓库时 isRepo 为 false */
+/** 某个工作区的 git 状态；目录不是仓库时 isRepo 为 false */
 export function gitStatus(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_status", { root });
 }
@@ -488,7 +366,7 @@ export function isPathInside(child: string, parent: string): boolean {
  * 这条路径落在哪个根里——取**最长**的那个匹配，这样一根套在另一根里时也算给里层
  * （外层根下的那条路径其实归里层管）。哪个根都不是就返回 null。
  *
- * 一个项目可以挂多个源文件夹，但后端每条 fs 命令只认一个白名单里的 root：
+ * 一个工作区可以挂多个工作目录，但后端每条 fs 命令只认一个白名单里的 root：
  * 拿错 root 会被 `checked_root` 挡下，报「路径越界（不在工作区内）」。
  * 所以凡是「路径可能来自任意根」的地方，都得先过这一道。
  */

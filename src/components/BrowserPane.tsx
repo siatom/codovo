@@ -7,7 +7,7 @@ const URL_KEY = "codedock.browserUrl.";
 
 /**
  * 记住上次的地址：右栏会记住停在哪个模块，回来时地址栏空着很别扭。
- * key 带上项目 root：多个项目各预览各的本地服务，切项目时地址跟着换。
+ * key 带上工作区 root：多个工作区各预览各的本地服务，切工作区时地址跟着换。
  */
 function readSavedUrl(root: string): string {
   try {
@@ -44,7 +44,7 @@ export function BrowserPane({
   fullscreen,
   onToggleFullscreen,
 }: {
-  /** 地址按项目各记一份：切项目时看到的是各自上次预览的那个地址 */
+  /** 地址按工作区各记一份：切工作区时看到的是各自上次预览的那个地址 */
   root: string;
   fullscreen: boolean;
   onToggleFullscreen: () => void;

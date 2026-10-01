@@ -53,7 +53,7 @@ export interface AgentPaneHandle {
 }
 
 interface AgentPaneProps {
-  /** 这个智能体面板属于哪个项目。一个项目一个 opencode 进程，各自独立 */
+  /** 这个智能体面板属于哪个工作区。一个工作区一个 opencode 进程，各自独立 */
   root: string;
   /** 当前是不是停在智能体 tab；第一次变 true 时才去拉服务 */
   active: boolean;
@@ -69,7 +69,7 @@ type Phase = "idle" | "starting" | "ready" | "error";
 
 /**
  * 当前选中的会话 id 按工作区记，换工作区就是另一套历史。
- * 存 sessionStorage：多窗口下同一个项目可以各看各的会话，互不影响。
+ * 存 sessionStorage：多窗口下同一个工作区可以各看各的会话，互不影响。
  */
 const SESSION_KEY_PREFIX = "codedock.agentSession.";
 
@@ -221,7 +221,7 @@ function PrimaryAgentPicker({
  */
 export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }: AgentPaneProps) {
   const { settings, update } = useSettings();
-  // 会话列表和当前会话跟侧边栏共用：那边要按项目列出历史、并高亮正在聊的那条
+  // 会话列表和当前会话跟侧边栏共用：那边要按工作区列出历史、并高亮正在聊的那条
   const {
     setSessions,
     currentIdRef,
@@ -253,7 +253,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   // 默认模型那家提供商走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
-  // 生效层（全局 + 当前项目已合并）与 primary agent 候选。选择器存的是名字，
+  // 生效层（全局 + 当前工作区已合并）与 primary agent 候选。选择器存的是名字，
   // 可能已被删掉 / 改名，所以实际用的是「候选里还有没有它」的结果，没有就回落 build。
   const layer = useMemo(() => resolveAgentLayer(settings, root), [settings, root]);
   const agentOptions = useMemo(() => primaryAgentOptions(layer), [layer]);
@@ -396,7 +396,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
     let disposed = false;
 
     void onAgentEvent((eventRoot, event) => {
-      // 一个窗口里会同时开着几个项目、各有一个 opencode 在跑，只认自己这份
+      // 一个窗口里会同时开着几个工作区、各有一个 opencode 在跑，只认自己这份
       if (!samePath(eventRoot, root)) return;
       const sessionId = currentIdRef.current;
       if (!sessionId) return;
@@ -714,7 +714,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
             ? modelRefLabel(settings, sendModel)
             : aiConfig.model) || "未配置模型"}
         </span>
-        {/* 新建对话和历史会话都在侧边栏当前项目那一行，这里只留状态与 agent 选择 */}
+        {/* 新建对话和历史会话都在侧边栏当前工作区那一行，这里只留状态与 agent 选择 */}
         <PrimaryAgentPicker
           value={primary}
           options={agentOptions}

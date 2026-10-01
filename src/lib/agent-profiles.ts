@@ -11,13 +11,13 @@ export function isValidAgentName(name: string): boolean {
   return NAME_PATTERN.test(name.trim());
 }
 
-/** 取某个工作区的项目层；没有记录或还没选工作区就返回空层 */
-export function projectLayer(settings: Settings, cwd: string | null): AgentLayer {
+/** 取某个工作区对应的配置层；没有记录或还没选工作区就返回空层 */
+export function workspaceLayer(settings: Settings, cwd: string | null): AgentLayer {
   if (!cwd) return emptyAgentLayer();
-  return settings.agentProjects[cwd] ?? emptyAgentLayer();
+  return settings.agentWorkspaces[cwd] ?? emptyAgentLayer();
 }
 
-/** 按 name 去重合并两份列表；后一份（项目层）的同名项覆盖前一份 */
+/** 按 name 去重合并两份列表；后一份（工作区层）的同名项覆盖前一份 */
 function mergeByName<T extends { name: string }>(base: T[], over: T[]): T[] {
   const merged = new Map<string, T>();
   for (const item of base) merged.set(item.name, item);
@@ -26,27 +26,27 @@ function mergeByName<T extends { name: string }>(base: T[], over: T[]): T[] {
 }
 
 /**
- * 把「全局 + 当前项目」两层合并成生效层，交给后端物化。
+ * 把「全局 + 当前工作区」两层合并成生效层，交给后端物化。
  *
- * - 规则 / 记忆：两段文本都保留，全局在前、项目在后，用空行隔开；
- * - 技能 / Agents：按名去重，项目层覆盖全局层；
+ * - 规则 / 记忆：两段文本都保留，全局在前、工作区在后，用空行隔开；
+ * - 技能 / Agents：按名去重，工作区层覆盖全局层；
  * - 关掉的（enabled=false）和名字非法的条目在这里就滤掉——非法名会让后端的
  *   校验直接报错、把整个服务拦下，不如提前丢。
  */
 export function resolveAgentLayer(settings: Settings, cwd: string | null): AgentLayer {
   const global = settings.agentGlobal;
-  const project = projectLayer(settings, cwd);
+  const workspace = workspaceLayer(settings, cwd);
 
   const join = (a: string, b: string) =>
     [a, b].map((text) => text.trim()).filter(Boolean).join("\n\n");
 
   return {
-    rules: join(global.rules, project.rules),
-    memory: join(global.memory, project.memory),
-    skills: mergeByName(global.skills, project.skills).filter(
+    rules: join(global.rules, workspace.rules),
+    memory: join(global.memory, workspace.memory),
+    skills: mergeByName(global.skills, workspace.skills).filter(
       (skill) => skill.enabled && isValidAgentName(skill.name),
     ),
-    agents: mergeByName(global.agents, project.agents).filter(
+    agents: mergeByName(global.agents, workspace.agents).filter(
       (agent) => agent.enabled && isValidAgentName(agent.name),
     ),
   };
@@ -64,14 +64,14 @@ export function primaryAgentOptions(layer: AgentLayer): { value: string; label: 
   ];
 }
 
-/** 写回一层配置：scope 决定改全局层还是当前项目的层，返回可直接 update 的补丁 */
+/** 写回一层配置：scope 决定改全局层还是当前工作区的层，返回可直接 update 的补丁 */
 export function withLayer(
   settings: Settings,
-  scope: "global" | "project",
+  scope: "global" | "workspace",
   cwd: string | null,
   layer: AgentLayer,
 ): Partial<Settings> {
   if (scope === "global") return { agentGlobal: layer };
   if (!cwd) return {};
-  return { agentProjects: { ...settings.agentProjects, [cwd]: layer } };
+  return { agentWorkspaces: { ...settings.agentWorkspaces, [cwd]: layer } };
 }

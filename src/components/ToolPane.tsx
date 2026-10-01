@@ -2,7 +2,7 @@ import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { GitController, GitMark } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
 import { pathKey, toDisplayPath } from "../lib/fs";
-import { folderName } from "../lib/projects";
+import { folderName } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut } from "../lib/shortcuts";
 import { ExplorerPane } from "./ExplorerPane";
@@ -21,7 +21,7 @@ const TOOLS: ToolId[] = ["files", "changes", "search", "browser"];
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
  * 不给终端让位就白搭），所以这里只存模块名，不存展开状态。
  *
- * key 里带上项目 root：一个窗口里同时开着多个项目，各看各的模块才不会串。
+ * key 里带上工作区 root：一个窗口里同时开着多个工作区，各看各的模块才不会串。
  * 用 sessionStorage 存，重启后回到「文件」，够用了。
  */
 export function readTool(root: string): ToolId {
@@ -43,9 +43,9 @@ export function saveTool(root: string, tool: ToolId) {
 
 interface ToolPaneProps {
   tool: ToolId;
-  /** 项目的全部源文件夹：文件树并列显示，变更面板按根分组，搜索挨个根搜 */
+  /** 工作区的全部工作目录：文件树并列显示，变更面板按根分组，搜索挨个根搜 */
   roots: string[];
-  /** 这个项目是不是当前显示的。隐藏时不做任何后端交互 */
+  /** 这个工作区是不是当前显示的。隐藏时不做任何后端交互 */
   visible: boolean;
   /** 当前打开的文件，文件树里要高亮 */
   selected: string | null;
@@ -112,7 +112,7 @@ export function ToolPane({
 }: ToolPaneProps) {
   const { settings } = useSettings();
   const filesHidden = tool === "changes" || tool === "search";
-  /** 变更面板里被整块收起的源文件夹（归一化路径）。收起只留根名那一行 */
+  /** 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行 */
   const [collapsedRoots, setCollapsedRoots] = useState<ReadonlySet<string>>(new Set());
 
   const toggleRoot = (root: string) => {
@@ -164,7 +164,7 @@ export function ToolPane({
           onDeleted={onEntryDeleted}
         />
       </div>
-      {/* 变更：每个源文件夹一块，各挂一个完整的变更面板。多根时每块能整块收起、只留
+      {/* 变更：每个工作目录一块，各挂一个完整的变更面板。多根时每块能整块收起、只留
           根名那一行——两个仓库的改动加提交历史全铺开，一屏根本看不完。
           面板本身是 h-full 的整高布局（内部自己滚），所以展开的块按份数分高度、
           开了折叠就只占一行，块多了整体滚 */}

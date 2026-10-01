@@ -164,12 +164,12 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
 }
 
 /**
- * 一个项目的 git 状态（可能挂着多个源文件夹）。
+ * 一个工作区的 git 状态（可能挂着多个工作目录）。
  *
  * `byRoot` 是每根各一份快照；`marks` / `changed` / `isRepo` 是合并视图——文件树、
- * 标签页、图标条要的是「整个项目现在什么样」，而变更面板要按根分开列。
+ * 标签页、图标条要的是「整个工作区现在什么样」，而变更面板要按根分开列。
  *
- * `enabled` 为 false 时**停掉轮询但保留已有状态**：一个窗口里会同时挂着多个项目，
+ * `enabled` 为 false 时**停掉轮询但保留已有状态**：一个窗口里会同时挂着多个工作区，
  * 只有当前显示的那个需要轮询，其余的一直在跑就是白烧 CPU。切回来时状态还是离开
  * 时的样子，再等一个 tick 就又准了。
  *
@@ -202,7 +202,7 @@ export function useGitStatus(roots: string[], enabled = true): GitStatusStore {
     // 不会把上一个仓库的状态盖到新目录上
     const targets = roots;
     if (!enabled || targets.length === 0) {
-      // 项目切走了：只停轮询，**不清状态**——组件还挂着，切回来该是原样
+      // 工作区切走了：只停轮询，**不清状态**——组件还挂着，切回来该是原样
       loadRef.current = () => {};
       return;
     }
@@ -257,7 +257,7 @@ export function useGitStatus(roots: string[], enabled = true): GitStatusStore {
     };
   }, [rootsKey, enabled]);
 
-  // 换过根之后把不在列表里的旧快照摘掉：不然改项目留下的根会一直挂在状态里
+  // 换过根之后把不在列表里的旧快照摘掉：不然改工作区留下的根会一直挂在状态里
   useEffect(() => {
     setByRoot((current) => {
       const keep = Object.keys(current).filter((root) =>

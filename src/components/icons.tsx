@@ -695,7 +695,7 @@ export const IconPencil = icon(
   </>,
 );
 
-/** 项目置顶：一枚图钉，菜单里切换、列表里标示置顶态都用它 */
+/** 工作区置顶：一枚图钉，菜单里切换、列表里标示置顶态都用它 */
 export const IconPin = icon(
   <>
     <path d="M12 17v5" />

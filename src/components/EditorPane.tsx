@@ -98,14 +98,14 @@ interface EditorPaneProps {
   /** 选中浮窗的两个动作：把位置引用送到终端 / 智能体输入框 */
   onSendToTerminal: (location: EditorLocation) => void;
   onSendToAgent: (location: EditorLocation) => void;
-  /** 项目内当前活动根。文件命令的沙箱根按**文件实际所属根**算，见 `roots` */
+  /** 工作区内当前活动根。文件命令的沙箱根按**文件实际所属根**算，见 `roots` */
   root: string;
   /**
-   * 项目的全部源文件夹。标签是跨根共用一个的，读一个次要根里的文件时如果仍拿活动根
+   * 工作区的全部工作目录。标签是跨根共用一个的，读一个次要根里的文件时如果仍拿活动根
    * 去请求，后端会判「路径越界（不在工作区内）」——所以每条读写都先按路径找归属
    */
   roots: string[];
-  /** 这个项目是不是当前显示的。从隐藏切回可见时 Monaco 要补一次 layout */
+  /** 这个工作区是不是当前显示的。从隐藏切回可见时 Monaco 要补一次 layout */
   visible: boolean;
   /** 搜索替换要用的几个动作。React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<EditorPaneHandle>;
@@ -366,7 +366,7 @@ export function EditorPane({
 
   /**
    * 鼠标松开后决定浮窗的去向：有非空选区就摆到选区末端下方，否则收起。
-   * 用视口坐标（和项目里其它弹出菜单一致），因为编辑器会随分栏拖动而移动。
+   * 用视口坐标（和工作区里其它弹出菜单一致），因为编辑器会随分栏拖动而移动。
    */
   const showFloatBar = useCallback(() => {
     const editor = editorRef.current;
@@ -1061,7 +1061,7 @@ export function EditorPane({
   }, [isPreview, activeKey, previewNonce]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
-  // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；项目从后台切回来时同理
+  // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；工作区从后台切回来时同理
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       editorRef.current?.layout();

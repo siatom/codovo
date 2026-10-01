@@ -3,7 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /**
  * 用户点了窗口关闭按钮。后端把这一下拦了下来（`CloseRequested` 里 `prevent_close`），
- * 只把事件递过来——是收进托盘还是真退出，取决于当前开着几个项目，这事前端才知道。
+ * 只把事件递过来——是收进托盘还是真退出，取决于当前开着几个工作区，这事前端才知道。
  */
 export function onCloseRequested(handler: () => void): Promise<UnlistenFn> {
   return listen("app://close-requested", () => handler());

@@ -95,10 +95,10 @@ export interface Settings {
   agentPort: number;
   /** 对话面板里选中的 primary agent；空或不存在时由 opencode 回落到 build */
   agentPrimary: string;
-  /** 全局层的智能体配置（所有项目共享） */
+  /** 全局层的智能体配置（所有工作区共享） */
   agentGlobal: AgentLayer;
-  /** 项目层的智能体配置，按工作区绝对路径索引 */
-  agentProjects: Record<string, AgentLayer>;
+  /** 工作区层的智能体配置，按工作区绝对路径索引 */
+  agentWorkspaces: Record<string, AgentLayer>;
   /** 终端启动的 shell 候选 id；空串表示自动（后端按平台挑） */
   terminalShell: string;
   /** 终端字体（CSS font-family），留空用默认 */
@@ -120,7 +120,7 @@ export interface Settings {
   /** afterDelay 模式下停手多久才落盘（毫秒） */
   editorAutoSaveDelay: number;
   /**
-   * 关窗口时直接收进托盘、不再问。开着项目才用得着——没项目时关闭就是退出。
+   * 关窗口时直接收进托盘、不再问。开着工作区才用得着——没工作区时关闭就是退出。
    * 用户在某次确认框里勾了「不再提醒」就会置成 true
    */
   closeToTray: boolean;
@@ -180,7 +180,7 @@ const DEFAULTS: Settings = {
   agentPort: 0,
   agentPrimary: "build",
   agentGlobal: emptyAgentLayer(),
-  agentProjects: {},
+  agentWorkspaces: {},
   terminalShell: "",
   terminalFontFamily: "",
   terminalFontSize: 13,
@@ -191,7 +191,7 @@ const DEFAULTS: Settings = {
   editorFontBold: true,
   editorAutoSave: "afterDelay",
   editorAutoSaveDelay: 1000,
-  // 默认还是要问一句：第一次关窗口时得让用户知道项目还在后台跑着
+  // 默认还是要问一句：第一次关窗口时得让用户知道工作区还在后台跑着
   closeToTray: false,
   rightFilesVisible: true,
   rightChangesVisible: true,
@@ -368,8 +368,8 @@ function asLayer(value: unknown): AgentLayer {
   };
 }
 
-/** 项目层是按工作区路径索引的一张表，逐项校验；读坏的条目直接丢掉 */
-function asProjectLayers(value: unknown): Record<string, AgentLayer> {
+/** 工作区层是按工作区路径索引的一张表，逐项校验；读坏的条目直接丢掉 */
+function asWorkspaceLayers(value: unknown): Record<string, AgentLayer> {
   if (!value || typeof value !== "object") return {};
   const out: Record<string, AgentLayer> = {};
   for (const [key, layer] of Object.entries(value as Record<string, unknown>)) {
@@ -403,9 +403,9 @@ function readSaved(): Settings {
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
     agentPrimary: asString(raw.agentPrimary, DEFAULTS.agentPrimary),
-    // 老版本的设置里没有这两项，回落成空层 / 空表
+    // 老版本的设置里没有这两项，回落成空层 / 空表；更早的字段叫 agentProjects，兜底读旧名
     agentGlobal: asLayer(raw.agentGlobal),
-    agentProjects: asProjectLayers(raw.agentProjects),
+    agentWorkspaces: asWorkspaceLayers(raw.agentWorkspaces ?? raw.agentProjects),
     terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
@@ -545,7 +545,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       aiProviders: [],
       // 同 aiCommands：DEFAULTS 是模块级常量，层里带数组，必须换成新对象
       agentGlobal: emptyAgentLayer(),
-      agentProjects: {},
+      agentWorkspaces: {},
       // 同 aiCommands：DEFAULTS 是模块级常量，键位表也得换成新的，免得被就地改到
       shortcuts: defaultShortcuts(),
     });

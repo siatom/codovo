@@ -39,7 +39,7 @@ import {
 } from "./icons";
 
 interface ExplorerPaneProps {
-  /** 项目的全部源文件夹：每一根在树里各成一棵子树，并列显示 */
+  /** 工作区的全部工作目录：每一根在树里各成一棵子树，并列显示 */
   roots: string[];
   selected: string | null;
   /** 归一化路径 -> git 标记，行尾那个字母 */
@@ -102,7 +102,7 @@ async function copyText(text: string): Promise<boolean> {
 }
 
 interface FilterTree {
-  /** 每个源文件夹下要显示的项，按根分组 */
+  /** 每个工作目录下要显示的项，按根分组 */
   rootEntries: Map<string, FileEntry[]>;
   /** 目录绝对路径 -> 该目录下要显示的项 */
   children: Map<string, FileEntry[]>;
@@ -113,7 +113,7 @@ interface FilterTree {
 /**
  * 把命中文件的绝对路径拼回一棵树：只留通往命中项的目录和文件本身。
  * 路径全是后端给的，所以祖先目录直接按路径合成即可，不用再 listDir 一遍。
- * 多根时每条命中项按它所属的根分组，免得两条来自不同源文件夹的路径拼到一根上。
+ * 多根时每条命中项按它所属的根分组，免得两条来自不同工作目录的路径拼到一根上。
  */
 function buildFilter(roots: string[], hits: string[]): FilterTree {
   const rootEntries = new Map<string, FileEntry[]>();
@@ -169,7 +169,7 @@ export function ExplorerPane({
   onRenamed,
   onDeleted,
 }: ExplorerPaneProps) {
-  /** 每个源文件夹的顶层条目，按根分组 */
+  /** 每个工作目录的顶层条目，按根分组 */
   const [entries, setEntries] = useState<Map<string, FileEntry[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, FileEntry[]>>(new Map());
@@ -217,7 +217,7 @@ export function ExplorerPane({
   const [hits, setHits] = useState<string[] | null>(null);
   /** 过滤模式下被用户单独收起的目录 */
   const [filterCollapsed, setFilterCollapsed] = useState<Set<string>>(new Set());
-  /** 多根并列时被整块收起的源文件夹（归一化路径）。收起后只留根名那一行 */
+  /** 多根并列时被整块收起的工作目录（归一化路径）。收起后只留根名那一行 */
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
 
   const activeQuery = query.trim();
@@ -235,13 +235,13 @@ export function ExplorerPane({
 
   const focusRow = activeRow ?? selected;
 
-  /** 这个路径是不是某一个源文件夹本身 */
+  /** 这个路径是不是某一个工作目录本身 */
   const isRootPath = useCallback(
     (path: string) => roots.some((root) => pathKey(root) === pathKey(path)),
     [roots],
   );
 
-  /** 收起 / 展开一个源文件夹的整棵子树 */
+  /** 收起 / 展开一个工作目录的整棵子树 */
   const toggleRoot = useCallback((root: string) => {
     const key = pathKey(root);
     setCollapsedRoots((current) => {
@@ -252,7 +252,7 @@ export function ExplorerPane({
     });
   }, []);
 
-  // 工作区一变（换了项目、或改了项目的源文件夹），整棵树的展开状态就作废了
+  // 工作目录一变（换了工作区、或改了它的工作目录），整棵树的展开状态就作废了
   useEffect(() => {
     setExpanded(new Set());
     setChildren(new Map());
@@ -264,7 +264,7 @@ export function ExplorerPane({
     setQuery("");
     setHits(null);
     setFilterCollapsed(new Set());
-    // 源文件夹可能整个换掉了，收起的键跟着作废
+    // 工作目录可能整个换掉了，收起的键跟着作废
     setCollapsedRoots(new Set());
     // 就地改名/菜单里的那一行也属于旧工作区
     setRenaming(null);
@@ -476,7 +476,7 @@ export function ExplorerPane({
       }
       const owner = ownerRoot(roots, entry.path);
       if (!owner) {
-        setExplain({ title, text: null, error: "这个路径不在任何源文件夹里" });
+        setExplain({ title, text: null, error: "这个路径不在任何工作目录里" });
         return;
       }
 
@@ -523,7 +523,7 @@ export function ExplorerPane({
     const { path } = renaming;
     const owner = ownerRoot(roots, path);
     if (!owner) {
-      setRenameError("这个路径不在任何源文件夹里");
+      setRenameError("这个路径不在任何工作目录里");
       return;
     }
     setBusy(true);
@@ -556,7 +556,7 @@ export function ExplorerPane({
     setActionError(null);
     const owner = ownerRoot(roots, entry.path);
     if (!owner) {
-      setActionError("这个路径不在任何源文件夹里");
+      setActionError("这个路径不在任何工作目录里");
       setBusy(false);
       return;
     }
@@ -574,7 +574,7 @@ export function ExplorerPane({
     }
   }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, closeSearch]);
 
-  /** 当前已经在树里、值得跟着磁盘刷新的目录（含全部源文件夹） */
+  /** 当前已经在树里、值得跟着磁盘刷新的目录（含全部工作目录） */
   const loadedDirs = useMemo(() => {
     const keys = new Set<string>(roots.map((root) => pathKey(root)));
     for (const dir of children.keys()) keys.add(pathKey(dir));
@@ -707,7 +707,7 @@ export function ExplorerPane({
     }
     const owner = ownerRoot(roots, creating.parent);
     if (!owner) {
-      setCreateError("这个路径不在任何源文件夹里");
+      setCreateError("这个路径不在任何工作目录里");
       return;
     }
     const separator = creating.parent.includes("\\") ? "\\" : "/";
@@ -843,7 +843,7 @@ export function ExplorerPane({
   }, [filtering, filtered, roots, entries]);
 
   // 根名在树里各自有一行，header 不再重复；只有多根时才给一个总览
-  const headerTitle = roots.length > 1 ? `${roots.length} 个源文件夹` : "";
+  const headerTitle = roots.length > 1 ? `${roots.length} 个工作目录` : "";
   const headerHint = roots.map((root) => toDisplayPath(root)).join("\n");
 
   return (
@@ -946,7 +946,7 @@ export function ExplorerPane({
             {rootError}
           </p>
         )}
-        {/* 每个源文件夹各一棵子树，并列显示；只有多根时才加一行根名做分隔 */}
+        {/* 每个工作目录各一棵子树，并列显示；只有多根时才加一行根名做分隔 */}
         {groups.map((group) => {
           const collapsed = collapsedRoots.has(pathKey(group.root));
           const empty = !filtering && group.items.length === 0;
@@ -954,7 +954,7 @@ export function ExplorerPane({
             pathKey(creating.parent) === pathKey(group.root);
           return (
             <div key={group.root}>
-              {/* 每个源文件夹一行，点一下整块收起——收起只留这一行，下面连空目录提示都不画 */}
+              {/* 每个工作目录一行，点一下整块收起——收起只留这一行，下面连空目录提示都不画 */}
               <button
                 type="button"
                 onClick={() => toggleRoot(group.root)}

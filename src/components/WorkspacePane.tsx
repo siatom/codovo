@@ -18,9 +18,9 @@ import { isBlankClick } from "../lib/dom";
 import { isPathInside, pathKey } from "../lib/fs";
 import { sameTab, type DiffSource, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
-import type { Project } from "../lib/projects";
+import type { Workspace } from "../lib/workspaces";
 
-/** 交给 App 的两个 handle，供侧栏 AI CLI、编辑器浮窗路由到**当前项目**的实例 */
+/** 交给 App 的两个 handle，供侧栏 AI CLI、编辑器浮窗路由到**当前工作区**的实例 */
 export interface WorkspaceHandles {
   terminal: TerminalPaneHandle | null;
   editor: EditorPaneHandle | null;
@@ -28,10 +28,10 @@ export interface WorkspaceHandles {
 
 export type Fullscreen = "none" | "right" | "left";
 
-interface ProjectWorkspaceProps {
-  /** 这个工作区对应的项目：名字、全部源文件夹、以及当前活动根 */
-  project: Project;
-  /** 是不是当前显示的那个项目。非当前的用 `hidden` 藏着，**不卸载** */
+interface WorkspacePaneProps {
+  /** 这个工作区：名字、全部工作目录、以及当前活动根 */
+  workspace: Workspace;
+  /** 是不是当前显示的那个工作区。非当前的用 `hidden` 藏着，**不卸载** */
   visible: boolean;
   /** 全屏区域。放在 App 是因为它会连带隐藏侧边栏，属于窗口级布局 */
   fullscreen: Fullscreen;
@@ -39,30 +39,30 @@ interface ProjectWorkspaceProps {
   onToggleLeftFullscreen: () => void;
   /** 收起面板时顺带退出全屏（全屏按钮在面板里，面板收起来就点不到了） */
   onExitFullscreen: () => void;
-  /** handle 挂上 / 卸载时上报，App 按**项目 id** 存起来 */
-  onHandles: (projectId: string, handles: WorkspaceHandles) => void;
+  /** handle 挂上 / 卸载时上报，App 按**工作区 id** 存起来 */
+  onHandles: (workspaceId: string, handles: WorkspaceHandles) => void;
 }
 
 /**
- * 一个项目的右侧工作区：终端 / 智能体 + 右边栏。
+ * 一个工作区实例的右侧：终端 / 智能体 + 右边栏。
  *
- * 实例是**按项目**挂的（`key` 用项目 id）——一个项目可以有多个源文件夹，
+ * 实例是**按工作区**挂的（`key` 用工作区 id）——一个工作区可以有多个工作目录，
  * 文件树把它们并列显示；其余单根概念（终端、变更、搜索、浏览器）跟活动根走。
- * 切项目只是切 `visible`——非当前的 `display:none` 藏着、不卸载，于是终端会话、
+ * 切工作区只是切 `visible`——非当前的 `display:none` 藏着、不卸载，于是终端会话、
  * Monaco model、文件树展开态天然保留，切回来是原样。代价是这个实例的状态不能
  * 依赖「外部换 key 重置」，那套在这里会丢东西。
  */
-export function ProjectWorkspace({
-  project,
+export function WorkspacePane({
+  workspace,
   visible,
   fullscreen,
   onToggleRightFullscreen,
   onToggleLeftFullscreen,
   onExitFullscreen,
   onHandles,
-}: ProjectWorkspaceProps) {
-  /** 项目内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
-  const root = project.activeRoot;
+}: WorkspacePaneProps) {
+  /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
+  const root = workspace.activeRoot;
 
   // 编辑器标签按打开顺序排，activeTab 是当前显示的那个。
   // 标签身份是结构化的（文件 / 差异视图），不能只拿路径当键，见 lib/tabs.ts
@@ -73,23 +73,23 @@ export function ProjectWorkspace({
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(false);
 
-  // 项目内换了活动根（比如把另一个文件夹设为主要），右栏模块跟着换成那个根上次看的。
+  // 工作区内换了活动根（比如把另一个工作目录设为主要），右栏模块跟着换成那个根上次看的。
   // 实例不重建，所以初始值那一次不会重跑，得显式同步
   useEffect(() => {
     setTool(readTool(root));
   }, [root]);
 
-  // 只有当前显示的项目需要轮询 git，其余的一直在跑就是白烧 CPU。
-  // 一个项目可能挂着多个源文件夹，每个根都是一个独立的仓库，各轮各的
-  const git = useGitStatus(project.roots, visible);
+  // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU。
+  // 一个工作区可能挂着多个工作目录，每个根都是一个独立的仓库，各轮各的
+  const git = useGitStatus(workspace.roots, visible);
   const { settings } = useSettings();
 
   // 变更面板按根分组，每根挂一个完整的面板，各自拿自己的控制器
   const gitByRoot = useMemo(() => {
     const out: Record<string, GitController> = {};
-    for (const item of project.roots) out[item] = controllerOf(git, item);
+    for (const item of workspace.roots) out[item] = controllerOf(git, item);
     return out;
-  }, [git, project.roots]);
+  }, [git, workspace.roots]);
 
   const gitReady = git.isRepo;
   // 设置里关掉的模块不上图标条。顺序以图标条的注册表为准，加模块只要往那边加一条
@@ -148,17 +148,17 @@ export function ProjectWorkspace({
     [fullscreen],
   );
 
-  /** AI CLI 的入口挂在侧边栏的项目行上，命令要落到当前项目终端那边的活动会话里 */
+  /** AI CLI 的入口挂在侧边栏的工作区行上，命令要落到当前工作区终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
   /** 搜索替换要指挥编辑器保存 / 重载 / 定位，这几件事只有它自己知道怎么做 */
   const editorRef = useRef<EditorPaneHandle>(null);
 
-  // handle 交回 App：侧栏的命令、编辑器的浮窗都得打在**当前项目**的实例上。
+  // handle 交回 App：侧栏的命令、编辑器的浮窗都得打在**当前工作区**的实例上。
   // 用回调 ref 上报，不能靠 effect——ref 变化不会触发渲染
   const handlesRef = useRef<WorkspaceHandles>({ terminal: null, editor: null });
   const reportHandles = useCallback(() => {
-    onHandles(project.id, { ...handlesRef.current });
-  }, [project.id, onHandles]);
+    onHandles(workspace.id, { ...handlesRef.current });
+  }, [workspace.id, onHandles]);
 
   const setTerminalHandle = useCallback(
     (handle: TerminalPaneHandle | null) => {
@@ -376,7 +376,7 @@ export function ProjectWorkspace({
                   first={
                     <ToolPane
                       tool={activeTool}
-                      roots={project.roots}
+                      roots={workspace.roots}
                       visible={visible}
                       selected={activeTab?.kind === "file" ? activeTab.path : null}
                       gitByRoot={gitByRoot}
@@ -399,7 +399,7 @@ export function ProjectWorkspace({
                     <EditorPane
                       ref={setEditorHandle}
                       root={root}
-                      roots={project.roots}
+                      roots={workspace.roots}
                       visible={visible}
                       tabs={openTabs}
                       active={activeTab}
