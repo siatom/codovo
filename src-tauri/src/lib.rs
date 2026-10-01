@@ -39,7 +39,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             // 关窗一律先拦下：界面还没告诉我们是收进托盘还是真退出。判断依据
-            // （开着几个项目、用户是不是勾了「不再提醒」）全在前端，后端只管转发
+            // （开着几个工作区、用户是不是勾了「不再提醒」）全在前端，后端只管转发
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.emit("app://close-requested", ());
@@ -51,9 +51,9 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             shells::shell_list,
-            fs_api::project_activate,
-            fs_api::project_register,
-            fs_api::project_close,
+            fs_api::workspace_activate,
+            fs_api::workspace_register,
+            fs_api::workspace_close,
             fs_api::fs_list_dir,
             fs_api::fs_search_files,
             fs_api::fs_search_content,
@@ -132,7 +132,7 @@ pub fn run() {
                 if let Some(state) = app.try_state::<pty::PtyState>() {
                     state.kill_all();
                 }
-                // 智能体是常驻的 opencode 子进程，退出时必须带走（每个项目一个）
+                // 智能体是常驻的 opencode 子进程，退出时必须带走（每个工作区一个）
                 if let Some(state) = app.try_state::<agent::AgentState>() {
                     state.kill_all();
                 }

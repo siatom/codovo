@@ -22,8 +22,8 @@ struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    /// 这个会话属于哪个项目（工作区根）。关闭项目时按它收摊，否则 shell 会在后台
-    /// 留下；空串表示不属于任何项目（比如没选工作区时开的终端）。
+    /// 这个会话属于哪个工作区（工作区根）。关闭工作区时按它收摊，否则 shell 会在后台
+    /// 留下；空串表示不属于任何工作区（比如没选工作区时开的终端）。
     owner: String,
 }
 
@@ -57,9 +57,9 @@ impl PtyState {
         }
     }
 
-    /// 关闭项目时调用：只收这个项目开的 shell。PTY 池是全局的（会话按 id 区分），
-    /// 但归属项目记在 `owner` 上，不然项目关掉后 shell 还挂在后台。
-    pub fn kill_project(&self, root: &str) -> usize {
+    /// 关闭工作区时调用：只收这个工作区开的 shell。PTY 池是全局的（会话按 id 区分），
+    /// 但归属工作区记在 `owner` 上，不然工作区关掉后 shell 还挂在后台。
+    pub fn kill_workspace(&self, root: &str) -> usize {
         let mut sessions = match self.inner.sessions.lock() {
             Ok(s) => s,
             Err(_) => return 0,

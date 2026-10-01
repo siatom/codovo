@@ -4,7 +4,7 @@
 //! CORS 头，直连必被拦；而且密钥和网络调用留在 Rust 侧，和 `ai.rs` 的既定做法一致。
 //!
 //! 进程模型：一个窗口一个 opencode 进程，cwd 就是该窗口的工作区根。懒启动（用户第一次
-//! 切到智能体 tab 才起），关窗或退出应用时杀掉。同项目开两个窗口会起两个进程，
+//! 切到智能体 tab 才起），关窗或退出应用时杀掉。同工作区开两个窗口会起两个进程，
 //! 各自监听端口、各自一份配置目录，互不干扰。
 
 use std::collections::{HashMap, VecDeque};
@@ -23,12 +23,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::dev;
 use crate::fs_api::FsState;
 
-/// SSE 事件推给前端用的事件名。载荷里带着项目 root，前端据此路由到对应项目的界面。
+/// SSE 事件推给前端用的事件名。载荷里带着工作区 root，前端据此路由到对应工作区的界面。
 pub const EVENT_NAME: &str = "agent-event";
 /// 子进程自己退出（崩溃、被杀）时推的事件，前端据此提示重启。
 pub const EXIT_EVENT: &str = "agent-exit";
 
-/// 推给前端的事件载荷。单窗口下同时有多个项目在跑，不带 root 就分不清是谁的事件。
+/// 推给前端的事件载荷。单窗口下同时有多个工作区在跑，不带 root 就分不清是谁的事件。
 #[derive(Serialize, Clone)]
 struct TaggedEvent {
     root: String,
@@ -207,7 +207,7 @@ impl ProviderSpec {
 }
 
 /// 前端传进来的配置。提供商列表和默认模型来自「设置 → 智能体 → 模型提供商」；
-/// 规则 / 记忆 / 技能 / Agents 是前端把「全局 + 当前项目」两层合并后的生效值。
+/// 规则 / 记忆 / 技能 / Agents 是前端把「全局 + 当前工作区」两层合并后的生效值。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
@@ -554,7 +554,7 @@ fn unwrap_data(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// 一个项目的智能体运行槽位。克隆给 SSE 任务和退出轮询线程持有——
+/// 一个工作区的智能体运行槽位。克隆给 SSE 任务和退出轮询线程持有——
 /// 它俩要独立于命令调用存活，不能借用 `AgentState`。
 #[derive(Clone)]
 struct Slot {
@@ -562,7 +562,7 @@ struct Slot {
     generation: Arc<AtomicU64>,
 }
 
-/// 进程池，**按项目 root 分片**：一个项目一个 opencode 进程，切走的项目继续跑。
+/// 进程池，**按工作区 root 分片**：一个工作区一个 opencode 进程，切走的工作区继续跑。
 pub struct AgentState {
     slots: Mutex<HashMap<String, Slot>>,
 }
@@ -574,7 +574,7 @@ impl AgentState {
         }
     }
 
-    /// 取（必要时创建）某项目的槽位。锁被毒掉也照常用内部值——
+    /// 取（必要时创建）某工作区的槽位。锁被毒掉也照常用内部值——
     /// 这里没有跨字段的不变式，一次 panic 不该让整个智能体功能瘫掉。
     fn slot(&self, root: &str) -> Slot {
         let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
@@ -597,8 +597,8 @@ impl AgentState {
             .cloned()
     }
 
-    /// 收掉某个项目的 opencode 进程并删掉它的配置目录。
-    pub fn kill_project(&self, root: &str) {
+    /// 收掉某个工作区的 opencode 进程并删掉它的配置目录。
+    pub fn kill_workspace(&self, root: &str) {
         let removed = self
             .slots
             .lock()
@@ -611,7 +611,7 @@ impl AgentState {
 
     /// 应用退出时调用，别留下游离的 opencode 进程。
     pub fn kill_all(&self) {
-        // 先取出 root 列表再逐个收，别持着锁去调 kill_project（它会再取一次锁）
+        // 先取出 root 列表再逐个收，别持着锁去调 kill_workspace（它会再取一次锁）
         let roots: Vec<String> = self
             .slots
             .lock()
@@ -620,7 +620,7 @@ impl AgentState {
             .cloned()
             .collect();
         for root in roots {
-            self.kill_project(&root);
+            self.kill_workspace(&root);
         }
     }
 }
@@ -1066,7 +1066,7 @@ fn truncate(text: &str, max_chars: usize) -> String {
 /// 拿当前实例的端口、口令、接口代次。每个命令都要这三样：
 /// 端口拼 URL、口令做认证（只有 v2 用得上）、协议决定走哪条路由。
 fn current_endpoint(state: &AgentState, root: &str) -> Result<(Protocol, u16, String), String> {
-    // 只查已有槽位：没启动过的项目不在这里，也就不必凭空建一个
+    // 只查已有槽位：没启动过的工作区不在这里，也就不必凭空建一个
     let slot = state
         .peek(root)
         .ok_or_else(|| "智能体服务还没启动".to_string())?;
@@ -1376,9 +1376,9 @@ fn is_current(inner: &Arc<Mutex<Option<Running>>>, generation: u64) -> bool {
 
 // ---- 命令 ----
 
-/// 项目的配置目录名：root 是完整路径，不能直接当目录名——把非法字符换成 `_`，
+/// 工作区的配置目录名：root 是完整路径，不能直接当目录名——把非法字符换成 `_`，
 /// 再缀一段稳定 hash 保证唯一（截断之后也不会撞）。
-fn project_dir_name(root: &Path) -> String {
+fn workspace_dir_name(root: &Path) -> String {
     let mut safe: String = root
         .to_string_lossy()
         .chars()
@@ -1402,7 +1402,7 @@ fn stable_hash(path: &Path) -> u64 {
     hash
 }
 
-/// 启动智能体服务。幂等：同一个项目已经在跑就直接返回现有信息。
+/// 启动智能体服务。幂等：同一个工作区已经在跑就直接返回现有信息。
 #[tauri::command]
 pub async fn agent_start(
     app: AppHandle,
@@ -1455,14 +1455,14 @@ pub async fn agent_start(
             check_port(config.port)?
         };
 
-        // 配置目录按项目分开：共用一份会让两个 opencode 进程争用同一批文件，
-        // 而且收掉某个项目时的 remove_dir_all 会把另一个还在用的目录一起删掉
+        // 配置目录按工作区分开：共用一份会让两个 opencode 进程争用同一批文件，
+        // 而且收掉某个工作区时的 remove_dir_all 会把另一个还在用的目录一起删掉
         let config_dir = app
             .path()
             .app_config_dir()
             .map_err(|e| format!("拿不到配置目录: {e}"))?
             .join("opencode")
-            .join(project_dir_name(&cwd));
+            .join(workspace_dir_name(&cwd));
         write_config(&config_dir, &config)?;
 
         let password = random_password();
@@ -1503,8 +1503,8 @@ pub async fn agent_start(
     let (protocol, version) = match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
         Ok(found) => found,
         Err(reason) => {
-            // 只收本项目这一份：探测失败的责任不该由别的项目的智能体承担
-            state.kill_project(&root);
+            // 只收本工作区这一份：探测失败的责任不该由别的工作区的智能体承担
+            state.kill_workspace(&root);
             return Err(reason);
         }
     };
@@ -1550,10 +1550,10 @@ pub fn agent_status(state: tauri::State<'_, AgentState>, root: String) -> AgentS
     }
 }
 
-/// 停掉某个项目的服务。关闭项目时调。
+/// 停掉某个工作区的服务。关闭工作区时调。
 #[tauri::command]
 pub fn agent_stop(state: tauri::State<'_, AgentState>, root: String) {
-    state.kill_project(&root);
+    state.kill_workspace(&root);
 }
 
 /// 建一个会话。v2 把返回包在 `{data: ...}` 里，拆掉再给前端——
@@ -1605,7 +1605,7 @@ pub async fn agent_messages(
     Ok(protocol.unwrap(messages))
 }
 
-/// 列出所有会话。opencode 那边是全局存的、跨项目混在一起，调用方自己按 directory 过滤。
+/// 列出所有会话。opencode 那边是全局存的、跨工作区混在一起，调用方自己按 directory 过滤。
 ///
 /// v2 是游标分页（`{data, cursor}`），这里只取第一页、丢掉 cursor——界面上本来就
 /// 只列最近一批，为此引入分页状态不划算。

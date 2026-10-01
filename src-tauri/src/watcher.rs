@@ -30,12 +30,12 @@ enum Signal {
     Stop,
 }
 
-/// 当前项目的目录监听。切项目时整体换掉。
+/// 当前工作区的目录监听。切工作区时整体换掉。
 ///
-/// 一个项目可能挂多个源文件夹，所以这里是一**组**根、而不是一个：每个根各有一套
+/// 一个工作区可能挂多个工作目录，所以这里是一**组**根、而不是一个：每个根各有一套
 /// 监听和防抖线程，否则后加的根会把先加的顶掉，文件树只有最后一根是活的。
 pub struct WatchState {
-    /// 连根一起记着：关闭项目时要据此判断该不该停，别停了别人的
+    /// 连根一起记着：关闭工作区时要据此判断该不该停，别停了别人的
     current: Mutex<Vec<(PathBuf, Watch)>>,
 }
 
@@ -53,9 +53,9 @@ impl WatchState {
         }
     }
 
-    /// 盯着这一组根（一个项目的全部源文件夹）。
+    /// 盯着这一组根（一个工作区的全部工作目录）。
     ///
-    /// 整体替换当前监听：切项目时旧的逐个停掉，免得旧根目录上的事件继续发给已经切
+    /// 整体替换当前监听：切工作区时旧的逐个停掉，免得旧根目录上的事件继续发给已经切
     /// 过去的界面。单个根起不来（目录被删了等）只跳过它，不妨碍其余根。
     pub fn watch_roots(&self, app: AppHandle, roots: &[PathBuf]) {
         let fresh: Vec<(PathBuf, Watch)> = roots
@@ -86,7 +86,7 @@ impl WatchState {
     }
 
     /// 关掉某一根的监听。**不在当前监听集合里的根什么都不做**——
-    /// 否则关掉一个后台项目会把当前项目的文件树刷新一起停掉。
+    /// 否则关掉一个后台工作区会把当前工作区的文件树刷新一起停掉。
     pub fn stop_if(&self, root: &Path) {
         if let Ok(mut inner) = self.current.lock() {
             let mut kept = Vec::with_capacity(inner.len());
@@ -104,7 +104,7 @@ impl WatchState {
 
 /// 为一根建一套监听：notify 的 watcher + 一个攒批的防抖线程。
 ///
-/// 拆出来是因为一个项目可能挂多个根——每组各自持有自己的 `event_root` 做归属过滤，
+/// 拆出来是因为一个工作区可能挂多个根——每组各自持有自己的 `event_root` 做归属过滤，
 /// 共用一个 watcher 的话就分不清事件落在哪个根上了。
 fn start_watch(app: &AppHandle, root: &Path) -> Result<Watch, String> {
     let (tx, rx) = mpsc::channel::<Signal>();

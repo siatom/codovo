@@ -21,9 +21,9 @@ pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)
 }
 
-/// 用户打开过的项目根（canonical 路径）。
+/// 用户打开过的工作区根（canonical 路径）。
 ///
-/// 单窗口下会同时存在多个项目，所以命令一律显式带上 `root`；但前端传来的路径
+/// 单窗口下会同时存在多个工作区，所以命令一律显式带上 `root`；但前端传来的路径
 /// 不可信，只有在这里登记过的才算数——否则等于把任意目录交给前端去读写，沙箱白做。
 pub struct FsState {
     known: Mutex<HashSet<PathBuf>>,
@@ -36,7 +36,7 @@ impl FsState {
         }
     }
 
-    /// 登记一个项目根（统一 canonical 化后返回）。前端「打开项目」和切换项目都走这里。
+    /// 登记一个工作区根（统一 canonical 化后返回）。前端「打开工作区」和切换工作区都走这里。
     ///
     /// 存进去的路径带不带 `\\?\` 前缀、大小写对不对，会直接决定 `resolve` 的前缀校验
     /// 过不过，所以不能在调用处各写各的。
@@ -56,11 +56,11 @@ impl FsState {
         if known.contains(&candidate) {
             Ok(candidate)
         } else {
-            Err(format!("未登记的项目目录: {raw}"))
+            Err(format!("未登记的工作区目录: {raw}"))
         }
     }
 
-    /// 关闭项目时把根从白名单摘掉，别让它无限涨
+    /// 关闭工作区时把根从白名单摘掉，别让它无限涨
     pub(crate) fn forget(&self, root: &str) {
         if let Ok(mut known) = self.known.lock() {
             known.remove(Path::new(root));
@@ -103,7 +103,7 @@ fn canonical(path: PathBuf) -> PathBuf {
     simplify(path.canonicalize().unwrap_or_else(|_| normalize(&path)))
 }
 
-/// 前端传来的路径一律视为不可信：解析后必须落在**这个项目**的根内。
+/// 前端传来的路径一律视为不可信：解析后必须落在**这个工作区**的根内。
 ///
 /// 已存在的路径直接 canonicalize（会跟随软链接，能挡住"工作区里放一个指向
 /// 外部的软链接"这种逃逸）。路径（或它的若干层父目录）还不存在时，向上找到
@@ -176,7 +176,7 @@ pub struct ImageContent {
     too_large: bool,
 }
 
-/// 打开 / 切换项目：登记这个项目的**全部源文件夹**，并把目录监听整体换成这一组。
+/// 打开 / 切换工作区：登记这个工作区的**全部工作目录**，并把目录监听整体换成这一组。
 ///
 /// 一次收一组而不是逐个调，是因为监听是「整组替换」的：逐个来的话后一个根会把前一个
 /// 顶掉，文件树只有最后一根是活的。返回 canonical 后的路径列表，顺序跟传入一致
@@ -184,7 +184,7 @@ pub struct ImageContent {
 ///
 /// 监听失败不影响用——文件树还有刷新按钮——所以只吞掉错误，不把切换搞失败。
 #[tauri::command]
-pub fn project_activate(
+pub fn workspace_activate(
     app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
     watch: tauri::State<'_, crate::watcher::WatchState>,
@@ -202,12 +202,12 @@ pub fn project_activate(
     Ok(resolved.iter().map(|root| display(root)).collect())
 }
 
-/// 只登记这一组根、**不换目录监听**：编辑一个「开着、但不是当前显示」的项目时用。
+/// 只登记这一组根、**不换目录监听**：编辑一个「开着、但不是当前显示」的工作区时用。
 ///
-/// 监听只跟当前项目（切过去时才由 `project_activate` 整体换），所以给后台项目改
-/// 源文件夹时不能顺手 activate——那会把监听抢到它身上，当前项目的文件树就不刷了。
+/// 监听只跟当前工作区（切过去时才由 `workspace_activate` 整体换），所以给后台工作区改
+/// 工作目录时不能顺手 activate——那会把监听抢到它身上，当前工作区的文件树就不刷了。
 #[tauri::command]
-pub fn project_register(
+pub fn workspace_register(
     state: tauri::State<'_, FsState>,
     roots: Vec<String>,
 ) -> Result<Vec<String>, String> {
@@ -222,10 +222,10 @@ pub fn project_register(
     Ok(resolved.iter().map(|root| display(root)).collect())
 }
 
-/// 关闭一个项目：收掉它每个源文件夹的终端与 opencode 进程、停掉各自的目录监听
-/// （只在正听着它时），并把根从白名单摘掉。前端「移除项目」和「关闭项目」都走这里。
+/// 关闭一个工作区：收掉它每个工作目录的终端与 opencode 进程、停掉各自的目录监听
+/// （只在正听着它时），并把根从白名单摘掉。前端「移除工作区」和「关闭工作区」都走这里。
 #[tauri::command]
-pub fn project_close(
+pub fn workspace_close(
     state: tauri::State<'_, FsState>,
     watch: tauri::State<'_, crate::watcher::WatchState>,
     pty: tauri::State<'_, crate::pty::PtyState>,
@@ -233,8 +233,8 @@ pub fn project_close(
     roots: Vec<String>,
 ) {
     for root in &roots {
-        agent.kill_project(root);
-        let _ = pty.kill_project(root);
+        agent.kill_workspace(root);
+        let _ = pty.kill_workspace(root);
         watch.stop_if(Path::new(root));
         state.forget(root);
     }
@@ -1083,22 +1083,22 @@ mod tests {
         (state, root)
     }
 
-    /// 测试里只登记一个项目，取它的根当沙箱
-    fn project_root(state: &FsState) -> PathBuf {
+    /// 测试里只登记一个工作区，取它的根当沙箱
+    fn workspace_root(state: &FsState) -> PathBuf {
         state
             .known
             .lock()
             .unwrap()
             .iter()
             .next()
-            .expect("测试里应该已经登记了项目")
+            .expect("测试里应该已经登记了工作区")
             .clone()
     }
 
     #[test]
     fn rejects_everything_before_a_workspace_is_chosen() {
         let state = FsState::new();
-        // 一个项目都没登记过：连根都取不出来，自然也没有可操作的沙箱
+        // 一个工作区都没登记过：连根都取不出来，自然也没有可操作的沙箱
         assert!(state.checked_root("D:\\anything.txt").is_err());
     }
 
@@ -1106,7 +1106,7 @@ mod tests {
     fn rejects_parent_traversal() {
         let (state, root) = temp_state();
         let outside = root.join("secret.txt");
-        assert!(resolve(&project_root(&state), outside.to_str().unwrap()).is_err());
+        assert!(resolve(&workspace_root(&state), outside.to_str().unwrap()).is_err());
         fs::remove_dir_all(&root).ok();
     }
 
@@ -1117,15 +1117,15 @@ mod tests {
         // 父目录还不存在也放行：git 报出的"整个目录被删"就是这个形状
         // （`D src/old/a.txt`，而 src/old 已经没了），拦在这里会让删除类改动
         // 没法暂存。真正的失败留给 OS——写文件时父目录不存在会报错。
-        let nested = project_root(&state).join("nested").join("new.txt");
+        let nested = workspace_root(&state).join("nested").join("new.txt");
         assert_eq!(
-            resolve(&project_root(&state), nested.to_str().unwrap()).unwrap(),
+            resolve(&workspace_root(&state), nested.to_str().unwrap()).unwrap(),
             nested
         );
 
-        let flat = project_root(&state).join("new.txt");
+        let flat = workspace_root(&state).join("new.txt");
         assert_eq!(
-            resolve(&project_root(&state), flat.to_str().unwrap()).unwrap(),
+            resolve(&workspace_root(&state), flat.to_str().unwrap()).unwrap(),
             flat
         );
         fs::remove_dir_all(&root).ok();
@@ -1134,7 +1134,7 @@ mod tests {
     #[test]
     fn lists_dotfiles_and_puts_dirs_first() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         fs::write(workspace.join(".env"), "A=1").unwrap();
         fs::create_dir_all(workspace.join(".github")).unwrap();
         fs::write(workspace.join("main.rs"), "").unwrap();
@@ -1150,24 +1150,24 @@ mod tests {
     #[test]
     fn creates_a_file_and_a_directory() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
 
         let file = workspace.join("new.txt");
-        create_file_at(&project_root(&state), file.to_str().unwrap()).unwrap();
+        create_file_at(&workspace_root(&state), file.to_str().unwrap()).unwrap();
         assert!(file.is_file());
         assert_eq!(fs::read_to_string(&file).unwrap(), "", "新文件应该是空的");
 
         let dir = workspace.join("src");
-        create_directory_at(&project_root(&state), dir.to_str().unwrap()).unwrap();
+        create_directory_at(&workspace_root(&state), dir.to_str().unwrap()).unwrap();
         assert!(dir.is_dir());
         // 已有目录里再建一层文件
         let nested = dir.join("main.rs");
-        create_file_at(&project_root(&state), nested.to_str().unwrap()).unwrap();
+        create_file_at(&workspace_root(&state), nested.to_str().unwrap()).unwrap();
         assert!(nested.is_file());
 
         // 中文和空格也要能建
         let spaced = workspace.join("我的 笔记.md");
-        create_file_at(&project_root(&state), spaced.to_str().unwrap()).unwrap();
+        create_file_at(&workspace_root(&state), spaced.to_str().unwrap()).unwrap();
         assert!(spaced.is_file());
         fs::remove_dir_all(&root).ok();
     }
@@ -1175,12 +1175,12 @@ mod tests {
     #[test]
     fn refuses_to_overwrite_an_existing_target() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("a.txt");
         fs::write(&file, "original").unwrap();
 
         assert!(
-            create_file_at(&project_root(&state), file.to_str().unwrap()).is_err(),
+            create_file_at(&workspace_root(&state), file.to_str().unwrap()).is_err(),
             "不能覆盖已有文件"
         );
         assert_eq!(
@@ -1192,7 +1192,7 @@ mod tests {
         let dir = workspace.join("src");
         fs::create_dir(&dir).unwrap();
         assert!(
-            create_directory_at(&project_root(&state), dir.to_str().unwrap()).is_err(),
+            create_directory_at(&workspace_root(&state), dir.to_str().unwrap()).is_err(),
             "不能覆盖已有目录"
         );
         fs::remove_dir_all(&root).ok();
@@ -1201,28 +1201,28 @@ mod tests {
     #[test]
     fn rejects_a_missing_or_non_directory_parent() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
 
         // 父目录不存在：创建类操作用的是词法归一化，resolve 放行，由这一层拦住
         let orphan = workspace.join("nope").join("a.txt");
-        assert!(create_file_at(&project_root(&state), orphan.to_str().unwrap()).is_err());
+        assert!(create_file_at(&workspace_root(&state), orphan.to_str().unwrap()).is_err());
 
         // 父路径是个文件
         let file = workspace.join("a.txt");
         fs::write(&file, "").unwrap();
         let below_file = file.join("a.txt");
-        assert!(create_file_at(&project_root(&state), below_file.to_str().unwrap()).is_err());
+        assert!(create_file_at(&workspace_root(&state), below_file.to_str().unwrap()).is_err());
         fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn create_rejects_traversal_and_invalid_names() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
 
         let outside = root.join("outside.txt");
         assert!(
-            create_file_at(&project_root(&state), outside.to_str().unwrap()).is_err(),
+            create_file_at(&workspace_root(&state), outside.to_str().unwrap()).is_err(),
             "越界要拒绝"
         );
         assert!(!outside.exists());
@@ -1230,7 +1230,7 @@ mod tests {
         for bad in ["", ".", ".."] {
             let target = format!("{}/{}", workspace.to_string_lossy(), bad);
             assert!(
-                create_file_at(&project_root(&state), &target).is_err(),
+                create_file_at(&workspace_root(&state), &target).is_err(),
                 "{bad:?} 不该被当成名称"
             );
         }
@@ -1239,7 +1239,7 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         assert!(
             create_directory_at(
-                &project_root(&state),
+                &workspace_root(&state),
                 dir.join("a").join("b").to_str().unwrap()
             )
             .is_err(),
@@ -1251,12 +1251,12 @@ mod tests {
     #[test]
     fn renames_a_file_and_a_directory() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
 
         let file = workspace.join("old.txt");
         fs::write(&file, "hi").unwrap();
         let renamed =
-            rename_entry(&project_root(&state), file.to_str().unwrap(), "new.txt").unwrap();
+            rename_entry(&workspace_root(&state), file.to_str().unwrap(), "new.txt").unwrap();
         assert_eq!(renamed, display(&workspace.join("new.txt")));
         assert!(!file.exists());
         assert_eq!(
@@ -1268,7 +1268,7 @@ mod tests {
         let dir = workspace.join("src");
         fs::create_dir(&dir).unwrap();
         fs::write(dir.join("main.rs"), "").unwrap();
-        let moved = rename_entry(&project_root(&state), dir.to_str().unwrap(), "app").unwrap();
+        let moved = rename_entry(&workspace_root(&state), dir.to_str().unwrap(), "app").unwrap();
         assert!(
             workspace.join("app").join("main.rs").is_file(),
             "目录要连内容一起搬"
@@ -1277,7 +1277,7 @@ mod tests {
 
         // 名称带首尾空格是允许的（trim 掉），中文和空格也要能改
         let spaced = rename_entry(
-            &project_root(&state),
+            &workspace_root(&state),
             workspace.join("new.txt").to_str().unwrap(),
             "我的 笔记.md",
         )
@@ -1289,44 +1289,44 @@ mod tests {
     #[test]
     fn rename_refuses_bad_names_and_occupied_targets() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("a.txt");
         fs::write(&file, "a").unwrap();
         fs::write(workspace.join("b.txt"), "b").unwrap();
 
         for bad in ["", "  ", ".", "..", "sub/c.txt", r"sub\c.txt"] {
             assert!(
-                rename_entry(&project_root(&state), file.to_str().unwrap(), bad).is_err(),
+                rename_entry(&workspace_root(&state), file.to_str().unwrap(), bad).is_err(),
                 "{bad:?} 不该被当成名称"
             );
         }
         assert!(file.exists(), "校验失败时原文件一个字节都不该动");
 
         assert!(
-            rename_entry(&project_root(&state), file.to_str().unwrap(), "b.txt").is_err(),
+            rename_entry(&workspace_root(&state), file.to_str().unwrap(), "b.txt").is_err(),
             "不能覆盖同名文件"
         );
         assert_eq!(fs::read_to_string(workspace.join("b.txt")).unwrap(), "b");
 
         // 改名不能跨目录：名称里带分隔符已经被上面挡掉了，越界的写法也一并拒绝
         let outside = root.join("outside.txt");
-        assert!(rename_entry(&project_root(&state), outside.to_str().unwrap(), "x.txt").is_err());
+        assert!(rename_entry(&workspace_root(&state), outside.to_str().unwrap(), "x.txt").is_err());
 
         // 工作区根不能被改名，否则前后端的沙箱边界就对不上了
-        assert!(rename_entry(&project_root(&state), workspace.to_str().unwrap(), "other").is_err());
+        assert!(rename_entry(&workspace_root(&state), workspace.to_str().unwrap(), "other").is_err());
         fs::remove_dir_all(&root).ok();
     }
 
     #[test]
     fn rename_only_changes_the_case_of_a_name() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("readme.md");
         fs::write(&file, "hi").unwrap();
 
         // Windows 上 exists() 会说"目标已存在"，但它就是自己，不该被拦下
         let renamed =
-            rename_entry(&project_root(&state), file.to_str().unwrap(), "README.md").unwrap();
+            rename_entry(&workspace_root(&state), file.to_str().unwrap(), "README.md").unwrap();
         assert_eq!(renamed.to_lowercase(), display(&file).to_lowercase());
         assert!(workspace.join("README.md").exists() || workspace.join("readme.md").exists());
         fs::remove_dir_all(&root).ok();
@@ -1335,25 +1335,25 @@ mod tests {
     #[test]
     fn deletes_files_and_directories_recursively() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
 
         let file = workspace.join("a.txt");
         fs::write(&file, "").unwrap();
-        delete_entry(&project_root(&state), file.to_str().unwrap()).unwrap();
+        delete_entry(&workspace_root(&state), file.to_str().unwrap()).unwrap();
         assert!(!file.exists());
 
         let dir = workspace.join("src");
         fs::create_dir_all(dir.join("deep")).unwrap();
         fs::write(dir.join("deep").join("main.rs"), "").unwrap();
-        delete_entry(&project_root(&state), dir.to_str().unwrap()).unwrap();
+        delete_entry(&workspace_root(&state), dir.to_str().unwrap()).unwrap();
         assert!(!dir.exists(), "目录要连里面的文件一起删掉");
 
         // 越界和工作区根都不许删
         let outside = root.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        assert!(delete_entry(&project_root(&state), outside.to_str().unwrap()).is_err());
+        assert!(delete_entry(&workspace_root(&state), outside.to_str().unwrap()).is_err());
         assert!(outside.is_dir(), "越界时不能真删");
-        assert!(delete_entry(&project_root(&state), workspace.to_str().unwrap()).is_err());
+        assert!(delete_entry(&workspace_root(&state), workspace.to_str().unwrap()).is_err());
         assert!(workspace.is_dir());
         fs::remove_dir_all(&root).ok();
     }
@@ -1361,7 +1361,7 @@ mod tests {
     #[test]
     fn searches_file_names_and_skips_heavy_dirs() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         fs::create_dir_all(workspace.join("src")).unwrap();
         fs::write(workspace.join("src").join("Main.rs"), "").unwrap();
         fs::write(workspace.join("README.md"), "").unwrap();
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn search_ignores_an_empty_needle() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         fs::write(workspace.join("a.txt"), "").unwrap();
 
         assert!(search_files(&workspace, "").is_empty());
@@ -1403,23 +1403,23 @@ mod tests {
 
         #[cfg(unix)]
         let linked =
-            std::os::unix::fs::symlink(&outside, project_root(&state).join("link")).is_ok();
+            std::os::unix::fs::symlink(&outside, workspace_root(&state).join("link")).is_ok();
         #[cfg(windows)]
         let linked =
-            std::os::windows::fs::symlink_dir(&outside, project_root(&state).join("link")).is_ok();
+            std::os::windows::fs::symlink_dir(&outside, workspace_root(&state).join("link")).is_ok();
 
         // 建软链接通常需要权限，建不出来就跳过
         if linked {
-            let escaping = project_root(&state).join("link").join("pwned.txt");
-            assert!(resolve(&project_root(&state), escaping.to_str().unwrap()).is_err());
+            let escaping = workspace_root(&state).join("link").join("pwned.txt");
+            assert!(resolve(&workspace_root(&state), escaping.to_str().unwrap()).is_err());
 
             // 向上找祖先不能变成绕过前缀校验的后门：软链接下面的目录不存在时，
             // 拼回去的路径落在工作区外，照样要拒绝
-            let deeper = project_root(&state)
+            let deeper = workspace_root(&state)
                 .join("link")
                 .join("missing")
                 .join("pwned.txt");
-            assert!(resolve(&project_root(&state), deeper.to_str().unwrap()).is_err());
+            assert!(resolve(&workspace_root(&state), deeper.to_str().unwrap()).is_err());
         }
         fs::remove_dir_all(&root).ok();
     }
@@ -1435,7 +1435,7 @@ mod tests {
     #[test]
     fn content_search_honours_the_three_switches() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         fs::write(workspace.join("a.txt"), "Hello world\nhello there\n").unwrap();
 
         let plain = search_content(&workspace, "hello", &opts(false, false, false)).unwrap();
@@ -1479,7 +1479,7 @@ mod tests {
     #[test]
     fn whole_word_treats_chinese_as_word_characters() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         fs::write(workspace.join("cn.txt"), "中文测试\n中文\n").unwrap();
 
         let found = search_content(&workspace, "中文", &opts(false, true, false)).unwrap();
@@ -1492,7 +1492,7 @@ mod tests {
     #[test]
     fn content_search_reports_a_broken_regex() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let error = match search_content(&workspace, "a(", &opts(false, false, true)) {
             Ok(_) => panic!("非法正则不该返回结果"),
             Err(message) => message,
@@ -1504,7 +1504,7 @@ mod tests {
     #[test]
     fn content_search_skips_large_and_binary_files() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         fs::write(
             workspace.join("big.txt"),
             "x".repeat(MAX_TEXT_SIZE as usize + 1),
@@ -1524,7 +1524,7 @@ mod tests {
     #[test]
     fn replaces_one_match_and_keeps_line_endings() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("a.txt");
         fs::write(&file, "one two\r\none\r\n").unwrap();
 
@@ -1540,7 +1540,7 @@ mod tests {
     #[test]
     fn falls_back_to_the_only_match_on_that_line() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("a.txt");
         fs::write(&file, "one\n").unwrap();
 
@@ -1553,7 +1553,7 @@ mod tests {
     #[test]
     fn refuses_when_it_cannot_tell_which_match_to_replace() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("a.txt");
         fs::write(&file, "one one\n").unwrap();
 
@@ -1572,7 +1572,7 @@ mod tests {
     #[test]
     fn replaces_every_occurrence() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("a.txt");
         fs::write(&file, "one two one\n").unwrap();
         let pattern = build_pattern("one", &opts(false, false, false)).unwrap();
@@ -1586,7 +1586,7 @@ mod tests {
     #[test]
     fn refuses_to_touch_a_non_utf8_file() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let file = workspace.join("gbk.txt");
         // GBK 的「你好」：不是合法 UTF-8，也没有 NUL
         let original = vec![0xC4u8, 0xE3, 0xBA, 0xC3];
@@ -1601,14 +1601,14 @@ mod tests {
     #[test]
     fn reads_images_as_data_urls_and_rejects_other_files() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         // 内容不重要，验的是 MIME 推断和 base64 编码；扩展名故意大写
         let raw = [0x89u8, b'P', b'N', b'G'];
         let image_path = workspace.join("shot.PNG");
         fs::write(&image_path, raw).unwrap();
         fs::write(workspace.join("a.txt"), "hi").unwrap();
 
-        let image = read_image_at(&project_root(&state), image_path.to_str().unwrap()).unwrap();
+        let image = read_image_at(&workspace_root(&state), image_path.to_str().unwrap()).unwrap();
         assert!(
             image.data.starts_with("data:image/png;base64,"),
             "{}",
@@ -1626,7 +1626,7 @@ mod tests {
 
         // 文本文件不给预览：否则借这个命令能绕开 fs_read_file 的上限把二进制读出去
         let error = read_image_at(
-            &project_root(&state),
+            &workspace_root(&state),
             workspace.join("a.txt").to_str().unwrap(),
         )
         .unwrap_err();
@@ -1637,11 +1637,11 @@ mod tests {
     #[test]
     fn skips_oversized_images() {
         let (state, root) = temp_state();
-        let workspace = project_root(&state);
+        let workspace = workspace_root(&state);
         let big = workspace.join("big.png");
         fs::write(&big, vec![0u8; MAX_IMAGE_SIZE as usize + 1]).unwrap();
 
-        let image = read_image_at(&project_root(&state), big.to_str().unwrap()).unwrap();
+        let image = read_image_at(&workspace_root(&state), big.to_str().unwrap()).unwrap();
         assert!(image.too_large);
         assert!(image.data.is_empty(), "超限就别把内容编码出来");
         fs::remove_dir_all(&root).ok();
