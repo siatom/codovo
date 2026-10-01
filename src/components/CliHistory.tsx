@@ -284,7 +284,7 @@ export function CliHistory({
           而不是又一排工具按钮。收起按钮靠标题右缘——它管的就是下面这一整块，
           跟标题同排比跟选择器挤一行更顺。折叠时标题和按钮都常显 */}
       <div className="flex h-7 shrink-0 items-center gap-1 pr-2 pl-4">
-        <span className="text-[11px] font-medium tracking-wide text-fg-faint">
+        <span className="text-[12px] font-medium tracking-wide text-fg-faint">
           对话历史
         </span>
         <span className="flex-1" />

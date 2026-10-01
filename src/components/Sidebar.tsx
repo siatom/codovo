@@ -411,7 +411,7 @@ export function Sidebar({
         </button>
       </nav>
 
-      <p className="shrink-0 px-4 pt-3 pb-1 text-[11px] font-medium tracking-wide text-fg-faint">
+      <p className="shrink-0 px-4 pt-3 pb-1 text-[13px] font-semibold tracking-wide text-fg-faint">
         工作区
       </p>
       <ul className="min-h-0 flex-1 overflow-auto px-2 pb-2">
