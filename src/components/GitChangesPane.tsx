@@ -679,19 +679,18 @@ function ChangeRow({
         title={toDisplayPath(change.path)}
         className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
       >
-        {depth !== null && (
-          <>
-            {/* 空出目录行折叠箭头的宽度，这样文件名和同层目录名左边缘对齐 */}
-            <span className="w-3 shrink-0" />
-            <span className="flex shrink-0 items-center text-fg-icon">
-              <FileTypeIcon name={name} className="h-3.5 w-3.5" />
-            </span>
-          </>
-        )}
+        {/* 树视图里空出目录行折叠箭头的宽度，文件名和同层目录名左边缘对齐；
+            列表视图没有目录行，直接顶到最左 */}
+        {depth !== null && <span className="w-3 shrink-0" />}
+        <span className="flex shrink-0 items-center text-fg-icon">
+          <FileTypeIcon name={name} className="h-3.5 w-3.5" />
+        </span>
         <span className="min-w-0 truncate text-fg-muted">{name}</span>
-        {/* 树视图里层级已经说明了在哪个目录，再补一遍目录反而啰嗦 */}
+        {/* 树视图里层级已经说明了在哪个目录，再补一遍目录反而啰嗦。
+            目录的收缩权重拉满：空间不够时先让目录消失、把宽度全留给文件名——
+            文件名才是扫列表时要认的东西，目录看不全无所谓 */}
         {depth === null && dir && (
-          <span className="min-w-0 truncate text-[11px] text-fg-faint">{dir}</span>
+          <span className="min-w-0 shrink-[999] truncate text-[11px] text-fg-faint">{dir}</span>
         )}
       </button>
       {/* 右侧这一串（操作图标 + 状态徽标）单独成组：行上的 gap-1.5 对它们太松，
@@ -699,61 +698,67 @@ function ChangeRow({
           徽标压在最后（最右）：它每行都在、按钮是悬停才显形，这样同一列的
           徽标在每行都对齐，扫下来不用左右找 */}
       <div className="flex shrink-0 items-center gap-0.5">
-        {/* 打开文件排在更右边、放弃修改在左边，中间留给暂存/取消暂存，
-            和行内既有的一串操作连起来读就是「放弃 → 暂存 → 打开」 */}
-        {canDiscard(change, staged) && (
+        {/* 行内操作 + 行数：平时收成 0 宽、藏起来，悬停或键盘聚焦到行内才撑开。
+            这样文件名能占满整行；状态字母放在这一组外面，始终对齐、不跟着动 */}
+        <div className="pointer-events-none flex w-0 shrink-0 items-center gap-0.5 overflow-hidden opacity-0 group-hover:pointer-events-auto group-hover:w-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:w-auto group-focus-within:opacity-100">
+          {/* 打开文件排在更右边、放弃修改在左边，中间留给暂存/取消暂存，
+              和行内既有的一串操作连起来读就是「放弃 → 暂存 → 打开」 */}
+          {canDiscard(change, staged) && (
+            <button
+              type="button"
+              onClick={() => onDiscard(change)}
+              disabled={busy}
+              title={staged ? "放弃修改（还原到 HEAD）" : "放弃修改（还原到暂存区）"}
+              className={ROW_DANGER}
+            >
+              <IconUndo className="h-3 w-3" />
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => onDiscard(change)}
+            onClick={() => onToggle(change.path)}
             disabled={busy}
-            title={staged ? "放弃修改（还原到 HEAD）" : "放弃修改（还原到暂存区）"}
-            className={ROW_DANGER}
-          >
-            <IconUndo className="h-3 w-3" />
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={() => onToggle(change.path)}
-          disabled={busy}
-          title={staged ? "取消暂存" : "暂存"}
-          className={ROW_ACTION}
-        >
-          {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
-        </button>
-        {exists && (
-          <button
-            type="button"
-            onClick={() => onOpenFile(change.path)}
-            title="打开文件（看完整内容，不开差异）"
+            title={staged ? "取消暂存" : "暂存"}
             className={ROW_ACTION}
           >
-            <IconPencil className="h-3 w-3" />
+            {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
           </button>
-        )}
-        {/* 行数压在操作按钮和徽标之间：悬停时按钮显形会挤动它，但它本来就是
-            靠右固定的，徽标在最右不跟着动 */}
-        <LineCounts added={added} removed={removed} />
-        <GitMarkBadge mark={mark} className="text-[10px]" />
-        {/* 逐块展开箭头压在最右端：常驻，这样徽标那一列的宽度对每行都一样。
-            不可逐块的文件补一个同宽占位——少一个箭头它们那行的徽标会左移一格 */}
-        {hunks !== undefined &&
-          (hunkable ? (
+          {exists && (
+            <button
+              type="button"
+              onClick={() => onOpenFile(change.path)}
+              title="打开文件（看完整内容，不开差异）"
+              className={ROW_ACTION}
+            >
+              <IconPencil className="h-3 w-3" />
+            </button>
+          )}
+          <LineCounts added={added} removed={removed} />
+          {/* 没展开时，逐块操作入口也藏进这一组，跟其它按钮一起悬停才出现 */}
+          {!hunkOpen && hunks !== undefined && hunkable && (
             <button
               type="button"
               onClick={() => hunks.onToggle(change.path)}
-              title={hunkOpen ? "收起逐块操作" : "展开逐块操作（逐块暂存 / 放弃）"}
+              title="展开逐块操作（逐块暂存 / 放弃）"
               className={ROW_HUNK_TOGGLE}
             >
-              {hunkOpen ? (
-                <IconChevronDown className="h-3 w-3" />
-              ) : (
-                <IconChevronRight className="h-3 w-3" />
-              )}
+              <IconChevronRight className="h-3 w-3" />
             </button>
-          ) : (
-            <span className="h-5 w-5 shrink-0" />
-          ))}
+          )}
+        </div>
+        {/* 展开着的行给箭头常驻位置：展开是这一行的状态，藏起来就看不出哪行开着。
+            压在状态字母左边，不影响字母那一列的对齐 */}
+        {hunkOpen && hunks !== undefined && (
+          <button
+            type="button"
+            onClick={() => hunks.onToggle(change.path)}
+            title="收起逐块操作"
+            className={ROW_HUNK_TOGGLE}
+          >
+            <IconChevronDown className="h-3 w-3" />
+          </button>
+        )}
+        <GitMarkBadge mark={mark} className="text-[10px]" />
       </div>
     </div>
     {hunkOpen && hunks !== undefined && (
