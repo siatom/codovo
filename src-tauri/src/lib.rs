@@ -72,6 +72,8 @@ pub fn run() {
             git::git_stage,
             git::git_unstage,
             git::git_discard,
+            git::git_file_hunks,
+            git::git_apply_patch,
             git::git_commit,
             git::git_amend,
             git::git_undo_commit,

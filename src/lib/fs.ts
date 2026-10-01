@@ -7,11 +7,13 @@ import type {
   FileContent,
   FileDiff,
   FileEntry,
+  FileHunks,
   GitBranch,
   GitCommit,
   GitCommitFile,
   GitStash,
   GitStatusPayload,
+  HunkAction,
   ImageContent,
   ReplaceResult,
   SearchOptions,
@@ -312,6 +314,26 @@ export function gitDiscard(
   source: DiscardSource,
 ): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_discard", { root, paths, source });
+}
+
+/**
+ * 一个文件未暂存侧的 hunk 列表：界面按块给「暂存 / 放弃」。
+ * 二进制、纯新增 / 删除、非 UTF-8 文本的 hunks 是空的，只能整文件操作。
+ */
+export function gitFileHunks(root: string, path: string): Promise<FileHunks> {
+  return invoke<FileHunks>("git_file_hunks", { root, path });
+}
+
+/**
+ * 应用一段补丁：`stage` 进暂存区、`discard` 从工作区撤掉。**discard 不可撤销**，
+ * 调用前先跟用户确认。patch 由界面用文件级头拼选中的 hunk 原文得到。
+ */
+export function gitApplyPatch(
+  root: string,
+  patch: string,
+  action: HunkAction,
+): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_apply_patch", { root, patch, action });
 }
 
 export function gitCommit(root: string, message: string): Promise<GitStatusPayload> {

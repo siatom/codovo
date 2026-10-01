@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -112,6 +114,40 @@ pub enum DiscardSource {
     Unstaged,
     /// 工作区 + index → HEAD，暂存的和未暂存的改动一起丢（「暂存的改动」组）
     Staged,
+}
+
+/// 一个 hunk 要往哪边落。和 DiscardSource 同一个思路：标签枚举比 bool 好读。
+#[derive(Debug, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum HunkAction {
+    /// 把这个 hunk 加进暂存区（`git apply --cached`）
+    Stage,
+    /// 把这个 hunk 从工作区丢掉（`git apply --reverse`）
+    Discard,
+}
+
+/// 一个文件里的一段改动（统一 diff 里的一个 `@@` 块）。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchHunk {
+    /// `@@ -12,6 +12,7 @@ fn foo()` 整行（去掉行尾换行），界面显示用
+    header: String,
+    /// 这个 hunk 的原文：`@@` 行 + 内容行，行尾换行原样保留。
+    /// 界面拼补丁时把它接在文件级头后面，一个字节都不改地交回给 `git apply`。
+    text: String,
+    added: u32,
+    removed: u32,
+}
+
+/// 一个未暂存文件的 hunk 列表。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHunks {
+    /// 文件级头（`diff --git` 到第一个 `@@` 之前）。拼补丁时要带上
+    header: String,
+    /// 空 = 这个文件做不了逐块操作（二进制、纯新增 / 删除、不是 UTF-8 文本），
+    /// 界面这时只给整文件操作
+    hunks: Vec<PatchHunk>,
 }
 
 /// 提交历史里的一条。
@@ -642,6 +678,108 @@ fn discard_paths(
     };
     args.extend(specs.iter().map(String::as_str));
     run_git_checked(root, &args)?;
+    status_of(root)
+}
+
+/// 把一份单文件的统一 diff 拆成「文件级头 + 各个 hunk」。
+///
+/// 按 `@@` 起始行切：它之前的是头（`diff --git` / `index` / `---` / `+++`），之后
+/// 每个 hunk 从 `@@` 行到下一个 `@@` 行为止。hunk 的内容行前缀只有空格 / `+` / `-`，
+/// `\ No newline at end of file` 以 `\` 开头，都不会被误判成新 hunk 的开始。
+///
+/// 行尾一律原样留着（含每行末尾的换行）：拼回去要一个字节不改地交给 `git apply`，
+/// 这里少一个换行补丁就对不上了。
+fn split_patch(text: &str) -> (String, Vec<PatchHunk>) {
+    let mut header = String::new();
+    let mut hunks: Vec<PatchHunk> = Vec::new();
+    let mut current: Option<PatchHunk> = None;
+
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("@@") {
+            if let Some(done) = current.take() {
+                hunks.push(done);
+            }
+            current = Some(PatchHunk {
+                header: line.trim_end_matches(['\n', '\r']).to_string(),
+                text: line.to_string(),
+                added: 0,
+                removed: 0,
+            });
+        } else if let Some(hunk) = current.as_mut() {
+            hunk.text.push_str(line);
+            match line.as_bytes().first() {
+                Some(b'+') => hunk.added += 1,
+                Some(b'-') => hunk.removed += 1,
+                _ => {}
+            }
+        } else {
+            header.push_str(line);
+        }
+    }
+    if let Some(done) = current {
+        hunks.push(done);
+    }
+    (header, hunks)
+}
+
+/// 取某个文件未暂存侧的 hunk 列表。
+///
+/// 只做未暂存侧：`git diff` 的原始输出一份两用——`--cached` 应用就是「暂存这块」，
+/// `--reverse` 应用就是「丢掉这块」，不用为两个方向各生成一份。
+///
+/// `--no-color` 是必须的，带了颜色码的补丁交给 `git apply` 会直接认不出来。
+/// 不加 `normalize_newlines`——那条链是为了让**比对**不被 CRLF 干扰，补丁必须和
+/// 工作区字节一致，归一过就 apply 不上了。
+fn file_hunks(root: &Path, path: &str) -> Result<FileHunks, String> {
+    let (_, spec) = workspace_relative(root, path)?;
+    let raw = run_git_literal(root, &["diff", "--no-color", "-U3", "--", &spec])?.unwrap_or_default();
+
+    // diff 里混进非 UTF-8 字节（文件是别的编码）就没法原样走 JSON 往返，跨过去
+    // 会变成替换字符、补丁当场失效。这种情况退回整文件操作，界面不给逐块按钮
+    let Ok(text) = String::from_utf8(raw) else {
+        return Ok(FileHunks {
+            header: String::new(),
+            hunks: Vec::new(),
+        });
+    };
+
+    let (header, hunks) = split_patch(&text);
+    Ok(FileHunks { header, hunks })
+}
+
+/// 把一段补丁应用下去：进暂存区，或者从工作区撤掉。
+///
+/// 补丁先写成临时文件再 `git apply <file>`：`run_git_raw` 的 stdin 是
+/// `Stdio::null()`，喂不进管道；改 stdin 要动所有调用方，代价比多写一个文件大。
+fn apply_patch(root: &Path, patch: &str, action: &HunkAction) -> Result<GitStatus, String> {
+    if patch.trim().is_empty() {
+        return Err("没有要应用的改动".to_string());
+    }
+
+    // 名字带上 pid + 自增序号：并发调用写同名文件会互相截断
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let file = std::env::temp_dir().join(format!(
+        "codedock-hunk-{}-{seq}.patch",
+        std::process::id()
+    ));
+    fs::write(&file, patch.as_bytes()).map_err(|reason| format!("写临时补丁失败: {reason}"))?;
+    let file_arg = file.to_string_lossy().to_string();
+
+    // `--recount` 让 git 自己数 `@@` 里的行数，不认副本里的旧计数。补丁是刚由
+    // `git diff` 生成的，本来就算得准，这里纯粹是防御——手工改过的补丁也能落下去
+    let mut args: Vec<&str> = vec!["apply", "--recount"];
+    match action {
+        HunkAction::Stage => args.push("--cached"),
+        HunkAction::Discard => args.push("--reverse"),
+    }
+    args.push("--");
+    args.push(&file_arg);
+    let result = run_git_checked(root, &args);
+
+    // 成功失败都清掉：临时文件留着除了占地方没有别的用
+    fs::remove_file(&file).ok();
+    result?;
     status_of(root)
 }
 
@@ -1416,6 +1554,27 @@ pub fn git_discard(
     source: DiscardSource,
 ) -> Result<GitStatus, String> {
     discard_paths(&state.checked_root(&root)?, &paths, &source)
+}
+
+/// 某个未暂存文件的 hunk 列表，界面据此逐个列出、逐个暂存 / 放弃。
+#[tauri::command(async)]
+pub fn git_file_hunks(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    path: String,
+) -> Result<FileHunks, String> {
+    file_hunks(&state.checked_root(&root)?, &path)
+}
+
+/// 应用一段补丁：把选中的 hunk 加进暂存区，或把工作区里的这些改动撤掉。
+#[tauri::command(async)]
+pub fn git_apply_patch(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    patch: String,
+    action: HunkAction,
+) -> Result<GitStatus, String> {
+    apply_patch(&state.checked_root(&root)?, &patch, &action)
 }
 
 /// 提交暂存区。
@@ -2639,6 +2798,220 @@ mod tests {
         assert_eq!(after.files.len(), 1);
         assert_eq!((after.files[0].index, after.files[0].worktree), ('M', '.'));
 
+        cleanup(&top);
+    }
+
+    // ---- hunk 级：把一个文件的改动拆成块，单独暂存 / 放弃 ----
+
+    #[test]
+    fn splits_a_patch_into_header_and_hunks() {
+        let patch = "diff --git a/x b/x\n\
+                     index 1111111..2222222 100644\n\
+                     --- a/x\n\
+                     +++ b/x\n\
+                     @@ -1,4 +1,5 @@\n\
+                     \x20top\n\
+                     -old\n\
+                     +new\n\
+                     +more\n\
+                     \x20tail\n\
+                     @@ -10,3 +11,3 @@ fn tail()\n\
+                     -a\n\
+                     +b\n\
+                     \x20z\n";
+        let (header, hunks) = split_patch(patch);
+
+        assert_eq!(
+            header,
+            "diff --git a/x b/x\nindex 1111111..2222222 100644\n--- a/x\n+++ b/x\n"
+        );
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[0].header, "@@ -1,4 +1,5 @@");
+        assert_eq!((hunks[0].added, hunks[0].removed), (2, 1));
+        assert_eq!(hunks[1].header, "@@ -10,3 +11,3 @@ fn tail()");
+        assert_eq!((hunks[1].added, hunks[1].removed), (1, 1));
+        // 拼回去要一个字节不差：补丁是原样交给 git apply 的
+        assert_eq!(
+            format!("{}{}{}", header, hunks[0].text, hunks[1].text),
+            patch
+        );
+    }
+
+    #[test]
+    fn keeps_the_no_newline_marker_inside_its_hunk() {
+        // 文件末尾没有换行时 git 会补一行 `\ No newline ...`，它以 `\` 开头，
+        // 不能被当成新 hunk 的开始，也不能计进增删行数
+        let patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n";
+        let (_, hunks) = split_patch(patch);
+        assert_eq!(hunks.len(), 1);
+        assert_eq!((hunks[0].added, hunks[0].removed), (1, 1));
+        assert!(hunks[0].text.contains("\\ No newline at end of file"));
+    }
+
+    /// 造一个文件：第一行和中间一行各改一处，中间隔着足够多的上下文，
+    /// `git diff` 会把它们分成两个 hunk（默认上下文 3 行）
+    fn repo_with_two_hunks(repo: &Path) -> PathBuf {
+        let file = repo.join("app.ts");
+        let base: String = (1..=30).map(|line| format!("line {line}\n")).collect();
+        fs::write(&file, &base).unwrap();
+        stage_paths(repo, &None).unwrap();
+        commit_staged(repo, "init").unwrap();
+
+        let mut changed: Vec<String> = (1..=30).map(|line| format!("line {line}\n")).collect();
+        changed[1] = "line 2 changed\n".to_string();
+        changed[25] = "line 26 changed\n".to_string();
+        fs::write(&file, changed.concat()).unwrap();
+        file
+    }
+
+    #[test]
+    fn stages_only_the_selected_hunk() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo_with_two_hunks(&repo);
+
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        assert_eq!(hunks.hunks.len(), 2, "两处相隔 24 行，应该切成两个 hunk");
+
+        // 只暂存第二个 hunk
+        let patch = format!("{}{}", hunks.header, hunks.hunks[1].text);
+        let status = apply_patch(&repo, &patch, &HunkAction::Stage).unwrap();
+
+        let staged = String::from_utf8(
+            run_git(&repo, &["diff", "--cached", "--no-color"])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(staged.contains("line 26 changed"), "{staged}");
+        assert!(!staged.contains("line 2 changed"), "{staged}");
+        // 工作区两处改动都还在，只有 index 动了
+        assert_eq!(read_text(&file), {
+            let mut text: Vec<String> = (1..=30).map(|line| format!("line {line}\n")).collect();
+            text[1] = "line 2 changed\n".to_string();
+            text[25] = "line 26 changed\n".to_string();
+            text.concat()
+        });
+        assert_eq!((status.files[0].index, status.files[0].worktree), ('M', 'M'));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn discards_only_the_selected_hunk() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo_with_two_hunks(&repo);
+
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        assert_eq!(hunks.hunks.len(), 2);
+
+        // 只丢掉第一个 hunk：第 2 行回到原样，第 26 行的改动留着
+        let patch = format!("{}{}", hunks.header, hunks.hunks[0].text);
+        apply_patch(&repo, &patch, &HunkAction::Discard).unwrap();
+
+        let text = read_text(&file);
+        assert!(text.contains("line 2\n"), "{text}");
+        assert!(!text.contains("line 2 changed"), "{text}");
+        assert!(text.contains("line 26 changed"), "{text}");
+
+        cleanup(&top);
+    }
+
+    /// 工作区是 CRLF、index 是 LF（`core.autocrlf=true` 的机器就是这样）。
+    ///
+    /// 这条链上**不能**过 `normalize_newlines`：那是给「两侧内容比对」用的，补丁必须
+    /// 和工作区字节一致，归一过就 apply 不上了。反过来说，只要不多此一举，
+    /// 补丁由 `git diff` 生成、再由 `git apply` 落回去，行尾转换是自洽的——实测
+    /// 不需要 `--ignore-whitespace`。
+    #[test]
+    fn hunks_round_trip_with_a_crlf_worktree() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        assert!(git(&repo, &["config", "core.autocrlf", "true"]));
+
+        let file = repo.join("app.ts");
+        let crlf = |lines: &[String]| lines.join("\r\n") + "\r\n";
+        let base: Vec<String> = (1..=30).map(|line| format!("line {line}")).collect();
+        fs::write(&file, crlf(&base)).unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        let mut changed = base.clone();
+        changed[1] = "line 2 changed".to_string();
+        changed[25] = "line 26 changed".to_string();
+        fs::write(&file, crlf(&changed)).unwrap();
+
+        // 提交后工作区是 CRLF，但整文件不该显示成"改过了"：autocrlf 已经把它折算掉
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        assert_eq!(hunks.hunks.len(), 2, "行尾不该被算成改动");
+
+        // 暂存第二块，再丢掉第一块：一个动 index、一个动工作区
+        apply_patch(
+            &repo,
+            &format!("{}{}", hunks.header, hunks.hunks[1].text),
+            &HunkAction::Stage,
+        )
+        .unwrap();
+        let staged = String::from_utf8(
+            run_git(&repo, &["diff", "--cached", "--no-color"])
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(staged.contains("line 26 changed"), "{staged}");
+        assert!(!staged.contains("line 2 changed"), "{staged}");
+
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        assert_eq!(hunks.hunks.len(), 1, "刚暂存过的那块不该再出现");
+        apply_patch(
+            &repo,
+            &format!("{}{}", hunks.header, hunks.hunks[0].text),
+            &HunkAction::Discard,
+        )
+        .unwrap();
+        // 丢掉的是工作区那一侧：行尾仍是 CRLF，第 26 行那处改动留着
+        let text = fs::read(&file).unwrap();
+        let text = String::from_utf8(text).unwrap();
+        assert!(text.contains("line 2\r\n"), "{text:?}");
+        assert!(!text.contains("line 2 changed"), "{text:?}");
+        assert!(text.contains("line 26 changed"), "{text:?}");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn a_clean_file_has_no_hunks() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo.join("app.ts");
+        fs::write(&file, "one\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+
+        // 已经提交、工作区没动：diff 是空的，不该报错也不该有 hunk
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        assert!(hunks.hunks.is_empty());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn applying_an_empty_patch_is_refused() {
+        let (_state, repo, top) = temp_repo();
+        assert!(apply_patch(&repo, "  \n", &HunkAction::Stage).is_err());
         cleanup(&top);
     }
 

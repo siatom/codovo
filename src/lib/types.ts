@@ -123,6 +123,26 @@ export interface GitCommitFile {
  */
 export type DiscardSource = { mode: "unstaged" } | { mode: "staged" };
 
+/** 一个文件里的一段改动（统一 diff 里的一个 `@@` 块） */
+export interface PatchHunk {
+  /** `@@ -12,6 +12,7 @@ fn foo()` 整行，显示用 */
+  header: string;
+  /** 这个 hunk 的原文（`@@` 行 + 内容行）。拼补丁时原样接在文件级头后面，一个字节都别改 */
+  text: string;
+  added: number;
+  removed: number;
+}
+
+/** 一个未暂存文件的 hunk 列表；hunks 为空表示这个文件做不了逐块操作（二进制、新增 / 删除等） */
+export interface FileHunks {
+  /** 文件级头（`diff --git` 到第一个 `@@` 之前），拼补丁时要带上 */
+  header: string;
+  hunks: PatchHunk[];
+}
+
+/** 一个 hunk 要往哪边落，和 DiscardSource 同一个思路 */
+export type HunkAction = { mode: "stage" } | { mode: "discard" };
+
 /** 搜索的三个开关，和 VS Code 搜索框右边那排一致 */
 export interface SearchOptions {
   caseSensitive: boolean;

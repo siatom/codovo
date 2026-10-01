@@ -12,12 +12,14 @@ import {
 import {
   gitAddToIgnore,
   gitAmend,
+  gitApplyPatch,
   gitBranches,
   gitCommit,
   gitCommitFiles,
   gitCreateBranch,
   gitDiscard,
   gitFetch,
+  gitFileHunks,
   gitLog,
   gitMerge,
   gitMergeAbort,
@@ -53,6 +55,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { DiffSource } from "../lib/tabs";
 import type {
   DiscardSource,
+  FileHunks,
   GitBranch,
   GitCommit,
   GitCommitFile,
@@ -332,6 +335,23 @@ const ROW_DANGER =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-danger focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 disabled:opacity-0";
 
 /**
+ * 行尾的「逐块操作」展开箭头。和其它行内按钮不同，它**常驻可见**：
+ * 展开是这一行的状态，箭头藏起来就看不出哪一行开着。压在最右端是因为
+ * 悬停时那一串按钮会显形把左边的东西挤动，这里跟着动会看着在跳。
+ */
+const ROW_HUNK_TOGGLE =
+  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg";
+
+/**
+ * 展开区里的逐块按钮。同样常驻：展开这一块本来就是为了点它们，
+ * 再藏到悬停里等于白展开一次。
+ */
+const HUNK_ACTION =
+  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg disabled:opacity-30";
+const HUNK_DANGER =
+  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger disabled:opacity-30";
+
+/**
  * 同一时刻只允许一个写操作在跑，否则会和自己的 index.lock 撞上。
  *  generate 不是写操作，但同样在跑的时候得把按钮禁掉，免得连点发好几次请求。
  *  fetch/pull/push/merge 是网络操作，跑起来可能要几分钟，更不能叠着发。
@@ -365,6 +385,19 @@ type Busy =
  */
 function canDiscard(change: GitChange, staged: boolean): boolean {
   return staged ? change.index !== "A" : change.worktree !== "?";
+}
+
+/**
+ * 能不能逐块（hunk 级）操作。**只在未暂存组用**：补丁是从「index ↔ 工作区」
+ * 的 diff 生成的，两个方向（`--cached` 暂存、`--reverse` 放弃）都落在这份 diff 上。
+ *
+ * 排除新增 / 删除 / 冲突：新增（未跟踪的 `?`）在 index 里没有基线，删除
+ * （`D`）在工作区里没有文件，两边都生成不出能 apply 的补丁；冲突（`U`）
+ * 的 diff 是三方合并的产物，交给 `git apply` 只会失败。这些一律回退到整文件操作。
+ */
+function canHunk(change: GitChange): boolean {
+  const { index, worktree } = change;
+  return worktree !== "?" && worktree !== "U" && worktree !== "D" && index !== "U";
 }
 
 /** 标题栏那几个图标按钮的样式，和刷新按钮同一套 */
@@ -427,11 +460,121 @@ function LineCounts({
   );
 }
 
+/** diff 正文里一行的着色：加行绿、删行红、上下文默认、`\ No newline` 最淡 */
+function hunkLineClass(line: string): string {
+  if (line.startsWith("+")) return "text-ok";
+  if (line.startsWith("-")) return "text-danger";
+  if (line.startsWith("\\")) return "text-fg-faint";
+  return "text-fg-muted";
+}
+
+/**
+ * 未暂存文件的逐块操作。**暂存组不给这一份**：补丁来自「index ↔ 工作区」的
+ * diff，只有未暂存侧才有工作区文件可比，暂存侧那半截生成不出能 apply 的补丁。
+ */
+interface HunkSection {
+  /** 展开着的那个文件（绝对路径）；null = 一个都没展开 */
+  open: string | null;
+  /** 展开文件的 hunk 列表；null = 还没拉到 */
+  data: FileHunks | null;
+  loading: boolean;
+  onToggle: (path: string) => void;
+  onStage: (patch: string) => void;
+  /** 放弃不可撤销，这里只记下来弹确认框，用户点了才真跑 */
+  onDiscard: (patch: string, what: string) => void;
+}
+
+/**
+ * 展开出来的逐块列表：一块一个头（`@@` 行 + 增删数 + 暂存 / 放弃）加它的 diff 正文。
+ *
+ * 交给后端的补丁是「文件级头 + 这一块的原文」拼出来的，中间的每个字节都原样保留——
+ * 补丁要和 `git diff` 的输出完全一致才 apply 得上。
+ */
+function HunkList({
+  file,
+  loading,
+  busy,
+  indent,
+  onStage,
+  onDiscard,
+}: {
+  file: FileHunks | null;
+  loading: boolean;
+  busy: boolean;
+  /** 和文件行左边缘对齐（树视图里有层级） */
+  indent: number;
+  onStage: (patch: string) => void;
+  onDiscard: (patch: string) => void;
+}) {
+  const notice = (text: string) => (
+    <p className="py-1 text-[11px] text-fg-faint" style={{ paddingLeft: indent }}>
+      {text}
+    </p>
+  );
+
+  if (!file) return notice(loading ? "加载中…" : "读不到这个文件的改动");
+  if (file.hunks.length === 0) {
+    return notice("这个文件只能整文件暂存 / 放弃（新增、删除或二进制）");
+  }
+
+  return (
+    <div
+      className="mb-1 overflow-hidden rounded border border-line"
+      style={{ marginLeft: indent, marginRight: 4 }}
+    >
+      {file.hunks.map((hunk, index) => {
+        const patch = file.header + hunk.text;
+        const lines = hunk.text.split("\n");
+        // 原文以换行结尾，split 会多出一个空串；首行是 `@@`，正文从第二行起
+        if (lines[lines.length - 1] === "") lines.pop();
+        const body = lines.slice(1);
+        return (
+          <div key={index} className="border-b border-line last:border-b-0">
+            <div className="flex items-center gap-1.5 bg-surface px-2 py-0.5 font-mono text-[11px]">
+              <span className="min-w-0 flex-1 truncate text-fg-dim" title={hunk.header}>
+                {hunk.header}
+              </span>
+              {hunk.added > 0 && <span className="shrink-0 text-ok">+{hunk.added}</span>}
+              {hunk.removed > 0 && <span className="shrink-0 text-danger">-{hunk.removed}</span>}
+              <button
+                type="button"
+                onClick={() => onDiscard(patch)}
+                disabled={busy}
+                title="放弃这块改动（还原到暂存区）"
+                className={HUNK_DANGER}
+              >
+                <IconUndo className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onStage(patch)}
+                disabled={busy}
+                title="暂存这块改动"
+                className={HUNK_ACTION}
+              >
+                <IconPlus className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="overflow-x-auto py-1 font-mono text-[11px] leading-[1.55]">
+              {body.map((line, lineIndex) => (
+                <div key={lineIndex} className={`whitespace-pre px-2 ${hunkLineClass(line)}`}>
+                  {line === "" ? " " : line}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ChangeRow({
   change,
   staged,
   busy,
   depth,
+  hunks,
   onOpen,
   onOpenFile,
   onToggle,
@@ -444,6 +587,8 @@ function ChangeRow({
   busy: boolean;
   /** 树视图里的层级；null = 列表视图（不缩进、不画文件图标、名字后面补目录） */
   depth: number | null;
+  /** 逐块操作；只在未暂存组给，暂存组没有这一份（见 HunkSection） */
+  hunks?: HunkSection;
   onOpen: (path: string, source: DiffSource) => void;
   onOpenFile: (path: string) => void;
   onToggle: (path: string) => void;
@@ -460,8 +605,15 @@ function ChangeRow({
   // 行数也按分组取：同一个 `MM` 文件在两个组里改动的量本来就不一样
   const added = staged ? change.stagedAdded : change.unstagedAdded;
   const removed = staged ? change.stagedRemoved : change.unstagedRemoved;
+  /** 这一行能不能逐块操作。整行（含箭头占位）都跟着它走 */
+  const hunkable = hunks !== undefined && canHunk(change);
+  // 多带一次 `hunks !== undefined`：JSX 里靠它把类型收窄，才能取 hunks.data
+  const hunkOpen = hunkable && hunks !== undefined && hunks.open === change.path;
+  // 展开区缩进到和文件名对齐：树视图里层级已经占了前导空白
+  const hunkIndent = depth === null ? 4 : depth * INDENT + 4;
 
   return (
+    <>
     <div
       className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
       style={depth === null ? undefined : { paddingLeft: depth * INDENT + 4 }}
@@ -531,8 +683,38 @@ function ChangeRow({
             靠右固定的，徽标在最右不跟着动 */}
         <LineCounts added={added} removed={removed} />
         <GitMarkBadge mark={mark} className="text-[10px]" />
+        {/* 逐块展开箭头压在最右端：常驻，这样徽标那一列的宽度对每行都一样。
+            不可逐块的文件补一个同宽占位——少一个箭头它们那行的徽标会左移一格 */}
+        {hunks !== undefined &&
+          (hunkable ? (
+            <button
+              type="button"
+              onClick={() => hunks.onToggle(change.path)}
+              title={hunkOpen ? "收起逐块操作" : "展开逐块操作（逐块暂存 / 放弃）"}
+              className={ROW_HUNK_TOGGLE}
+            >
+              {hunkOpen ? (
+                <IconChevronDown className="h-3 w-3" />
+              ) : (
+                <IconChevronRight className="h-3 w-3" />
+              )}
+            </button>
+          ) : (
+            <span className="h-5 w-5 shrink-0" />
+          ))}
       </div>
     </div>
+    {hunkOpen && hunks !== undefined && (
+      <HunkList
+        file={hunks.data}
+        loading={hunks.loading}
+        busy={busy}
+        indent={hunkIndent}
+        onStage={hunks.onStage}
+        onDiscard={(patch) => hunks.onDiscard(patch, change.relative)}
+      />
+    )}
+    </>
   );
 }
 
@@ -575,6 +757,8 @@ function ChangeDirRow({
 interface ChangeRowActions {
   staged: boolean;
   busy: boolean;
+  /** 逐块操作；只有未暂存组传 */
+  hunks?: HunkSection;
   onOpen: (path: string, source: DiffSource) => void;
   /** 行内「打开文件」：开文件内容而不是差异 */
   onOpenFile: (path: string) => void;
@@ -784,6 +968,18 @@ export function GitChangesPane({
   const [pendingAmend, setPendingAmend] = useState(false);
   /** 放弃 stash：只删记录，但丢了就找不回来，照样确认一下 */
   const [pendingStashDrop, setPendingStashDrop] = useState<GitStash | null>(null);
+  /** 展开逐块操作的那个未暂存文件（绝对路径）；null = 一个都没展开 */
+  const [hunkPath, setHunkPath] = useState<string | null>(null);
+  /** 展开文件的 hunk 列表；null = 还没拉到（或者拉失败了） */
+  const [hunkData, setHunkData] = useState<FileHunks | null>(null);
+  const [hunkLoading, setHunkLoading] = useState(false);
+  /** 每次应用完一块 +1：apply 只回新的状态快照，不带块列表，得自己重拉 */
+  const [hunkRevision, setHunkRevision] = useState(0);
+  /** 待确认的「放弃这一块」。补丁先记在这儿，用户点了才真跑 */
+  const [pendingHunkDiscard, setPendingHunkDiscard] = useState<{
+    patch: string;
+    what: string;
+  } | null>(null);
   /**
    * null = 随内容长高（也就是默认的一行）；拖过之后是固定高度（px），内容多了自己滚动。
    * 高度不落盘：每次进应用都从一行起步，省得某次拖高之后再也回不到默认。
@@ -1292,6 +1488,89 @@ export function GitChangesPane({
     setPendingDiscard(null);
     void run("discard", () => gitDiscard(root, pending.paths, pending.source));
   }, [pendingDiscard, run]);
+
+  /**
+   * 展开 / 收起某个文件的逐块操作。
+   *
+   * 展开时**不去自动拉取**：拉取放在下面的 effect 里，入口有「点展开」和「应用完
+   * 重拉」两处，写在按钮里会让重拉漏掉。
+   */
+  const toggleHunks = useCallback((path: string) => {
+    setHunkPath((current) => (current === path ? null : path));
+  }, []);
+
+  /**
+   * 拉展开文件的 hunk 列表。
+   *
+   * 依赖里没有 status：轮询本身不该带着它重拉（每 2 秒一次太浪费）。代价是
+   * 在终端里改了文件之后这里的块会过期，apply 时报错、重拉一次就对上——比每次都拉划算。
+   */
+  useEffect(() => {
+    if (!hunkPath) {
+      setHunkData(null);
+      return;
+    }
+    let alive = true;
+    setHunkLoading(true);
+    gitFileHunks(root, hunkPath)
+      .then((data) => {
+        if (alive) setHunkData(data);
+      })
+      .catch((reason) => {
+        if (!alive) return;
+        setHunkData(null);
+        setError(String(reason));
+      })
+      .finally(() => {
+        if (alive) setHunkLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [root, hunkPath, hunkRevision]);
+
+  /** 展开的文件不在未暂存列表里了（暂存完、放弃完、或者被提交掉了）就收起 */
+  useEffect(() => {
+    if (hunkPath && !unstaged.some((item) => item.path === hunkPath)) {
+      setHunkPath(null);
+    }
+  }, [hunkPath, unstaged]);
+
+  /** 暂存选中的一块：补丁进 index，工作区不动 */
+  const stageHunk = useCallback(
+    (patch: string) => {
+      void run("stage", async () => {
+        const payload = await gitApplyPatch(root, patch, { mode: "stage" });
+        setHunkRevision((revision) => revision + 1);
+        return payload;
+      });
+    },
+    [root, run],
+  );
+
+  const confirmHunkDiscard = useCallback(() => {
+    const pending = pendingHunkDiscard;
+    if (!pending) return;
+    setPendingHunkDiscard(null);
+    void run("discard", async () => {
+      const payload = await gitApplyPatch(root, pending.patch, { mode: "discard" });
+      setHunkRevision((revision) => revision + 1);
+      return payload;
+    });
+  }, [pendingHunkDiscard, root, run]);
+
+  /** 逐块操作那一组，只给未暂存的分组（见 HunkSection） */
+  const hunkSection = useMemo<HunkSection>(
+    () => ({
+      open: hunkPath,
+      data: hunkData,
+      loading: hunkLoading,
+      onToggle: toggleHunks,
+      onStage: stageHunk,
+      onDiscard: (patch, what) => setPendingHunkDiscard({ patch, what }),
+    }),
+    [hunkPath, hunkData, hunkLoading, toggleHunks, stageHunk],
+  );
 
   const discardAllStaged = useCallback(() => {
     discard(
@@ -2134,6 +2413,7 @@ export function GitChangesPane({
                 view={view}
                 staged={false}
                 busy={busy !== null}
+                hunks={hunkSection}
                 collapsedDirs={collapsedDirs}
                 onToggleDir={toggleDir}
                 onOpen={onOpen}
@@ -2236,6 +2516,15 @@ export function GitChangesPane({
           confirmLabel="放弃"
           onConfirm={confirmDiscard}
           onCancel={() => setPendingDiscard(null)}
+        />
+      )}
+
+      {pendingHunkDiscard && (
+        <ConfirmDialog
+          message={`放弃 ${pendingHunkDiscard.what} 的这块改动？将还原到暂存区里的版本，无法撤销。`}
+          confirmLabel="放弃"
+          onConfirm={confirmHunkDiscard}
+          onCancel={() => setPendingHunkDiscard(null)}
         />
       )}
 
