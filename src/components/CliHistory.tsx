@@ -27,8 +27,8 @@ interface CliHistoryProps {
   /** 当前选中的命令行 */
   value: string;
   onChange: (command: string) => void;
-  /** 点一条会话：参数是拼好的完整 resume 命令 */
-  onResume: (command: string) => void;
+  /** 点一条会话：参数是拼好的完整 resume 命令，以及该会话的标题（作新标签的标题） */
+  onResume: (command: string, title: string) => void;
 }
 
 /** 选择器菜单宽度（px）。比项目行的菜单宽：名字前面多一个 logo */
@@ -241,7 +241,9 @@ export function CliHistory({
           <li key={item.id}>
             <button
               type="button"
-              onClick={() => onResume(resumeCommand(value, item.id, provider))}
+              onClick={() =>
+                onResume(resumeCommand(value, item.id, provider), item.title || "未命名会话")
+              }
               title={`${item.title || "未命名会话"}\n${item.id}`}
               className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
             >

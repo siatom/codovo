@@ -118,16 +118,22 @@ function Shell() {
     handlesRef.current.set(projectId, handles);
   }, []);
 
-  /** 侧栏项目行的 AI CLI 入口：新开一个终端标签启动它，不注入当前终端 */
-  const runAiCommand = useCallback((command: string) => {
+  /**
+   * 侧栏项目行的 AI CLI 入口：新开一个终端标签启动它，不注入当前终端。
+   * `title`（CLI 名）作新标签的标题，让人一眼分辨是哪家 CLI
+   */
+  const runAiCommand = useCallback((command: string, title: string) => {
     if (!activeIdRef.current) return;
-    handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command);
+    handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command, title);
   }, []);
 
-  /** 侧边栏点了某条 CLI 历史会话：新开一个终端标签跑 resume，不动正在用的那个 */
-  const resumeSession = useCallback((command: string) => {
+  /**
+   * 侧边栏点了某条 CLI 历史会话：新开一个终端标签跑 resume，不动正在用的那个。
+   * `title`（被恢复会话的标题）作新标签的标题
+   */
+  const resumeSession = useCallback((command: string, title: string) => {
     if (!activeIdRef.current) return;
-    handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command);
+    handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command, title);
   }, []);
 
   /**

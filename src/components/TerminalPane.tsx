@@ -48,8 +48,9 @@ export interface TerminalPaneHandle {
   /**
    * 新开一个终端标签并在里面执行命令（侧栏的 AI CLI 入口与 CLI 会话 resume 都用它）。
    * 不能写进当前活动会话——那儿可能正跑着别的东西，命令会被当成它的输入。
+   * `title` 直接作新标签的标题：AI CLI 传 CLI 名，resume 传被恢复会话的标题。
    */
-  runInNewSession: (command: string) => void;
+  runInNewSession: (command: string, title: string) => void;
   /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
   insertToTerminal: (location: EditorLocation) => void;
   /** 把位置引用送进智能体输入框（插成一个可整体删除的 chip），顺带切到 GUI 模式 */
@@ -100,6 +101,17 @@ export function TerminalPane({
   const agentRef = useRef<AgentPaneHandle>(null);
   /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
   const shellByIdRef = useRef(new Map<number, string>());
+  /**
+   * 普通 shell 会话的标签序号：它用的 shell 是第几次被开出来的。**创建时定死**，
+   * 不按「当前还剩几个同名」算——关掉别的标签不会让剩下的跳号（pwsh 3 → pwsh 2）。
+   */
+  const shellSeqByIdRef = useRef(new Map<number, number>());
+  /** 每个 shell 已开出过几个会话，给上面那份序号计数 */
+  const shellCountRef = useRef(new Map<string, number>());
+  /** AI CLI / resume 会话的标签标题；有值的会话不再按 shell 命名 */
+  const customTitleByIdRef = useRef(new Map<number, string>());
+  /** 标签的 hover 提示：AI CLI / resume 记启动命令，普通会话回落到 shell 全名 */
+  const hintByIdRef = useRef(new Map<number, string>());
   const addButtonRef = useRef<HTMLDivElement>(null);
   /** 并列布局的容器：拖分隔条时按它的尺寸换算比例 */
   const splitRef = useRef<HTMLDivElement>(null);
@@ -123,6 +135,36 @@ export function TerminalPane({
       .catch(() => setShellOptions([{ id: "", label: "自动", name: "终端", kind: "shell" }]));
   }, []);
 
+  /** 会话实际归属的 shell id：创建时选过就用选的，否则跟随设置里的默认 */
+  const shellKeyOf = (id: number) => shellByIdRef.current.get(id) ?? settings.terminalShell;
+
+  /** 会话在标签栏要显示的 shell（名字 / 图标 / 全名）；列表还没拉回来就回落到首项 */
+  const shellForSession = (id: number) => {
+    const key = shellKeyOf(id);
+    return shellOptions.find((item) => item.id === key) ?? shellOptions[0];
+  };
+
+  /**
+   * 给一个普通 shell 会话排固定序号。分配过的直接跳过——这样初始化那个 effect
+   * 在 StrictMode 下跑两遍也只算一次，计数不会被多扣。
+   */
+  const assignShellSeq = (id: number) => {
+    if (shellSeqByIdRef.current.has(id)) return;
+    const key = shellKeyOf(id);
+    const seq = (shellCountRef.current.get(key) ?? 0) + 1;
+    shellCountRef.current.set(key, seq);
+    shellSeqByIdRef.current.set(id, seq);
+  };
+
+  // 初始会话（sessions 的 [0]）不走 addSession，序号在这儿补。它必然是第一个，
+  // 序号 1 不显示后缀，所以补分配不需要触发重渲染。上面已分配的直接跳过
+  useEffect(() => {
+    for (const id of sessions) {
+      if (customTitleByIdRef.current.has(id)) continue;
+      assignShellSeq(id);
+    }
+  }, [sessions]);
+
   const attachHandle = useCallback(
     (id: number) => (handle: TerminalSessionHandle | null) => {
       if (handle) handlesRef.current.set(id, handle);
@@ -137,6 +179,7 @@ export function TerminalPane({
     const id = nextIdRef.current;
     nextIdRef.current += 1;
     if (shell !== undefined) shellByIdRef.current.set(id, shell);
+    assignShellSeq(id);
     setSessions((list) => [...list, id]);
     setActiveId(id);
   };
@@ -156,6 +199,7 @@ export function TerminalPane({
     if (sessions.length === 1) {
       const fresh = nextIdRef.current;
       nextIdRef.current += 1;
+      assignShellSeq(fresh);
       setSessions([fresh]);
       setActiveId(fresh);
       return;
@@ -178,9 +222,12 @@ export function TerminalPane({
    * 一律新开标签，不写进当前活动会话：那儿可能正跑着别的东西（shell、别的 AI CLI），
    * 命令会被当成它的输入。
    */
-  const runInNewSession = useCallback((command: string) => {
+  const runInNewSession = useCallback((command: string, title: string) => {
     const id = nextIdRef.current;
     nextIdRef.current += 1;
+    // 标题与提示创建时就定死，之后不随别的标签增删改动
+    customTitleByIdRef.current.set(id, title);
+    hintByIdRef.current.set(id, command);
     setLaunchFor({ id, command });
     setSessions((list) => [...list, id]);
     setActiveId(id);
@@ -268,12 +315,15 @@ export function TerminalPane({
             {sessions.map((id, index) => {
               const isActive = id === activeId;
               // 会话自己在下拉里选过就用它，否则跟着设置走，都没有就是「自动」
-              const chosen = shellByIdRef.current.get(id);
-              const shell =
-                shellOptions.find(
-                  (item) =>
-                    item.id === (chosen !== undefined ? chosen : settings.terminalShell),
-                ) ?? shellOptions[0];
+              const shell = shellForSession(id);
+              // AI CLI / resume 会话用创建时传来的标题；普通 shell 会话按 shell 名，
+              // 同名的从第二个起带固定序号（见 assignShellSeq）
+              const custom = customTitleByIdRef.current.get(id);
+              const seq = shellSeqByIdRef.current.get(id) ?? 1;
+              const shellName = shell?.name ?? `终端 ${index + 1}`;
+              const title = custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
+              // 悬停提示：启动过的会话报命令，普通会话报 shell 全名
+              const hint = hintByIdRef.current.get(id) ?? shell?.label ?? shellName;
               return (
                 <div
                   key={id}
@@ -284,11 +334,11 @@ export function TerminalPane({
                   <button
                     type="button"
                     onClick={() => setActiveId(id)}
-                    title={shell?.label ?? `终端 ${index + 1}`}
+                    title={hint}
                     className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
                   >
                     <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
-                    <span className="truncate">{shell?.name ?? `终端 ${index + 1}`}</span>
+                    <span className="truncate">{title}</span>
                   </button>
                   <button
                     type="button"

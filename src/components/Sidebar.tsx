@@ -60,10 +60,11 @@ interface SidebarProps {
   onClose: (project: Project) => void;
   /** 切换置顶：置顶的项目排在列表最前 */
   onTogglePin: (project: Project) => void;
-  /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端 */
-  onRunAiCommand: (command: string) => void;
-  /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume" */
-  onResumeSession: (command: string) => void;
+  /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端。
+   *  title 是 CLI 名，作新标签的标题 */
+  onRunAiCommand: (command: string, title: string) => void;
+  /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume"，title 作新标签的标题 */
+  onResumeSession: (command: string, title: string) => void;
 }
 
 /** 窗口级偏好，存 sessionStorage：多窗口下各收各的侧边栏 */
@@ -280,7 +281,7 @@ export function Sidebar({
     if (aiCommands.length === 1) {
       // 顺便把底部会话历史的选择器切过去，两边始终看同一家
       pickCli(aiCommands[0].command);
-      onRunAiCommand(aiCommands[0].command);
+      onRunAiCommand(aiCommands[0].command, aiCommands[0].name || "未命名 AI CLI");
       return;
     }
     const rect = target.getBoundingClientRect();
@@ -792,7 +793,7 @@ export function Sidebar({
                 onClick={() => {
                   setAiMenu(null);
                   pickCli(item.command);
-                  onRunAiCommand(item.command);
+                  onRunAiCommand(item.command, item.name || "未命名 AI CLI");
                 }}
                 title={item.name || "未命名 AI CLI"}
                 className={`${MENU_ITEM} flex items-center gap-2`}
