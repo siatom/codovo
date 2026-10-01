@@ -32,6 +32,7 @@ import {
   IconPanelCollapse,
   IconPanelExpand,
   IconPencil,
+  IconPin,
   IconPlus,
   IconSettings,
   IconSun,
@@ -57,6 +58,8 @@ interface SidebarProps {
   onRemove: (project: Project) => void;
   /** 关掉已打开的项目：收进程、丢实例，但保留在列表里 */
   onClose: (project: Project) => void;
+  /** 切换置顶：置顶的项目排在列表最前 */
+  onTogglePin: (project: Project) => void;
   /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端 */
   onRunAiCommand: (command: string) => void;
   /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume" */
@@ -137,6 +140,7 @@ export function Sidebar({
   onEdit,
   onRemove,
   onClose,
+  onTogglePin,
   onRunAiCommand,
   onResumeSession,
 }: SidebarProps) {
@@ -364,6 +368,13 @@ export function Sidebar({
     );
   }
 
+  // 置顶的项目排最前；置顶组与普通组内部各自维持原有顺序（sort 自 ES2019 起稳定）。
+  // 显式 `=== true` 归一：新建 / 迁移出来的项目没有 pinned 字段，直接 Number(undefined)
+  // 是 NaN，比较器返回 NaN 会被当 0，新项目反而不让位、留在置顶项上面。
+  const ordered = [...projects].sort(
+    (a, b) => Number(b.pinned === true) - Number(a.pinned === true),
+  );
+
   return (
     <div
       className="relative flex h-full shrink-0 flex-col border-r border-line bg-panel"
@@ -391,10 +402,10 @@ export function Sidebar({
         项目
       </p>
       <ul className="min-h-0 flex-1 overflow-auto px-2 pb-2">
-        {projects.length === 0 && (
+        {ordered.length === 0 && (
           <li className="px-2 py-1 text-[12px] text-fg-faint">还没有项目</li>
         )}
-        {projects.map((project) => {
+        {ordered.map((project) => {
           const isCurrent = project.id === currentId;
           // 已打开 = 后台挂着工作区实例的项目，和「只在列表里」区分开
           const isOpen = opened.includes(project.id);
@@ -412,6 +423,12 @@ export function Sidebar({
                     {/* 已打开的项目（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
                     {isOpen ? <IconFolderOpen /> : <IconFolder />}
                     <span className="truncate">{project.name}</span>
+                    {/* 置顶的项目在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
+                    {project.pinned && (
+                      <span title="已置顶" className="shrink-0 text-fg-faint">
+                        <IconPin className="h-3 w-3" />
+                      </span>
+                    )}
                     {/* 已打开的项目在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
                     {isOpen && (
                       <span
@@ -631,7 +648,7 @@ export function Sidebar({
               // 条目数随源文件夹数量变，按实际行数折算高度，免得贴底时被顶出可视区
               top: Math.min(
                 menu.y + 4,
-                window.innerHeight - (menu.project.roots.length * 24 + 116),
+                window.innerHeight - (menu.project.roots.length * 24 + 140),
               ),
             }}
           >
@@ -662,6 +679,18 @@ export function Sidebar({
               </div>
             ))}
             <div className="my-1 border-t border-line" />
+            <button
+              type="button"
+              onClick={() => {
+                const { project } = menu;
+                setMenu(null);
+                onTogglePin(project);
+              }}
+              className={`${MENU_ITEM} flex items-center gap-2`}
+            >
+              <IconPin className="h-3.5 w-3.5 shrink-0" />
+              {menu.project.pinned ? "取消置顶" : "置顶"}
+            </button>
             <button
               type="button"
               onClick={() => {

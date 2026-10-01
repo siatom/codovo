@@ -244,6 +244,11 @@ function Shell() {
     [closeProject],
   );
 
+  /** 置顶 / 取消置顶。只改记录里的标记，「置顶的排最前」由侧边栏渲染时排序实现 */
+  const togglePin = useCallback((project: Project) => {
+    setProjects(saveProject({ ...project, pinned: !project.pinned }));
+  }, []);
+
   /** 右栏（编辑器 / 浏览器）全屏，按钮挂在这两个面板的标题栏上 */
   const toggleRightFullscreen = useCallback(
     () => setFullscreen((area) => (area === "right" ? "none" : "right")),
@@ -373,6 +378,7 @@ function Shell() {
           onEdit={(project) => setDialog({ mode: "edit", project })}
           onRemove={setPendingRemove}
           onClose={closeProject}
+          onTogglePin={togglePin}
           onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
         />

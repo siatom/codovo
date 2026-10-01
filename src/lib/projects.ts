@@ -15,6 +15,8 @@ export interface Project {
   roots: string[];
   /** 项目内当前活动根：终端 / 变更 / 智能体这些单根概念跟它走 */
   activeRoot: string;
+  /** 置顶：排在项目列表最前。老数据没有这个字段，缺省即不置顶 */
+  pinned?: boolean;
 }
 
 const PROJECTS_KEY = "codedock.projects";
@@ -72,6 +74,8 @@ function normalizeProject(value: unknown): Project | null {
     name: name.trim() || folderName(roots[0]),
     roots,
     activeRoot: active,
+    // 只有明确的 true 才算置顶，坏值一律当没置顶
+    pinned: raw.pinned === true,
   };
 }
 
