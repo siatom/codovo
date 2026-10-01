@@ -141,6 +141,13 @@ const MAX_REF_CHIPS = 2;
  */
 const LOG_POLL_MS = 5000;
 
+/**
+ * 鼠标离开提交行后，浮框再留多久才收。
+ * 浮框和提交行之间隔了 GAP，鼠标穿过去时会先离开这一行——留这点时间让鼠标能移进浮框
+ * 去点「复制提交号」。**这是「离开」的宽限，不是「进入」的延迟**：进新行要立刻换过去。
+ */
+const HOVER_HIDE_MS = 180;
+
 /** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
 const MESSAGE_MAX_ROWS = 5;
 
@@ -990,8 +997,11 @@ function CommitRow({
   files,
   stat,
   unpushed,
+  anchor,
   onToggle,
   onOpen,
+  onHover,
+  onUnhover,
   onStat,
 }: {
   commit: GitCommit;
@@ -1005,41 +1015,32 @@ function CommitRow({
   stat: CommitStat | undefined;
   /** 还没推送到上游。标一下，省得用户去数 ahead 有几个 */
   unpushed: boolean;
+  /**
+   * 悬停浮框贴着的矩形；null = 这一行没开着浮框。
+   * 状态由整份列表统一持有（见 GitChangesPane 里的 hoverCommit），行本身不存。
+   */
+  anchor: DOMRect | null;
   onToggle: () => void;
   onOpen: (path: string, source: DiffSource) => void;
+  /** 鼠标进到这一行：报上本行矩形，让列表把浮框换过来 */
+  onHover: (rect: DOMRect) => void;
+  /** 鼠标离开这一行。可能只是穿 GAP 去浮框，收不收由列表按延迟定 */
+  onUnhover: () => void;
   /** 鼠标进到这一行时喊一声，上层按需去拉改动规模 */
   onStat: () => void;
 }) {
-  /** 悬停浮框贴着的那个矩形；null = 不显示 */
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
-  const hideTimer = useRef<number | null>(null);
-
-  // 浮框和提交行之间隔了 GAP，鼠标穿过去时会先离开这一行，所以藏要延迟一下；
-  // 真正移进浮框（它是本行的后代）时再把这次藏取消掉
-  const cancelHide = () => {
-    if (hideTimer.current === null) return;
-    window.clearTimeout(hideTimer.current);
-    hideTimer.current = null;
-  };
-  const hide = () => {
-    cancelHide();
-    hideTimer.current = window.setTimeout(() => setAnchor(null), 180);
-  };
-  useEffect(() => cancelHide, []);
-
   return (
     <div
       className="flex"
       onMouseEnter={(event) => {
-        cancelHide();
-        setAnchor(event.currentTarget.getBoundingClientRect());
+        onHover(event.currentTarget.getBoundingClientRect());
         onStat();
       }}
-      onMouseLeave={hide}
+      onMouseLeave={onUnhover}
       // 滚动时行会跑掉、浮框留在原地，干脆收起来
-      onWheel={hide}
+      onWheel={onUnhover}
     >
-      <CommitGraph row={graph} width={graphWidth} />
+      <CommitGraph row={graph} width={graphWidth} local={unpushed} />
       {/* 负 margin：文字贴住本行圆圈，图列右边没线的那截让它盖上去 */}
       <div className="min-w-0 flex-1" style={{ marginLeft: graphTextInset(graph, graphWidth) }}>
         <button
@@ -1066,13 +1067,16 @@ function CommitRow({
               )}
             </span>
           )}
-          <span className="min-w-0 flex-1 truncate text-fg-muted">{commit.subject}</span>
+          {/* 未推送的用强调色：本地领先上游的那一段一眼就能圈出来，不用去数 ↑ 有几个 */}
+          <span className={`min-w-0 flex-1 truncate ${unpushed ? "text-accent" : "text-fg-muted"}`}>
+            {commit.subject}
+          </span>
           <span className="shrink-0 max-w-[40%] truncate text-[10px] text-fg-faint">
             {commit.author}
           </span>
           {/* 未推送的单独给个向上的箭头：和 header 上那个 ↑N 是同一套语汇 */}
           {unpushed && (
-            <span className="shrink-0 text-fg-faint" title="还没推送到上游">
+            <span className="shrink-0 text-accent" title="还没推送到上游">
               ↑
             </span>
           )}
@@ -1196,6 +1200,26 @@ export function GitChangesPane({
   const [unpushed, setUnpushed] = useState<ReadonlySet<string>>(new Set());
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
   const [logRevision, setLogRevision] = useState(0);
+
+  /**
+   * 悬停浮框挂在哪个提交上、贴着哪个矩形；null = 没开着。
+   *
+   * **整份列表共用一个**：之前是每行各存各的 anchor，从一行划到相邻行时，上一行
+   * HOVER_HIDE_MS 的延迟收起还没到点、下一行的浮框已经冒出来了，两个浮框叠在一起
+   * （行距只有 22px，看着就是「迟滞」）。收起定时器也只有一份，进新行时一并取消。
+   */
+  const [hoverCommit, setHoverCommit] = useState<{ hash: string; rect: DOMRect } | null>(null);
+  const hoverHideTimer = useRef<number | null>(null);
+  const cancelHoverHide = () => {
+    if (hoverHideTimer.current === null) return;
+    window.clearTimeout(hoverHideTimer.current);
+    hoverHideTimer.current = null;
+  };
+  const hideHover = () => {
+    cancelHoverHide();
+    hoverHideTimer.current = window.setTimeout(() => setHoverCommit(null), HOVER_HIDE_MS);
+  };
+  useEffect(() => cancelHoverHide, []);
 
   /** 改动列表怎么排：平铺还是按目录收起来。选择落盘，下次进应用照旧 */
   const [view, setView] = useState<ChangeView>(() => readChangeView(root));
@@ -2695,8 +2719,14 @@ export function GitChangesPane({
                 files={commitFiles.get(commit.hash)}
                 stat={commitStats.get(commit.hash)}
                 unpushed={unpushed.has(commit.hash)}
+                anchor={hoverCommit?.hash === commit.hash ? hoverCommit.rect : null}
                 onToggle={() => toggleCommit(commit.hash)}
                 onOpen={onOpen}
+                onHover={(rect) => {
+                  cancelHoverHide();
+                  setHoverCommit({ hash: commit.hash, rect });
+                }}
+                onUnhover={hideHover}
                 onStat={() => ensureStat(commit.hash)}
               />
             ))}

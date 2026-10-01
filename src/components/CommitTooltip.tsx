@@ -65,12 +65,20 @@ export function CommitTooltip({
   const left = Math.max(EDGE, anchor.left - GAP - WIDTH);
 
   // 高度要等渲染出来才知道，所以在 paint 之前量一次再把纵向位置夹回窗口内，
-  // 免得贴着屏幕上下边缘的提交行把浮框顶出去
+  // 免得贴着屏幕上下边缘的提交行把浮框顶出去。
+  // **夹完还得盯着**：改动规模是异步拉回来的，拉回来之后浮框会长高，只按 anchor 夹一次的话
+  // 新长出来的那截就掉到窗口外面去了。ResizeObserver 一发现尺寸变了就重新夹。
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const maxTop = window.innerHeight - EDGE - element.offsetHeight;
-    element.style.top = `${Math.min(Math.max(EDGE, anchor.top), Math.max(EDGE, maxTop))}px`;
+    const place = () => {
+      const maxTop = window.innerHeight - EDGE - element.offsetHeight;
+      element.style.top = `${Math.min(Math.max(EDGE, anchor.top), Math.max(EDGE, maxTop))}px`;
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(element);
+    return () => observer.disconnect();
   }, [anchor]);
 
   const copy = () => {
@@ -90,14 +98,14 @@ export function CommitTooltip({
     >
       <div className="flex items-center gap-1.5 text-fg-faint">
         <IconPerson className="h-3.5 w-3.5" />
-        <span className="text-fg-muted">{commit.author}</span>
+        <span className="text-accent">{commit.author}</span>
         <IconCommit className="ml-1 h-3.5 w-3.5" />
         <span>
           {relative}（{absoluteTime(commit.time)}）
         </span>
       </div>
 
-      <p className="mt-2 text-[12px] text-fg">{commit.subject}</p>
+      <p className="mt-2 text-[12px] font-semibold text-fg-bright">{commit.subject}</p>
 
       {lines.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1">
@@ -113,20 +121,28 @@ export function CommitTooltip({
       {/* 合并提交按 git show 的口径是空 diff，这时不摆这一行，免得写成「0 个文件」 */}
       {stat && stat.files > 0 && (
         <p className="mt-2 text-fg-faint">
-          已更改 {stat.files} 个文件，{stat.insertions} 行插入(+)，{stat.deletions} 行删除(-)
+          已更改 {stat.files} 个文件，
+          {/* +绿 / -红，和「变更」列表里的 diff 统计同一套色，一眼能看出是加还是删 */}
+          <span className="text-ok">{stat.insertions} 行插入(+)</span>，
+          <span className="text-danger">{stat.deletions} 行删除(-)</span>
         </p>
       )}
 
       <div className="mt-2 flex items-center gap-1.5">
         <IconCommit className="h-3.5 w-3.5 text-fg-faint" />
-        <span className="font-mono text-fg-muted">{commit.short}</span>
+        {/* 编号本身就当按钮：旁边那颗复制小图标才 12px，扫过去很难瞄准 */}
         <button
           type="button"
           onClick={copy}
           title={copied ? "已复制" : `复制完整提交号 ${commit.hash}`}
-          className="flex h-4 w-4 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
+          className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-active"
         >
-          <IconCopy className="h-3 w-3" />
+          <span className="font-mono text-accent">{commit.short}</span>
+          {copied ? (
+            <span className="text-fg-faint">已复制</span>
+          ) : (
+            <IconCopy className="h-3 w-3 text-fg-faint" />
+          )}
         </button>
       </div>
     </div>

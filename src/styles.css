@@ -17,6 +17,9 @@
   --c-line-strong: #242a35;
   --c-line-hover: #3d4655;
   --c-fg: #d7dce5;
+  /* 比 --c-fg 再亮一档的前景，给「整块里最该被先看到的那一行」用（提交浮框的主题行）。
+     浅色主题下它反过来是最深的黑——亮是相对的，不是绝对的。 */
+  --c-fg-bright: #ffffff;
   --c-fg-muted: #a8b0bd;
   --c-fg-dim: #8b93a3;
   --c-fg-faint: #5c6370;
@@ -61,6 +64,7 @@
   --c-line-strong: #ccd3db;
   --c-line-hover: #a9b3c0;
   --c-fg: #1f2430;
+  --c-fg-bright: #000000;
   --c-fg-muted: #4a5261;
   --c-fg-dim: #667085;
   --c-fg-faint: #8b93a3;
@@ -247,6 +251,7 @@
   --color-line-strong: var(--c-line-strong);
   --color-line-hover: var(--c-line-hover);
   --color-fg: var(--c-fg);
+  --color-fg-bright: var(--c-fg-bright);
   --color-fg-muted: var(--c-fg-muted);
   --color-fg-dim: var(--c-fg-dim);
   --color-fg-faint: var(--c-fg-faint);
