@@ -27,3 +27,16 @@ export function GitMarkBadge({ mark, className = "" }: { mark: GitMark; classNam
     </span>
   );
 }
+
+/**
+ * 目录节点用的状态点：同一个语义色，但做成圆点而不是字母——目录不是具体某个
+ * 改动，标一个字母会让人以为它自己有什么状态。尺寸由调用处用 className 给。
+ */
+export function GitMarkDot({ mark, className = "" }: { mark: GitMark; className?: string }) {
+  return (
+    <span
+      title={TITLE[mark.kind]}
+      className={`shrink-0 rounded-full bg-current ${COLOR[mark.kind]} ${className}`}
+    />
+  );
+}

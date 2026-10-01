@@ -47,6 +47,7 @@ import {
   type GitChange,
   type GitController,
   type GitMark,
+  type GitMarkKind,
 } from "../lib/git";
 import { explainChange, generateCommitMessage, useEffectiveAiConfig } from "../lib/ai";
 import { useSettings } from "../lib/settings";
@@ -62,7 +63,7 @@ import type {
   GitStash,
   GitStatusPayload,
 } from "../lib/types";
-import { GitMarkBadge } from "./GitMarkBadge";
+import { GitMarkBadge, GitMarkDot } from "./GitMarkBadge";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
@@ -280,7 +281,59 @@ function buildChangeTree(changes: readonly GitChange[]): ChangeTreeNode[] {
     });
   }
   sortChangeTree(root.children);
-  return root.children;
+  return compactDirs(root.children);
+}
+
+/**
+ * 把只有单条子目录的链条并成一个节点（`a` → `a/b/c`），照 VS Code 的改动树：
+ * 逐级展开一串没有分叉的目录纯属浪费层级，也不好看。合并后 `path` 取最深那级，
+ * 当作折叠状态的 key——旧 key 自然失效、默认展开，无妨。
+ */
+function compactDirs(nodes: ChangeTreeNode[]): ChangeTreeNode[] {
+  return nodes.map((node) => {
+    if (!node.children) return node;
+    let current: DirNode = { ...node, children: compactDirs(node.children) };
+    while (current.children.length === 1 && current.children[0].children) {
+      const only = current.children[0] as DirNode;
+      current = {
+        name: `${current.name}/${only.name}`,
+        path: only.path,
+        children: only.children,
+      };
+    }
+    return current;
+  });
+}
+
+/**
+ * 目录节点右侧那个状态点：把整棵子树里最"重"的状态挑出来。轻重按合并冲突 >
+ * 删除 > 修改 > 新增 > 未跟踪排——一个目录里混着几种改动时，先让人看到最该
+ * 处理的那种。同一组的文件看同一列（暂存组看 index、未暂存组看 worktree）。
+ */
+const MARK_RANK: Record<GitMarkKind, number> = {
+  conflict: 5,
+  deleted: 4,
+  modified: 3,
+  added: 2,
+  untracked: 1,
+};
+
+function aggregateMark(node: ChangeTreeNode, staged: boolean): GitMark | null {
+  let best: GitMark | null = null;
+  let bestRank = -1;
+  const walk = (current: ChangeTreeNode) => {
+    if (current.change) {
+      const mark = markOfColumn(staged ? current.change.index : current.change.worktree);
+      const rank = MARK_RANK[mark.kind] ?? 0;
+      if (rank > bestRank) {
+        bestRank = rank;
+        best = mark;
+      }
+    }
+    current.children?.forEach(walk);
+  };
+  walk(node);
+  return best;
 }
 
 /** 目录排在文件前面，同类按名字排——和文件树那边的顺序观感一致 */
@@ -723,11 +776,14 @@ function ChangeDirRow({
   depth,
   collapsed,
   onToggle,
+  mark,
 }: {
   node: ChangeTreeNode;
   depth: number;
   collapsed: boolean;
   onToggle: (path: string) => void;
+  /** 整棵子树里最重的状态；null = 底下没有任何改动 */
+  mark: GitMark | null;
 }) {
   return (
     <button
@@ -747,7 +803,9 @@ function ChangeDirRow({
       <span className="flex shrink-0 items-center text-fg-icon">
         <IconFolder className="h-3.5 w-3.5" />
       </span>
-      <span className="min-w-0 flex-1 truncate">{node.name}</span>
+      {/* 单链已经合并过，这里可能是 `a\b\c` 这样一整段路径；用反斜杠贴合 Windows 观感 */}
+      <span className="min-w-0 flex-1 truncate">{node.name.split("/").join("\\")}</span>
+      {mark && <GitMarkDot mark={mark} className="h-1.5 w-1.5" />}
     </button>
   );
 }
@@ -802,6 +860,7 @@ function ChangeTree({
               depth={depth}
               collapsed={collapsedDirs.has(node.path)}
               onToggle={onToggleDir}
+              mark={aggregateMark(node, rowActions.staged)}
             />
             {!collapsedDirs.has(node.path) && (
               <ChangeTree
