@@ -3,7 +3,7 @@
 右栏「变更」面板的剩余工作。功能定位见 [README.md](./README.md)，模块约定见
 [AGENTS.md](./AGENTS.md)。
 
-状态截至 2026-09-30。
+状态截至 2026-10-01。
 
 ## 进度总览
 
@@ -13,48 +13,31 @@
 | --- | --- | --- |
 | 1-5 | 前端低成本项（快捷键文案、右键菜单、行内打开文件、历史相对时间、未推送标记） | 已完成，见 `36535ae` |
 | 6-10 | 前端项（路径筛选、提交按钮禁用原因、多条提交同展、滚动加载、分组独立折叠） | 已完成，见 `36535ae` |
-| 11-15 | 后端项（行数统计、修正/撤销提交、分支切换、hunk 级暂存、stash） | 除 **14** 外已完成（**尚未提交**） |
+| 11-15 | 后端项（行数统计、修正/撤销提交、分支切换、hunk 级暂存、stash） | 全部已完成 |
 
-## 未完成
+11-15 里 11 见 `0991bc9`、12 见 `1bd9c83`+`cb7888f`+`7044569`、13 见 `fb90cd1`、
+15 见 `dcbaf00`；**只有 14（hunk 级）还在工作区、尚未提交**。
 
-### 14. hunk 级（代码块级）暂存与放弃
+## 已完成：14. hunk 级（代码块级）暂存与放弃
 
-现在只能整文件暂存 / 取消暂存 / 放弃。这一项是唯一还没动的。
+15 项里最后一项，按勘察时定的 MVP 落地：**方案 (b)，只覆盖未暂存侧的暂存 / 放弃**。
 
-**体量判断：属于独立大功能，不是小改动**——跨「Rust 生成 patch」+「新命令」+「新 UI」
-三块，单独排一批做。
+- 后端 `git.rs`：`split_patch` 按 `@@` 切「文件级头 + 各 hunk」；`file_hunks` 取
+  `git diff --no-color -U3` 的原始输出；`apply_patch` 把补丁写临时文件后
+  `git apply --recount [--cached|--reverse]`；命令 `git_file_hunks` / `git_apply_patch`。
+- 前端：`GitChangesPane` 未暂存分组每行多个展开箭头，展开后逐块列出 `@@` 头 + 正文 +
+  「暂存 / 放弃」；放弃走确认框。新增 `PatchHunk` / `FileHunks` / `HunkAction` 类型。
+- 回退整文件操作的情形：二进制、纯新增（`?`）、纯删除（`D`）、冲突（`U`）。
+  判据在 `GitChangesPane.tsx` 的 `canHunk`。
 
-**已勘察清楚的技术前提：**
+**和勘察笔记的出入（记下来免得下次又踩）：**
 
-- 现有 `run_git_raw`（`git.rs:207`）的 stdin 是 `Stdio::null()`，**喂不进 patch**。
-  要么先把 patch 写成临时文件再 `git apply <tmp>`（改动小），要么改造 stdin（代价大）。
-  倾向临时文件。
-- 生成 patch 走 `git diff -U3 -- <path>`（`run_git_literal` 已有），加 `--recount`
-  让 git 自己数 `@@` 计数，省掉一大类手算错误。
-- 三种方向的操作：暂存 `git apply --cached`、取消暂存 `git apply --cached --reverse`、
-  放弃工作区改动（用 unstaged diff）`git apply --reverse`。
-- **注意和「两侧按 LF 比较」的关系**：`file_diff` 那条链上的 `normalize_newlines`
-  （`git.rs:944`）是为了让差异比对不被 CRLF 干扰；但 patch 本身要交给 `git apply`，
-  **不能先归一化**，否则生成出来的补丁和工作区字节不一致会 apply 失败。工作区是 CRLF
-  时可能还需要 `--ignore-whitespace`。
-- `\ No newline at end of file` 必须原样保留。
-- 排除这些情形，回退到整文件操作：二进制（`fs_api::looks_binary`）、纯新增
-  （`Side::Missing`，HEAD/index 里没这个路径）、纯删除（工作区里没有）。
-
-**UI 方案（推荐第二个）：**
-
-- (a) 在 Monaco 的 DiffEditor 上叠加行内按钮——**最贵**，要靠 decoration / view zone
-  自己映射 hunk 与行号，且全仓库没有任何先例可抄。`EditorPane.tsx` 的差异编辑器是
-  懒创建、只读的（`createDiffEditor`，见 `diffModelsRef`），加交互要动它的创建参数。
-- (b) **在「变更」面板里原地展开 diff、每个 hunk 一行操作按钮**。最贴仓库「小改动、
-  别上重方案」的取向，也不用碰 Monaco。
-- (c) 只做「整块暂存 / 整块放弃」的简化版。
-
-**MVP 建议：** 方案 (b) + 只覆盖「未暂存文件的暂存 / 放弃选中 hunk」。
-砍掉：编辑器内行内按钮、暂存侧（staged）的 hunk 操作、二进制、新增 / 删除文件。
-
-**粗量级：** `git.rs` 约 +200 行（hunk 解析 + apply 命令）、`lib.rs` 注册 1 处、
-`fs.ts` 约 +20、新增 hunk 列表组件约 150、`GitChangesPane.tsx` 接入约 60。
+- `--recount` 是 **`git apply`** 的选项，`git diff` 根本不认（会 `invalid option` 直接
+  非 0 退出，被 `run_git_literal` 吞成空输出、一个 hunk 都没有）。放在 apply 侧才对。
+- 「工作区是 CRLF 时可能需要 `--ignore-whitespace`」**不需要**：补丁由 `git diff` 生成、
+  再由 `git apply` 落回去，行尾转换是自洽的。前提是**别**在这条链上过
+  `normalize_newlines`——已由单测 `hunks_round_trip_with_a_crlf_worktree` 钉住。
+- 勘察时说的「不改 stdin、走临时文件」是对的，照做了。
 
 ## 已明确不做（除非单独立项）
 
