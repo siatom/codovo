@@ -370,7 +370,7 @@ export function WorkspacePane({
                 }
               >
                 <SplitPane
-                  initial={28}
+                  initial={32}
                   min={12}
                   max={45}
                   first={

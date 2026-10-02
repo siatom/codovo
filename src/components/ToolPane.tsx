@@ -112,8 +112,13 @@ export function ToolPane({
 }: ToolPaneProps) {
   const { settings } = useSettings();
   const filesHidden = tool === "changes" || tool === "search";
-  /** 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行 */
-  const [collapsedRoots, setCollapsedRoots] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
+   * 初始只展开第一个根、其余收起：多根时几份改动加提交历史全铺开，一屏根本看不完。
+   */
+  const [collapsedRoots, setCollapsedRoots] = useState<ReadonlySet<string>>(
+    () => new Set(roots.slice(1).map(pathKey)),
+  );
 
   const toggleRoot = (root: string) => {
     const key = pathKey(root);
@@ -178,15 +183,19 @@ export function ToolPane({
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {roots.map((item) => {
           const collapsed = collapsedRoots.has(pathKey(item));
+          // 这一根的改动数。各根相加正好是图标条上「变更」的角标（同一个来源）
+          const changed = gitByRoot[item]?.snapshot.changed ?? 0;
           return (
             <div
               key={item}
+              // 展开的块各占满可视高度、块之间靠外层滚动切换。不用 flex-1 均分——
+              // 几个根各分一小条，改动列表和提交历史全挤在一屏里没法看。
               // overflow-hidden 不只是裁内容：它把 flex item 的 min-height:auto 变成 0，
               // 否则 GitChangesPane 里长长的提交历史会把这一块撑开，把后面的根挤出可视区
               className={
                 collapsed
                   ? "flex shrink-0 flex-col"
-                  : "flex min-h-[300px] flex-1 flex-col overflow-hidden"
+                  : "flex h-full min-h-[300px] shrink-0 flex-col overflow-hidden"
               }
             >
               {/* 单根时不加标题：面板自己的 header 已经在最上面了，没必要多一行 */}
@@ -203,6 +212,12 @@ export function ToolPane({
                     <IconChevronDown className="h-3 w-3 shrink-0" />
                   )}
                   <span className="min-w-0 flex-1 truncate">{folderName(item)}</span>
+                  {/* 有改动才给角标：和图标条那个同一套实心样式，0 不显示，免得像加载失败 */}
+                  {changed > 0 && (
+                    <span className="shrink-0 min-w-[14px] rounded-full bg-accent px-1 text-center text-[9px] leading-[14px] font-medium text-app tabular-nums">
+                      {changed}
+                    </span>
+                  )}
                 </button>
               )}
               {/* 收起是藏起来、不是卸载：提交草稿、历史加载到第几页、拖过的高度都还在 */}

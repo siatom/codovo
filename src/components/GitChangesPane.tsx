@@ -1074,13 +1074,6 @@ function CommitRow({
           <span className="shrink-0 max-w-[40%] truncate text-[10px] text-fg-faint">
             {commit.author}
           </span>
-          {/* 未推送的单独给个向上的箭头：和 header 上那个 ↑N 是同一套语汇 */}
-          {unpushed && (
-            <span className="shrink-0 text-accent" title="还没推送到上游">
-              ↑
-            </span>
-          )}
-          <span className="shrink-0 text-[10px] text-fg-faint">{formatTime(commit.time)}</span>
         </button>
 
         {expanded && files === undefined && (

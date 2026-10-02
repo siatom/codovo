@@ -264,8 +264,8 @@ export function ExplorerPane({
     setQuery("");
     setHits(null);
     setFilterCollapsed(new Set());
-    // 工作目录可能整个换掉了，收起的键跟着作废
-    setCollapsedRoots(new Set());
+    // 工作目录可能整个换掉了，收起的键跟着作废；默认只展开第一个根，其余收起
+    setCollapsedRoots(new Set(roots.slice(1).map(pathKey)));
     // 就地改名/菜单里的那一行也属于旧工作区
     setRenaming(null);
     setRenameError(null);
@@ -948,7 +948,8 @@ export function ExplorerPane({
         )}
         {/* 每个工作目录各一棵子树，并列显示；只有多根时才加一行根名做分隔 */}
         {groups.map((group) => {
-          const collapsed = collapsedRoots.has(pathKey(group.root));
+          // 搜索时一律展开：命中的根被收起就白搜了
+          const collapsed = !filtering && collapsedRoots.has(pathKey(group.root));
           const empty = !filtering && group.items.length === 0;
           const showCreate = !filtering && creating !== null && isRootPath(creating.parent) &&
             pathKey(creating.parent) === pathKey(group.root);

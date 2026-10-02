@@ -325,17 +325,38 @@ body.codedock-dragging-row * {
   display: none;
 }
 
+/* 滚动条做细、平时透明：4px 本来就窄，再让它悬停才显形，
+   静止时几乎不占视觉，鼠标进到哪一块、哪一块才亮出来 */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 2px;
+}
+
+:hover::-webkit-scrollbar-thumb {
+  background: var(--c-scroll);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-scroll-hover);
+}
+
+/* 终端（xterm）的滚动条不跟着应用界面一起收细：它是 xterm 自己的滚动区，
+   维持原来的 10px 实心样式。Monaco 的滚动条是自绘的，本来就不吃这套全局样式 */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+}
+
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--c-scroll);
   border-radius: 5px;
 }
 
-::-webkit-scrollbar-thumb:hover {
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--c-scroll-hover);
 }
 
