@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { DiffSource } from "./tabs";
 import type {
+  CloneProgress,
   DiscardSource,
   FileContent,
   FileDiff,
@@ -50,6 +51,12 @@ export async function pickFolder(): Promise<string[]> {
   // 多选返回数组、单选返回字符串，取消都是 null；统一收敛成数组给调用方
   if (Array.isArray(picked)) return picked;
   return typeof picked === "string" ? [picked] : [];
+}
+
+/** 弹目录选择框（单选），返回选中的路径；用户取消时返回 null。克隆时用来选「克隆到哪个目录下」 */
+export async function pickCloneParent(): Promise<string | null> {
+  const picked = await open({ directory: true, multiple: false, title: "选择克隆到的位置" });
+  return typeof picked === "string" ? picked : null;
 }
 
 export function listDir(root: string, path: string): Promise<FileEntry[]> {
@@ -150,6 +157,35 @@ export function onDirsChanged(handler: (dirs: string[]) => void): Promise<Unlist
  */
 export function onFilesChanged(handler: (paths: string[]) => void): Promise<UnlistenFn> {
   return listen<string[]>("fs-file-changed", (event) => handler(event.payload));
+}
+
+/**
+ * 克隆一个 Git 仓库到 `parent/name`，返回克隆出的绝对路径；成功后前端把它当新工作区打开。
+ *
+ * 耗时按网络算，后端不设硬超时；进度通过 `git-clone-progress` 事件推送，调用方用同一个
+ * `id` 过滤出自己那次克隆。目录已存在、凭据没配好等情况以 git 的原始报错 reject。
+ */
+export function gitClone(params: {
+  id: string;
+  url: string;
+  parent: string;
+  name?: string;
+  branch?: string;
+  depth?: number;
+}): Promise<string> {
+  return invoke<string>("git_clone", {
+    id: params.id,
+    url: params.url,
+    parent: params.parent,
+    name: params.name ?? null,
+    branch: params.branch ?? null,
+    depth: params.depth ?? null,
+  });
+}
+
+/** 克隆进度事件；调用方按 payload.id 过滤出自己那次克隆。返回取消订阅的函数 */
+export function onCloneProgress(handler: (progress: CloneProgress) => void): Promise<UnlistenFn> {
+  return listen<CloneProgress>("git-clone-progress", (event) => handler(event.payload));
 }
 
 /** 某个工作区的 git 状态；目录不是仓库时 isRepo 为 false */
@@ -335,6 +371,17 @@ export function gitMergeAbort(root: string): Promise<GitStatusPayload> {
 /** 冲突都解决并暂存后，用 MERGE_MSG 提交完成合并 */
 export function gitMergeContinue(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_merge_continue", { root });
+}
+
+/**
+ * 从仓库 URL 推导目录名：`https://github.com/foo/bar.git` -> bar。
+ * 与后端 `derive_repo_name` 同规则（scp 风格的冒号、结尾斜杠都兼容），只用来给
+ * 克隆表单里的「目录名」填默认值，最终以后端为准。
+ */
+export function repoNameFromUrl(url: string): string {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  const last = trimmed.split(/[/:]/).pop() ?? "";
+  return last.replace(/\.git$/, "").trim();
 }
 
 /** 后端一律用原生分隔符；界面按 VS Code 习惯显示 `/`。 */

@@ -138,6 +138,18 @@ export interface GitCommitFile {
   status: string;
 }
 
+/** 一次 git clone 的进度事件（后端 `git-clone-progress`） */
+export interface CloneProgress {
+  /** 对应发起它的那次克隆，前端按它过滤 */
+  id: string;
+  /** 阶段名（Counting / Compressing / Receiving / Resolving…） */
+  phase: string;
+  /** 百分比；这一行解析不出来时是 null（前端显示不确定态） */
+  percent: number | null;
+  /** 原始那一行 */
+  text: string;
+}
+
 /**
  * 「放弃修改」还原到哪一侧，和 DiffSource 同一个思路用标签枚举：
  * 调用处一眼能看出语义，不用去翻 bool 的含义。
