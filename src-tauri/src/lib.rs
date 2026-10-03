@@ -98,6 +98,7 @@ pub fn run() {
             git::git_merge_continue,
             git::git_ignored,
             git::git_add_to_ignore,
+            git::git_clone,
             ai::ai_generate_commit_message,
             ai::ai_explain_change,
             ai::ai_test_provider,

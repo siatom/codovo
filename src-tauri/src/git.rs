@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2060,6 +2061,215 @@ fn add_to_ignore(root: &Path, raw: &str) -> Result<(), String> {
     next.push_str(&entry);
     next.push('\n');
     std::fs::write(&file, next).map_err(|reason| format!("写入 .gitignore 失败: {reason}"))
+}
+
+/// 一次克隆的进度事件。`percent` 解析不出来时为 None（比如 "Cloning into..." 这类
+/// 没有百分比的阶段），前端据此显示不确定态进度条。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloneProgress {
+    /// 对应前端发起的那次克隆，前端按它过滤（同一窗口可能有别的克隆在跑）
+    id: String,
+    /// 阶段名（Counting / Compressing / Receiving / Resolving…），给进度条上的文案用
+    phase: String,
+    percent: Option<u8>,
+    /// 原始那一行，出错或需要看细节时直接展示
+    text: String,
+}
+
+/// 从 git 的进度行里抠出百分比：`Receiving objects:  45% (45/100)` -> 45。
+/// 取 `%` 之前连续的十进制数字；没有 `%` 或取不到数字就返回 None，封顶 100。
+fn parse_percent(line: &str) -> Option<u8> {
+    let index = line.find('%')?;
+    let digits: String = line[..index]
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let value: u32 = digits.chars().rev().collect::<String>().parse().ok()?;
+    Some(value.min(100) as u8)
+}
+
+/// 进度行的阶段名：取冒号前的部分（`Receiving objects:  45% …` -> `Receiving objects`）。
+/// 没有冒号的行（`Cloning into 'x'...`）原样返回。
+fn clone_phase(line: &str) -> &str {
+    match line.split_once(':') {
+        Some((head, _)) => head.trim(),
+        None => line.trim(),
+    }
+}
+
+/// 从仓库 URL 推导目录名：`https://github.com/foo/bar.git` -> bar。
+/// 兼容 scp 风格（`git@github.com:foo/bar.git`，最后一段用冒号分隔）与结尾斜杠。
+fn derive_repo_name(url: &str) -> String {
+    let trimmed = url.trim().trim_end_matches('/');
+    let last = trimmed.rsplit(['/', ':']).next().unwrap_or(trimmed);
+    last.strip_suffix(".git").unwrap_or(last).trim().to_string()
+}
+
+/// 把一行 git 输出变成进度事件发出去。percent / phase 解析不出来也照发，
+/// 前端至少能显示原始文案。
+fn emit_clone_progress(app: &tauri::AppHandle, id: &str, text: &str) {
+    use tauri::Emitter;
+
+    let payload = CloneProgress {
+        id: id.to_string(),
+        phase: clone_phase(text).to_string(),
+        percent: parse_percent(text),
+        text: text.to_string(),
+    };
+    let _ = app.emit("git-clone-progress", payload);
+}
+
+/// 克隆一个仓库到 `parent/name`，边跑边把进度 emit 出去，返回克隆出的绝对路径。
+///
+/// 目标目录必须不存在——`git clone` 允许克隆进一个已存在的**空**目录，但那样目录里
+/// 可能藏着用户自己的东西，宁可直接报错让换个名字。
+fn clone_repo(
+    app: &tauri::AppHandle,
+    id: &str,
+    url: &str,
+    parent: &str,
+    name: Option<&str>,
+    branch: Option<&str>,
+    depth: Option<u32>,
+) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("请填写仓库地址".to_string());
+    }
+
+    let parent_path = Path::new(parent);
+    if !parent_path.is_dir() {
+        return Err(format!("父目录不存在或不是目录: {parent}"));
+    }
+
+    let dir_name = match name.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.to_string(),
+        None => derive_repo_name(url),
+    };
+    // 目录名必须是单段：带分隔符或 `..` 就能把它带到父目录之外
+    if dir_name.is_empty() || dir_name == "." || dir_name == ".." || dir_name.contains(['/', '\\']) {
+        return Err(format!("非法的目录名: {dir_name}"));
+    }
+
+    let target = parent_path.join(&dir_name);
+    if target.exists() {
+        return Err(format!("目录已存在: {}", target.display()));
+    }
+
+    let mut args: Vec<String> = vec!["clone".into(), "--progress".into()];
+    if let Some(branch) = branch.map(str::trim).filter(|value| !value.is_empty()) {
+        args.push("--branch".into());
+        args.push(branch.to_string());
+    }
+    if let Some(depth) = depth.filter(|value| *value > 0) {
+        args.push("--depth".into());
+        args.push(depth.to_string());
+    }
+    args.push(url.to_string());
+    args.push(dir_name.clone());
+
+    let mut command = Command::new("git");
+    command
+        .args(&args)
+        .current_dir(parent_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // 没有 TTY：私有仓库交给系统上配好的凭据，缺了就报错，别卡在输入密码上
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    hide_console(&mut command);
+
+    let mut child = command
+        .spawn()
+        .map_err(|reason| format!("无法执行 git: {reason}"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "无法读取 git 输出".to_string())?;
+
+    // 边读边发进度，读完把整段 stderr 还给主线程当错误信息
+    let app = app.clone();
+    let id = id.to_string();
+    let reader = std::thread::spawn(move || {
+        let mut all: Vec<u8> = Vec::new();
+        let mut pending: Vec<u8> = Vec::new();
+        let mut reader = stderr;
+        let mut chunk = [0u8; 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    pending.extend_from_slice(&chunk[..count]);
+                    // git 用 \r 原地刷新进度、用 \n 结束一行，两种都当分隔符
+                    while let Some(index) = pending.iter().position(|b| *b == b'\r' || *b == b'\n')
+                    {
+                        let line: Vec<u8> = pending.drain(..=index).collect();
+                        all.extend_from_slice(&line);
+                        let text =
+                            String::from_utf8_lossy(&line[..line.len() - 1]).trim().to_string();
+                        if !text.is_empty() {
+                            emit_clone_progress(&app, &id, &text);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        all.extend_from_slice(&pending);
+        all
+    });
+
+    let status = child.wait();
+    let stderr = reader.join().unwrap_or_default();
+
+    match status {
+        Ok(status) if status.success() => Ok(target.to_string_lossy().to_string()),
+        Ok(_) => {
+            // 进度行也在 stderr 里，把 \r 换成换行，读起来才不是一行糊到底
+            let text = String::from_utf8_lossy(&stderr).replace('\r', "\n");
+            let text = text.trim();
+            Err(if text.is_empty() {
+                "git clone 失败".to_string()
+            } else {
+                text.to_string()
+            })
+        }
+        Err(reason) => Err(format!("等待 git 结束失败: {reason}")),
+    }
+}
+
+/// 克隆一个 Git 仓库并返回它在本地的绝对路径；成功后前端把它当新工作区打开。
+///
+/// 克隆是长任务，**必须 async + spawn_blocking**：Tauri 的同步命令跑在主线程上，
+/// 直接 `child.wait()` 会把整个界面卡住。进度通过 `git-clone-progress` 事件推送。
+#[tauri::command]
+pub async fn git_clone(
+    app: tauri::AppHandle,
+    id: String,
+    url: String,
+    parent: String,
+    name: Option<String>,
+    branch: Option<String>,
+    depth: Option<u32>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        clone_repo(
+            &app,
+            &id,
+            &url,
+            &parent,
+            name.as_deref(),
+            branch.as_deref(),
+            depth,
+        )
+    })
+    .await
+    .map_err(|reason| format!("克隆任务异常结束: {reason}"))?
 }
 
 #[cfg(test)]
@@ -4250,5 +4460,35 @@ mod tests {
             pairs,
             vec![("main", "head"), ("origin/main", "remote"), ("v1.0", "tag")]
         );
+    }
+
+    #[test]
+    fn reads_clone_percent() {
+        assert_eq!(parse_percent("Receiving objects:  45% (45/100)"), Some(45));
+        assert_eq!(
+            parse_percent("Resolving deltas: 100% (10/10), done."),
+            Some(100)
+        );
+        assert_eq!(parse_percent("Cloning into 'x'..."), None);
+        // 超过 100 也封顶
+        assert_eq!(parse_percent("Receiving objects: 250%"), Some(100));
+    }
+
+    #[test]
+    fn names_clone_phase() {
+        assert_eq!(
+            clone_phase("Receiving objects:  45% (45/100)"),
+            "Receiving objects"
+        );
+        assert_eq!(clone_phase("Cloning into 'x'..."), "Cloning into 'x'...");
+    }
+
+    #[test]
+    fn derives_repo_name_from_urls() {
+        assert_eq!(derive_repo_name("https://github.com/foo/bar.git"), "bar");
+        assert_eq!(derive_repo_name("https://github.com/foo/bar/"), "bar");
+        assert_eq!(derive_repo_name("git@github.com:foo/bar.git"), "bar");
+        assert_eq!(derive_repo_name("https://host/foo/bar"), "bar");
+        assert_eq!(derive_repo_name("   "), "");
     }
 }
