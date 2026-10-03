@@ -436,6 +436,15 @@ export function Sidebar({
                     {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
                     {isOpen ? <IconFolderOpen /> : <IconFolder />}
                     <span className="truncate">{workspace.name}</span>
+                    {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
+                    {workspace.roots.length > 1 && (
+                      <span
+                        title={`包含 ${workspace.roots.length} 个工作目录`}
+                        className="shrink-0 rounded bg-active px-1 text-[10px] leading-4 text-fg-faint"
+                      >
+                        {workspace.roots.length}
+                      </span>
+                    )}
                     {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
                     {workspace.pinned && (
                       <span title="已置顶" className="shrink-0 text-fg-faint">
