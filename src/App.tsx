@@ -255,7 +255,9 @@ function Shell() {
         // 当前工作区换人了，后端的目录监听也得跟着挪
         if (nextWorkspace) void workspaceActivate(nextWorkspace.roots).catch(() => {});
       } else {
-        clearLastWorkspaceId();
+        // 关到空：不动「上次的工作区」。关闭只是把界面收起来、记录还在列表里，
+        // 下次启动该把它恢复回来；清掉的话用户关光工作区再开软件就永远停在空态。
+        saveLastWorkspaceId(workspace.id);
       }
     },
     [dropAgentSession],
