@@ -20,20 +20,26 @@ pub(crate) fn default_shell() -> String {
     }
 }
 
-/// macOS 的 GUI 应用没有终端父进程，只能借 login shell 读取用户自己维护的 Node PATH。
-/// 调用方（pty.rs 的 default_shell）只在 unix 分支里用，Windows 下不需要这个函数。
+/// 哪些 shell 能接 `-il`（登录 + 交互）。GUI 应用没有终端父进程，让 shell 自己去读
+/// 用户维护的 profile / rc，PATH 之类的才进得来（macOS 与 Linux 同理）。fish / nu / pwsh
+/// 的登录参数不一样，硬塞 `-il` 会让终端起不来，所以只认这几个 POSIX shell。
+#[cfg(unix)]
+pub(crate) fn supports_login_shell(shell: &str) -> bool {
+    use std::ffi::OsStr;
+    matches!(
+        Path::new(shell).file_name().and_then(OsStr::to_str),
+        Some("zsh") | Some("bash") | Some("sh") | Some("ksh")
+    )
+}
+
+/// 终端 shell 的启动参数：登录 + 交互，让 shell 自己把用户配置的环境带进来。
 #[cfg(unix)]
 pub(crate) fn login_args(shell: &str) -> Vec<String> {
-    #[cfg(target_os = "macos")]
-    {
-        if macos::supports_login_shell(shell) {
-            return vec!["-il".to_string()];
-        }
+    if supports_login_shell(shell) {
+        vec!["-il".to_string()]
+    } else {
+        Vec::new()
     }
-
-    #[cfg(not(target_os = "macos"))]
-    let _ = shell;
-    Vec::new()
 }
 
 /// 返回与终端一致的 PATH；探测失败时必须保留应用原本的环境，不能阻断终端启动。
@@ -42,7 +48,7 @@ pub(crate) fn resolved_path(shell: &str, cwd: Option<&Path>) -> Option<OsString>
 
     #[cfg(target_os = "macos")]
     {
-        if macos::supports_login_shell(shell) {
+        if supports_login_shell(shell) {
             macos::probe_path(shell, cwd).or(inherited)
         } else {
             inherited
@@ -58,7 +64,7 @@ pub(crate) fn resolved_path(shell: &str, cwd: Option<&Path>) -> Option<OsString>
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsString;
     use std::io::Read;
     // 模块本身就是 macOS(=unix)，extract_path 不必再区分 unix / 非 unix。
     use std::os::unix::ffi::OsStringExt;
@@ -70,13 +76,6 @@ mod macos {
     const PATH_END: &[u8] = b"__CODEDOCK_PATH_END__";
     const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
     const MAX_PROBE_OUTPUT: u64 = 64 * 1024;
-
-    pub(super) fn supports_login_shell(shell: &str) -> bool {
-        matches!(
-            Path::new(shell).file_name().and_then(OsStr::to_str),
-            Some("zsh") | Some("bash") | Some("sh") | Some("ksh")
-        )
-    }
 
     pub(super) fn probe_path(shell: &str, cwd: Option<&Path>) -> Option<OsString> {
         let script = "printf '__CODEDOCK_PATH_START__%s__CODEDOCK_PATH_END__\\n' \"$PATH\"";

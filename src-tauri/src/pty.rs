@@ -131,6 +131,11 @@ fn open_shell(
     if let Some(dir) = workdir.as_ref() {
         cmd.cwd(dir);
     }
+    // PATH 只有 macOS 需要显式喂：GUI 应用没有终端父进程，拿不到用户登录 shell 里的 PATH。
+    // Windows 上绝不能覆盖——portable-pty 每次 spawn 都会重读注册表（system + user PATH 合并），
+    // 显式设成进程自身那份 PATH 反而把它钉死在 CodeDock 启动那一刻的旧值，启动之后新改的
+    // PATH 就永远进不来（Linux 下 get_base_env 不读额外配置，设与不设等价，故一并省去）。
+    #[cfg(target_os = "macos")]
     if let Some(path) = crate::shell_env::resolved_path(&program, workdir.as_deref()) {
         cmd.env("PATH", path);
     }
