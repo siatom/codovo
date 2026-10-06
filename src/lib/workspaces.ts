@@ -239,6 +239,10 @@ export function saveLastWorkspaceId(id: string) {
 export function clearLastWorkspaceId() {
   try {
     window.localStorage.removeItem(LAST_WORKSPACE_KEY);
+    // 旧键必须一并清：readLastWorkspaceId 会回落到它，只清新键的话「关到空」这个状态
+    // 根本留不住——下次启动照样从旧键里把工作区捞回来。旧键只是「上次开的是哪个」，
+    // 不是工作区列表（列表在 codedock.projects / workspaceList 里，都不动），清掉不丢东西。
+    window.localStorage.removeItem(LEGACY_LAST_KEY);
   } catch {
     // 同 saveWorkspaceList
   }

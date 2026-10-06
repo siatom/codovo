@@ -255,9 +255,10 @@ function Shell() {
         // 当前工作区换人了，后端的目录监听也得跟着挪
         if (nextWorkspace) void workspaceActivate(nextWorkspace.roots).catch(() => {});
       } else {
-        // 关到空：不动「上次的工作区」。关闭只是把界面收起来、记录还在列表里，
-        // 下次启动该把它恢复回来；清掉的话用户关光工作区再开软件就永远停在空态。
-        saveLastWorkspaceId(workspace.id);
+        // 关到空：把「上次的工作区」清掉，让「一个都没开」这个状态也跨启动保留。
+        // 用户特意把工作区全关掉再退出，下次启动就该还是空态，不该替他把最后一个又开回来。
+        // 工作区本身还在列表里（没走 dropWorkspace），侧栏点一下就能重新打开。
+        clearLastWorkspaceId();
       }
     },
     [dropAgentSession],
