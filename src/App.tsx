@@ -25,6 +25,7 @@ import {
   newWorkspaceId,
   onWorkspacesChanged,
   readLastWorkspaceId,
+  reorderWorkspaces,
   saveLastWorkspaceId,
   saveWorkspace,
   type Workspace,
@@ -281,6 +282,11 @@ function Shell() {
     setWorkspaces(saveWorkspace({ ...workspace, pinned: !workspace.pinned }));
   }, []);
 
+  /** 拖拽重排：侧栏算好新顺序（含被拖动项的置顶标记）后整份落盘 */
+  const reorder = useCallback((ordered: Workspace[]) => {
+    setWorkspaces(reorderWorkspaces(ordered));
+  }, []);
+
   /** 右栏（编辑器 / 浏览器）全屏，按钮挂在这两个面板的标题栏上 */
   const toggleRightFullscreen = useCallback(
     () => setFullscreen((area) => (area === "right" ? "none" : "right")),
@@ -412,6 +418,7 @@ function Shell() {
           onRemove={setPendingRemove}
           onClose={closeWorkspace}
           onTogglePin={togglePin}
+          onReorder={reorder}
           onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
         />

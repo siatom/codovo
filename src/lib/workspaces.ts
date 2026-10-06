@@ -209,6 +209,28 @@ export function saveWorkspace(workspace: Workspace): Workspace[] {
   return next;
 }
 
+/**
+ * 拖拽重排：按给定顺序写回工作区列表，并同步各工作区的置顶标记。
+ *
+ * 写前读最新：多窗口共享同一份 localStorage，直接拿本窗口算出来的整份列表覆盖，
+ * 会把别的窗口刚建/刚删的项抹掉。所以以传入顺序当骨架、实体取最新那份；别的窗口
+ * 新增的追加到末尾（宁可不整齐也不能丢），已被别处删掉的跳过。
+ */
+export function reorderWorkspaces(ordered: Workspace[]): Workspace[] {
+  const latest = new Map(readWorkspaces().map((item) => [item.id, item]));
+  const next: Workspace[] = [];
+  for (const item of ordered) {
+    const live = latest.get(item.id);
+    if (!live) continue;
+    latest.delete(item.id);
+    const pinned = item.pinned === true;
+    next.push((live.pinned === true) === pinned ? live : { ...live, pinned });
+  }
+  for (const rest of latest.values()) next.push(rest);
+  saveWorkspaceList(next);
+  return next;
+}
+
 /** 从列表里去掉一个工作区（只动 CodeDock 的记录，不碰磁盘）。返回新列表 */
 export function dropWorkspace(id: string): Workspace[] {
   const next = readWorkspaces().filter((item) => item.id !== id);

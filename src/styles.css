@@ -311,6 +311,13 @@ body.codedock-dragging-row * {
   cursor: row-resize;
 }
 
+/* 拖动工作区行重排：同样禁选中，光标给抓握态（不是 row-resize，这不是在改尺寸） */
+body.codedock-dragging-list,
+body.codedock-dragging-list * {
+  user-select: none;
+  cursor: grabbing;
+}
+
 /* xterm 自己算尺寸，容器不能给它留内边距 */
 .xterm .xterm-viewport {
   background-color: transparent !important;

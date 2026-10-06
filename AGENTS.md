@@ -54,6 +54,12 @@ git push --follow-tags            # 连 tag 一起推
   （右栏模块、浏览器地址、提交历史视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
   （设置、主题、工作区列表、别名）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
   列表类一律「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别处刚写进去的。
+- 侧栏工作区的顺序**就是那份列表的存储顺序**（`pinned` 只是标记，渲染时把置顶组排最前），拖拽重排走
+  `reorderWorkspaces` 按新顺序整份写回、并同步被拖项的 `pinned`。**行容器刻意不 `setPointerCapture`**：
+  捕获会把 `click` 重定向到行容器，行内「⋯」「+」这些按钮就全点不动了——所以按下只记起点，
+  `pointermove` / `pointerup` 挂 `window`（指针移出行外也收得到），纵向越过 4px 才算拖动，拖完靠
+  `onClickCapture` 吞掉浏览器补的那次 click。落点按各行中线算，插进置顶组（`insertAt < 置顶项数`）
+  就自动置顶、拖出自动取消。
 - 多工作区下的前端约定：git 状态**只轮询当前工作区**（`useGitStatus(root, visible)`，隐藏的工作区停轮询但
   保留状态）；Monaco 从隐藏切回可见要补一次 `layout()`（隐藏期间容器尺寸是 0）；侧栏命令、编辑器浮窗
   这类「打到当前工作区实例」的动作，走 App 里的 `root -> handle` 表路由。

@@ -66,6 +66,8 @@ interface SidebarProps {
   onClose: (workspace: Workspace) => void;
   /** 切换置顶：置顶的工作区排在列表最前 */
   onTogglePin: (workspace: Workspace) => void;
+  /** 拖拽重排：整份新顺序（含被拖动项的置顶标记）交给 App 落盘 */
+  onReorder: (ordered: Workspace[]) => void;
   /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端。
    *  title 是 CLI 名，作新标签的标题 */
   onRunAiCommand: (command: string, title: string) => void;
@@ -122,6 +124,9 @@ const WORKSPACE_MENU_W = 320;
 /** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
 const AI_MENU_W = 150;
 
+/** 工作区行拖动重排：纵向移过这么多像素才算「在拖」，免得手抖把点击变成重排 */
+const DRAG_THRESHOLD = 4;
+
 function readCollapsed(): boolean {
   try {
     return window.sessionStorage.getItem(COLLAPSED_KEY) === "1";
@@ -152,6 +157,7 @@ export function Sidebar({
   onRemove,
   onClose,
   onTogglePin,
+  onReorder,
   onRunAiCommand,
   onResumeSession,
 }: SidebarProps) {
@@ -161,6 +167,23 @@ export function Sidebar({
   /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
   const [resizing, setResizing] = useState(false);
+  /**
+   * 工作区行的拖动重排。会话放 ref：指针每动一下都要更新，不能每帧重建整棵列表。
+   * `started` 区分「按下」和「真的在拖」，没越过阈值时一切照旧（点击选中不受影响）。
+   */
+  const dragRef = useRef<{ id: string; startY: number; started: boolean } | null>(null);
+  /** 已按下、还没越过阈值；非空时才往 window 上挂监听 */
+  const [dragPending, setDragPending] = useState(false);
+  /** 拖动中的落点：插到第几项之前（0..行数），以及拖的是谁 */
+  const [dragOver, setDragOver] = useState<{ id: string; index: number } | null>(null);
+  /** 落点索引的同步副本：pointerup 时要读最新值，走 state 会拿到上一帧的 */
+  const dropIndexRef = useRef<number | null>(null);
+  /** 刚拖完要吞掉随后那一次 click（pointerup 之后浏览器还会补一个 click） */
+  const swallowClickRef = useRef(false);
+  /** 工作区列表容器：按各行的中线算落点 */
+  const listRef = useRef<HTMLUListElement>(null);
+  /** 当前渲染顺序的副本：拖动监听只挂一次，别每帧重挂 */
+  const orderedRef = useRef<Workspace[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -266,6 +289,96 @@ export function Sidebar({
       // 记不住就每次启动按默认宽度算，不影响使用
     }
   };
+
+  /** 按各行的中线算落点：返回「插到第几项之前」，范围 0..行数 */
+  const dropIndexAt = (clientY: number): number => {
+    const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-ws-row]");
+    if (!rows || rows.length === 0) return 0;
+    for (let index = 0; index < rows.length; index += 1) {
+      const rect = rows[index].getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return index;
+    }
+    return rows.length;
+  };
+
+  /** 工作区行按下：只记起点，「到底在不在拖」交给 window 上的 pointermove 判 */
+  const onRowDown = (event: ReactPointerEvent<HTMLDivElement>, workspace: Workspace) => {
+    // 只认鼠标左键：触摸的纵向拖动要留给列表滚动，笔同理
+    if (event.button !== 0 || event.pointerType !== "mouse") return;
+    // 就地改名的输入框不参与拖动，否则选词会变成拖行
+    if ((event.target as HTMLElement).closest("input")) return;
+    swallowClickRef.current = false;
+    dragRef.current = { id: workspace.id, startY: event.clientY, started: false };
+    setDragPending(true);
+  };
+
+  /*
+   * 拖动重排。pointermove / pointerup 挂 window 而不是行自己：指针一移出行外，行上的
+   * onPointerMove 就断了。行也刻意不 setPointerCapture——捕获会把 click 重定向到行容器，
+   * 行内「⋯」「+」这些按钮就都点不动了（分隔条那种不吃点击的地方才能这么用）。
+   */
+  useEffect(() => {
+    if (!dragPending) return;
+    const onMove = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (!drag.started) {
+        if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD) return;
+        drag.started = true;
+        // 按下到越界这几像素里可能已经选上了文本，清掉
+        window.getSelection()?.removeAllRanges();
+        document.body.classList.add("codedock-dragging-list");
+      }
+      const index = dropIndexAt(event.clientY);
+      dropIndexRef.current = index;
+      setDragOver({ id: drag.id, index });
+    };
+    const finish = (commit: boolean) => {
+      const drag = dragRef.current;
+      dragRef.current = null;
+      setDragPending(false);
+      setDragOver(null);
+      document.body.classList.remove("codedock-dragging-list");
+      const index = dropIndexRef.current;
+      dropIndexRef.current = null;
+      // 按下了但没动过，那就是普通点击，什么都不用做
+      if (!drag?.started) return;
+      // 拖完浏览器还会补一次 click，吞掉它，别顺手把工作区又切一遍
+      swallowClickRef.current = true;
+      if (!commit || index === null) return;
+
+      const list = orderedRef.current;
+      const from = list.findIndex((item) => item.id === drag.id);
+      const rest = list.filter((item) => item.id !== drag.id);
+      // 只有一个工作区时拖动没有意义，顺带免得把它的置顶标记抹掉
+      if (from < 0 || rest.length === 0) return;
+
+      // 置顶组排在最前，所以「插进置顶组」就置顶、插到普通区就取消。全列表都是置顶项时
+      // 拖到哪都还在组内（末尾也算）；否则拖过最后一个置顶项的中线就算出组
+      const insertAt = index > from ? index - 1 : index;
+      const pinnedCount = rest.filter((item) => item.pinned === true).length;
+      const pinned = pinnedCount === rest.length || insertAt < pinnedCount;
+      const moved = { ...list[from], pinned };
+      const next = [...rest.slice(0, insertAt), moved, ...rest.slice(insertAt)];
+      // 落点和原位一样就是没动过，不必落盘（pinned 缺省是 undefined，比之前先归一）
+      const unchanged = next.every(
+        (item, i) =>
+          item.id === list[i].id && (item.pinned === true) === (list[i].pinned === true),
+      );
+      if (unchanged) return;
+      onReorder(next);
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+  }, [dragPending, onReorder]);
 
   /** 用系统的文件浏览器打开这个目录（Windows 资源管理器 / macOS 访达 / Linux 文件管理器） */
   const openInSystem = (path: string) => {
@@ -384,6 +497,8 @@ export function Sidebar({
   const ordered = [...workspaces].sort(
     (a, b) => Number(b.pinned === true) - Number(a.pinned === true),
   );
+  // 拖动的 window 监听只挂一次，所以顺序走 ref 传给它
+  orderedRef.current = ordered;
 
   return (
     <div
@@ -414,19 +529,44 @@ export function Sidebar({
       <p className="shrink-0 px-4 pt-3 pb-1 text-[13px] font-semibold tracking-wide text-fg-faint">
         工作区
       </p>
-      <ul className="min-h-0 flex-1 overflow-auto px-2 pb-2">
+      <ul ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 pb-2">
         {ordered.length === 0 && (
           <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
         )}
-        {ordered.map((workspace) => {
+        {ordered.map((workspace, index) => {
           const isCurrent = workspace.id === currentId;
           // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
           const isOpen = opened.includes(workspace.id);
+          const dragging = dragOver?.id === workspace.id;
+          // 落点线：插在第一项之前画在这行上面，插在最后一项之后画在最后一行下面
+          const dropBefore = dragOver?.index === index;
+          const dropAfter = dragOver?.index === ordered.length && index === ordered.length - 1;
           return (
-            <li key={workspace.id}>
+            <li key={workspace.id} data-ws-row className="relative">
+              {(dropBefore || dropAfter) && (
+                <span
+                  className={`pointer-events-none absolute right-1 left-1 z-10 h-0.5 rounded bg-accent-strong ${
+                    dropBefore ? "-top-0.5" : "-bottom-0.5"
+                  }`}
+                />
+              )}
               {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
-              <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
-                <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
+              <div
+                className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}
+                // 拖完紧跟着的那次 click 在这里拦掉：行内主按钮、⋯、+ 都在这一层里
+                onClickCapture={(event) => {
+                  if (!swallowClickRef.current) return;
+                  swallowClickRef.current = false;
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+              >
+                <div
+                  className={`${ROW} ${isCurrent ? "text-fg" : ""} ${
+                    dragging ? "opacity-40" : ""
+                  }`}
+                  onPointerDown={(event) => onRowDown(event, workspace)}
+                >
                   <button
                     type="button"
                     onClick={() => onSelect(workspace)}
