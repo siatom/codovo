@@ -33,7 +33,7 @@ allowed-tools: Bash, PowerShell, Read, Grep, Glob, TaskCreate, TaskUpdate, AskUs
 ```
 netstat -ano | grep ":5273" | grep LISTENING
 ```
-有输出说明被占。用 **PowerShell 工具** `Get-CimInstance Win32_Process` 查那个 PID 的命令行，确认是本项目的 vite/node（命令行含 `D:\CodeProjects\CodeDock`）后再停掉它；父进程链还在就照 `ParentProcessId` 一并停。
+有输出说明被占。用 **PowerShell 工具** `Get-CimInstance Win32_Process` 查那个 PID 的命令行，确认是本项目的 vite/node（命令行含 `D:\CodeProjects\code-dock`）后再停掉它；父进程链还在就照 `ParentProcessId` 一并停。
 
 **macOS / Linux（Bash 工具）**：
 ```
