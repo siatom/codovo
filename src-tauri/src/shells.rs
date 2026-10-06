@@ -142,7 +142,12 @@ fn table() -> Vec<Entry> {
 
 #[cfg(windows)]
 fn auto_shell() -> (String, Vec<String>) {
-    // 与改造前的 pty::default_shell 一致：优先 pwsh，其次 Windows PowerShell，最后 ComSpec
+    // 默认用 Git Bash：Windows 上跑 CLI 工具（各种 *nix 风格命令）最省事。
+    // 直接复用候选表里那条，免得 program / 启动参数两处各写一份、将来改一处忘一处。
+    if let Some(git_bash) = table().into_iter().find(|item| item.info.id == "git-bash") {
+        return (git_bash.program, git_bash.args);
+    }
+    // 本机没装 Git Bash 才退回原来的顺序：pwsh → Windows PowerShell → ComSpec
     for candidate in ["pwsh.exe", "powershell.exe"] {
         if on_path(candidate) {
             return (candidate.to_string(), vec!["-NoLogo".to_string()]);
@@ -220,6 +225,19 @@ pub(crate) fn resolve_shell(preference: Option<&str>) -> (String, Vec<String>) {
 /// 「自动」对应的那条候选：id 为空串，名字和图标按它实际会起的 shell 来定。
 fn auto_entry() -> Entry {
     let (program, args) = auto_shell();
+    // 自动选中的若正好是候选表里的某条，直接借它的名字 / 图标：光看可执行文件名
+    // 认不出 Git Bash（bin\bash.exe 会被当成普通 bash，图标和显示名都不对）。
+    if let Some(found) = table().into_iter().find(|item| item.program == program) {
+        return Entry {
+            info: ShellInfo {
+                id: String::new(),
+                label: format!("自动 ({})", found.info.name),
+                ..found.info
+            },
+            program: found.program,
+            args: found.args,
+        };
+    }
     let (name, kind) = describe(&program);
     Entry {
         info: ShellInfo {
