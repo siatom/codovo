@@ -334,6 +334,217 @@ fn build_file_prompt(display: &str, content: &str) -> (String, String) {
     (FILE_SYSTEM_PROMPT.to_string(), user)
 }
 
+/// 起草反馈正文时，喂给模型的仓库文件清单最多列多少条。
+/// 清单只用来让模型挑相关文件，列太多纯属烧 token。
+const MAX_TREE_ENTRIES: usize = 400;
+
+/// 让模型挑相关文件时最多挑几个。
+const MAX_CONTEXT_FILES: usize = 8;
+
+/// 单个相关文件喂给模型的字符上限。
+const MAX_CONTEXT_FILE_CHARS: usize = 4_000;
+
+/// 所有相关文件合起来的字符上限。
+const MAX_CONTEXT_CHARS: usize = 20_000;
+
+/// 分类值 → 中文名。和前端 `CATEGORIES` 对齐；认不出的值原样带过去。
+fn category_label(category: &str) -> &str {
+    match category {
+        "bug" => "缺陷",
+        "feature" => "建议",
+        "other" => "其他",
+        other => other,
+    }
+}
+
+/// 列一份工作区内的文件清单（相对路径、正斜杠），供模型挑相关文件。
+/// 返回 (清单, 是否被上限截断)。
+fn repo_files(root: &Path) -> (Vec<String>, bool) {
+    let mut files: Vec<String> = Vec::new();
+    let complete = crate::fs_api::walk_files(root, &mut |path| {
+        if files.len() >= MAX_TREE_ENTRIES {
+            return false;
+        }
+        files.push(
+            path.strip_prefix(root)
+                .map(|rest| rest.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/")),
+        );
+        true
+    });
+    // 遍历顺序取决于目录项的返回顺序，排一下让同样的仓库给出同样的清单
+    files.sort();
+    (files, !complete)
+}
+
+/// 把模型给的一行折算成清单里真实存在的路径。
+///
+/// 模型常给路径加上序号、反引号、行号或一句说明，所以先做宽松的精确匹配，
+/// 再退一步取「这一行包含的、最长的那个已知路径」。认不出来就返回 None——
+/// 宁可少读一个文件，也不能拿编出来的路径去读盘。
+fn match_known(line: &str, known: &[String]) -> Option<String> {
+    let trimmed = line.trim().trim_start_matches(|c: char| {
+        c == '-' || c == '*' || c == '`' || c == '"' || c == '.' || c == ' ' || c.is_ascii_digit()
+    });
+    let candidate = trimmed.trim_matches('`').trim_matches('"').trim();
+    if let Some(hit) = known.iter().find(|path| path.as_str() == candidate) {
+        return Some(hit.clone());
+    }
+    known
+        .iter()
+        .filter(|path| candidate.contains(path.as_str()))
+        .max_by_key(|path| path.len())
+        .cloned()
+}
+
+/// 解析模型挑出来的文件清单，只保留清单里真实存在的路径。
+fn parse_selected_files(raw: &str, known: &[String]) -> Vec<String> {
+    let mut picked: Vec<String> = Vec::new();
+    for line in raw.lines() {
+        if picked.len() >= MAX_CONTEXT_FILES {
+            break;
+        }
+        let Some(path) = match_known(line, known) else {
+            continue;
+        };
+        if !picked.contains(&path) {
+            picked.push(path);
+        }
+    }
+    picked
+}
+
+/// 把挑中的文件读成一段可喂给模型的正文。读不了的文件（太大 / 二进制 / 不存在）
+/// 直接跳过——为一个大文件让整次生成失败不值得。
+fn read_context_files(root: &Path, files: &[String]) -> String {
+    let mut out = String::new();
+    let mut budget = MAX_CONTEXT_CHARS;
+    for relative in files {
+        // 沙箱校验、大小上限、二进制判定都在 read_text_file 里
+        let Ok(content) = crate::fs_api::read_text_file(root, relative) else {
+            continue;
+        };
+        let block = format!("--- {relative} ---\n{}\n\n", truncate(&content, MAX_CONTEXT_FILE_CHARS));
+        let cost = block.chars().count();
+        if cost > budget {
+            break;
+        }
+        budget -= cost;
+        out.push_str(&block);
+    }
+    out
+}
+
+/// 第一趟用的 system 提示：只挑文件，不要正文。
+const PICK_FILES_PROMPT: &str = "\
+你要为起草一条 issue 挑出需要参考的仓库文件。
+用户会给一条线索和仓库的文件清单，你挑出与线索最相关的文件。
+规则：
+1. 只输出文件路径，每行一个，必须和清单里的写法完全一致。
+2. 按相关度从高到低排列，最多 8 个。
+3. 一个相关的都没有时，只输出「无」。
+4. 不要输出解释、序号、行号或任何其它文字。";
+
+/// 第二趟用的 system 提示：结构照仓库里的 `.codebuddy/commands/gitee-issue-add.md`——
+/// 只写有内容的小节，判断必须落在真实代码上。
+const FEEDBACK_PROMPT: &str = "\
+你是 Gitee issue 起草助手，负责把用户给的线索写成本仓库一条 issue 的「详细描述」。
+
+严格按下面的 markdown 结构输出，只写有内容的小节，没有的整节省略，不要加前言、结尾或代码围栏：
+
+## 背景
+
+当前行为是什么、为什么需要改（引用相关文件路径，必要时带行号）。
+
+## 期望
+
+改完之后应该是什么样，写成可验收的行为描述。
+
+## 实现要点
+
+（可选）排查到的落点：相关文件、已知坑、跨平台差异、需要同步改的地方。
+
+## 验收
+
+怎么验证这条做完了（跑什么命令、界面怎么点）。
+
+规则：
+1. 用中文。判断和结论必须基于给出的代码，不许凭印象编；引用了文件就带路径。
+2. 代码里看不出实现落点时就省略「实现要点」，不要编造。
+3. 不要重复标题，不写「本次」「我们」这类空话。
+4. 只输出正文本身，不要输出标题行。";
+
+/// 拼第一趟（挑文件）的 system / user 两条消息。
+fn build_pick_prompt(title: &str, category: &str, tree: &str, truncated: bool) -> (String, String) {
+    let mut user = format!(
+        "线索：{title}\n类型：{}\n\n仓库文件清单：\n{tree}",
+        category_label(category)
+    );
+    if truncated {
+        // 告诉模型清单被截过，免得它以为仓库就这么大
+        user.push_str("\n…（文件过多，此处只列了一部分）");
+    }
+    (PICK_FILES_PROMPT.to_string(), user)
+}
+
+/// 拼第二趟（写正文）的 system / user 两条消息。
+fn build_feedback_prompt(title: &str, category: &str, context: &str) -> (String, String) {
+    let mut user = format!("线索（标题）：{title}\n类型：{}\n\n", category_label(category));
+    if context.trim().is_empty() {
+        user.push_str("（没能取到相关文件内容，只能依据线索本身来写）");
+    } else {
+        user.push_str("相关文件内容：\n");
+        user.push_str(context);
+    }
+    (FEEDBACK_PROMPT.to_string(), user)
+}
+
+/// 让大模型根据标题（线索）和当前工作区的代码，写一条反馈的「详细描述」。
+///
+/// 分两趟：先从文件清单里挑出相关文件，再把它们的内容喂进去起草正文。
+/// 单趟做不到「结合代码现状」——线索是自然语言，没法直接当关键词去搜文件。
+#[tauri::command]
+pub async fn ai_generate_feedback_body(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    config: AiConfig,
+    title: String,
+    category: String,
+) -> Result<String, String> {
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("请先填个标题，生成时拿它当线索".to_string());
+    }
+
+    // 覆盖要赶在 resolve() 之前；钥匙串那次同步读也在第一个 await 之前
+    let mut config = config;
+    config.apply(&dev::read_overrides());
+    config.resolve()?;
+
+    // 遍历工作区是同步阻塞的，先跑完再 await
+    let root = state.checked_root(&root)?;
+    let (files, truncated) = repo_files(&root);
+    if files.is_empty() {
+        return Err("这个工作区里没有可参考的文件".to_string());
+    }
+
+    // 第一趟：挑相关文件。温度给低——挑文件不需要发挥
+    let (pick_system, pick_user) = build_pick_prompt(&title, &category, &files.join("\n"), truncated);
+    let picked_raw = chat(&config, &pick_system, &pick_user, 0.1).await?;
+    let picked = parse_selected_files(&picked_raw, &files);
+
+    // 第二趟：读文件、起草正文
+    let context = read_context_files(&root, &picked);
+    let (system, user) = build_feedback_prompt(&title, &category, &context);
+    let raw = chat(&config, &system, &user, 0.3).await?;
+
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Err("大模型返回了空的内容".to_string());
+    }
+    Ok(text)
+}
+
 /// 拼 system / user 两条消息。单独抽出来是为了能直接跑单测。
 fn build_prompt(context: &git::CommitContext) -> (String, String) {
     let mut user = String::new();
@@ -893,5 +1104,93 @@ mod tests {
             &long,
         );
         assert!(user.contains("已截断"));
+    }
+
+    // ---- 生成反馈正文 ----
+
+    fn known_paths() -> Vec<String> {
+        ["src/lib/ai.ts", "src/components/FeedbackDialog.tsx", "README.md"]
+            .iter()
+            .map(|item| item.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn parse_selected_files_keeps_only_real_paths() {
+        let picked = parse_selected_files(
+            "1. `src/components/FeedbackDialog.tsx`\n- src/lib/ai.ts:120\n编出来的/没有.ts\n无",
+            &known_paths(),
+        );
+        // 序号 / 反引号 / 行号都要能剥掉，编出来的路径必须丢掉
+        assert_eq!(
+            picked,
+            vec![
+                "src/components/FeedbackDialog.tsx".to_string(),
+                "src/lib/ai.ts".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_selected_files_dedupes_and_caps() {
+        let known: Vec<String> = (0..12).map(|index| format!("f{index}.ts")).collect();
+        let mut lines = vec!["f0.ts".to_string(), "f0.ts".to_string()];
+        lines.extend((0..12).map(|index| format!("f{index}.ts")));
+        let picked = parse_selected_files(&lines.join("\n"), &known);
+
+        assert_eq!(picked.len(), MAX_CONTEXT_FILES);
+        // 重复的路径不该占掉两个位置
+        assert_eq!(picked[0], "f0.ts");
+        assert_eq!(picked[1], "f1.ts");
+    }
+
+    #[test]
+    fn parse_selected_files_returns_empty_when_nothing_matches() {
+        assert!(parse_selected_files("无", &known_paths()).is_empty());
+    }
+
+    #[test]
+    fn build_pick_prompt_carries_the_clue_and_the_tree() {
+        let (system, user) =
+            build_pick_prompt("反馈面板加生成", "feature", "src/a.ts\nsrc/b.ts", true);
+        assert!(system.contains("只输出文件路径"));
+        assert!(user.contains("线索：反馈面板加生成"));
+        assert!(user.contains("建议"), "分类要翻成中文");
+        assert!(user.contains("src/a.ts"));
+        // 截断时要说明，免得模型以为仓库就这么大
+        assert!(user.contains("只列了一部分"));
+    }
+
+    #[test]
+    fn build_feedback_prompt_asks_for_the_sections() {
+        let (system, user) = build_feedback_prompt("标题", "bug", "--- src/a.ts ---\ncode\n");
+        for section in ["## 背景", "## 期望", "## 实现要点", "## 验收"] {
+            assert!(system.contains(section), "缺少小节: {section}");
+        }
+        assert!(user.contains("缺陷"));
+        assert!(user.contains("--- src/a.ts ---"));
+    }
+
+    #[test]
+    fn build_feedback_prompt_handles_missing_code_context() {
+        let (_, user) = build_feedback_prompt("标题", "other", "  ");
+        assert!(user.contains("没能取到相关文件内容"));
+    }
+
+    #[test]
+    fn repo_files_lists_relative_paths_and_skips_heavy_dirs() {
+        let dir = std::env::temp_dir().join("codedock-ai-repo-files");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src").join("a.ts"), "x").unwrap();
+        std::fs::write(dir.join("README.md"), "x").unwrap();
+        // 被跳过的目录里的文件不该出现在清单里
+        std::fs::create_dir_all(dir.join("node_modules").join("pkg")).unwrap();
+        std::fs::write(dir.join("node_modules").join("pkg").join("index.js"), "x").unwrap();
+
+        let (files, truncated) = repo_files(&dir);
+        assert_eq!(files, vec!["README.md".to_string(), "src/a.ts".to_string()]);
+        assert!(!truncated);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

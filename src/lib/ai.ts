@@ -78,6 +78,22 @@ export function explainChange(
 }
 
 /**
+ * 让大模型根据标题（线索）和当前工作区的代码，写一条反馈的「详细描述」。
+ *
+ * 返回 markdown 正文，分节结构照仓库里的 `.codebuddy/commands/gitee-issue-add.md`
+ * （背景 / 期望 / 实现要点 / 验收）。后端分两趟：先从文件清单里挑相关文件，
+ * 再读它们的内容起草。
+ */
+export function generateFeedbackBody(
+  root: string,
+  config: AiConfig,
+  title: string,
+  category: string,
+): Promise<string> {
+  return invoke<string>("ai_generate_feedback_body", { root, config, title, category });
+}
+
+/**
  * 开发调试版从 `src-tauri/.env` 读到的覆盖值；正式版恒为空。
  * 空串 / false 都表示「这一项没被覆盖」，用设置里的值。
  */

@@ -101,6 +101,7 @@ pub fn run() {
             git::git_clone,
             ai::ai_generate_commit_message,
             ai::ai_explain_change,
+            ai::ai_generate_feedback_body,
             ai::ai_test_provider,
             ai::ai_list_provider_models,
             secrets::secret_set,

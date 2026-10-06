@@ -486,7 +486,9 @@ export function Sidebar({
         {settingsOpen && (
           <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={activeRoot} />
         )}
-        {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
+        {feedbackOpen && (
+          <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
+        )}
       </div>
     );
   }
@@ -786,7 +788,9 @@ export function Sidebar({
           <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={activeRoot} />
         )}
 
-      {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
+      {feedbackOpen && (
+        <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
+      )}
 
       {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (

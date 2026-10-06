@@ -1,6 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useState } from "react";
+import { generateFeedbackBody, useEffectiveAiConfig } from "../lib/ai";
 import { formatTime } from "../lib/agent";
 import {
   CATEGORIES,
@@ -26,11 +27,14 @@ import {
   IconExternalLink,
   IconRefresh,
   IconSend,
+  IconSparkle,
   IconTrash,
 } from "./icons";
 
 interface FeedbackDialogProps {
   onClose: () => void;
+  /** 当前工作区的根目录；生成「详细描述」时要拿它的代码当参考，没有就禁用生成 */
+  root: string | null;
 }
 
 /** 一行提示：提交结果 / 错误都在按钮下方露一行，不弹第二个框 */
@@ -51,6 +55,10 @@ const LABEL = "mb-1 block text-[11px] text-fg-faint";
 /** 「我的反馈」里每条记录右侧的删除按钮：平时不抢眼，悬停才透出危险色 */
 const ROW_ACTION =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger";
+
+/** 「详细描述」标题行右侧的生成按钮：和标题同一行，做小一点别抢戏 */
+const GENERATE_BUTTON =
+  "flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-faint hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-faint";
 
 const TABS = [
   { id: "write", label: "写反馈" },
@@ -92,7 +100,7 @@ function statusTextClass(kind: Status["kind"]): string {
  * 「浏览器打开新建 issue 页 + 正文写进剪贴板」——预填参数 Gitee 不一定认，
  * 剪贴板是兜底；这条路产生不了可跟踪的记录，界面上如实说明。
  */
-export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
+export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
   const [tab, setTab] = useState<TabId>("write");
   /** 本机 CLI 状态；null = 还在探测 */
   const [cli, setCli] = useState<CliStatus | null>(null);
@@ -107,8 +115,13 @@ export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
   const [refreshing, setRefreshing] = useState(false);
   /** 等待确认删除的那条本地记录 */
   const [pendingDelete, setPendingDelete] = useState<FeedbackRecord | null>(null);
+  /** 生成中：按钮转成「生成中…」，别让用户连点 */
+  const [generating, setGenerating] = useState(false);
+  /** 生成好了、但「详细描述」里已经有内容，等用户确认是否覆盖 */
+  const [pendingGenerate, setPendingGenerate] = useState<string | null>(null);
 
   const ready = cli?.available === true && cli.loggedIn;
+  const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   /** 探一次 CLI 状态；登录状态可能在弹窗开着的时候变，所以也用于「重新检测」 */
   async function probeCli(): Promise<boolean> {
@@ -163,13 +176,13 @@ export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      // 删除确认框开着时让 Esc 只关它：两个弹窗都监听 Esc，不挡住的话
+      // 确认框开着时让 Esc 只关它：两个弹窗都监听 Esc，不挡住的话
       // 一下会把确认框和整个反馈弹窗一起关掉
-      if (event.key === "Escape" && !pendingDelete) onClose();
+      if (event.key === "Escape" && !pendingDelete && !pendingGenerate) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, pendingDelete]);
+  }, [onClose, pendingDelete, pendingGenerate]);
 
   /** 校验并拼出 issue 正文；不合格时把原因写进 status 并返回 null */
   const buildBody = (): string | null => {
@@ -182,6 +195,40 @@ export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
       return null;
     }
     return composeBody(category, content, environmentInfo());
+  };
+
+  /**
+   * 用大模型把标题（线索）扩写成「详细描述」，参考当前工作区的代码。
+   *
+   * 不自动提交，只填进框里由用户改。已经写了内容时先问一句再覆盖——
+   * 生成结果未必比用户手写的合意，冲掉就找不回来了。
+   */
+  const generate = async () => {
+    if (!root) {
+      setStatus({ kind: "error", text: "先在左侧打开一个工作区，生成时要参考它的代码" });
+      return;
+    }
+    if (!title.trim()) {
+      setStatus({ kind: "error", text: "请先填个标题，生成时拿它当线索" });
+      return;
+    }
+    if (!aiReady) {
+      setStatus({ kind: "error", text: "请先在「设置 → 智能体 → 模型提供商」里配置接口地址、模型和密钥" });
+      return;
+    }
+    setGenerating(true);
+    setStatus({ kind: "busy", text: "正在生成…" });
+    try {
+      const text = await generateFeedbackBody(root, aiConfig, title.trim(), category);
+      // 空框直接填；已有内容先弹确认，别把用户手写的冲掉
+      if (content.trim()) setPendingGenerate(text);
+      else setContent(text);
+      setStatus({ kind: "idle", text: "" });
+    } catch (reason) {
+      setStatus({ kind: "error", text: String(reason) });
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const submit = async () => {
@@ -294,6 +341,17 @@ export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
 
       {/* 确认框放在遮罩**外面**：嵌在遮罩里的话，点它自己的遮罩会冒泡上去
           把整个反馈弹窗一起关掉 */}
+      {pendingGenerate && (
+        <ConfirmDialog
+          message="「详细描述」里已经有内容，用 AI 生成的结果覆盖它？覆盖后原来写的内容找不回来。"
+          confirmLabel="覆盖"
+          onConfirm={() => {
+            setContent(pendingGenerate);
+            setPendingGenerate(null);
+          }}
+          onCancel={() => setPendingGenerate(null)}
+        />
+      )}
       {pendingDelete && (
         <ConfirmDialog
           message={`从本地历史里移除 #${pendingDelete.number}？只清 CodeDock 这边的记录，Gitee 上的 issue 不受影响。`}
@@ -381,9 +439,22 @@ export function FeedbackDialog({ onClose }: FeedbackDialogProps) {
           className={`${INPUT} mb-3`}
         />
 
-        <label className={LABEL} htmlFor="feedback-content">
-          详细描述
-        </label>
+        {/* 生成按钮和标题同一行、右对齐：单独占一行会把正文往下挤 */}
+        <div className="mb-1 flex items-center gap-2">
+          <label className="text-[11px] text-fg-faint" htmlFor="feedback-content">
+            详细描述
+          </label>
+          <button
+            type="button"
+            onClick={() => void generate()}
+            disabled={generating}
+            title="用 AI 根据标题和当前工作区的代码生成"
+            className={`ml-auto ${GENERATE_BUTTON}`}
+          >
+            <IconSparkle className={`h-3.5 w-3.5 ${generating ? "animate-pulse" : ""}`} />
+            {generating ? "生成中…" : "生成"}
+          </button>
+        </div>
         <textarea
           id="feedback-content"
           value={content}

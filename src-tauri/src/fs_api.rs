@@ -321,7 +321,10 @@ const MAX_VISITS: usize = 100_000;
 /// 递归遍历工作区里的文件：跳过 SKIP_DIRS，用显式栈避免深目录压爆调用栈。
 /// `on_file` 返回 false 表示不必再往下走了（比如结果已经收满）。
 /// 返回值是「是否走完了」—— false 说明是提前收手，不是真的没有更多。
-fn walk_files(root: &Path, on_file: &mut dyn FnMut(&Path) -> bool) -> bool {
+///
+/// `pub(crate)`：生成反馈正文时也要列一遍工作区文件（见 `ai.rs`），
+/// 跳目录 / 防爆栈的规则只能有一份。
+pub(crate) fn walk_files(root: &Path, on_file: &mut dyn FnMut(&Path) -> bool) -> bool {
     // 显式栈而不是递归：目录嵌套很深时不会把调用栈压爆
     let mut stack = vec![root.to_path_buf()];
     let mut visits = 0usize;
