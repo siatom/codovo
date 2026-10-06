@@ -200,10 +200,27 @@ export const TerminalSession = forwardRef<
 
     let cancelled = false;
 
+    // 句柄就绪前先攒着的输入，见 writeInput
+    let pendingInput: string[] = [];
+
     // 待敲的启动命令。每次 effect 跑起来都重新待命：StrictMode 的第一轮是作废的
     // 那一轮，它写出去的命令会随 shell 一起被 kill，第二轮要重新写一遍；
     // 用户点「重开」时也是重新拉起同一个会话，顺带把 resume 再执行一次
     let bootPending = bootCommand;
+
+    /**
+     * 往 PTY 里写用户/终端产生的输入。句柄是异步拿到的，写可能比它先到——最典型的是
+     * xterm 对 shell 启动时 `ESC[6n`（查光标位置，bash/readline 用它算提示符宽度）的
+     * 自动应答：应答比 `spawnPty` 的 await 先到，此时直接 `ptyRef.current?.write` 会被
+     * 丢掉，shell 就一直等这个应答、永远不出提示符（实测：应用启动时的第一个终端没有
+     * 提示符、也不响应输入，看着像卡住；之后新建的终端因为句柄早就绪所以正常）。
+     * 所以先攒起来，句柄就绪后按原顺序补发。
+     */
+    const writeInput = (data: string) => {
+      const pty = ptyRef.current;
+      if (pty) pty.write(data);
+      else pendingInput.push(data);
+    };
 
     /**
      * 把待敲的启动命令交给刚就绪的 PTY。传 null 表示还没就绪——直接返回、
@@ -251,16 +268,26 @@ export const TerminalSession = forwardRef<
         return;
       }
       ptyRef.current = handle;
+      // 句柄就绪前攒下的输入现在补发。顺序不能变：最前面那个多半是 shell 正等着的
+      // 光标位置应答，压到后面它会一直等下去
+      for (const chunk of pendingInput) handle.write(chunk);
+      pendingInput = [];
       // 首个输出块比 await 先到的话 bootPending 还挂着，这里补一次；
       // 已经消费过就是空操作
       flushBoot(handle);
     };
 
-    void start().catch((reason) => {
-      if (!cancelled) setError(String(reason));
-    });
+    // StrictMode 会挂载两次：第一轮 effect 刚跑完就被 cleanup 掉。spawn 是异步的，
+    // 立刻发起的话第一轮会白白起一个 shell、随即又被 kill 掉。推迟到下一个宏任务再
+    // spawn，cleanup 里 clearTimeout 掉，第一轮就根本不起 PTY（StrictMode 的
+    // 挂载→卸载→挂载是同一个同步批次里跑的，所以这个 clearTimeout 一定赶得上）。
+    const startTimer = window.setTimeout(() => {
+      void start().catch((reason) => {
+        if (!cancelled) setError(String(reason));
+      });
+    }, 0);
 
-    const dataDisposable = term.onData((data) => ptyRef.current?.write(data));
+    const dataDisposable = term.onData(writeInput);
 
     // 粘贴走 term.paste()：它会按当前是否开启 bracketed paste 决定包不包 ESC[200~，
     // 多行内容才不会被 shell 逐行当命令执行。
@@ -336,6 +363,7 @@ export const TerminalSession = forwardRef<
 
     return () => {
       cancelled = true;
+      window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
       observer.disconnect();
       dataDisposable.dispose();
