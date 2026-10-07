@@ -52,7 +52,7 @@ git push --follow-tags            # 连 tag 一起推
   与目录监听。目录监听**只跟当前工作区**，切工作区时整体换掉。
 - 持久化的分层：**窗口级偏好存 sessionStorage**（侧栏折叠、CLI 选择）；**工作区级的按 root 作 key**
   （右栏模块、浏览器地址、提交历史视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
-  （设置、主题、工作区列表、别名）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
+  （设置、主题、工作区列表、别名、远程主机）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
   列表类一律「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别处刚写进去的。
 - 侧栏工作区的顺序**就是那份列表的存储顺序**（`pinned` 只是标记，渲染时把置顶组排最前），拖拽重排走
   `reorderWorkspaces` 按新顺序整份写回、并同步被拖项的 `pinned`。**行容器刻意不 `setPointerCapture`**：
@@ -102,6 +102,10 @@ git push --follow-tags            # 连 tag 一起推
   `await` 之前；Linux 无 Secret Service 时报明原因，不静默降级成「没密钥」。
 - 破坏性确认框自研（WKWebView 不支持 `window.confirm`）；右边栏内容面板 `hidden` 藏着不卸载；
   调试用 AI 参数覆盖只在 debug 构建（`dev.rs`），别用 `dotenvy`（`set_var` 会泄密钥进 PTY）。
+- 远程连接（`remote.rs`）：SSH 走纯 Rust 的 `russh` + `russh-sftp`。交互式 shell 由**一个** tokio 任务
+  独占通道（`wait()` 要 `&mut`，而 `data`/`window_change` 只要 `&self`——拆成两个任务就够不到改尺寸），
+  前端指令走 mpsc 汇进同一个 `select!`。密码 / 私钥口令存系统钥匙串（前端只有布尔位），主机密钥按
+  TOFU 记指纹、对不上就拒绝；已连接的主机各留一个终端实例，`display:none` 藏着不卸载。
 - **单实例**：`tauri-plugin-single-instance` 在 builder 里**第一个**注册，回调把已被收进托盘的
   主窗口唤回来（`tray::show_main`）。它的锁名取自 app identifier，所以 dev 和安装版不能共用
   `tauri.conf.json` 里那个 `com.codedock`——否则本机开着安装版时 dev 一启动就被顶掉。build.rs 在
