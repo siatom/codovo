@@ -145,6 +145,32 @@ export function renameEntry(root: string, path: string, newName: string): Promis
   return invoke<string>("fs_rename", { root, path, newName });
 }
 
+/** 一次移动：源路径 -> 新路径。批量移动时给编辑器标签重定向用 */
+export interface MovePair {
+  from: string;
+  to: string;
+}
+
+/**
+ * 把一项（文件 / 目录）移动到目标目录下，返回移动后的绝对路径。
+ *
+ * 源和目标各带一个 root：一个窗口能同时挂多个工作目录，拖拽可能跨根，两边都要过沙箱。
+ * 同根 / 同卷走 rename；跨卷时后端把系统报错原样带出来。
+ */
+export function moveEntry(params: {
+  fromRoot: string;
+  path: string;
+  toRoot: string;
+  targetDir: string;
+}): Promise<string> {
+  return invoke<string>("fs_move", {
+    fromRoot: params.fromRoot,
+    path: params.path,
+    toRoot: params.toRoot,
+    targetDir: params.targetDir,
+  });
+}
+
 /** 删除文件或整个目录（递归）。**不可撤销**，调用前必须先跟用户确认。 */
 export function deleteEntry(root: string, path: string): Promise<void> {
   return invoke("fs_delete", { root, path });

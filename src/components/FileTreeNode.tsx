@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
 import type { FileEntry } from "../lib/types";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import type { GitMark } from "../lib/git";
@@ -30,13 +30,26 @@ export interface TreeController {
   loading: ReadonlySet<string>;
   errors: ReadonlyMap<string, string>;
   children: ReadonlyMap<string, FileEntry[]>;
-  selected: string | null;
+  /** 多选集合：归一化路径 -> 条目。点击 / 拖拽 / 批量删除都看它 */
+  selection: ReadonlySet<string>;
+  /** 有焦点的行（归一化路径），给 roving tabindex 用 */
+  focusedKey: string | null;
+  /** 没有任何行有焦点时，让第一行可 Tab 进入 */
+  firstKey: string | null;
   /** 归一化路径 -> git 标记 */
   gitMarks: ReadonlyMap<string, GitMark>;
   /** 被 .gitignore 忽略的条目（归一化路径），这些行置灰 */
   ignored: ReadonlySet<string>;
+  /** 正在被拖的行（归一化路径），拖动时淡化 */
+  dragging: ReadonlySet<string>;
+  /** 当前悬停到的可投放目录（归一化路径），画高亮 */
+  dropDir: string | null;
   toggle: (entry: FileEntry) => void;
   select: (entry: FileEntry) => void;
+  /** 一行被点击：处理 Ctrl / Shift 多选与普通打开 */
+  onRowClick: (entry: FileEntry, event: MouseEvent) => void;
+  /** 一行的键盘操作：方向键 / Enter / F2 / Delete */
+  onRowKeyDown: (entry: FileEntry, event: KeyboardEvent) => void;
   creating: CreatingState | null;
   createError: string | null;
   onCreateChange: (value: string) => void;
@@ -49,6 +62,12 @@ export interface TreeController {
   onRenameChange: (value: string) => void;
   onRenameSubmit: () => void;
   onRenameCancel: () => void;
+  /** HTML5 拖拽：源行的四个回调（目标由目录行 / 根行 / 空白区各自处理） */
+  onDragStart: (entry: FileEntry, event: DragEvent) => void;
+  onDragOver: (entry: FileEntry, event: DragEvent) => void;
+  onDragLeave: (entry: FileEntry) => void;
+  onDrop: (entry: FileEntry, event: DragEvent) => void;
+  onDragEnd: () => void;
 }
 
 interface FileTreeNodeProps {
@@ -71,7 +90,7 @@ function formatModified(ms: number): string {
 
 export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const isOpen = entry.isDir && tree.expanded.has(entry.path);
-  const isSelected = tree.selected === entry.path;
+  const isSelected = tree.selection.has(pathKey(entry.path));
   const isLoading = tree.loading.has(entry.path);
   const error = tree.errors.get(entry.path);
   const childEntries = tree.children.get(entry.path) ?? [];
@@ -79,9 +98,12 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const isIgnored = tree.ignored.has(pathKey(entry.path));
   const isCreatingHere = isOpen && tree.creating?.parent === entry.path;
   const isRenamingHere = tree.renaming?.path === entry.path;
+  const isDragging = tree.dragging.has(pathKey(entry.path));
+  const isDropTarget = tree.dropDir === pathKey(entry.path);
   /**
    * 行的配色。被忽略的行用更淡的颜色，而且悬停**不**转亮——置灰要一直成立，
    * 否则鼠标扫过去以为它没被忽略。选中态优先，照旧用高亮底色。
+   * 被拖动的行整体淡化，可投放的目录加一圈描边。
    */
   const tone = isSelected
     ? "bg-selected text-fg"
@@ -90,6 +112,8 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
       : "text-fg-muted hover:bg-hover hover:text-fg";
   /** 图标降不透明度的类，前面自带空格，好直接拼进 className */
   const dim = isIgnored ? " opacity-50" : "";
+  const dropRing = isDropTarget ? " ring-1 ring-inset ring-accent" : "";
+  const dragFade = isDragging ? " opacity-50" : "";
 
   return (
     <li>
@@ -136,10 +160,20 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
       ) : (
         <button
           type="button"
+          data-row-key={pathKey(entry.path)}
+          // roving tabindex：整棵树只有一个入口，方向键在树内移动焦点
+          tabIndex={(tree.focusedKey ?? tree.firstKey) === pathKey(entry.path) ? 0 : -1}
+          draggable
           title={`${toDisplayPath(entry.path)}\n最近修改：${formatModified(entry.modified)}`}
-          onClick={() => (entry.isDir ? tree.toggle(entry) : tree.select(entry))}
+          onClick={(event) => tree.onRowClick(entry, event)}
           onContextMenu={(event) => tree.openMenu(entry, event)}
-          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}`}
+          onKeyDown={(event) => tree.onRowKeyDown(entry, event)}
+          onDragStart={(event) => tree.onDragStart(entry, event)}
+          onDragOver={(event) => tree.onDragOver(entry, event)}
+          onDragLeave={() => tree.onDragLeave(entry)}
+          onDrop={(event) => tree.onDrop(entry, event)}
+          onDragEnd={tree.onDragEnd}
+          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}${dropRing}${dragFade}`}
           style={{ paddingLeft: depth * INDENT + 4 }}
         >
           <span className={`flex w-3 shrink-0 justify-center text-fg-icon${dim}`}>

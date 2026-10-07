@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { explainChange, useEffectiveAiConfig } from "../lib/ai";
@@ -10,12 +19,14 @@ import {
   gitIgnored,
   isPathInside,
   listDir,
+  moveEntry,
   onDirsChanged,
   ownerRoot,
   pathKey,
   renameEntry,
   searchFiles,
   toDisplayPath,
+  type MovePair,
 } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import type { FileEntry } from "../lib/types";
@@ -54,10 +65,10 @@ interface ExplorerPaneProps {
   onSelect: (path: string) => void;
   /** 改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
   onBeforeRename: () => Promise<boolean>;
-  /** 改名成功：编辑器里指向旧路径的标签要跟着换 */
-  onRenamed: (from: string, to: string) => void;
-  /** 删除成功：编辑器里落在它下面的标签要关掉 */
-  onDeleted: (path: string) => void;
+  /** 改名 / 移动成功：编辑器里落在旧路径下的标签要跟着换到新路径 */
+  onRenamed: (moves: MovePair[]) => void;
+  /** 删除成功：编辑器里落在这些路径下的标签要关掉（批量一次性提交） */
+  onDeleted: (paths: string[]) => void;
 }
 
 /** 输入停下来多久才去搜，省得每敲一个字都跑一趟目录遍历 */
@@ -85,6 +96,27 @@ function parentOf(path: string): string {
 /** 末级目录名，取不到就退回整个路径 */
 function folderName(path: string): string {
   return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
+/** 路径末级名字（文件或目录都行）。合成只用于展示的条目时用。 */
+function baseName(path: string): string {
+  return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
+/** 去掉被同一批里另一个路径包含的项：移动 / 删除父项已经连带处理了子项 */
+function pruneNested(paths: string[]): string[] {
+  return paths.filter((path) => !paths.some((other) => other !== path && isPathInside(path, other)));
+}
+
+/** 批量删除确认框的文案 */
+function deleteMessage(items: FileEntry[]): string {
+  if (items.length === 1) {
+    const entry = items[0];
+    return entry.isDir
+      ? `删除文件夹「${entry.name}」及其中全部内容？此操作不可撤销。`
+      : `删除文件「${entry.name}」？此操作不可撤销。`;
+  }
+  return `删除选中的 ${items.length} 项？此操作不可撤销。`;
 }
 
 /** roots 数组每次渲染都是新引用，effect 的依赖得靠这个字符串来判断「换没换」 */
@@ -194,12 +226,23 @@ export function ExplorerPane({
    */
   const [activeRow, setActiveRow] = useState<string | null>(null);
 
+  /** 多选集合：归一化路径 -> 条目。存条目对象，收起的目录里的选中项也留得住 */
+  const [selection, setSelection] = useState<Map<string, FileEntry>>(new Map());
+  /** Shift 连选的锚点（归一化路径） */
+  const anchorRef = useRef<string | null>(null);
+  /** 正在拖的路径（绝对路径，已去掉被父项包含的项）；非空即处于拖拽中 */
+  const [dragging, setDragging] = useState<string[]>([]);
+  /** 当前悬停到的可投放目录（归一化路径），画高亮 */
+  const [dropDir, setDropDir] = useState<string | null>(null);
+  /** 树滚动容器的 ref：键盘移动焦点时按 data-row-key 找行 */
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   // 右键菜单：开在哪一行、贴光标多远处。位置用 fixed 定位，所以要的是视口坐标
   const [menu, setMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<RenamingState | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  /** 等着确认删除的那一项；非空时弹确认框 */
-  const [pendingDelete, setPendingDelete] = useState<FileEntry | null>(null);
+  /** 等着确认删除的那一批；非空时弹确认框 */
+  const [pendingDelete, setPendingDelete] = useState<FileEntry[] | null>(null);
   /** 改名 / 删除正在跑，期间不再接第二次 */
   const [busy, setBusy] = useState(false);
   /** 改名 / 删除失败的原因，挂在树顶上 */
@@ -234,9 +277,15 @@ export function ExplorerPane({
   const primaryRoot = roots[0] ?? "";
 
   // 打开/切换文件时把焦点带回那一行。只在 selected 变化时同步，
-  // 所以点目录选中的那一行不会被这条 effect 反复抢走
+  // 所以点目录选中的那一行不会被这条 effect 反复抢走。
+  // 选中集合也一并收敛到这一个文件——编辑器切标签就等于树里单选了它。
   useEffect(() => {
     setActiveRow(selected);
+    if (selected) {
+      const key = pathKey(selected);
+      anchorRef.current = key;
+      setSelection(new Map([[key, { name: baseName(selected), path: selected, isDir: false, modified: 0 }]]));
+    }
   }, [selected]);
 
   const focusRow = activeRow ?? selected;
@@ -278,6 +327,11 @@ export function ExplorerPane({
     setMenu(null);
     setPendingDelete(null);
     setActionError(null);
+    // 多选与拖拽状态同样按工作区作废
+    setSelection(new Map());
+    anchorRef.current = null;
+    setDragging([]);
+    setDropDir(null);
     // 解析弹窗里是上一个工作区的内容，序号推进掉在途的请求
     explainSeq.current += 1;
     setExplain(null);
@@ -432,12 +486,21 @@ export function ExplorerPane({
   );
 
   /** 右键一行：先把它选中（跟 VS Code 一样，右键同时改变选中项），再开菜单 */
-  const openMenu = useCallback((entry: FileEntry, event: MouseEvent) => {
-    event.preventDefault();
-    setActiveRow(entry.path);
-    setActionError(null);
-    setMenu({ entry, x: event.clientX, y: event.clientY });
-  }, []);
+  const openMenu = useCallback(
+    (entry: FileEntry, event: MouseEvent) => {
+      event.preventDefault();
+      const key = pathKey(entry.path);
+      // 右键已在选中集合里的行时保留整批（菜单里的删除会对整批生效）
+      if (!selection.has(key)) {
+        setSelection(new Map([[key, entry]]));
+        anchorRef.current = key;
+      }
+      setActiveRow(entry.path);
+      setActionError(null);
+      setMenu({ entry, x: event.clientX, y: event.clientY });
+    },
+    [selection],
+  );
 
   const copyPath = useCallback(async (text: string) => {
     setMenu(null);
@@ -543,7 +606,18 @@ export function ExplorerPane({
       const next = await renameEntry(owner, path, name);
       setRenaming(null);
       setActiveRow(next);
-      onRenamed(path, next);
+      // 改名等价于把这一项移到同目录下的新名字，走同一条标签重定向
+      onRenamed([{ from: path, to: next }]);
+      // 选中集合指向旧路径的也换过来
+      setSelection((current) => {
+        if (!current.has(pathKey(path))) return current;
+        const entry = current.get(pathKey(path));
+        if (!entry) return current;
+        const map = new Map(current);
+        map.delete(pathKey(path));
+        map.set(pathKey(next), { ...entry, name: baseName(next), path: next });
+        return map;
+      });
       await refreshDir(parentOf(path));
       // 过滤模式下的结果是按旧路径拼的，改完名字就作废了
       if (filtering) closeSearch();
@@ -554,30 +628,56 @@ export function ExplorerPane({
     }
   }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch]);
 
+  /** 请求删除：这一行在选中集合里就删整批（VS Code 语义），否则只删它自己 */
+  const requestDelete = useCallback(
+    (entry: FileEntry) => {
+      setMenu(null);
+      const items = selection.has(pathKey(entry.path))
+        ? [...selection.values()]
+        : [entry];
+      if (items.length > 0) setPendingDelete(items);
+    },
+    [selection],
+  );
+
   const confirmDelete = useCallback(async () => {
-    const entry = pendingDelete;
-    if (!entry || busy) return;
+    const items = pendingDelete;
+    if (!items || items.length === 0 || busy) return;
     setPendingDelete(null);
     setBusy(true);
     setActionError(null);
-    const owner = ownerRoot(roots, entry.path);
-    if (!owner) {
-      setActionError("这个路径不在任何工作目录里");
-      setBusy(false);
-      return;
+    // 父项和子项同批时只删父项，避免"删完父项再删已经不存在的子项"报错
+    const paths = pruneNested(items.map((entry) => entry.path));
+    const removed: string[] = [];
+    const failures: string[] = [];
+    for (const path of paths) {
+      const owner = ownerRoot(roots, path);
+      if (!owner) {
+        failures.push(`这个路径不在任何工作目录里: ${path}`);
+        continue;
+      }
+      try {
+        await deleteEntry(owner, path);
+        removed.push(path);
+      } catch (reason) {
+        failures.push(String(reason));
+      }
     }
-    try {
-      await deleteEntry(owner, entry.path);
-      // 删掉的正好是当前那一行，锚点退回它所在的目录
-      if (activeRow && isPathInside(activeRow, entry.path)) setActiveRow(parentOf(entry.path));
-      onDeleted(entry.path);
-      await refreshDir(parentOf(entry.path));
+
+    if (removed.length > 0) {
+      // 锚点若落在被删项里，退回它所在的目录
+      if (activeRow && removed.some((path) => isPathInside(activeRow, path))) {
+        setActiveRow(parentOf(removed[0]));
+      }
+      // 一次批量关标签：逐个调用会各算各的旧 openTabs，只剩最后一个生效
+      onDeleted(removed);
+      setSelection(new Map());
+      anchorRef.current = null;
+      for (const dir of new Set(removed.map(parentOf))) await refreshDir(dir);
       if (filtering) closeSearch();
-    } catch (reason) {
-      setActionError(String(reason));
-    } finally {
-      setBusy(false);
     }
+    if (failures.length > 0) setActionError(failures.join("\n"));
+    setBusy(false);
   }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, closeSearch]);
 
   /** 当前已经在树里、值得跟着磁盘刷新的目录（含全部工作目录） */
@@ -785,16 +885,349 @@ export function ExplorerPane({
     return next;
   }, [filtered, filterCollapsed]);
 
+  /** 当前模式下的「展开集合」与「展开/收起动作」——正常树与过滤树各有一套 */
+  const treeExpanded = filtering ? filterExpanded : expanded;
+  const activateDir = filtering ? toggleFilter : toggle;
+
+  /**
+   * 当前可见的行，按渲染顺序排好（深度优先）。方向键上下移动、Shift 连选都按这个序列，
+   * 所以它必须跟界面上看到的顺序一致（根的顺序 + 展开态 + 目录内条目顺序）。
+   */
+  const flatEntries = useMemo(() => {
+    const out: FileEntry[] = [];
+    const childOf = (dir: string): FileEntry[] =>
+      (filtering ? filtered?.children.get(dir) : children.get(dir)) ?? [];
+    const openDir = (dir: string) => (filtering ? filterExpanded.has(dir) : expanded.has(dir));
+    const walk = (items: FileEntry[]) => {
+      for (const item of items) {
+        out.push(item);
+        if (item.isDir && openDir(item.path)) walk(childOf(item.path));
+      }
+    };
+    if (filtering) {
+      for (const items of filtered?.rootEntries.values() ?? []) walk(items);
+    } else {
+      for (const root of roots) {
+        // 整块收起的工作目录不参与：键盘移动 / Shift 连选只能落在看得见的行上
+        if (collapsedRoots.has(pathKey(root))) continue;
+        walk(entries.get(root) ?? []);
+      }
+    }
+    return out;
+  }, [filtering, filtered, filterExpanded, expanded, children, entries, rootsKey, collapsedRoots]);
+
+  const selectionKeys = useMemo(() => new Set(selection.keys()), [selection]);
+  const draggingKeys = useMemo(() => new Set(dragging.map(pathKey)), [dragging]);
+
+  /** 按 data-row-key 找到那一行并聚焦（避免属性选择器转义问题，直接遍历比对） */
+  const focusRowByKey = useCallback((path: string) => {
+    requestAnimationFrame(() => {
+      const container = scrollRef.current;
+      if (!container) return;
+      const key = pathKey(path);
+      for (const row of container.querySelectorAll<HTMLElement>("[data-row-key]")) {
+        if (row.dataset.rowKey === key) {
+          row.focus();
+          return;
+        }
+      }
+    });
+  }, []);
+
+  /** 一行被点击：Shift 连选、Ctrl 切换、普通点击单选并打开（照 VS Code） */
+  const handleRowClick = useCallback(
+    (entry: FileEntry, event: MouseEvent) => {
+      const key = pathKey(entry.path);
+      if (event.shiftKey && anchorRef.current) {
+        const anchorIndex = flatEntries.findIndex((item) => pathKey(item.path) === anchorRef.current);
+        const targetIndex = flatEntries.findIndex((item) => pathKey(item.path) === key);
+        if (anchorIndex >= 0 && targetIndex >= 0) {
+          const [from, to] =
+            anchorIndex <= targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+          const next = new Map<string, FileEntry>();
+          for (let i = from; i <= to; i += 1) {
+            next.set(pathKey(flatEntries[i].path), flatEntries[i]);
+          }
+          setSelection(next);
+          setActiveRow(entry.path);
+          return; // Shift 只扩选，不打开
+        }
+      }
+      if (event.ctrlKey || event.metaKey) {
+        setSelection((current) => {
+          const next = new Map(current);
+          if (next.has(key)) next.delete(key);
+          else next.set(key, entry);
+          return next;
+        });
+        anchorRef.current = key;
+        setActiveRow(entry.path);
+        return;
+      }
+      setSelection(new Map([[key, entry]]));
+      anchorRef.current = key;
+      setActiveRow(entry.path);
+      if (entry.isDir) activateDir(entry);
+      else onSelect(entry.path);
+    },
+    [flatEntries, activateDir, onSelect],
+  );
+
+  /** 一行的键盘操作：方向键在树内移动焦点，左右展开/收起，Enter 打开，F2 改名，Delete 删除 */
+  const handleRowKeyDown = useCallback(
+    (entry: FileEntry, event: KeyboardEvent) => {
+      const { key } = event;
+      if (
+        key !== "ArrowDown" &&
+        key !== "ArrowUp" &&
+        key !== "ArrowLeft" &&
+        key !== "ArrowRight" &&
+        key !== "Enter" &&
+        key !== "F2" &&
+        key !== "Delete"
+      ) {
+        return;
+      }
+      const index = flatEntries.findIndex((item) => pathKey(item.path) === pathKey(entry.path));
+      const focusSingle = (target: FileEntry) => {
+        setSelection(new Map([[pathKey(target.path), target]]));
+        anchorRef.current = pathKey(target.path);
+        setActiveRow(target.path);
+        focusRowByKey(target.path);
+      };
+      switch (key) {
+        case "ArrowDown": {
+          const next = flatEntries[index + 1];
+          if (next) {
+            event.preventDefault();
+            focusSingle(next);
+          }
+          break;
+        }
+        case "ArrowUp": {
+          const prev = flatEntries[index - 1];
+          if (prev) {
+            event.preventDefault();
+            focusSingle(prev);
+          }
+          break;
+        }
+        case "ArrowRight": {
+          event.preventDefault();
+          if (!entry.isDir) break;
+          if (!treeExpanded.has(entry.path)) activateDir(entry);
+          else {
+            const child = flatEntries[index + 1];
+            if (child && pathKey(child.path) !== pathKey(entry.path) && isPathInside(child.path, entry.path)) {
+              focusSingle(child);
+            }
+          }
+          break;
+        }
+        case "ArrowLeft": {
+          event.preventDefault();
+          if (entry.isDir && treeExpanded.has(entry.path)) {
+            activateDir(entry);
+            break;
+          }
+          const parent = parentOf(entry.path);
+          if (!isRootPath(parent) && pathKey(parent) !== pathKey(entry.path)) {
+            const parentEntry = flatEntries.find((item) => pathKey(item.path) === pathKey(parent));
+            if (parentEntry) focusSingle(parentEntry);
+          }
+          break;
+        }
+        case "Enter": {
+          event.preventDefault();
+          focusSingle(entry);
+          if (entry.isDir) activateDir(entry);
+          else onSelect(entry.path);
+          break;
+        }
+        case "F2": {
+          event.preventDefault();
+          startRename(entry);
+          break;
+        }
+        case "Delete": {
+          event.preventDefault();
+          requestDelete(entry);
+          break;
+        }
+      }
+    },
+    [
+      flatEntries,
+      treeExpanded,
+      activateDir,
+      onSelect,
+      isRootPath,
+      startRename,
+      requestDelete,
+      focusRowByKey,
+    ],
+  );
+
+  /**
+   * 目标目录能不能投放这批拖拽项。
+   * 跨工作目录的拖拽直接禁止：后端虽有跨根能力，但跨卷 rename 会失败，
+   * 与其半途报错不如在界面上就不让放。
+   */
+  const canDropOn = useCallback(
+    (destDir: string) => {
+      if (dragging.length === 0) return false;
+      const key = pathKey(destDir);
+      const destOwner = ownerRoot(roots, destDir);
+      if (!destOwner) return false;
+      // 全部项本来就在这个目录里 → 没有可移动的
+      if (dragging.every((path) => pathKey(parentOf(path)) === key)) return false;
+      for (const path of dragging) {
+        if (isPathInside(destDir, path)) return false; // 拖到自己或自己的子孙里
+        if (pathKey(ownerRoot(roots, path) ?? "") !== pathKey(destOwner)) return false; // 跨根
+      }
+      return true;
+    },
+    [dragging, roots],
+  );
+
+  const handleDragStart = useCallback(
+    (entry: FileEntry, event: DragEvent) => {
+      const key = pathKey(entry.path);
+      const paths = selection.has(key)
+        ? [...selection.values()].map((item) => item.path)
+        : [entry.path];
+      const pruned = pruneNested(paths);
+      setDragging(pruned);
+      setDropDir(null);
+      event.dataTransfer.effectAllowed = "move";
+      // 必须写点数据，否则部分环境不认这次拖拽（内容本身从 dragging 状态读）
+      event.dataTransfer.setData("text/plain", pruned.join("\n"));
+    },
+    [selection],
+  );
+
+  const handleDragOver = useCallback(
+    (entry: FileEntry, event: DragEvent) => {
+      if (!entry.isDir || !canDropOn(entry.path)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      setDropDir(pathKey(entry.path));
+    },
+    [canDropOn],
+  );
+
+  const handleDragLeave = useCallback((entry: FileEntry) => {
+    const key = pathKey(entry.path);
+    setDropDir((current) => (current === key ? null : current));
+  }, []);
+
+  /** 把当前拖拽项移动到 `destDir`。所有落点（目录行 / 根行 / 空白区）最终都汇到这里 */
+  const handleDrop = useCallback(
+    async (destDir: string, event: DragEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const paths = dragging;
+      setDropDir(null);
+      setDragging([]);
+      if (paths.length === 0 || !canDropOn(destDir)) return;
+      const toOwner = ownerRoot(roots, destDir);
+      if (!toOwner) return;
+
+      setBusy(true);
+      setActionError(null);
+      try {
+        // 移动会丢掉旧 model，未保存的改动跟着一起没——先落盘
+        if (!(await onBeforeRename())) {
+          setActionError("有文件没保存成功，已取消移动");
+          return;
+        }
+        const moves: MovePair[] = [];
+        for (const path of paths) {
+          const fromOwner = ownerRoot(roots, path);
+          if (!fromOwner) continue;
+          const to = await moveEntry({
+            fromRoot: fromOwner,
+            path,
+            toRoot: toOwner,
+            targetDir: destDir,
+          });
+          moves.push({ from: path, to });
+        }
+        if (moves.length === 0) return;
+        // 编辑器里落在旧路径下的标签一次重定向到新路径
+        onRenamed(moves);
+        setActiveRow(moves[0].to);
+        // 选中集合跟着挪到新路径，移动后仍高亮
+        setSelection((current) => {
+          if (current.size === 0) return current;
+          const next = new Map<string, FileEntry>();
+          for (const item of current.values()) {
+            const move = moves.find((candidate) => pathKey(candidate.from) === pathKey(item.path));
+            const path = move ? move.to : item.path;
+            next.set(pathKey(path), move ? { ...item, path, name: baseName(path) } : item);
+          }
+          return next;
+        });
+        // 源目录与目标目录都要重列
+        for (const dir of new Set<string>([destDir, ...paths.map(parentOf)])) {
+          await refreshDir(dir);
+        }
+        if (filtering) closeSearch();
+      } catch (reason) {
+        setActionError(String(reason));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [dragging, canDropOn, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch],
+  );
+
+  /** 拖到某一行上：目录行就是它，文件行落到它所在目录（照 VS Code） */
+  const handleRowDrop = useCallback(
+    (entry: FileEntry, event: DragEvent) => {
+      event.stopPropagation();
+      const destDir = entry.isDir ? entry.path : parentOf(entry.path);
+      void handleDrop(destDir, event);
+    },
+    [handleDrop],
+  );
+
+  const handleDragEnd = useCallback(() => {
+    setDragging([]);
+    setDropDir(null);
+  }, []);
+
   const tree = useMemo<TreeController>(() => {
+    const common = {
+      selection: selectionKeys,
+      focusedKey: focusRow ? pathKey(focusRow) : null,
+      firstKey: flatEntries.length > 0 ? pathKey(flatEntries[0].path) : null,
+      gitMarks,
+      ignored,
+      dragging: draggingKeys,
+      dropDir,
+      onRowClick: handleRowClick,
+      onRowKeyDown: handleRowKeyDown,
+      onDragStart: handleDragStart,
+      onDragOver: handleDragOver,
+      onDragLeave: handleDragLeave,
+      onDrop: handleRowDrop,
+      onDragEnd: handleDragEnd,
+      openMenu,
+      renaming,
+      renameError,
+      onRenameChange: changeRename,
+      onRenameSubmit: submitRename,
+      onRenameCancel: cancelRename,
+    };
     if (filtered) {
       return {
+        ...common,
         expanded: filterExpanded,
         loading: EMPTY_SET,
         errors: EMPTY_MAP,
         children: filtered.children,
-        selected: focusRow,
-        gitMarks,
-        ignored,
         toggle: toggleFilter,
         select: (entry: FileEntry) => onSelect(entry.path),
         creating: null,
@@ -802,22 +1235,14 @@ export function ExplorerPane({
         onCreateChange: () => {},
         onCreateSubmit: () => {},
         onCreateCancel: () => {},
-        openMenu,
-        renaming,
-        renameError,
-        onRenameChange: changeRename,
-        onRenameSubmit: submitRename,
-        onRenameCancel: cancelRename,
       };
     }
     return {
+      ...common,
       expanded,
       loading,
       errors,
       children,
-      selected: focusRow,
-      gitMarks,
-      ignored,
       toggle,
       select: (entry: FileEntry) => onSelect(entry.path),
       creating,
@@ -831,12 +1256,6 @@ export function ExplorerPane({
         setCreating(null);
         setCreateError(null);
       },
-      openMenu,
-      renaming,
-      renameError,
-      onRenameChange: changeRename,
-      onRenameSubmit: submitRename,
-      onRenameCancel: cancelRename,
     };
   }, [
     filtered,
@@ -847,6 +1266,17 @@ export function ExplorerPane({
     errors,
     children,
     focusRow,
+    selectionKeys,
+    draggingKeys,
+    dropDir,
+    flatEntries,
+    handleRowClick,
+    handleRowKeyDown,
+    handleDragStart,
+    handleDragOver,
+    handleDragLeave,
+    handleRowDrop,
+    handleDragEnd,
     gitMarks,
     ignored,
     toggle,
@@ -947,13 +1377,27 @@ export function ExplorerPane({
       </header>
 
       <div
+        ref={scrollRef}
         className="min-h-0 flex-1 overflow-auto px-1 py-1"
         onClick={(event) => {
           // 点空白处把锚点收回主要根：焦点行没了高亮，之后新建也落在那儿。
           // 点到行按钮或新建输入框的点击会冒泡到这，不算空白
           if ((event.target as HTMLElement).closest("button, input")) return;
           setActiveRow(primaryRoot);
+          setSelection(new Map());
+          anchorRef.current = null;
         }}
+        // 拖到树里的空白处 = 移动到主要根目录
+        onDragOver={(event) => {
+          if (!canDropOn(primaryRoot)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDropDir(pathKey(primaryRoot));
+        }}
+        onDragLeave={() => {
+          setDropDir((current) => (current === pathKey(primaryRoot) ? null : current));
+        }}
+        onDrop={(event) => void handleDrop(primaryRoot, event)}
       >
         {filtering && (
           <p className="px-2 py-1 text-[11px] text-fg-faint">
@@ -983,12 +1427,26 @@ export function ExplorerPane({
             pathKey(creating.parent) === pathKey(group.root);
           return (
             <div key={group.root}>
-              {/* 每个工作目录一行，点一下整块收起——收起只留这一行，下面连空目录提示都不画 */}
+              {/* 每个工作目录一行，点一下整块收起——收起只留这一行，下面连空目录提示都不画。
+                  这一行也是投放目标：拖到根名上 = 移到这个根目录 */}
               <button
                 type="button"
                 onClick={() => toggleRoot(group.root)}
                 title={toDisplayPath(group.root)}
-                className="flex w-full items-center gap-1 rounded px-1 pt-1.5 pb-0.5 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:bg-hover hover:text-fg"
+                onDragOver={(event) => {
+                  if (!canDropOn(group.root)) return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = "move";
+                  setDropDir(pathKey(group.root));
+                }}
+                onDragLeave={() => {
+                  setDropDir((current) => (current === pathKey(group.root) ? null : current));
+                }}
+                onDrop={(event) => void handleDrop(group.root, event)}
+                className={`flex w-full items-center gap-1 rounded px-1 pt-1.5 pb-0.5 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:bg-hover hover:text-fg${
+                  dropDir === pathKey(group.root) ? " ring-1 ring-inset ring-accent" : ""
+                }`}
               >
                 {collapsed ? (
                   <IconChevronRight className="h-3 w-3 shrink-0" />
@@ -1047,11 +1505,7 @@ export function ExplorerPane({
       {/* 删除不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
         <ConfirmDialog
-          message={
-            pendingDelete.isDir
-              ? `删除文件夹「${pendingDelete.name}」及其中全部内容？此操作不可撤销。`
-              : `删除文件「${pendingDelete.name}」？此操作不可撤销。`
-          }
+          message={deleteMessage(pendingDelete)}
           confirmLabel="删除"
           onConfirm={() => void confirmDelete()}
           onCancel={() => setPendingDelete(null)}
@@ -1135,10 +1589,7 @@ export function ExplorerPane({
             </button>
             <button
               type="button"
-              onClick={() => {
-                setPendingDelete(menu.entry);
-                setMenu(null);
-              }}
+              onClick={() => requestDelete(menu.entry)}
               className={MENU_ITEM}
             >
               删除
