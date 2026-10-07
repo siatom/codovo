@@ -1822,6 +1822,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     changes: settings.rightChangesVisible,
     search: settings.rightSearchVisible,
     browser: settings.rightBrowserVisible,
+    remote: settings.rightRemoteVisible,
   };
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
@@ -2232,6 +2233,14 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       options={VISIBLE_OPTIONS}
                       disabledValue={lastVisible === "browser" ? false : undefined}
                       onChange={(rightBrowserVisible) => update({ rightBrowserVisible })}
+                    />
+                  </Field>
+                  <Field label="远程连接">
+                    <BoolToggle
+                      value={settings.rightRemoteVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "remote" ? false : undefined}
+                      onChange={(rightRemoteVisible) => update({ rightRemoteVisible })}
                     />
                   </Field>
                   <Field

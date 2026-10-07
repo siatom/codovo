@@ -36,9 +36,15 @@ notify = "8.2"
 # AI 生成提交信息用。自带 rustls 而不是 native-tls：不带 OpenSSL 依赖，
 # 三端统一。注意 reqwest 0.13 起该特性叫 `rustls`（不再是 rustls-tls）。
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-# 智能体后端读 opencode 的 SSE 时要做退避重连，只需要 time 这一个特性。
+# 智能体后端读 opencode 的 SSE 时要做退避重连，只需要 time；SSH 还要 net（TcpStream）、
+# io-util（AsyncReadExt）、sync（mpsc）、rt / macros（tokio::select!）。
 # tauri 本来就依赖 tokio，这里只是显式声明版本、打开要用的特性。
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "net", "io-util", "sync", "rt", "macros", "fs"] }
+# 远程连接：SSH 客户端。纯 Rust、无原生依赖，default 特性带 aws-lc-rs
+# （reqwest/rustls 已经在用同一后端，不会多引一套 TLS）。
+russh = "0.64"
+# SFTP 协议实现。3.0 起与 russh 解耦，只吃 AsyncRead + AsyncWrite 流。
+russh-sftp = "3.0"
 # API 密钥落存储：借操作系统的凭据库。默认特性 v1 = Windows 凭据管理器 /
 # macOS 钥匙串 / Linux Secret Service（zbus），三端开箱可用，别关掉。
 keyring = "4.2.0"

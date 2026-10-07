@@ -9,6 +9,7 @@ mod fs_api;
 mod git;
 mod installer;
 mod pty;
+mod remote;
 mod secrets;
 mod shell_env;
 mod shells;
@@ -32,6 +33,7 @@ pub fn run() {
         .manage(fs_api::FsState::new())
         .manage(watcher::WatchState::new())
         .manage(agent::AgentState::new())
+        .manage(remote::RemoteState::new())
         .setup(|app| {
             // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
             tray::init(app.handle())?;
@@ -125,6 +127,17 @@ pub fn run() {
             agent::agent_abort,
             agent::agent_delete_session,
             agent::agent_rename_session,
+            remote::remote_connect,
+            remote::remote_write,
+            remote::remote_resize,
+            remote::remote_disconnect,
+            remote::sftp_home,
+            remote::sftp_list,
+            remote::sftp_mkdir,
+            remote::sftp_remove,
+            remote::sftp_rename,
+            remote::sftp_upload,
+            remote::sftp_download,
             tray::app_quit,
             tray::app_hide_to_tray,
         ])
@@ -142,6 +155,10 @@ pub fn run() {
                 // 目录监听的防抖线程也跟着收摊，别留游离线程
                 if let Some(state) = app.try_state::<watcher::WatchState>() {
                     state.stop();
+                }
+                // 远程连接是常驻的 SSH 会话，退出时通知它们收摊
+                if let Some(state) = app.try_state::<remote::RemoteState>() {
+                    state.kill_all();
                 }
             }
             // macOS 点 Dock 图标：窗口可能被收起来了，亮回来（关窗只隐藏，不走 Exit）

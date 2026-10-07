@@ -7,6 +7,7 @@ import {
   IconPanelRight,
   IconPanelRightOpen,
   IconSearch,
+  IconServer,
 } from "./icons";
 
 /** 和左侧栏收起时同宽，两条竖栏看起来才是一套 */
@@ -29,6 +30,7 @@ export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[]
   { id: "search", label: "搜索", Icon: IconSearch },
   { id: "changes", label: "变更", Icon: IconBranch },
   { id: "browser", label: "浏览器", Icon: IconGlobe },
+  { id: "remote", label: "远程连接", Icon: IconServer },
 ];
 
 interface ToolRailProps {

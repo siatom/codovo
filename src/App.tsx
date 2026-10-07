@@ -10,6 +10,7 @@ import {
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { AgentSessionProvider, useDropAgentSession, useNewChatAt } from "./lib/agent-session";
+import { RemoteHostsProvider } from "./lib/remote-hosts";
 import {
   isPathInside,
   onFilesChanged,
@@ -509,7 +510,9 @@ function Shell() {
 export default function App() {
   return (
     <AgentSessionProvider>
-      <Shell />
+      <RemoteHostsProvider>
+        <Shell />
+      </RemoteHostsProvider>
     </AgentSessionProvider>
   );
 }

@@ -10,12 +10,12 @@ import { GitChangesPane } from "./GitChangesPane";
 import { SearchPane } from "./SearchPane";
 import { IconChevronDown, IconChevronRight } from "./icons";
 
-/** 右栏的工具模块。浏览器不在这里渲染内容（它独占编辑器那一列），但入口在同一个图标条上 */
-export type ToolId = "files" | "changes" | "search" | "browser";
+/** 右栏的工具模块。浏览器 / 远程连接不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
+export type ToolId = "files" | "changes" | "search" | "browser" | "remote";
 
 const TOOL_KEY = "codedock.rightTool.";
 
-const TOOLS: ToolId[] = ["files", "changes", "search", "browser"];
+const TOOLS: ToolId[] = ["files", "changes", "search", "browser", "remote"];
 
 /**
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
@@ -111,7 +111,7 @@ export function ToolPane({
   onRequestCloseTab,
 }: ToolPaneProps) {
   const { settings } = useSettings();
-  const filesHidden = tool === "changes" || tool === "search";
+  const filesHidden = tool === "changes" || tool === "search" || tool === "remote";
   /**
    * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
    * 初始只展开第一个根、其余收起：多根时几份改动加提交历史全铺开，一屏根本看不完。

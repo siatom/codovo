@@ -12,6 +12,7 @@ import { ToolPane, readTool, saveTool, type ToolId } from "./ToolPane";
 import { RIGHT_TOOLS, ToolRail } from "./ToolRail";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { BrowserPane } from "./BrowserPane";
+import { RemotePane } from "./RemotePane";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
@@ -98,6 +99,7 @@ export function WorkspacePane({
     changes: settings.rightChangesVisible,
     search: settings.rightSearchVisible,
     browser: settings.rightBrowserVisible,
+    remote: settings.rightRemoteVisible,
   };
   // 当前模块被关掉、或者不是仓库看不了「变更」时，落到第一个还开着的模块。
   // 派生值兜底而不是改 state：用户选的模块不会被抹掉，重新打开设置里的开关就回到原样
@@ -358,13 +360,13 @@ export function WorkspacePane({
                 onToggleRight={toggleRight}
                 onBlankClick={onBlankClick}
               />
-              {/* 浏览器选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
+              {/* 浏览器 / 远程连接选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
                   Monaco 的撤销历史和文件树的展开态都留得住。
                   收起面板时整块内容一起藏起来，图标条单独留着。
                   全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
               <div
                 className={
-                  rightOpen && activeTool !== "browser"
+                  rightOpen && activeTool !== "browser" && activeTool !== "remote"
                     ? "flex min-h-0 min-w-0 flex-1"
                     : "hidden"
                 }
@@ -425,6 +427,18 @@ export function WorkspacePane({
               >
                 <BrowserPane
                   root={root}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              </div>
+              <div
+                className={
+                  rightOpen && activeTool === "remote"
+                    ? "flex min-h-0 min-w-0 flex-1"
+                    : "hidden"
+                }
+              >
+                <RemotePane
                   fullscreen={rightFullscreen}
                   onToggleFullscreen={onToggleRightFullscreen}
                 />

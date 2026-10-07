@@ -469,6 +469,15 @@ export const IconGlobe = icon(
   </>,
 );
 
+/** 右栏的「远程连接」模块：机架服务器 */
+export const IconServer = icon(
+  <>
+    <rect x="3" y="4" width="18" height="7" rx="2" />
+    <rect x="3" y="13" width="18" height="7" rx="2" />
+    <path d="M7 7.5h.01M7 16.5h.01" />
+  </>,
+);
+
 /** 用系统默认程序打开 */
 export const IconExternalLink = icon(
   <>
@@ -684,6 +693,14 @@ export const IconArrowUpFromLine = icon(
     <path d="m18 9-6-6-6 6" />
     <path d="M12 3v14" />
     <path d="M5 21h14" />
+  </>,
+);
+
+/** 上一级目录：一个纯上箭头，和「上传」（箭头带底线）区分开 */
+export const IconArrowUp = icon(
+  <>
+    <path d="M12 19V5" />
+    <path d="m5 12 7-7 7 7" />
   </>,
 );
 
