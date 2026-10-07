@@ -1,7 +1,7 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { GitController, GitMark } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
-import { pathKey, toDisplayPath } from "../lib/fs";
+import { pathKey, toDisplayPath, type MovePair } from "../lib/fs";
 import { folderName } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut } from "../lib/shortcuts";
@@ -75,10 +75,10 @@ interface ToolPaneProps {
   onAfterReplace: (paths: string[]) => void;
   /** 文件树里改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
   onBeforeRename: () => Promise<boolean>;
-  /** 文件树里改名成功：编辑器标签要跟着换路径 */
-  onEntryRenamed: (from: string, to: string) => void;
-  /** 文件树里删除成功：编辑器标签要关掉 */
-  onEntryDeleted: (path: string) => void;
+  /** 文件树里改名 / 移动成功：编辑器标签要跟着换路径（可能一次一批） */
+  onEntryRenamed: (moves: MovePair[]) => void;
+  /** 文件树里删除成功：编辑器标签要关掉（可能一次一批） */
+  onEntryDeleted: (paths: string[]) => void;
   /**
    * 焦点在这一栏（文件树 / 变更）里时按「关闭标签页」——关掉编辑器里当前那个标签
    * （含从「变更」打开的差异标签）。编辑器自己那份处理管的是焦点在编辑器区内的情形。

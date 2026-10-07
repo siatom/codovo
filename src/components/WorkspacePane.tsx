@@ -17,7 +17,7 @@ import { RemotePane } from "./RemotePane";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
-import { isPathInside, pathKey } from "../lib/fs";
+import { isPathInside, pathKey, type MovePair } from "../lib/fs";
 import { sameTab, type DiffSource, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
 import type { Workspace } from "../lib/workspaces";
@@ -243,30 +243,43 @@ export function WorkspacePane({
   }, []);
 
   /**
-   * 文件树里改了名：编辑器里落在旧路径下的标签换到新路径去。
-   * model 直接丢掉，由编辑器按新路径重读——改名前的未保存改动已经落过盘了。
+   * 文件树里改名 / 移动了东西：编辑器里落在旧路径下的标签换到新路径去。
+   * model 直接丢掉，由编辑器按新路径重读——改动前的未保存内容已经落过盘了。
+   * 一次可能来一批（批量移动），所以要一次性算好，别逐项调用（会各算各的旧 openTabs）。
    */
-  const renameOpenTabs = useCallback((from: string, to: string) => {
-    editorRef.current?.dropPaths([from]);
-    const moved = (path: string) => isPathInside(path, from);
-    const nextPath = (path: string) => to + path.slice(from.length);
+  const renameOpenTabs = useCallback((moves: MovePair[]) => {
+    if (moves.length === 0) return;
+    editorRef.current?.dropPaths(moves.map((move) => move.from));
+    const nextPath = (path: string) => {
+      for (const move of moves) {
+        if (isPathInside(path, move.from)) return move.to + path.slice(move.from.length);
+      }
+      return path;
+    };
     setOpenTabs((current) =>
-      current.map((tab) => (moved(tab.path) ? { ...tab, path: nextPath(tab.path) } : tab)),
+      current.map((tab) => {
+        const next = nextPath(tab.path);
+        return next === tab.path ? tab : { ...tab, path: next };
+      }),
     );
-    setActiveTab((current) =>
-      current && moved(current.path) ? { ...current, path: nextPath(current.path) } : current,
-    );
+    setActiveTab((current) => {
+      if (!current) return current;
+      const next = nextPath(current.path);
+      return next === current.path ? current : { ...current, path: next };
+    });
   }, []);
 
-  /** 文件树里删了东西：落在它下面的标签一并关掉，当前标签落到它右边那个 */
+  /** 文件树里删了东西：落在这些路径下的标签一并关掉，当前标签落到它右边那个 */
   const dropOpenTabs = useCallback(
-    (path: string) => {
-      editorRef.current?.dropPaths([path]);
-      const index = openTabs.findIndex((tab) => isPathInside(tab.path, path));
+    (paths: string[]) => {
+      if (paths.length === 0) return;
+      const removed = (path: string) => paths.some((item) => isPathInside(path, item));
+      editorRef.current?.dropPaths(paths);
+      const index = openTabs.findIndex((tab) => removed(tab.path));
       if (index === -1) return;
-      const rest = openTabs.filter((tab) => !isPathInside(tab.path, path));
+      const rest = openTabs.filter((tab) => !removed(tab.path));
       setOpenTabs(rest);
-      if (activeTab && isPathInside(activeTab.path, path)) {
+      if (activeTab && removed(activeTab.path)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
       }
     },
