@@ -20,6 +20,7 @@ import type {
   ReplaceResult,
   SearchOptions,
   SearchResult,
+  WorktreeInfo,
 } from "./types";
 
 /**
@@ -231,6 +232,14 @@ export function onCloneProgress(handler: (progress: CloneProgress) => void): Pro
 /** 某个工作区的 git 状态；目录不是仓库时 isRepo 为 false */
 export function gitStatus(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_status", { root });
+}
+
+/**
+ * root 所属仓库的全部 worktree。目录不是仓库 / 没有 worktree 时返回空数组，不是错误。
+ * 返回的 `path` 已登记过白名单，可以直接当别的 git 命令的 root。
+ */
+export function gitWorktreeList(root: string): Promise<WorktreeInfo[]> {
+  return invoke<WorktreeInfo[]>("git_worktree_list", { root });
 }
 
 /**
