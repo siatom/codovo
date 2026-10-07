@@ -81,7 +81,7 @@ node scripts/cdp-check.cjs '{"wait":1500,"target":"CodeDock","keys":"git status\
 | `wait` | 开跑前的等待 | `800` |
 | `cdp` | 直通任意 CDP 命令，`{method,params}`（如 `Emulation.setEmulatedMedia` 改系统主题） | — |
 | `focus` / `focusSelector` | 是否先聚焦、聚焦谁 | `true` / `.xterm-helper-textarea` |
-| `keys` | 逐字符模拟按键（`\r`=回车、空格可用） | — |
+| `keys` | 逐字符模拟按键（`\r`=回车）。字母大小写、数字、标点都能送，带 Shift 的符号（`!` `_` `|`…）自动补 Shift | — |
 | `afterKeys` | 按键后等待 | `1200` |
 | `click` | `[x,y]` 点一下 | — |
 | `drag` | `[x1,y1,x2,y2]` 拖拽 | — |

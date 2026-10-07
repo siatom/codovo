@@ -18,21 +18,72 @@ const getJson = (url) =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 标点要按 **Windows 虚拟键码**（VK_OEM_*）来，不能拿 ASCII 顶替：字母数字两者恰好相同，
+// 标点就岔了——`-` 的 ASCII 是 45，而 45 是 VK_INSERT，xterm 会当成 Insert 键吃掉，
+// `.` 的 46 是 VK_DELETE，同理。表里第三项是「要不要按住 Shift」。
+// 值: [vk, code, shift]
+const PUNCT = {
+  "-": [0xbd, "Minus"],
+  "=": [0xbb, "Equal"],
+  "[": [0xdb, "BracketLeft"],
+  "]": [0xdd, "BracketRight"],
+  "\\": [0xdc, "Backslash"],
+  ";": [0xba, "Semicolon"],
+  "'": [0xde, "Quote"],
+  ",": [0xbc, "Comma"],
+  ".": [0xbe, "Period"],
+  "/": [0xbf, "Slash"],
+  "`": [0xc0, "Backquote"],
+  "!": [0x31, "Digit1", true],
+  "@": [0x32, "Digit2", true],
+  "#": [0x33, "Digit3", true],
+  "$": [0x34, "Digit4", true],
+  "%": [0x35, "Digit5", true],
+  "^": [0x36, "Digit6", true],
+  "&": [0x37, "Digit7", true],
+  "*": [0x38, "Digit8", true],
+  "(": [0x39, "Digit9", true],
+  ")": [0x30, "Digit0", true],
+  "_": [0xbd, "Minus", true],
+  "+": [0xbb, "Equal", true],
+  "{": [0xdb, "BracketLeft", true],
+  "}": [0xdd, "BracketRight", true],
+  "|": [0xdc, "Backslash", true],
+  ":": [0xba, "Semicolon", true],
+  '"': [0xde, "Quote", true],
+  "<": [0xbc, "Comma", true],
+  ">": [0xbe, "Period", true],
+  "?": [0xbf, "Slash", true],
+  "~": [0xc0, "Backquote", true],
+};
+
 function keyFor(ch) {
   if (ch === "\r") {
-    return { key: "Enter", code: "Enter", vk: 13, text: "\r" };
+    return { key: "Enter", code: "Enter", vk: 13, text: "\r", shift: false };
   }
   if (ch === " ") {
-    return { key: " ", code: "Space", vk: 32, text: " " };
+    return { key: " ", code: "Space", vk: 32, text: " ", shift: false };
   }
-  const upper = ch.toUpperCase();
-  const isLetter = /[a-z]/i.test(ch);
-  return {
-    key: ch,
-    code: isLetter ? `Key${upper}` : "",
-    vk: upper.charCodeAt(0),
-    text: ch,
-  };
+  if (/[a-z]/i.test(ch)) {
+    const upper = ch.toUpperCase();
+    // 大写靠 Shift，虚拟键码还是那个字母键
+    return {
+      key: ch,
+      code: `Key${upper}`,
+      vk: upper.charCodeAt(0),
+      text: ch,
+      shift: ch !== ch.toLowerCase(),
+    };
+  }
+  if (/[0-9]/.test(ch)) {
+    return { key: ch, code: `Digit${ch}`, vk: ch.charCodeAt(0), text: ch, shift: false };
+  }
+  const punct = PUNCT[ch];
+  if (punct) {
+    return { key: ch, code: punct[1], vk: punct[0], text: ch, shift: punct[2] === true };
+  }
+  // 认不出的字符（中文等）：text 照发，至少能过一遍输入管线
+  return { key: ch, code: "", vk: 0, text: ch, shift: false };
 }
 
 async function main() {
@@ -103,13 +154,16 @@ async function main() {
 
   if (options.keys) {
     for (const ch of options.keys) {
-      const { key, code, vk, text } = keyFor(ch);
+      const { key, code, vk, text, shift } = keyFor(ch);
+      // modifiers: 8 = Shift。带 Shift 的符号得挂上，否则 xterm 按 keyCode 反推会认错字符
+      const modifiers = shift ? 8 : 0;
       await send("Input.dispatchKeyEvent", {
         type: "keyDown",
         key,
         code,
         windowsVirtualKeyCode: vk,
         nativeVirtualKeyCode: vk,
+        modifiers,
         text,
         unmodifiedText: text,
       });
@@ -119,6 +173,7 @@ async function main() {
         code,
         windowsVirtualKeyCode: vk,
         nativeVirtualKeyCode: vk,
+        modifiers,
       });
       await sleep(20);
     }
