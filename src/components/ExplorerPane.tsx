@@ -257,7 +257,8 @@ export function ExplorerPane({
   const [pendingPaste, setPendingPaste] = useState<{ targetDir: string; conflicts: string[] } | null>(
     null,
   );
-  /** 工作目录标题行上的右键菜单（只放「粘贴」，好让空目录也能粘进去） */
+  /** 根相关的右键菜单（只放「粘贴」）：工作目录标题行与树里的空白处都开它，
+   *  好让空目录 / 没有行可右键的地方也能粘进去 */
   const [rootMenu, setRootMenu] = useState<{ root: string; x: number; y: number } | null>(null);
   /** 改名 / 删除正在跑，期间不再接第二次 */
   const [busy, setBusy] = useState(false);
@@ -1616,6 +1617,16 @@ export function ExplorerPane({
           setActiveRow(primaryRoot);
           setSelection(new Map());
           anchorRef.current = null;
+        }}
+        // 空白处右键：把剪贴板里的东西粘到主要根（跟点空白收敛锚点、新建落点同一个口径）。
+        // 行是 button、目录标题也是 button，命中它们就让给各自的右键菜单，别抢——判断口径
+        // 同上面的 onClick；它们自己会 preventDefault，所以这里直接 return 也不会冒出原生菜单
+        onContextMenu={(event) => {
+          if ((event.target as HTMLElement).closest("button, input")) return;
+          event.preventDefault();
+          if (!clipboard || !primaryRoot) return;
+          setMenu(null);
+          setRootMenu({ root: primaryRoot, x: event.clientX, y: event.clientY });
         }}
         // 拖到树里的空白处 = 移动到主要根目录
         onDragOver={(event) => {
