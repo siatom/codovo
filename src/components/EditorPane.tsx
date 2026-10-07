@@ -6,6 +6,8 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  // 起个别名：文件里还有 DOM 的 MouseEvent（window 的 mousedown 监听），别让它被顶掉
+  type MouseEvent as ReactMouseEvent,
   type Ref,
 } from "react";
 import { monaco, monacoThemeFor } from "../lib/monaco-setup";
@@ -57,6 +59,60 @@ const FLOAT_BAR_BUTTON =
 
 /** 编码下拉菜单的宽度，和标签「⋯」菜单同一套写法 */
 const ENCODING_MENU_W = 156;
+
+/** 状态栏左侧（语言 / 缩进 / 换行符）下拉的宽度。语言名有长有短，给宽一点 */
+const STATUS_MENU_W = 200;
+
+/** 状态栏上的小按钮，和右侧编码入口同一套写法 */
+const STATUS_BUTTON =
+  "flex shrink-0 items-center rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-hover hover:text-fg";
+
+/**
+ * 状态栏要显示的「当前文件视图信息」。从 editor / model 现取后落到 state（不像编码那样
+ * 每帧现算），是因为切这些选项时要主动触发重渲染。
+ */
+interface ViewInfo {
+  line: number;
+  column: number;
+  language: string;
+  eol: "LF" | "CRLF";
+  tabSize: number;
+  insertSpaces: boolean;
+  wordWrap: boolean;
+}
+
+/** 两个视图信息是否完全一样，用来省掉光标没动时的无谓 setState */
+function sameViewInfo(a: ViewInfo, b: ViewInfo): boolean {
+  return (
+    a.line === b.line &&
+    a.column === b.column &&
+    a.language === b.language &&
+    a.eol === b.eol &&
+    a.tabSize === b.tabSize &&
+    a.insertSpaces === b.insertSpaces &&
+    a.wordWrap === b.wordWrap
+  );
+}
+
+/** Monaco 语言 id 的显示名缓存：aliases 取第一个，取不到就用 id 本身 */
+const languageLabels = new Map<string, string>();
+function languageLabel(id: string): string {
+  let label = languageLabels.get(id);
+  if (label === undefined) {
+    const lang = monaco.languages.getLanguages().find((item) => item.id === id);
+    label = lang?.aliases?.[0] ?? id;
+    languageLabels.set(id, label);
+  }
+  return label;
+}
+
+/** 状态栏下拉里的一项。key 单独给（语言菜单里可能有重名 label），checked 只用于打勾 */
+interface StatusMenuItem {
+  key: string;
+  label: string;
+  checked?: boolean;
+  onPick: () => void;
+}
 
 /**
  * 可切换的编码，顺序即下拉顺序。label 必须和后端 `Encoding::from_label` 一一对应，
@@ -316,6 +372,16 @@ export function EditorPane({
    */
   const [encodingMenu, setEncodingMenu] = useState<{ x: number; y: number } | null>(null);
   /**
+   * 状态栏左侧的下拉（语言 / 缩进 / 换行符）。位置记按钮左边缘 + 顶边，渲染时顶到按钮上方
+   */
+  const [statusMenu, setStatusMenu] = useState<{
+    x: number;
+    y: number;
+    items: StatusMenuItem[];
+  } | null>(null);
+  /** 状态栏左侧显示的当前文件视图信息；没有可用文本 model 时为 null（状态栏左侧整块收起） */
+  const [viewInfo, setViewInfo] = useState<ViewInfo | null>(null);
+  /**
    * 待确认的编码切换（脏标签才有）。切编码会从磁盘重读、丢掉未保存的改动，先确认再动手
    */
   const [encodingSwitch, setEncodingSwitch] = useState<{ tab: Tab; label: string } | null>(null);
@@ -372,6 +438,36 @@ export function EditorPane({
       else next.delete(key);
       return next;
     });
+  }, []);
+
+  /**
+   * 刷新状态栏的「当前文件视图信息」。光标一动就调，切标签 / 改选项也复用。
+   * 只在编辑器确实挂着当前文本 model 时才算数：差异、图片、加载中都没有 model，
+   * 这时把信息清空，状态栏左侧整块收起来。读到的值和上一次一样就直接 bail，不白渲染。
+   */
+  const refreshViewInfo = useCallback(() => {
+    const current = activeRef.current;
+    const model =
+      current && current.kind === "file"
+        ? modelsRef.current.get(tabKey(current))?.model ?? null
+        : null;
+    const editor = editorRef.current;
+    if (!editor || !model || editor.getModel() !== model) {
+      setViewInfo((prev) => (prev === null ? prev : null));
+      return;
+    }
+    const position = editor.getPosition();
+    const modelOptions = model.getOptions();
+    const next: ViewInfo = {
+      line: position?.lineNumber ?? 1,
+      column: position?.column ?? 1,
+      language: model.getLanguageId(),
+      eol: model.getEOL() === "\r\n" ? "CRLF" : "LF",
+      tabSize: modelOptions.tabSize,
+      insertSpaces: modelOptions.insertSpaces,
+      wordWrap: editor.getOption(monaco.editor.EditorOption.wordWrap) !== "off",
+    };
+    setViewInfo((prev) => (prev && sameViewInfo(prev, next) ? prev : next));
   }, []);
 
   /**
@@ -894,6 +990,8 @@ export function EditorPane({
     editorRef.current = editor;
 
     const contentSub = editor.onDidChangeModelContent(() => syncDirty());
+    // 光标一动就刷新状态栏的 Ln, Col（顺带校正语言 / 缩进 / EOL 这几项）
+    const cursorSub = editor.onDidChangeCursorPosition(() => refreshViewInfo());
 
     // 只有鼠标左键选完（拖拽 / 双击抬起）才弹浮窗，键盘 Shift 选择不弹，免得干扰打字；
     // 右键自带上下文菜单，这时不叠第二个
@@ -909,6 +1007,7 @@ export function EditorPane({
 
     return () => {
       contentSub.dispose();
+      cursorSub.dispose();
       mouseUpSub.dispose();
       selectionSub.dispose();
       scrollSub.dispose();
@@ -926,7 +1025,7 @@ export function EditorPane({
       }
       diffModelsRef.current.clear();
     };
-  }, [syncDirty, showFloatBar]);
+  }, [syncDirty, showFloatBar, refreshViewInfo]);
 
   // 保存键可配置：单独挂一个 effect，改键位时重建 action。
   // 不能塞进上面那个建实例的 effect——它的依赖里没有 settings，改键位永远不会生效。
@@ -1320,6 +1419,107 @@ export function EditorPane({
   const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
 
+  // 切标签 / 文件加载完成后刷一次状态栏信息。声明在「换 model」那个 effect 之后，
+  // 保证轮到它时 editor 上挂的已经是新 model（effect 按声明顺序跑）
+  useEffect(() => {
+    refreshViewInfo();
+  }, [activeKey, status.kind, refreshViewInfo]);
+
+  /** 打开状态栏下拉：位置取按钮左边缘 + 顶边，菜单顶到它上方 */
+  const openStatusMenu = (
+    event: ReactMouseEvent<HTMLButtonElement>,
+    items: StatusMenuItem[],
+  ) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setStatusMenu({ x: rect.left, y: rect.top, items });
+  };
+
+  /** 当前文本 model；不在文本文件上（差异 / 图片 / 加载中）返回 null */
+  const activeTextModel = () => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file") return null;
+    return modelsRef.current.get(tabKey(current))?.model ?? null;
+  };
+
+  /** 换语言：走 Monaco 的 setModelLanguage，只改语法着色，不动文件内容 */
+  const applyLanguage = (id: string) => {
+    setStatusMenu(null);
+    const model = activeTextModel();
+    if (!model) return;
+    monaco.editor.setModelLanguage(model, id);
+    refreshViewInfo();
+  };
+
+  /** 换行符：用 pushEOL（一次可撤销的内容编辑），不用会清掉撤销栈的 setEOL */
+  const applyEol = (eol: "LF" | "CRLF") => {
+    setStatusMenu(null);
+    const model = activeTextModel();
+    if (!model) return;
+    model.pushEOL(
+      eol === "CRLF" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF,
+    );
+    refreshViewInfo();
+  };
+
+  /** 缩进：作用在 model 上，只影响这个文件的编辑行为 */
+  const applyIndent = (tabSize: number, insertSpaces: boolean) => {
+    setStatusMenu(null);
+    const model = activeTextModel();
+    if (!model) return;
+    model.updateOptions({ tabSize, insertSpaces });
+    refreshViewInfo();
+  };
+
+  /** 自动换行开关：作用在 editor 实例上，不写进 model */
+  const toggleWordWrap = () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const on = editor.getOption(monaco.editor.EditorOption.wordWrap) !== "off";
+    editor.updateOptions({ wordWrap: on ? "off" : "on" });
+    refreshViewInfo();
+  };
+
+  /** 语言菜单项：Monaco 已注册的全部语言，按显示名排序 */
+  const languageItems = (): StatusMenuItem[] =>
+    monaco.languages
+      .getLanguages()
+      .map((lang) => ({ id: lang.id, label: lang.aliases?.[0] ?? lang.id }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map((lang) => ({
+        key: `lang-${lang.id}`,
+        label: lang.label,
+        checked: viewInfo?.language === lang.id,
+        onPick: () => applyLanguage(lang.id),
+      }));
+
+  /** 缩进菜单项：空格 2 / 4 / 8，外加「制表符」 */
+  const indentItems = (): StatusMenuItem[] => {
+    const items: StatusMenuItem[] = [2, 4, 8].map((size) => ({
+      key: `spaces-${size}`,
+      label: `空格: ${size}`,
+      checked: viewInfo?.insertSpaces === true && viewInfo.tabSize === size,
+      onPick: () => applyIndent(size, true),
+    }));
+    items.push({
+      key: "tab",
+      label: "制表符（Tab）",
+      checked: viewInfo?.insertSpaces === false,
+      onPick: () => applyIndent(viewInfo?.tabSize ?? 4, false),
+    });
+    return items;
+  };
+
+  /** 换行符菜单项 */
+  const eolItems = (): StatusMenuItem[] => [
+    { key: "lf", label: "LF", checked: viewInfo?.eol === "LF", onPick: () => applyEol("LF") },
+    {
+      key: "crlf",
+      label: "CRLF",
+      checked: viewInfo?.eol === "CRLF",
+      onPick: () => applyEol("CRLF"),
+    },
+  ];
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
@@ -1486,6 +1686,38 @@ export function EditorPane({
         </>
       )}
 
+      {/* 状态栏左侧的下拉（语言 / 缩进 / 换行符）。状态栏在底部，用 bottom 顶到按钮上方；
+          语言列表长，超出上限就滚 */}
+      {statusMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setStatusMenu(null)} />
+          <div
+            className="fixed z-40 flex max-h-[320px] flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: STATUS_MENU_W,
+              left: Math.min(statusMenu.x, window.innerWidth - STATUS_MENU_W - 4),
+              bottom: window.innerHeight - statusMenu.y + 4,
+            }}
+          >
+            {statusMenu.items.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={item.onPick}
+                className={TABS_MENU_ITEM}
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className="flex w-3 shrink-0 justify-center">
+                    {item.checked && <IconCheck className="h-3 w-3 text-ok" />}
+                  </span>
+                  {item.label}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
       <div className="relative min-h-0 flex-1">
         <div
           ref={containerRef}
@@ -1545,21 +1777,68 @@ export function EditorPane({
         )}
       </div>
 
-      {/* 编码状态栏。贴着编辑器底部，只放一个编码入口；点开就地切换（VS Code 那套） */}
-      {showEncodingBar && (
-        <div className="flex h-6 shrink-0 items-center justify-end border-t border-line px-1.5">
-          <button
-            type="button"
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              setEncodingMenu({ x: rect.right, y: rect.top });
-            }}
-            title="文件编码（点击切换，切换后按新编码重新读取）"
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
-          >
-            <span>{activeEncoding ? encodingName(activeEncoding) : "编码"}</span>
-            <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
-          </button>
+      {/* 状态栏。左侧是光标位置与视图选项（语言 / 缩进 / 换行符 / 自动换行），
+          右侧仍只放文件编码入口（行为不变）。差异 / 图片 / 加载中没有 viewInfo，左侧整块收起 */}
+      {(showEncodingBar || viewInfo !== null) && (
+        <div className="flex h-6 shrink-0 items-center justify-between gap-2 border-t border-line px-1.5">
+          <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
+            {viewInfo && (
+              <>
+                <span
+                  title="光标位置"
+                  className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
+                >
+                  行 {viewInfo.line}，列 {viewInfo.column}
+                </span>
+                <button
+                  type="button"
+                  onClick={(event) => openStatusMenu(event, languageItems())}
+                  title="语言模式（点击切换）"
+                  className={STATUS_BUTTON}
+                >
+                  {languageLabel(viewInfo.language)}
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => openStatusMenu(event, indentItems())}
+                  title="缩进（点击切换）"
+                  className={STATUS_BUTTON}
+                >
+                  {viewInfo.insertSpaces ? `空格: ${viewInfo.tabSize}` : "制表符"}
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => openStatusMenu(event, eolItems())}
+                  title="换行符（点击切换）"
+                  className={STATUS_BUTTON}
+                >
+                  {viewInfo.eol}
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleWordWrap}
+                  title="自动换行"
+                  className={STATUS_BUTTON}
+                >
+                  {viewInfo.wordWrap ? "自动换行" : "不换行"}
+                </button>
+              </>
+            )}
+          </div>
+          {showEncodingBar && (
+            <button
+              type="button"
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setEncodingMenu({ x: rect.right, y: rect.top });
+              }}
+              title="文件编码（点击切换，切换后按新编码重新读取）"
+              className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
+            >
+              <span>{activeEncoding ? encodingName(activeEncoding) : "编码"}</span>
+              <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+            </button>
+          )}
         </div>
       )}
 
