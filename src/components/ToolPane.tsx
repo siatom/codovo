@@ -161,6 +161,7 @@ export function ToolPane({
       <div className={filesHidden ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <ExplorerPane
           roots={roots}
+          visible={visible}
           selected={selected}
           gitMarks={gitMarks}
           isRepo={gitReady}
