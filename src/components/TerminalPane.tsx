@@ -184,6 +184,15 @@ export function TerminalPane({
     setActiveId(id);
   };
 
+  /**
+   * 切到并列布局。只有一个会话时先补一个再切——不然「左右/上下并列」摆出来只有一栏，
+   * 和单终端没有区别，用户还得自己去点「+」。
+   */
+  const setSplitLayout = (next: "horizontal" | "vertical") => {
+    if (sessions.length === 1) addSession();
+    setLayout(next);
+  };
+
   const toggleShellMenu = () => {
     if (shellMenuOpen) {
       setShellMenuOpen(false);
@@ -386,7 +395,7 @@ export function TerminalPane({
             </button>
             <button
               type="button"
-              onClick={() => setLayout("horizontal")}
+              onClick={() => setSplitLayout("horizontal")}
               title="左右并列"
               aria-label="左右并列"
               className={`flex h-6 w-6 items-center justify-center rounded ${
@@ -397,7 +406,7 @@ export function TerminalPane({
             </button>
             <button
               type="button"
-              onClick={() => setLayout("vertical")}
+              onClick={() => setSplitLayout("vertical")}
               title="上下并列"
               aria-label="上下并列"
               className={`flex h-6 w-6 items-center justify-center rounded ${
