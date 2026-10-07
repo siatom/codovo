@@ -1823,6 +1823,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     search: settings.rightSearchVisible,
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
+    database: settings.rightDatabaseVisible,
   };
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
@@ -2241,6 +2242,14 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       options={VISIBLE_OPTIONS}
                       disabledValue={lastVisible === "remote" ? false : undefined}
                       onChange={(rightRemoteVisible) => update({ rightRemoteVisible })}
+                    />
+                  </Field>
+                  <Field label="数据库">
+                    <BoolToggle
+                      value={settings.rightDatabaseVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "database" ? false : undefined}
+                      onChange={(rightDatabaseVisible) => update({ rightDatabaseVisible })}
                     />
                   </Field>
                   <Field

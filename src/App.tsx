@@ -11,6 +11,7 @@ import {
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { AgentSessionProvider, useDropAgentSession, useNewChatAt } from "./lib/agent-session";
 import { RemoteHostsProvider } from "./lib/remote-hosts";
+import { DbConnectionsProvider } from "./lib/db-connections";
 import {
   isPathInside,
   onFilesChanged,
@@ -511,7 +512,9 @@ export default function App() {
   return (
     <AgentSessionProvider>
       <RemoteHostsProvider>
-        <Shell />
+        <DbConnectionsProvider>
+          <Shell />
+        </DbConnectionsProvider>
       </RemoteHostsProvider>
     </AgentSessionProvider>
   );

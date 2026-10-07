@@ -2,6 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ToolId } from "./ToolPane";
 import {
   IconBranch,
+  IconDatabase,
   IconFile,
   IconGlobe,
   IconPanelRight,
@@ -31,6 +32,7 @@ export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[]
   { id: "changes", label: "变更", Icon: IconBranch },
   { id: "browser", label: "浏览器", Icon: IconGlobe },
   { id: "remote", label: "远程连接", Icon: IconServer },
+  { id: "database", label: "数据库", Icon: IconDatabase },
 ];
 
 interface ToolRailProps {

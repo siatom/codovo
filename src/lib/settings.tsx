@@ -130,6 +130,7 @@ export interface Settings {
   rightSearchVisible: boolean;
   rightBrowserVisible: boolean;
   rightRemoteVisible: boolean;
+  rightDatabaseVisible: boolean;
   /** 应用命令的键位，按命令 id 索引；值的写法见 lib/shortcuts.ts */
   shortcuts: Record<string, string>;
 }
@@ -201,6 +202,7 @@ const DEFAULTS: Settings = {
   rightSearchVisible: true,
   rightBrowserVisible: true,
   rightRemoteVisible: true,
+  rightDatabaseVisible: true,
   shortcuts: defaultShortcuts(),
 };
 
@@ -442,6 +444,10 @@ function readSaved(): Settings {
     rightRemoteVisible: asBoolean(
       raw.rightRemoteVisible,
       DEFAULTS.rightRemoteVisible,
+    ),
+    rightDatabaseVisible: asBoolean(
+      raw.rightDatabaseVisible,
+      DEFAULTS.rightDatabaseVisible,
     ),
     // 老版本的设置里没有这个字段，resolveShortcuts 会给出厂默认
     shortcuts: resolveShortcuts(raw.shortcuts),

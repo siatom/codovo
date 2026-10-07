@@ -478,6 +478,15 @@ export const IconServer = icon(
   </>,
 );
 
+/** 右栏的「数据库」模块：经典的三层柱体 */
+export const IconDatabase = icon(
+  <>
+    <ellipse cx="12" cy="5" rx="8" ry="3" />
+    <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+    <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+  </>,
+);
+
 /** 用系统默认程序打开 */
 export const IconExternalLink = icon(
   <>

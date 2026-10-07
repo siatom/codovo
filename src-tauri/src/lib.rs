@@ -3,6 +3,7 @@
 mod agent;
 mod ai;
 mod cli_sessions;
+mod database;
 mod dev;
 mod feedback;
 mod fs_api;
@@ -34,6 +35,7 @@ pub fn run() {
         .manage(watcher::WatchState::new())
         .manage(agent::AgentState::new())
         .manage(remote::RemoteState::new())
+        .manage(database::DbState::new())
         .setup(|app| {
             // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
             tray::init(app.handle())?;
@@ -138,6 +140,10 @@ pub fn run() {
             remote::sftp_rename,
             remote::sftp_upload,
             remote::sftp_download,
+            database::db_connect,
+            database::db_disconnect,
+            database::db_tables,
+            database::db_query,
             tray::app_quit,
             tray::app_hide_to_tray,
         ])
@@ -158,6 +164,10 @@ pub fn run() {
                 }
                 // 远程连接是常驻的 SSH 会话，退出时通知它们收摊
                 if let Some(state) = app.try_state::<remote::RemoteState>() {
+                    state.kill_all();
+                }
+                // 数据库连接池也跟着收掉
+                if let Some(state) = app.try_state::<database::DbState>() {
                     state.kill_all();
                 }
             }
