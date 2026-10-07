@@ -327,6 +327,16 @@ function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** 消息的创建时间（毫秒）。两代位置不同：v2 在顶层 `time.created`，v1 在 `info.time.created` */
+function createdOf(item: unknown): number {
+  const record = asRecord(item);
+  if (!record) return 0;
+  const top = asRecord(record.time);
+  if (typeof top?.created === "number") return top.created;
+  const nested = asRecord(asRecord(record.info)?.time);
+  return typeof nested?.created === "number" ? nested.created : 0;
+}
+
 /**
  * 把会话历史灌成对话状态。打开会话时先灌一次，之后靠 SSE 增量往上接。
  *
@@ -339,9 +349,14 @@ function asText(value: unknown): string {
  */
 export function conversationFromHistory(raw: unknown): AgentConversation {
   const list = Array.isArray(raw) ? raw : [];
+  // 接口按**倒序**返回（最新在前），照原序 upsert 会把整段对话翻过来——单轮时看着
+  // 就是「助手的回答排在用户提问前面」。按创建时间升序重排一遍；时间戳一样或压根没有
+  // （老版本）时 sort 是稳定的，保持原序不动。
+  // 用排序而不是直接 reverse：v1 的返回顺序没实测过，按时间排对升序倒序都成立。
+  const ordered = [...list].sort((a, b) => createdOf(a) - createdOf(b));
   let state = EMPTY_CONVERSATION;
 
-  for (const item of list) {
+  for (const item of ordered) {
     const record = asRecord(item);
     if (!record) continue;
 
@@ -519,9 +534,9 @@ function toolPartId(messageID: string, callID: string): string {
  *
  * 纯函数，只认当前会话的事件——后端是全量转发的，过滤放在这儿省得调用方各写一遍。
  *
- * 事件名是 opencode v2 那套（`session.text.delta` / `session.execution.*` /
- * `session.tool.*`）。v2 之前的 `message.part.updated` / `session.idle` 在 v2 里
- * 已经不再发出了，别照旧名写。
+ * 事件名是 opencode v2 那套（`session.inbox.*` / `session.text.delta` /
+ * `session.execution.*` / `session.tool.*`）。v2 之前的 `message.part.updated` /
+ * `session.idle` 在 v2 里已经不再发出了，别照旧名写。
  */
 export function reduceAgentEvent(
   state: AgentConversation,
@@ -536,6 +551,24 @@ export function reduceAgentEvent(
   }
 
   switch (event.type) {
+    // 用户自己说的话。v2 不发在 message.* 上，而是随「进 inbox」这条事件带出来：
+    // inboxID 就是消息 id（和 prompt 的响应、拉历史时的 id 一致），原文在 item.payload.text。
+    // 不认这条，整块对话里就只有助手在自言自语
+    case "session.inbox.enqueued": {
+      const messageID = firstString(payload, ["inboxID", "messageID"]);
+      const item = asRecord(payload.item);
+      if (!messageID || item?.type !== "user") return state;
+      const text = asText(asRecord(item.payload)?.text);
+      // part id 用 `${消息 id}:0`，和 historyParts 给用户消息的编号一致，
+      // 之后重新拉历史时能原地覆盖、不会多出一条
+      return upsertPart(upsertMessage(state, messageID, "user"), {
+        id: `${messageID}:0`,
+        messageID,
+        type: "text",
+        text,
+      });
+    }
+
     // 一轮开始 / 一个步骤开始：assistantMessageID 在这里才第一次出现，
     // 后面的文本与工具事件都挂在它下面
     case "session.step.started": {
