@@ -106,6 +106,15 @@ git push --follow-tags            # 连 tag 一起推
   独占通道（`wait()` 要 `&mut`，而 `data`/`window_change` 只要 `&self`——拆成两个任务就够不到改尺寸），
   前端指令走 mpsc 汇进同一个 `select!`。密码 / 私钥口令存系统钥匙串（前端只有布尔位），主机密钥按
   TOFU 记指纹、对不上就拒绝；已连接的主机各留一个终端实例，`display:none` 藏着不卸载。
+- 数据库（`database.rs`）：MySQL / PostgreSQL / SQLite 走 `sqlx`，**三库各持一个池**（`enum DbPool`）而不是
+  用 `Any` 驱动——`Any` 的类型映射和 URL 解析都有限制，`*ConnectOptions` 的 builder 反而更干净（不拼 URL、
+  不管转义）。TLS 特性必须是 `tls-rustls-aws-lc-rs`：reqwest / russh 已经在用 aws-lc，引 ring 会同时装
+  两个 CryptoProvider，rustls 0.23 没显式装默认时直接 panic。**分页在服务端**：SELECT 类包一层
+  `SELECT * FROM (<sql>) AS __codedock_pg LIMIT n+1 OFFSET m`，多取一行判断有没有下一页；写语句走
+  `execute()` 报影响行数，SHOW/EXPLAIN 之类只取一页。单元格按「String → i64 → f64 → bool → 时间 → …」
+  依次 `try_get` 渲染成字符串（sqlx 类型严格，`String` 解不了 INT）；BigDecimal / Uuid / JSON 只在
+  MySQL / PG 上试——sqlx-sqlite 没有这些 `Decode` 实现，硬塞进同一个宏整个编不过。密码存系统钥匙串
+  （前端只有布尔位），连接配置跨窗口共享。
 - **单实例**：`tauri-plugin-single-instance` 在 builder 里**第一个**注册，回调把已被收进托盘的
   主窗口唤回来（`tray::show_main`）。它的锁名取自 app identifier，所以 dev 和安装版不能共用
   `tauri.conf.json` 里那个 `com.codedock`——否则本机开着安装版时 dev 一启动就被顶掉。build.rs 在

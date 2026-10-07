@@ -11,7 +11,7 @@
         ↑ 分栏可拖动          ↑ 分栏可拖动
 ```
 
-右栏由最右边的图标条切换模块：**文件 / 搜索 / 变更 / 浏览器 / 远程连接**。
+右栏由最右边的图标条切换模块：**文件 / 搜索 / 变更 / 浏览器 / 远程连接 / 数据库**。
 
 ## 相比传统 IDE、纯终端
 
@@ -80,6 +80,10 @@ Monaco（VS Code 内核），离线可用。多标签 + `Ctrl+S`，打开的文�
 
 右栏「远程连接」模块：管理多台远程主机（密码或私钥文件认证，凭据存系统钥匙串），连上后可在同一面板里开**交互式远程终端**，或浏览、上传下载远端文件。主机配置跨窗口共享。
 
+### 数据库
+
+右栏「数据库」模块：管理 MySQL / PostgreSQL / SQLite 连接（密码存系统钥匙串），连上后可浏览表与视图、点表看数据，或写 SQL 查询（含写语句，显示受影响行数）。结果表格服务端翻页，连接配置跨窗口共享。
+
 ### 智能体（对话式编程）
 
 终端区顶栏是 **TUI / GUI** 双入口。GUI 侧是由 **opencode** 驱动的对话面板：实时渲染助手正文与工具调用，改动直接落到工作区；可切 primary agent、管理历史会话。关掉设置里的开关就完全回到纯 TUI。
@@ -104,8 +108,8 @@ Monaco（VS Code 内核），离线可用。多标签 + `Ctrl+S`，打开的文�
 src/                  React 前端
   App.tsx             三段式布局装配
   components/WorkspacePane.tsx     每个工作区独立的界面与状态
-  components/         UI 组件：侧边栏 / 终端 / 文件树 / 搜索 / 编辑器 / 变更 / 浏览器 / 远程连接 / 智能体 / 设置
-  lib/                Context 与薄封装：主题、设置、pty / fs / git / ai / agent / remote、Monaco 与语言
+  components/         UI 组件：侧边栏 / 终端 / 文件树 / 搜索 / 编辑器 / 变更 / 浏览器 / 远程连接 / 数据库 / 智能体 / 设置
+  lib/                Context 与薄封装：主题、设置、pty / fs / git / ai / agent / remote / database、Monaco 与语言
 src-tauri/src/        Rust 后端
   lib.rs              命令注册与 state
   pty.rs, shells.rs   终端会话与 shell 探测
@@ -114,6 +118,7 @@ src-tauri/src/        Rust 后端
   git.rs              git 状态 / 暂存 / 提交历史 / 差异 / 远程操作
   ai.rs, agent.rs     大模型调用、opencode 后端
   remote.rs           远程连接：SSH 终端 + SFTP 传输
+  database.rs         数据库：MySQL / PostgreSQL / SQLite 连接池与查询
   cli_sessions.rs     各 CLI 的会话历史
   secrets.rs          操作系统凭据库中的 API 密钥
   installer.rs        依赖检测与安装
