@@ -24,6 +24,21 @@ pub(crate) fn looks_binary(bytes: &[u8]) -> bool {
     bytes[..bytes.len().min(8192)].contains(&0)
 }
 
+/// 按检测到的编码把字节解成文本；认不出来（真二进制、或编码猜不准解不干净）返回 None。
+///
+/// 内容搜索、git 差异、AI 读文件都走这里。以前它们各自 `from_utf8_lossy`：GBK / Big5
+/// 文件的每个非法字节都会变成 U+FFFD，正文整个花掉，搜索既找不到中文、差异也全是乱码。
+/// 这里要么解对、要么让调用方按「二进制」处理，绝不产出替换字符。
+pub(crate) fn decode_text(bytes: &[u8]) -> Option<String> {
+    // UTF-16 文本里到处是 NUL，会被 looks_binary 误判成二进制，所以先认一遍 BOM
+    let encoding = match encoding::detect_bom(bytes) {
+        Some(bom) => bom,
+        None if looks_binary(bytes) => return None,
+        None => encoding::detect(bytes)?,
+    };
+    encoding::decode(bytes, encoding).ok()
+}
+
 /// 用户打开过的工作区根（canonical 路径）。
 ///
 /// 单窗口下会同时存在多个工作区，所以命令一律显式带上 `root`；但前端传来的路径
@@ -495,10 +510,8 @@ pub(crate) fn read_text_file(root: &Path, raw: &str) -> Result<String, String> {
         return Err("文件太大（超过 2 MB），无法解析".to_string());
     }
     let bytes = fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
-    if looks_binary(&bytes) {
-        return Err("这不是文本文件，无法解析".to_string());
-    }
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    // 按检测到的编码解：GBK / Big5 的老工程也能被读成正确正文，而不是一堆替换字符
+    decode_text(&bytes).ok_or_else(|| "这不是文本文件，无法解析".to_string())
 }
 
 /// 能直接渲染的图片扩展名 → MIME。**`svg` 故意不在列**：它是文本，编辑器里已经当
@@ -1247,12 +1260,11 @@ fn search_content(
         let Ok(bytes) = fs::read(path) else {
             return true;
         };
-        if looks_binary(&bytes) {
+        // 和编辑器读文件一致：按检测到的编码解码，GBK / Big5 文件里的中文才能搜到，
+        // 行 / 列号也才和 Monaco 打开的同一个 model 对得上（认不出编码的按二进制跳过）
+        let Some(text) = decode_text(&bytes) else {
             return true;
-        }
-
-        // 和编辑器读文件一致：宽容处理非法字节，这样列号才和 Monaco 里的 model 对得上
-        let text = String::from_utf8_lossy(&bytes);
+        };
         let matches = matches_in_text(&text, &pattern, options, MAX_MATCHES - total);
         if matches.is_empty() {
             return true;
@@ -2059,6 +2071,25 @@ mod tests {
         assert_eq!(result.skipped_large, 1, "大文件要被记一笔");
         assert_eq!(result.files.len(), 1, "二进制和超限的都不该有结果");
         assert!(result.files[0].relative.ends_with("small.txt"));
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 内容搜索要按检测到的编码解码：以前 lossy 会把 GBK 中文变成替换字符，一条都搜不到
+    #[test]
+    fn content_search_reads_legacy_encodings() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        const CN: &str = "这是一个使用旧编码的中文文本，用来验证编码检测与往返保存。";
+        fs::write(
+            workspace.join("gbk.txt"),
+            encoding::encode(CN, FileEncoding::Gbk).unwrap(),
+        )
+        .unwrap();
+
+        let result = search_content(&workspace, "旧编码", &opts(false, false, false)).unwrap();
+        assert_eq!(result.files.len(), 1, "GBK 文件里的中文应当能搜到");
+        assert!(result.files[0].relative.ends_with("gbk.txt"));
 
         fs::remove_dir_all(&root).ok();
     }

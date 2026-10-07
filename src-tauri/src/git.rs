@@ -1253,20 +1253,22 @@ fn is_merging(root: &Path) -> Result<bool, String> {
 ///
 /// 本机 `core.autocrlf=true`：index 里存的是 LF、工作区常是 CRLF。不归一就会
 /// 出现"整个文件都改了"的假差异。归一之后正好和 `git diff` 的默认行为一致——
-/// 只改行尾的改动本来也不该显示出来。
-fn normalize_newlines(bytes: Vec<u8>) -> String {
-    String::from_utf8_lossy(&bytes).replace("\r\n", "\n")
+/// 只改行尾的改动本来也不该显示出来。归一放在**解码之后**的字符串上做（见 `classify`）。
+fn normalize_newlines(text: String) -> String {
+    text.replace("\r\n", "\n")
 }
 
 fn classify(bytes: Vec<u8>) -> Side {
-    if fs_api::looks_binary(&bytes) {
-        return Side::Binary;
-    }
-    // cat-file -s 报的是 raw blob 大小，取回来再兜一次
+    // cat-file -s 报的是 raw blob 大小，取回来先兜一道，免得白解码一个超大对象
     if bytes.len() as u64 > fs_api::MAX_TEXT_SIZE {
         return Side::TooLarge;
     }
-    Side::Text(normalize_newlines(bytes))
+    // 按检测到的编码解码。以前这里 `from_utf8_lossy`：GBK / Big5 的非法字节全变成
+    // U+FFFD，差异正文整个花掉；`decode_text` 顺带先认 BOM，UTF-16 也不会因 NUL 被误判成二进制。
+    match fs_api::decode_text(&bytes) {
+        Some(text) => Side::Text(normalize_newlines(text)),
+        None => Side::Binary,
+    }
 }
 
 /// 取某个版本里的 blob：`HEAD:src/a.ts`（HEAD 版）或 `:src/a.ts`（index 版）。
@@ -1363,7 +1365,12 @@ pub(crate) fn file_diff_text(
     };
 
     if let Some(raw) = run_git_literal(root, &args)? {
-        let text = String::from_utf8_lossy(&raw).trim_end().to_string();
+        // diff 头部是 ASCII、正文是文件原始字节：按检测到的编码解，GBK / Big5 的改动
+        // 才不会在 AI 解读里变成乱码；解不出来（真二进制）才退回 lossy
+        let text = fs_api::decode_text(&raw)
+            .unwrap_or_else(|| String::from_utf8_lossy(&raw).into_owned())
+            .trim_end()
+            .to_string();
         if !text.is_empty() {
             return Ok(text);
         }
@@ -1699,8 +1706,12 @@ pub(crate) fn commit_context(root: &Path) -> Result<CommitContext, String> {
 
     // --no-color 保证没有 ANSI 序列；二进制文件默认只出 "Binary files ... differ"。
     // 空仓库（还没有 HEAD）时 --cached 按空树比，照样能列出已暂存的新增。
+    // 同 `file_diff_text`：按检测到的编码解，GBK / Big5 的暂存内容才不会喂一坨乱码给模型。
     let diff = run_git(root, &["diff", "--cached", "--no-color"])?
-        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .map(|bytes| {
+            fs_api::decode_text(&bytes)
+                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned())
+        })
         .unwrap_or_default();
 
     Ok(CommitContext {
@@ -2924,6 +2935,26 @@ mod tests {
     }
 
     // ---- 差异视图：同样是跑真 git 的用例 ----
+
+    /// `classify` 要按检测到的编码解码，不能像以前那样 lossy 成替换字符
+    #[test]
+    fn classify_decodes_legacy_encodings() {
+        const CN: &str = "这是一个使用旧编码的中文文本，用来验证编码检测与往返保存。";
+        let gbk = crate::encoding::encode(CN, crate::encoding::FileEncoding::Gbk).unwrap();
+        match classify(gbk) {
+            Side::Text(text) => assert_eq!(text, CN, "GBK 文件应当解成正确正文"),
+            _ => panic!("GBK 文本不该被判成二进制 / 过大"),
+        }
+
+        // CRLF 归一仍然生效
+        match classify(b"a\r\nb".to_vec()) {
+            Side::Text(text) => assert_eq!(text, "a\nb"),
+            _ => panic!("普通文本应当解成 Text"),
+        }
+
+        // 含 NUL 的真二进制仍然算二进制
+        assert!(classify(vec![0u8, 1, 2]).is_binary());
+    }
 
     #[test]
     fn new_file_baseline_is_empty() {
