@@ -23,6 +23,8 @@ export interface GitChange {
   index: string;
   /** porcelain v2 的 Y 列：工作区状态 */
   worktree: string;
+  /** 这条是不是一个目录（只有未跟踪目录会整条折叠成一项）；目录不参与差异 / 解读 */
+  isDir: boolean;
   /** 暂存那一侧增删了几行；null = 没统计出来（二进制 / 未跟踪） */
   stagedAdded: number | null;
   stagedRemoved: number | null;
@@ -139,6 +141,7 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
         relative: file.relative,
         index: file.index,
         worktree: file.worktree,
+        isDir: file.isDir,
         stagedAdded: file.stagedAdded,
         stagedRemoved: file.stagedRemoved,
         unstagedAdded: file.unstagedAdded,

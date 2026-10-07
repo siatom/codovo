@@ -226,6 +226,7 @@ export function ToolPane({
               <div className={collapsed ? "hidden" : "min-h-0 flex-1"}>
                 <GitChangesPane
                   root={item}
+                  visible={visible}
                   git={gitByRoot[item]}
                   onOpen={onOpenDiff}
                   onOpenFile={onSelectFile}
