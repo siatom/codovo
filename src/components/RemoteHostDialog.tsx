@@ -1,10 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
+  clearHostSecrets,
   hostSecretPresence,
   newHostId,
   setHostPassphrase,
   setHostPassword,
+  testRemoteConnection,
   type RemoteAuth,
   type RemoteHost,
 } from "../lib/remote";
@@ -46,6 +48,18 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  /** 测试连接的结果；null = 还没测过。改动任一连接参数后清掉，免得留着过期的「连接成功」 */
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  /** 钥匙串里是否存着凭据。本对话框里可以「清除」，所以用本地状态，不直接读 host */
+  const [savedPassword, setSavedPassword] = useState(host?.hasPassword ?? false);
+  const [savedPassphrase, setSavedPassphrase] = useState(host?.hasPassphrase ?? false);
+
+  // 改动任何一个影响连接的字段，上次的测试结果就过期了
+  useEffect(() => {
+    setTestResult(null);
+  }, [address, port, user, auth, keyPath, password, passphrase]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -64,19 +78,88 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
     }
   };
 
-  const submit = async () => {
-    const addr = address.trim();
-    const userName = user.trim();
-    if (!addr) return setError("请填写主机地址");
-    if (!userName) return setError("请填写用户名");
+  /** 校验表单，通过返回解析后的端口，不通过则设错误并返回 null */
+  const validate = (): number | null => {
+    if (!address.trim()) {
+      setError("请填写主机地址");
+      return null;
+    }
+    if (!user.trim()) {
+      setError("请填写用户名");
+      return null;
+    }
     const portNumber = Number(port);
     if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
-      return setError("端口要在 1–65535 之间");
+      setError("端口要在 1–65535 之间");
+      return null;
     }
-    if (auth === "key" && !keyPath.trim()) return setError("私钥认证需要选择私钥文件");
-    if (auth === "password" && !password && !host?.hasPassword) {
-      return setError("请填写密码");
+    if (auth === "key" && !keyPath.trim()) {
+      setError("私钥认证需要选择私钥文件");
+      return null;
     }
+    if (auth === "password" && !password && !savedPassword) {
+      setError("请填写密码");
+      return null;
+    }
+    return portNumber;
+  };
+
+  /** 试连一次验证参数。刚敲的明文凭据直接传后端，不落钥匙串 */
+  const runTest = async () => {
+    const portNumber = validate();
+    if (portNumber === null) return;
+    setTesting(true);
+    setError("");
+    setTestResult(null);
+    const addr = address.trim();
+    try {
+      const result = await testRemoteConnection({
+        hostId: host?.id ?? "",
+        host: addr,
+        port: portNumber,
+        user: user.trim(),
+        auth,
+        keyPath: keyPath.trim(),
+        // 地址 / 端口没变才沿用旧指纹；换了地址不该拿旧指纹去校验
+        expectedFingerprint:
+          host && host.host === addr && host.port === portNumber ? host.fingerprint : "",
+        password,
+        passphrase,
+      });
+      setTestResult({
+        ok: true,
+        message: result.fingerprint ? `连接成功，主机指纹 ${result.fingerprint}` : "连接成功",
+      });
+    } catch (reason) {
+      setTestResult({ ok: false, message: String(reason) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  /** 把该主机在钥匙串里的密码 / 口令清掉（后端传空串即删除），并刷新「已保存」状态 */
+  const clearCredentials = async () => {
+    if (!host) return;
+    setClearing(true);
+    setError("");
+    try {
+      await clearHostSecrets(host.id);
+      const presence = await hostSecretPresence(host.id);
+      setSavedPassword(presence.hasPassword);
+      setSavedPassphrase(presence.hasPassphrase);
+      setTestResult(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  const submit = async () => {
+    const portNumber = validate();
+    if (portNumber === null) return;
+    const addr = address.trim();
+    const userName = user.trim();
 
     setSaving(true);
     setError("");
@@ -191,7 +274,7 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={host?.hasPassword ? "已保存，留空则不改动" : "输入登录密码"}
+              placeholder={savedPassword ? "已保存，留空则不改动" : "输入登录密码"}
               spellCheck={false}
               className={INPUT}
             />
@@ -222,7 +305,7 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
                 type="password"
                 value={passphrase}
                 onChange={(event) => setPassphrase(event.target.value)}
-                placeholder={host?.hasPassphrase ? "已保存，留空则不改动" : "私钥没加密就留空"}
+                placeholder={savedPassphrase ? "已保存，留空则不改动" : "私钥没加密就留空"}
                 spellCheck={false}
                 className={INPUT}
               />
@@ -230,13 +313,42 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
           </>
         )}
 
+        {host && (savedPassword || savedPassphrase) && (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={clearing || saving || testing}
+              onClick={() => void clearCredentials()}
+              className="text-[11px] text-fg-dim hover:text-danger disabled:opacity-60"
+            >
+              {clearing ? "清除中…" : "清除已保存凭据"}
+            </button>
+          </div>
+        )}
+
         {error && <p className="text-[11px] leading-relaxed text-danger">{error}</p>}
 
-        <div className="mt-1 flex justify-end gap-2">
+        <div className="mt-1 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={testing || saving}
+            onClick={() => void runTest()}
+            className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60"
+          >
+            {testing ? "测试中…" : "测试连接"}
+          </button>
+          <span
+            className={`min-w-0 flex-1 truncate text-[11px] ${
+              testResult?.ok ? "text-accent" : "text-danger"
+            }`}
+            title={testResult?.message}
+          >
+            {testResult?.message ?? ""}
+          </span>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+            className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
           >
             取消
           </button>
@@ -244,7 +356,7 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
             type="button"
             disabled={saving}
             onClick={() => void submit()}
-            className="rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected disabled:opacity-60"
+            className="shrink-0 rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected disabled:opacity-60"
           >
             {saving ? "保存中…" : "保存"}
           </button>

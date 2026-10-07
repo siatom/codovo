@@ -177,6 +177,37 @@ export async function connectRemote(options: {
   };
 }
 
+/**
+ * 试连一次就断开（不登记会话、不写钥匙串），用来在保存前验证参数。
+ * `password` / `passphrase` 传表单里刚敲的明文；留空则后端回退到钥匙串里已存的。
+ * 成功时返回这次连到的服务器指纹，供界面展示 / 更新 TOFU。
+ */
+export function testRemoteConnection(request: {
+  hostId: string;
+  host: string;
+  port: number;
+  user: string;
+  auth: RemoteAuth;
+  keyPath: string;
+  expectedFingerprint: string;
+  password: string;
+  passphrase: string;
+}): Promise<{ fingerprint: string }> {
+  return invoke<{ fingerprint: string }>("remote_test_connection", {
+    request: {
+      hostId: request.hostId,
+      host: request.host,
+      port: request.port,
+      user: request.user,
+      authKind: request.auth,
+      keyPath: request.keyPath || null,
+      expectedFingerprint: request.expectedFingerprint || null,
+      password: request.password || null,
+      passphrase: request.passphrase || null,
+    },
+  });
+}
+
 export function sftpHome(id: number): Promise<string> {
   return invoke<string>("sftp_home", { id });
 }
