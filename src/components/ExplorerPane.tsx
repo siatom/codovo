@@ -12,6 +12,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { explainChange, useEffectiveAiConfig } from "../lib/ai";
 import {
+  copyEntry,
   createDirectory,
   createFile,
   deleteEntry,
@@ -28,6 +29,8 @@ import {
   toDisplayPath,
   type MovePair,
 } from "../lib/fs";
+import { matchesShortcut } from "../lib/shortcuts";
+import { useSettings } from "../lib/settings";
 import type { GitMark } from "../lib/git";
 import type { FileEntry } from "../lib/types";
 import {
@@ -81,9 +84,9 @@ const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
 const ICON_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
-/** 右键菜单：宽度和高度按最多 6 项算出来，用来贴着窗口边缘收一收 */
+/** 右键菜单：宽度和高度按最多 9 项算出来，用来贴着窗口边缘收一收 */
 const MENU_W = 132;
-const MENU_H = 170;
+const MENU_H = 250;
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /** 所在目录。改名/删除之后要重新列的就是它 */
@@ -243,6 +246,19 @@ export function ExplorerPane({
   const [renameError, setRenameError] = useState<string | null>(null);
   /** 等着确认删除的那一批；非空时弹确认框 */
   const [pendingDelete, setPendingDelete] = useState<FileEntry[] | null>(null);
+
+  /**
+   * 应用内的文件剪贴板：复制 / 剪切的是路径列表，`cut` 为 true 表示粘贴时要移动。
+   * 刻意不用系统剪贴板——剪贴板插件只能写文本，表达不了"一批文件"和"剪切"标记。
+   * 每个工作区一个 ExplorerPane 实例，所以剪贴板天然按工作区分开、切走也留得住。
+   */
+  const [clipboard, setClipboard] = useState<{ paths: string[]; cut: boolean } | null>(null);
+  /** 粘贴时目标目录已有同名项，等用户确认覆盖。非空时弹确认框 */
+  const [pendingPaste, setPendingPaste] = useState<{ targetDir: string; conflicts: string[] } | null>(
+    null,
+  );
+  /** 工作目录标题行上的右键菜单（只放「粘贴」，好让空目录也能粘进去） */
+  const [rootMenu, setRootMenu] = useState<{ root: string; x: number; y: number } | null>(null);
   /** 改名 / 删除正在跑，期间不再接第二次 */
   const [busy, setBusy] = useState(false);
   /** 改名 / 删除失败的原因，挂在树顶上 */
@@ -257,6 +273,7 @@ export function ExplorerPane({
   /** 关掉弹窗后迟到的响应不该把它弹回来，用序号丢弃（同 GitChangesPane） */
   const explainSeq = useRef(0);
 
+  const { settings } = useSettings();
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   // 搜索：输入框开着 + 有关键词才进入过滤模式
@@ -325,8 +342,12 @@ export function ExplorerPane({
     setRenaming(null);
     setRenameError(null);
     setMenu(null);
+    setRootMenu(null);
     setPendingDelete(null);
+    setPendingPaste(null);
     setActionError(null);
+    // 剪贴板里存的是上一个工作区的路径，换工作目录就作废，别拿失效路径去粘
+    setClipboard(null);
     // 多选与拖拽状态同样按工作区作废
     setSelection(new Map());
     anchorRef.current = null;
@@ -680,6 +701,187 @@ export function ExplorerPane({
     setBusy(false);
   }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, closeSearch]);
 
+  /** 这批操作要处理哪些路径：点在选中集合里的行就取整批（VS Code 语义），否则只它自己 */
+  const collectPaths = useCallback(
+    (entry: FileEntry) =>
+      pruneNested(
+        selection.has(pathKey(entry.path))
+          ? [...selection.values()].map((item) => item.path)
+          : [entry.path],
+      ),
+    [selection],
+  );
+
+  /** 复制到应用内剪贴板，源不动 */
+  const doCopy = useCallback(
+    (entry: FileEntry) => {
+      setMenu(null);
+      setRootMenu(null);
+      setActionError(null);
+      setClipboard({ paths: collectPaths(entry), cut: false });
+    },
+    [collectPaths],
+  );
+
+  /** 剪切：粘贴时走移动。工作区根不参与（后端也会拒） */
+  const doCut = useCallback(
+    (entry: FileEntry) => {
+      setMenu(null);
+      setRootMenu(null);
+      setActionError(null);
+      const paths = collectPaths(entry).filter((path) => !isRootPath(path));
+      if (paths.length === 0) return;
+      setClipboard({ paths, cut: true });
+    },
+    [collectPaths, isRootPath],
+  );
+
+  /** 真正执行粘贴。`overwrite` 只在目标已有同名项、且用户确认覆盖后为 true */
+  const runPaste = useCallback(
+    async (targetDir: string, overwrite: boolean) => {
+      const clip = clipboard;
+      if (!clip || clip.paths.length === 0 || busy) return;
+      const toOwner = ownerRoot(roots, targetDir);
+      if (!toOwner) {
+        setActionError(`目标不在任何工作目录里: ${targetDir}`);
+        return;
+      }
+      setBusy(true);
+      setActionError(null);
+      try {
+        // 剪切是移动，会丢掉旧 model，未保存的改动跟着一起没——先落盘
+        if (clip.cut && !(await onBeforeRename())) {
+          setActionError("有文件没保存成功，已取消粘贴");
+          return;
+        }
+        const moves: MovePair[] = [];
+        const done: string[] = [];
+        const failures: string[] = [];
+        for (const path of clip.paths) {
+          const fromOwner = ownerRoot(roots, path);
+          if (!fromOwner) {
+            failures.push(`这个路径不在任何工作目录里: ${path}`);
+            continue;
+          }
+          try {
+            if (clip.cut) {
+              const to = await moveEntry({
+                fromRoot: fromOwner,
+                path,
+                toRoot: toOwner,
+                targetDir,
+                overwrite,
+              });
+              moves.push({ from: path, to });
+            } else {
+              await copyEntry({ fromRoot: fromOwner, path, toRoot: toOwner, targetDir, overwrite });
+            }
+            done.push(path);
+          } catch (reason) {
+            failures.push(String(reason));
+          }
+        }
+
+        if (moves.length > 0) {
+          // 编辑器里落在旧路径下的标签一次重定向到新路径
+          onRenamed(moves);
+          setActiveRow(moves[0].to);
+          // 选中集合跟着挪到新路径，移动后仍高亮
+          setSelection((current) => {
+            if (current.size === 0) return current;
+            const next = new Map<string, FileEntry>();
+            for (const item of current.values()) {
+              const move = moves.find((candidate) => pathKey(candidate.from) === pathKey(item.path));
+              const path = move ? move.to : item.path;
+              next.set(pathKey(path), move ? { ...item, path, name: baseName(path) } : item);
+            }
+            return next;
+          });
+        }
+
+        if (done.length > 0) {
+          // 目标目录，以及各个源所在目录（剪切时那边少了一项）都要重列
+          for (const dir of new Set<string>([targetDir, ...done.map(parentOf)])) {
+            await refreshDir(dir);
+          }
+          if (filtering) closeSearch();
+        }
+
+        // 剪切后成功的项要从剪贴板摘掉，失败的留着——否则下次粘贴会重放已经搬走的源。
+        // 复制则整份保留，可以反复粘贴
+        if (clip.cut) {
+          const remaining = clip.paths.filter((path) => !done.includes(path));
+          setClipboard(remaining.length > 0 ? { paths: remaining, cut: true } : null);
+        }
+
+        if (failures.length > 0) setActionError(failures.join("\n"));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [clipboard, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch],
+  );
+
+  /**
+   * 粘贴前的探测：只判断会不会撞名，不落盘。
+   *
+   * 「先跑一遍，撞了再确认覆盖后重试」是错的——剪切场景下第一趟已经把源搬走了，
+   * 重试时源早不在原处。所以必须先在内存里把冲突找齐、用户确认之后才一次性执行。
+   */
+  const doPaste = useCallback(
+    async (targetDir: string) => {
+      const clip = clipboard;
+      if (!clip || clip.paths.length === 0 || busy) return;
+      const toOwner = ownerRoot(roots, targetDir);
+      if (!toOwner) {
+        setActionError(`目标不在任何工作目录里: ${targetDir}`);
+        return;
+      }
+      const separator = targetDir.includes("\\") ? "\\" : "/";
+
+      let existing: Set<string>;
+      try {
+        const listed = await listDir(toOwner, targetDir);
+        existing = new Set(listed.map((item) => pathKey(`${targetDir}${separator}${item.name}`)));
+      } catch (reason) {
+        setActionError(String(reason));
+        return;
+      }
+
+      const conflicts: string[] = [];
+      const seen = new Set<string>();
+      for (const path of clip.paths) {
+        const target = `${targetDir}${separator}${baseName(path)}`;
+        // 目标就是源自己（同目录粘贴）：交给后端报「不能粘贴到原位置」，不算覆盖冲突
+        if (pathKey(target) === pathKey(path)) continue;
+        // 批内同名：好几个源要落成同一个目标，放不进来
+        if (seen.has(pathKey(target))) {
+          setActionError("选中的项里有同名文件，无法放到同一个目录");
+          return;
+        }
+        seen.add(pathKey(target));
+        if (existing.has(pathKey(target))) conflicts.push(baseName(path));
+      }
+
+      if (conflicts.length > 0) {
+        setPendingPaste({ targetDir, conflicts });
+        return;
+      }
+      await runPaste(targetDir, false);
+    },
+    [clipboard, busy, roots, runPaste],
+  );
+
+  /** 右键项的粘贴目标：目录就粘进它，文件就粘进它所在目录（照 VS Code） */
+  const requestPaste = useCallback(
+    (entry: FileEntry) => {
+      setMenu(null);
+      setRootMenu(null);
+      void doPaste(entry.isDir ? entry.path : parentOf(entry.path));
+    },
+    [doPaste],
+  );
+
   /** 当前已经在树里、值得跟着磁盘刷新的目录（含全部工作目录） */
   const loadedDirs = useMemo(() => {
     const keys = new Set<string>(roots.map((root) => pathKey(root)));
@@ -918,6 +1120,11 @@ export function ExplorerPane({
 
   const selectionKeys = useMemo(() => new Set(selection.keys()), [selection]);
   const draggingKeys = useMemo(() => new Set(dragging.map(pathKey)), [dragging]);
+  // 被剪切、正等着粘贴的行：淡化（照 dragging 的写法，过滤模式下同样有效）
+  const cutKeys = useMemo(
+    () => (clipboard?.cut ? new Set(clipboard.paths.map(pathKey)) : EMPTY_SET),
+    [clipboard],
+  );
 
   /** 按 data-row-key 找到那一行并聚焦（避免属性选择器转义问题，直接遍历比对） */
   const focusRowByKey = useCallback((path: string) => {
@@ -977,6 +1184,23 @@ export function ExplorerPane({
   const handleRowKeyDown = useCallback(
     (entry: FileEntry, event: KeyboardEvent) => {
       const { key } = event;
+      // 复制 / 剪切 / 粘贴（key 是小写的 c/x/v）：必须放在下面那段白名单 return 之前，
+      // 否则永远进不来。事件走行自己的 keydown，终端那边是兄弟子树，不会串
+      if (matchesShortcut(event, settings.shortcuts["explorer.copy"])) {
+        event.preventDefault();
+        doCopy(entry);
+        return;
+      }
+      if (matchesShortcut(event, settings.shortcuts["explorer.cut"])) {
+        event.preventDefault();
+        doCut(entry);
+        return;
+      }
+      if (matchesShortcut(event, settings.shortcuts["explorer.paste"])) {
+        event.preventDefault();
+        requestPaste(entry);
+        return;
+      }
       if (
         key !== "ArrowDown" &&
         key !== "ArrowUp" &&
@@ -1065,6 +1289,10 @@ export function ExplorerPane({
       startRename,
       requestDelete,
       focusRowByKey,
+      doCopy,
+      doCut,
+      requestPaste,
+      settings.shortcuts,
     ],
   );
 
@@ -1206,6 +1434,7 @@ export function ExplorerPane({
       gitMarks,
       ignored,
       dragging: draggingKeys,
+      cutKeys,
       dropDir,
       onRowClick: handleRowClick,
       onRowKeyDown: handleRowKeyDown,
@@ -1268,6 +1497,7 @@ export function ExplorerPane({
     focusRow,
     selectionKeys,
     draggingKeys,
+    cutKeys,
     dropDir,
     flatEntries,
     handleRowClick,
@@ -1444,6 +1674,13 @@ export function ExplorerPane({
                   setDropDir((current) => (current === pathKey(group.root) ? null : current));
                 }}
                 onDrop={(event) => void handleDrop(group.root, event)}
+                // 根行也能右键：只放「粘贴」，好让空目录（没有子行可右键）也能粘进去
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  if (!clipboard) return;
+                  setMenu(null);
+                  setRootMenu({ root: group.root, x: event.clientX, y: event.clientY });
+                }}
                 className={`flex w-full items-center gap-1 rounded px-1 pt-1.5 pb-0.5 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:bg-hover hover:text-fg${
                   dropDir === pathKey(group.root) ? " ring-1 ring-inset ring-accent" : ""
                 }`}
@@ -1512,6 +1749,22 @@ export function ExplorerPane({
         />
       )}
 
+      {/* 粘贴撞上同名项：覆盖是破坏性的（目标目录会被整个删掉再换源），必须问清楚 */}
+      {pendingPaste && (
+        <ConfirmDialog
+          message={`目标位置已有同名的 ${pendingPaste.conflicts.length} 项：${pendingPaste.conflicts.join(
+            "、",
+          )}。继续将用源替换它们，其中的文件夹会被整个删除且无法恢复。`}
+          confirmLabel="覆盖"
+          onConfirm={() => {
+            const pending = pendingPaste;
+            setPendingPaste(null);
+            if (pending) void runPaste(pending.targetDir, true);
+          }}
+          onCancel={() => setPendingPaste(null)}
+        />
+      )}
+
       {/* AI 解读结果，和「变更解读」共用同一个弹窗外壳 */}
       {explain && (
         <ExplainChangeDialog
@@ -1556,6 +1809,18 @@ export function ExplorerPane({
                 AI 解读文件
               </button>
             )}
+            {/* 文件操作三件套。粘贴只在剪贴板有东西时给（本菜单已有按条件隐藏项的先例） */}
+            <button type="button" onClick={() => doCopy(menu.entry)} className={MENU_ITEM}>
+              复制
+            </button>
+            <button type="button" onClick={() => doCut(menu.entry)} className={MENU_ITEM}>
+              剪切
+            </button>
+            {clipboard && (
+              <button type="button" onClick={() => requestPaste(menu.entry)} className={MENU_ITEM}>
+                粘贴
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void copyPath(menu.entry.path)}
@@ -1593,6 +1858,41 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               删除
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* 工作目录标题行上的右键菜单：只有「粘贴」一项，专门用来粘进空目录 */}
+      {rootMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setRootMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setRootMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: MENU_W,
+              left: Math.min(rootMenu.x, window.innerWidth - MENU_W - 4),
+              // 只有一项，高度按一行估
+              top: Math.min(rootMenu.y, window.innerHeight - 40 - 4),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const root = rootMenu.root;
+                setRootMenu(null);
+                void doPaste(root);
+              }}
+              className={MENU_ITEM}
+            >
+              粘贴
             </button>
           </div>
         </>

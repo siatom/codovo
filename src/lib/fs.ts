@@ -161,18 +161,44 @@ export interface MovePair {
  *
  * 源和目标各带一个 root：一个窗口能同时挂多个工作目录，拖拽可能跨根，两边都要过沙箱。
  * 同根 / 同卷走 rename；跨卷时后端把系统报错原样带出来。
+ *
+ * `overwrite` 只在目标已有同名项时有意义：拖拽不传（拒绝覆盖），剪切粘贴经用户确认后传 true。
  */
 export function moveEntry(params: {
   fromRoot: string;
   path: string;
   toRoot: string;
   targetDir: string;
+  overwrite?: boolean;
 }): Promise<string> {
   return invoke<string>("fs_move", {
     fromRoot: params.fromRoot,
     path: params.path,
     toRoot: params.toRoot,
     targetDir: params.targetDir,
+    overwrite: params.overwrite ?? null,
+  });
+}
+
+/**
+ * 把一项（文件 / 目录）复制到目标目录下，返回新项的绝对路径。
+ *
+ * 沙箱规则与 `moveEntry` 一致；`overwrite` 语义也一样。同目录粘贴会被后端拒绝
+ * （目标就是源），不会覆盖掉源本身。
+ */
+export function copyEntry(params: {
+  fromRoot: string;
+  path: string;
+  toRoot: string;
+  targetDir: string;
+  overwrite?: boolean;
+}): Promise<string> {
+  return invoke<string>("fs_copy", {
+    fromRoot: params.fromRoot,
+    path: params.path,
+    toRoot: params.toRoot,
+    targetDir: params.targetDir,
+    overwrite: params.overwrite ?? null,
   });
 }
 

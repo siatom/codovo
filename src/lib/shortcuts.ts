@@ -27,6 +27,11 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
   { id: "newTab", label: "新建终端标签页", defaultCombo: "Mod+T" },
   { id: "editor.save", label: "保存文件", defaultCombo: "Mod+S" },
   { id: "git.commit", label: "提交（提交信息框内）", defaultCombo: "Mod+Enter" },
+  // 文件树的复制 / 剪切 / 粘贴：只在树里某一行有焦点时生效（事件走行自己的 keydown，
+  // 终端那边是兄弟子树、抢不到），所以和终端的 Ctrl+C 语义不冲突
+  { id: "explorer.copy", label: "复制（文件树）", defaultCombo: "Mod+C" },
+  { id: "explorer.cut", label: "剪切（文件树）", defaultCombo: "Mod+X" },
+  { id: "explorer.paste", label: "粘贴（文件树）", defaultCombo: "Mod+V" },
 ];
 
 /** 修饰键 token，顺序也按这个来序列化，保证同组合只有一种写法 */

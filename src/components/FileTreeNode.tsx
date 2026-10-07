@@ -42,6 +42,8 @@ export interface TreeController {
   ignored: ReadonlySet<string>;
   /** 正在被拖的行（归一化路径），拖动时淡化 */
   dragging: ReadonlySet<string>;
+  /** 被剪切、正等着粘贴的行（归一化路径），淡化表示"待搬走" */
+  cutKeys: ReadonlySet<string>;
   /** 当前悬停到的可投放目录（归一化路径），画高亮 */
   dropDir: string | null;
   toggle: (entry: FileEntry) => void;
@@ -99,6 +101,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   const isCreatingHere = isOpen && tree.creating?.parent === entry.path;
   const isRenamingHere = tree.renaming?.path === entry.path;
   const isDragging = tree.dragging.has(pathKey(entry.path));
+  const isCut = tree.cutKeys.has(pathKey(entry.path));
   const isDropTarget = tree.dropDir === pathKey(entry.path);
   /**
    * 行的配色。被忽略的行用更淡的颜色，而且悬停**不**转亮——置灰要一直成立，
@@ -113,7 +116,8 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
   /** 图标降不透明度的类，前面自带空格，好直接拼进 className */
   const dim = isIgnored ? " opacity-50" : "";
   const dropRing = isDropTarget ? " ring-1 ring-inset ring-accent" : "";
-  const dragFade = isDragging ? " opacity-50" : "";
+  // 拖动中 / 已被剪切待粘贴，都整体淡化。合成一个类名，别叠成两个 opacity-50
+  const fade = isDragging || isCut ? " opacity-50" : "";
 
   return (
     <li>
@@ -173,7 +177,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           onDragLeave={() => tree.onDragLeave(entry)}
           onDrop={(event) => tree.onDrop(entry, event)}
           onDragEnd={tree.onDragEnd}
-          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}${dropRing}${dragFade}`}
+          className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}${dropRing}${fade}`}
           style={{ paddingLeft: depth * INDENT + 4 }}
         >
           <span className={`flex w-3 shrink-0 justify-center text-fg-icon${dim}`}>

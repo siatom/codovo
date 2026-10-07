@@ -793,11 +793,15 @@ pub fn fs_delete(
 /// `from_root` / `to_root` 分别是源项与目标目录所属的工作目录：一个窗口里能同时挂着
 /// 多个工作目录，拖拽可能跨根，两边都得各自过沙箱校验。同根时就是普通 rename；
 /// 跨根但同卷也能 rename，跨卷时 `fs::rename` 会失败，把系统报错原样带出去。
+///
+/// `overwrite` 只在目标已有同名项时起作用：拖拽（`false`）一律拒绝覆盖，剪切粘贴
+/// 经用户确认后才传 `true`。
 fn move_entry(
     from_root: &Path,
     path: &str,
     to_root: &Path,
     target_dir: &str,
+    overwrite: bool,
 ) -> Result<String, String> {
     let source = resolve(from_root, path)?;
     // 工作区根没有上级可去，挪走之后前后端的沙箱边界就对不上了
@@ -830,7 +834,11 @@ fn move_entry(
     let occupied = target.exists()
         && target.to_string_lossy().to_lowercase() != source.to_string_lossy().to_lowercase();
     if occupied {
-        return Err(format!("目标已存在: {}", display(&target)));
+        if !overwrite {
+            return Err(format!("目标已存在: {}", display(&target)));
+        }
+        // 覆盖：先删目标再 rename。Windows 的 rename 撞上已存在的项会直接失败
+        delete_at(&target)?;
     }
 
     fs::rename(&source, &target).map_err(|e| format!("移动失败 {}: {e}", display(&source)))?;
@@ -845,10 +853,112 @@ pub fn fs_move(
     path: String,
     to_root: String,
     target_dir: String,
+    overwrite: Option<bool>,
 ) -> Result<String, String> {
     let from_root = state.checked_root(&from_root)?;
     let to_root = state.checked_root(&to_root)?;
-    move_entry(&from_root, &path, &to_root, &target_dir)
+    move_entry(
+        &from_root,
+        &path,
+        &to_root,
+        &target_dir,
+        overwrite.unwrap_or(false),
+    )
+}
+
+/// 递归复制目录。用 `file_type()`（lstat 语义）而不是跟随软链接：指向工作区外或
+/// 成环的软链接目录，跟随会越界读取 / 死循环，所以软链接直接跳过。
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| format!("创建目录失败 {}: {e}", display(dst)))?;
+    let read = fs::read_dir(src).map_err(|e| format!("读取目录失败 {}: {e}", display(src)))?;
+    for item in read.flatten() {
+        let Ok(kind) = item.file_type() else {
+            continue;
+        };
+        let to = dst.join(item.file_name());
+        if kind.is_dir() {
+            copy_dir_all(&item.path(), &to)?;
+        } else if kind.is_file() {
+            fs::copy(item.path(), &to)
+                .map_err(|e| format!("复制文件失败 {}: {e}", display(&item.path())))?;
+        }
+        // 软链接：跳过，见上面的注释
+    }
+    Ok(())
+}
+
+/// 把一项（文件或目录）复制到目标目录下，返回新项的绝对路径。
+///
+/// 沙箱校验、拒绝根目录、拒绝把目录放进自己/子孙这几条与 `move_entry` 完全对齐，
+/// 只是最后一步换成复制而不是 rename。`overwrite` 语义同 `move_entry`。
+fn copy_entry(
+    from_root: &Path,
+    path: &str,
+    to_root: &Path,
+    target_dir: &str,
+    overwrite: bool,
+) -> Result<String, String> {
+    let source = resolve(from_root, path)?;
+    if source == from_root {
+        return Err("不能复制工作区根目录".to_string());
+    }
+    let dest_dir = resolve(to_root, target_dir)?;
+    let meta =
+        fs::metadata(&dest_dir).map_err(|e| format!("目标目录不存在 {}: {e}", display(&dest_dir)))?;
+    if !meta.is_dir() {
+        return Err(format!("目标不是目录: {}", display(&dest_dir)));
+    }
+
+    // 目录不能复制进自己或自己的子孙里，否则会无限递归复制
+    if source.is_dir() && (dest_dir == source || dest_dir.starts_with(&source)) {
+        return Err("不能把目录复制到它自己里面".to_string());
+    }
+
+    let name = source
+        .file_name()
+        .ok_or_else(|| format!("非法路径: {path}"))?;
+    let target = dest_dir.join(name);
+    // 目标就是源本身（同目录粘贴）：直接拒绝。**必须放在 delete_at 之前**——
+    // 覆盖模式下先删目标就等于把源删掉了
+    if target == source {
+        return Err("不能复制到原位置".to_string());
+    }
+
+    if target.exists() {
+        if !overwrite {
+            return Err(format!("目标已存在: {}", display(&target)));
+        }
+        delete_at(&target)?;
+    }
+
+    if source.is_dir() {
+        copy_dir_all(&source, &target)?;
+    } else {
+        fs::copy(&source, &target).map_err(|e| format!("复制失败 {}: {e}", display(&source)))?;
+    }
+    Ok(display(&target))
+}
+
+/// 复制文件 / 目录到另一个目录。`targetDir` 必须是已存在的目录。
+/// 用 async：整个目录的复制可能很久，别把主线程占住（同 `fs_search_files`）。
+#[tauri::command(async)]
+pub fn fs_copy(
+    state: tauri::State<'_, FsState>,
+    from_root: String,
+    path: String,
+    to_root: String,
+    target_dir: String,
+    overwrite: Option<bool>,
+) -> Result<String, String> {
+    let from_root = state.checked_root(&from_root)?;
+    let to_root = state.checked_root(&to_root)?;
+    copy_entry(
+        &from_root,
+        &path,
+        &to_root,
+        &target_dir,
+        overwrite.unwrap_or(false),
+    )
 }
 
 // ==================== 全工作区的内容搜索与替换 ====================
@@ -1772,6 +1882,7 @@ mod tests {
             src.join("a.txt").to_str().unwrap(),
             &workspace_root(&state),
             dst.to_str().unwrap(),
+            false,
         )
         .unwrap();
         assert_eq!(moved, display(&dst.join("a.txt")));
@@ -1784,6 +1895,7 @@ mod tests {
             src.join("deep").to_str().unwrap(),
             &workspace_root(&state),
             dst.to_str().unwrap(),
+            false,
         )
         .unwrap();
         assert!(moved_dir.ends_with("deep"));
@@ -1808,6 +1920,7 @@ mod tests {
             src.to_str().unwrap(),
             &workspace_root(&state),
             workspace.join("nope").to_str().unwrap(),
+            false,
         )
         .is_err());
 
@@ -1817,6 +1930,7 @@ mod tests {
             src.to_str().unwrap(),
             &workspace_root(&state),
             workspace.join("a.txt").to_str().unwrap(),
+            false,
         )
         .is_err());
 
@@ -1826,6 +1940,7 @@ mod tests {
             src.to_str().unwrap(),
             &workspace_root(&state),
             src.to_str().unwrap(),
+            false,
         )
         .is_err());
 
@@ -1835,6 +1950,7 @@ mod tests {
             workspace.join("a.txt").to_str().unwrap(),
             &workspace_root(&state),
             other.to_str().unwrap(),
+            false,
         )
         .is_err());
         assert_eq!(fs::read_to_string(other.join("a.txt")).unwrap(), "b");
@@ -1845,6 +1961,7 @@ mod tests {
             workspace.to_str().unwrap(),
             &workspace_root(&state),
             other.to_str().unwrap(),
+            false,
         )
         .is_err());
         fs::remove_dir_all(&root).ok();
@@ -1866,11 +1983,163 @@ mod tests {
             file.to_str().unwrap(),
             &second,
             second.to_str().unwrap(),
+            false,
         )
         .unwrap();
         assert_eq!(moved, display(&second.join("a.txt")));
         assert!(second.join("a.txt").is_file());
         assert!(!file.exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn copies_a_file_and_a_dir_recursively() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let src = workspace.join("src");
+        fs::create_dir_all(src.join("deep")).unwrap();
+        fs::write(src.join("a.txt"), "hi").unwrap();
+        fs::write(src.join("deep").join("b.txt"), "deep").unwrap();
+        let dst = workspace.join("dst");
+        fs::create_dir(&dst).unwrap();
+
+        // 复制文件：新的落在 dst，源必须原样还在
+        let copied = copy_entry(
+            &workspace_root(&state),
+            src.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(copied, display(&dst.join("a.txt")));
+        assert!(dst.join("a.txt").is_file());
+        assert!(src.join("a.txt").is_file(), "复制不能动到源");
+
+        // 复制目录要连内容一起拷
+        let copied_dir = copy_entry(
+            &workspace_root(&state),
+            src.join("deep").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(copied_dir.ends_with("deep"));
+        assert!(dst.join("deep").join("b.txt").is_file());
+        assert!(src.join("deep").join("b.txt").is_file());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn copy_refuses_root_same_path_and_own_subtree() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let src = workspace.join("dir");
+        fs::create_dir(&src).unwrap();
+        fs::write(src.join("a.txt"), "a").unwrap();
+        let other = workspace.join("other");
+        fs::create_dir(&other).unwrap();
+
+        // 不能复制工作区根
+        assert!(copy_entry(
+            &workspace_root(&state),
+            workspace.to_str().unwrap(),
+            &workspace_root(&state),
+            other.to_str().unwrap(),
+            false,
+        )
+        .is_err());
+
+        // 同目录粘贴 = 目标就是源，拒绝——而且源必须没被删掉
+        assert!(copy_entry(
+            &workspace_root(&state),
+            src.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+            false,
+        )
+        .is_err());
+        assert!(src.join("a.txt").is_file(), "同路径被拒时源必须还在");
+
+        // 目录不能复制进自己的子孙
+        assert!(copy_entry(
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+            false,
+        )
+        .is_err());
+
+        // 目标已有同名项、没开覆盖：拒绝且不碰目标
+        fs::write(other.join("a.txt"), "b").unwrap();
+        assert!(copy_entry(
+            &workspace_root(&state),
+            src.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            other.to_str().unwrap(),
+            false,
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(other.join("a.txt")).unwrap(), "b");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn copy_and_move_overwrite_existing() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let src = workspace.join("src");
+        let dst = workspace.join("dst");
+        fs::create_dir(&src).unwrap();
+        fs::create_dir(&dst).unwrap();
+        fs::write(src.join("a.txt"), "new").unwrap();
+        fs::write(dst.join("a.txt"), "old").unwrap();
+
+        // 复制覆盖：目标内容被替换，源还在
+        copy_entry(
+            &workspace_root(&state),
+            src.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "new");
+        assert!(src.join("a.txt").is_file());
+
+        // 移动覆盖：目标被替换，源消失
+        fs::write(src.join("a.txt"), "moved").unwrap();
+        move_entry(
+            &workspace_root(&state),
+            src.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "moved");
+        assert!(!src.join("a.txt").exists());
+
+        // 目录覆盖：dst/dir 里的旧内容要被整个换掉
+        fs::create_dir(src.join("dir")).unwrap();
+        fs::write(src.join("dir").join("keep.txt"), "k").unwrap();
+        fs::create_dir(dst.join("dir")).unwrap();
+        fs::write(dst.join("dir").join("stale.txt"), "s").unwrap();
+        copy_entry(
+            &workspace_root(&state),
+            src.join("dir").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+            true,
+        )
+        .unwrap();
+        assert!(dst.join("dir").join("keep.txt").is_file());
+        assert!(
+            !dst.join("dir").join("stale.txt").exists(),
+            "旧的目录内容要被换掉"
+        );
         fs::remove_dir_all(&root).ok();
     }
 
