@@ -36,11 +36,14 @@ import {
 import { useAgentSession } from "../lib/agent-session";
 import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
+import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   IconBot,
   IconChevronDown,
+  IconPlus,
   IconSend,
   IconStop,
   closeIconHtml,
@@ -80,6 +83,10 @@ const SEND_BUTTON =
 /** 停止键和发送键同尺寸同位置，但保持中性色，免得被当成"再发一次" */
 const STOP_BUTTON =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
+
+/** 标题栏上的小图标按钮（历史 / 新建），和数据库智能体那边同一套 */
+const HEAD_BUTTON =
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
 /* ---------- 输入框里的位置引用 chip ---------- */
 
@@ -223,21 +230,27 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   const { settings, update } = useSettings();
   // 会话列表和当前会话跟侧边栏共用：那边要按工作区列出历史、并高亮正在聊的那条
   const {
+    sessions,
     setSessions,
+    currentId,
     currentIdRef,
     setCurrentId,
     requestedId,
     clearRequest,
+    requestDelete,
     requestedDeleteId,
     clearDeleteRequest,
     requestedNew,
     clearNewRequest,
+    requestRename,
     requestedRename,
     clearRenameRequest,
   } = useAgentSession(root);
   const [phase, setPhase] = useState<Phase>("idle");
   const [fatal, setFatal] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
+  /** 标题栏历史菜单里点了「删除」，等确认框 */
+  const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
   /** 输入框内容的纯文本形态（chip 已序列化成引用串），只用来判断能不能发、发什么 */
   const [draft, setDraft] = useState("");
   /** 从编辑器浮窗送来、还没插进去的位置引用；服务没就绪时先挂起，ready 后补上 */
@@ -714,7 +727,19 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
             ? modelRefLabel(settings, sendModel)
             : aiConfig.model) || "未配置模型"}
         </span>
-        {/* 新建对话和历史会话都在侧边栏当前工作区那一行，这里只留状态与 agent 选择 */}
+        {/* 历史 / 新建和侧边栏工作区行下那份是同一套状态（两处都能操作），
+            面板里这一份是为了不用把侧边栏展开就能切会话 */}
+        <AgentHistoryMenu
+          sessions={sessions}
+          currentId={currentId}
+          onOpen={(id) => void openSession(id)}
+          onNew={newSession}
+          onRename={requestRename}
+          onDelete={setPendingDelete}
+        />
+        <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
+          <IconPlus className="h-3.5 w-3.5" />
+        </button>
         <PrimaryAgentPicker
           value={primary}
           options={agentOptions}
@@ -794,6 +819,19 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
           </div>
         </div>
       </div>
+
+      {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
+      {pendingDelete && (
+        <ConfirmDialog
+          message={`删除会话「${pendingDelete.title}」？这条对话的消息会一起删掉，不可撤销。`}
+          confirmLabel="删除"
+          onConfirm={() => {
+            requestDelete(pendingDelete.id);
+            setPendingDelete(null);
+          }}
+          onCancel={() => setPendingDelete(null)}
+        />
+      )}
     </div>
   );
 }

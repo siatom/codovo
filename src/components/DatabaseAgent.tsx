@@ -9,7 +9,6 @@ import {
   createAgentSession,
   deleteAgentSession,
   fetchAgentMessages,
-  formatTime,
   listAgentSessions,
   onAgentEvent,
   onAgentExit,
@@ -27,9 +26,10 @@ import {
   writeDbAgentSession,
 } from "../lib/db-agent";
 import type { AgentConversation, AgentSessionSummary } from "../lib/types";
+import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconBot, IconHistory, IconMore, IconPlus, IconSend, IconStop } from "./icons";
+import { IconBot, IconPlus, IconSend, IconStop } from "./icons";
 
 type Phase = "idle" | "starting" | "ready" | "error";
 
@@ -42,9 +42,6 @@ const STOP_BUTTON =
 
 const HEAD_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
-
-const MENU_ITEM =
-  "flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /**
  * 数据库模块的「Agent」子视图：自然语言 → 只读 SQL。
@@ -74,14 +71,7 @@ export function DatabaseAgent({
   const [draft, setDraft] = useState("");
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([]);
   const [currentId, setCurrentIdState] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
-  const [itemMenu, setItemMenu] = useState<{
-    session: AgentSessionSummary;
-    x: number;
-    y: number;
-  } | null>(null);
 
   const startedRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -273,7 +263,6 @@ export function DatabaseAgent({
   const newSession = useCallback(() => {
     setCurrentId(null);
     setConversation(EMPTY_CONVERSATION);
-    setHistoryOpen(false);
   }, [setCurrentId]);
 
   const send = useCallback(async () => {
@@ -341,12 +330,9 @@ export function DatabaseAgent({
     [refreshSessions, openSession, newSession],
   );
 
-  /** 就地改名：空标题或没改动就跳过 */
+  /** 就地改名：裁剪与判空交给 AgentHistoryMenu，这里只管改 */
   const renameSession = useCallback(
-    async (id: string, value: string) => {
-      setRenaming(null);
-      const title = value.trim();
-      if (!title) return;
+    async (id: string, title: string) => {
       try {
         await renameAgentSession(DB_AGENT_ROOT, id, title);
         await refreshSessions();
@@ -356,12 +342,6 @@ export function DatabaseAgent({
     },
     [refreshSessions],
   );
-
-  const openItemMenu = (event: React.MouseEvent, session: AgentSessionSummary) => {
-    event.stopPropagation();
-    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    setItemMenu({ session, x: rect.right, y: rect.bottom + 4 });
-  };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter") return;
@@ -432,98 +412,17 @@ export function DatabaseAgent({
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-muted" title={currentTitle}>
           {currentTitle}
         </span>
-        <button
-          type="button"
-          onClick={() => setHistoryOpen((open) => !open)}
-          title="历史对话"
-          className={HEAD_BUTTON}
-        >
-          <IconHistory className="h-3.5 w-3.5" />
-        </button>
+        <AgentHistoryMenu
+          sessions={sessions}
+          currentId={currentId}
+          onOpen={(id) => void openSession(id)}
+          onNew={newSession}
+          onRename={(id, title) => void renameSession(id, title)}
+          onDelete={setPendingDelete}
+        />
         <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
           <IconPlus className="h-3.5 w-3.5" />
         </button>
-
-        {historyOpen && (
-          <>
-            <div className="fixed inset-0 z-30" onClick={() => setHistoryOpen(false)} />
-            {/* 工具条在滚动区之外，绝对定位不会被裁，不必用 fixed */}
-            <div className="absolute top-full right-2 z-40 mt-1 flex max-h-80 w-64 flex-col overflow-auto rounded-lg border border-line-strong bg-raised p-1 shadow-lg">
-              <button type="button" onClick={newSession} className={MENU_ITEM}>
-                <IconPlus className="h-3.5 w-3.5" />
-                新建对话
-              </button>
-              <div className="my-1 h-px shrink-0 bg-line" />
-              {sessions.length === 0 ? (
-                <p className="px-2 py-1.5 text-[11px] text-fg-faint">还没有历史对话</p>
-              ) : (
-                <ul className="flex flex-col">
-                  {sessions.map((item) => {
-                    const isActive = item.id === currentId;
-                    return (
-                      <li
-                        key={item.id}
-                        className={`group/hist flex items-center rounded-md ${
-                          isActive ? "bg-active" : "hover:bg-hover"
-                        }`}
-                      >
-                        {renaming?.id === item.id ? (
-                          /* 就地改名：Enter 确认、Esc 取消、点别处也算确认 */
-                          <input
-                            autoFocus
-                            value={renaming.value}
-                            onChange={(event) =>
-                              setRenaming({ id: item.id, value: event.target.value })
-                            }
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                event.preventDefault();
-                                void renameSession(item.id, renaming.value);
-                              } else if (event.key === "Escape") {
-                                event.preventDefault();
-                                setRenaming(null);
-                              }
-                            }}
-                            onBlur={() => void renameSession(item.id, renaming.value)}
-                            className="my-0.5 mr-1 min-w-0 flex-1 rounded border border-line bg-app px-1.5 py-0.5 text-[12px] text-fg outline-none focus:border-line-hover"
-                          />
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setHistoryOpen(false);
-                                void openSession(item.id);
-                              }}
-                              title={item.title}
-                              className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-2 text-left text-[12px] ${
-                                isActive ? "text-fg" : "text-fg-muted group-hover/hist:text-fg"
-                              }`}
-                            >
-                              <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                              {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」 */}
-                              <span className="shrink-0 text-[11px] text-fg-faint group-hover/hist:hidden">
-                                {formatTime(item.updated)}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => openItemMenu(event, item)}
-                              title="更多操作"
-                              className="pointer-events-none mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/hist:pointer-events-auto group-hover/hist:opacity-100"
-                            >
-                              <IconMore className="h-3.5 w-3.5" />
-                            </button>
-                          </>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-          </>
-        )}
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
@@ -588,38 +487,6 @@ export function DatabaseAgent({
           </div>
         </div>
       </div>
-
-      {/* 会话行「⋯」的小菜单。用 fixed 定位：浮层是滚动容器，绝对定位会被裁 */}
-      {itemMenu && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setItemMenu(null)} />
-          <div
-            className="fixed z-40 w-32 rounded-lg border border-line-strong bg-raised p-1 shadow-lg"
-            style={{ left: Math.max(8, itemMenu.x - 128), top: itemMenu.y }}
-          >
-            <button
-              type="button"
-              className={MENU_ITEM}
-              onClick={() => {
-                setRenaming({ id: itemMenu.session.id, value: itemMenu.session.title });
-                setItemMenu(null);
-              }}
-            >
-              重命名
-            </button>
-            <button
-              type="button"
-              className={`${MENU_ITEM} text-danger hover:text-danger`}
-              onClick={() => {
-                setPendingDelete(itemMenu.session);
-                setItemMenu(null);
-              }}
-            >
-              删除
-            </button>
-          </div>
-        </>
-      )}
 
       {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
