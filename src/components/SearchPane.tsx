@@ -11,6 +11,7 @@ import {
   IconReplaceAll,
   IconWholeWord,
 } from "./icons";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 /** 打字停下来多久才真正发请求 */
 const SEARCH_DEBOUNCE_MS = 200;
@@ -104,6 +105,11 @@ export function SearchPane({
   const [reloadKey, setReloadKey] = useState(0);
   /** 每次搜索递增；回来的结果对不上号就丢掉，连续打字时不会被先发的慢请求盖掉 */
   const requestRef = useRef(0);
+  /** 「全部替换」的待确认信息。null 表示不显示确认框 */
+  const [confirmReplaceAll, setConfirmReplaceAll] = useState<{
+    files: number;
+    matches: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!visible) return;
@@ -196,12 +202,17 @@ export function SearchPane({
     return true;
   };
 
-  const runReplaceAll = async () => {
+  /** 「全部替换」按钮：先弹自研确认框——WKWebView（macOS）不支持 `window.confirm`，
+   *  调了会静默返回、直接跳过确认。确认后再交给 performReplaceAll 真正动手 */
+  const runReplaceAll = () => {
+    if (busy || !result || result.groups.length === 0) return;
+    setConfirmReplaceAll({ files: totalFiles, matches: totalMatches });
+  };
+
+  /** 真的开始替换。走到这里说明用户已经在确认框里点过替换了 */
+  const performReplaceAll = async () => {
     if (busy || !result || result.groups.length === 0) return;
     const paths = result.groups.flatMap((group) => group.files.map((file) => file.path));
-    if (!window.confirm(`将在 ${paths.length} 个文件里替换 ${totalMatches} 处，确定吗？`)) {
-      return;
-    }
 
     setBusy(true);
     setMessage(null);
@@ -377,7 +388,7 @@ export function SearchPane({
               </div>
               <button
                 type="button"
-                onClick={() => void runReplaceAll()}
+                onClick={runReplaceAll}
                 disabled={busy || totalMatches === 0}
                 title="全部替换"
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-accent-line text-accent-soft hover:bg-active disabled:opacity-40"
@@ -525,6 +536,19 @@ export function SearchPane({
           </>
         )}
       </div>
+
+      {/* 全部替换一次改写多个文件、不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
+      {confirmReplaceAll && (
+        <ConfirmDialog
+          message={`将在 ${confirmReplaceAll.files} 个文件里替换 ${confirmReplaceAll.matches} 处，确定吗？`}
+          confirmLabel="替换"
+          onConfirm={() => {
+            setConfirmReplaceAll(null);
+            void performReplaceAll();
+          }}
+          onCancel={() => setConfirmReplaceAll(null)}
+        />
+      )}
     </section>
   );
 }
