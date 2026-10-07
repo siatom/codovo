@@ -126,8 +126,11 @@ git push --follow-tags            # 连 tag 一起推
   TOFU 记指纹、对不上就拒绝。**每台主机各自一组终端标签**，每个标签是一条独立 SSH 会话
   （`remote_connect` 自己建连 + 认证，不复用别的标签的连接），切走的主机与标签都 `display:none`
   藏着不卸载；会话 / 状态 / 重连计数都按标签 id 索引（不是按主机）。**关掉某台主机的最后一个标签
-  就等于断开这台主机**（`connected` 不再单独存，由「有没有标签」派生）。`Ctrl+T` 新建 / `Ctrl+W`
-  关闭和中间那个本地终端是**同一套键位**：各终端只在自己的容器上挂 keydown，谁拿到焦点谁响应。
+  就等于断开这台主机**（`connected` 不再单独存，由「有没有标签」派生）。新建 / 关闭终端标签是
+  **同一套键位**（默认 `Ctrl+Shift+T` / `Ctrl+W`）：各终端只在自己的容器上挂 keydown，谁拿到焦点谁响应。
+  **终端里跑到备用屏（全屏 TUI：CodeBuddy CLI、vim、less…）时这两条键一律让行**——判据是 xterm 的
+  `term.buffer.active.type`，这些程序自己占用 Ctrl+字母（CodeBuddy 的 Ctrl+T 展开 tasks），宿主抢了就没法用；
+  裸 shell 提示符（normal）下才当应用快捷键。`newTab` 默认也刻意避开 `Ctrl+T`，那正是冲突源。
 - 远程连接的「文件」视图是**左右双面板**（`RemoteBrowser`）：本地（`local_fs.rs`）和远程（SFTP）各一个
   `FilePanel` 实例，选中文件传到对侧当前目录（只传文件，目录不递归）。**本地面板走 `local_fs` 的命令，
   刻意不查 `FsState` 工作区白名单**——它要像 WinSCP 那样自由浏览整个文件系统（主目录起、可一直退到
