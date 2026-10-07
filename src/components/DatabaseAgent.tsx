@@ -29,6 +29,7 @@ import type { AgentConversation, AgentSessionSummary } from "../lib/types";
 import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ScrollToBottomButton, useStickToBottom } from "./ScrollToBottom";
 import { IconBot, IconPlus, IconSend, IconStop } from "./icons";
 
 type Phase = "idle" | "starting" | "ready" | "error";
@@ -74,8 +75,15 @@ export function DatabaseAgent({
   const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
 
   const startedRef = useRef(false);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // 对话流贴底跟随（上滚暂停、回到底部恢复），和终端区智能体共用同一套逻辑
+  const {
+    ref: scrollRef,
+    atBottom,
+    onScroll,
+    jumpToBottom,
+    reset: resetScroll,
+  } = useStickToBottom(conversation);
   /** SSE 处理器只订阅一次，读 state 会拿到挂载那刻的旧值，所以会话 id 走 ref */
   const sessionIdRef = useRef<string | null>(null);
   /** 这个实例的工作目录，列表按它过滤；startAgent 之后才有值 */
@@ -126,11 +134,13 @@ export function DatabaseAgent({
         setCurrentId(id);
         writeDbAgentSession(id);
         setConversation(conversationFromHistory(history));
+        // 换了一段对话，跟随状态一起复位，别带着上一条的「已上滚」
+        resetScroll();
       } catch (reason) {
         setConversation((current) => ({ ...current, error: String(reason) }));
       }
     },
-    [setCurrentId],
+    [setCurrentId, resetScroll],
   );
 
   /** 拉服务 + 注入只读数据库工具。配置变化不重启，第一次切到本视图时跑一次即可 */
@@ -245,11 +255,7 @@ export function DatabaseAgent({
     wasStreamingRef.current = conversation.streaming;
   }, [conversation.streaming, refreshSessions]);
 
-  // 新内容进来就贴到底部
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [conversation]);
+  // 新内容进来就贴到底部（由 useStickToBottom 统一处理：上滚后暂停、回底恢复）
 
   // 输入框跟着内容长高，超过上限就内部滚动
   useEffect(() => {
@@ -263,7 +269,8 @@ export function DatabaseAgent({
   const newSession = useCallback(() => {
     setCurrentId(null);
     setConversation(EMPTY_CONVERSATION);
-  }, [setCurrentId]);
+    resetScroll();
+  }, [setCurrentId, resetScroll]);
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -425,33 +432,42 @@ export function DatabaseAgent({
         </button>
       </div>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
-              <IconBot className="h-5 w-5" />
-            </span>
-            <div className="text-[13px] font-medium text-fg-muted">
-              用一句话描述你想查什么
+      {/* 外层 relative 只用来给「回到底部」按钮定位；滚动仍在内层容器上 */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        >
+          {messages.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
+                <IconBot className="h-5 w-5" />
+              </span>
+              <div className="text-[13px] font-medium text-fg-muted">
+                用一句话描述你想查什么
+              </div>
+              <div className="text-[12px] leading-relaxed text-fg-faint">
+                智能体会先看表结构，再生成只读 SQL 并执行。写操作一律被拒绝。
+              </div>
             </div>
-            <div className="text-[12px] leading-relaxed text-fg-faint">
-              智能体会先看表结构，再生成只读 SQL 并执行。写操作一律被拒绝。
+          ) : (
+            messages.map((message) => (
+              <AgentMessageView
+                key={message.id}
+                message={message}
+                streaming={message.id === streamingId}
+              />
+            ))
+          )}
+          {conversation.error && (
+            <div className="my-2 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
+              {conversation.error}
             </div>
-          </div>
-        ) : (
-          messages.map((message) => (
-            <AgentMessageView
-              key={message.id}
-              message={message}
-              streaming={message.id === streamingId}
-            />
-          ))
-        )}
-        {conversation.error && (
-          <div className="my-2 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
-            {conversation.error}
-          </div>
-        )}
+          )}
+        </div>
+        {/* 只有用户上滚、不再贴底时才露出；点一下回到底部并恢复跟随 */}
+        {!atBottom && <ScrollToBottomButton onClick={jumpToBottom} />}
       </div>
 
       <div className="shrink-0 px-3 pt-1 pb-3">
