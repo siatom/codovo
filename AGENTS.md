@@ -96,6 +96,14 @@ git push --follow-tags            # 连 tag 一起推
   （远程分支、标签这些行内装饰会变），所以挂了个比 status 慢的轮询（`LOG_POLL_MS`，收起时不起）。
 - AI / 智能体：HTTP 与 SSE 全走 Rust 代理，前端不直连 opencode；规则 / 记忆 / 技能 / Agents
   存 localStorage、启动时才物化；兼容两代接口、按接口探测（判据是响应里有 `version` 字段）。
+- 对话消息有两处 v2 的坑（`lib/agent.ts` 里都标了）：**用户自己那句话不发在 `message.*` 上**，
+  得认 `session.inbox.enqueued`（`data.inboxID` 就是消息 id、原文在 `data.item.payload.text`），
+  不然整屏只有助手自言自语；**`/session/:id/message` 返回的是倒序**（最新在前），灌历史必须按
+  `time.created` 升序重排，否则整段对话翻过来。两处都是「单轮时看不出来、一显示用户消息就露馅」。
+- 终端区智能体与数据库智能体的对话面板共用历史下拉 `components/AgentHistoryMenu.tsx`（两边的
+  会话分属不同 opencode 实例，只是界面一样，读写交给调用方）。终端区那份**和侧边栏工作区行下
+  的会话列表并存**，共享 `lib/agent-session.tsx` 的状态——面板里的改名 / 删除也汇进那套请求
+  （`requestRename` / `requestDelete`），别让两个入口各写一套。
 - API 密钥进**操作系统凭据库**（`secrets.rs` + keyring），localStorage 只留 `apiKeySet` 布尔位，
   前端全程拿不到明文；opencode 配置里只有 `{env:CODEDOCK_AI_KEY_<ID>}` 占位符。旧版明文在启动时
   自动搬迁，搬不动就原样留着重试（绝不丢用户的密钥）。读钥匙串是同步阻塞调用，必须放在第一个
