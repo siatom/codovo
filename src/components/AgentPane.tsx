@@ -40,6 +40,7 @@ import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FullscreenButton } from "./FullscreenButton";
+import { ScrollToBottomButton, useStickToBottom } from "./ScrollToBottom";
 import {
   IconBot,
   IconChevronDown,
@@ -259,8 +260,15 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   const [agentVersion, setAgentVersion] = useState("");
 
   const startedRef = useRef(false);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
+  // 对话流贴底跟随（上滚暂停、回到底部恢复），终端区智能体与数据库智能体共用这套逻辑
+  const {
+    ref: scrollRef,
+    atBottom,
+    onScroll,
+    jumpToBottom,
+    reset: resetScroll,
+  } = useStickToBottom(conversation);
 
   const { agentCommand, agentPort } = settings;
   // 默认模型那家提供商走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
@@ -320,13 +328,15 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
         setCurrentId(id);
         window.sessionStorage.setItem(SESSION_KEY_PREFIX + root, id);
         setConversation(conversationFromHistory(history));
+        // 换了一段对话，跟随状态跟着复位（否则会带着上一条的「已上滚」停在半空）
+        resetScroll();
         setPhase("ready");
       } catch (reason) {
         setFatal(String(reason));
         setPhase("error");
       }
     },
-    [root, setCurrentId],
+    [root, setCurrentId, resetScroll],
   );
 
   /** 拉服务 → 接着上次的会话（没了就接最近的一条；一条都没有就停在空态，等用户发第一句再建） */
@@ -454,11 +464,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
     };
   }, []);
 
-  // 新内容进来就贴到底部
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [conversation]);
+  // 新内容进来就贴到底部（由 useStickToBottom 统一处理：上滚后暂停、回底恢复）
 
   // 输入框跟着内容长高，超过上限就内部滚动
   useEffect(() => {
@@ -564,7 +570,8 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   const newSession = useCallback(() => {
     setCurrentId(null);
     setConversation(EMPTY_CONVERSATION);
-  }, [setCurrentId]);
+    resetScroll();
+  }, [setCurrentId, resetScroll]);
 
   useEffect(() => {
     if (!pendingRef || phase !== "ready") return;
@@ -749,33 +756,42 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </div>
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-            <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
-              <IconBot className="h-5 w-5" />
-            </span>
-            <div className="text-[13px] font-medium text-fg-muted">
-              让智能体读代码、改文件、跑命令
+      {/* 外层 relative 只用来给「回到底部」按钮定位；滚动仍在内层容器上 */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        >
+          {messages.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+              <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
+                <IconBot className="h-5 w-5" />
+              </span>
+              <div className="text-[13px] font-medium text-fg-muted">
+                让智能体读代码、改文件、跑命令
+              </div>
+              <div className="text-[12px] leading-relaxed text-fg-faint">
+                改动会直接落到工作区，git 面板能看到
+              </div>
             </div>
-            <div className="text-[12px] leading-relaxed text-fg-faint">
-              改动会直接落到工作区，git 面板能看到
+          ) : (
+            messages.map((message) => (
+              <AgentMessageView
+                key={message.id}
+                message={message}
+                streaming={message.id === streamingId}
+              />
+            ))
+          )}
+          {conversation.error && (
+            <div className="my-2 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
+              {conversation.error}
             </div>
-          </div>
-        ) : (
-          messages.map((message) => (
-            <AgentMessageView
-              key={message.id}
-              message={message}
-              streaming={message.id === streamingId}
-            />
-          ))
-        )}
-        {conversation.error && (
-          <div className="my-2 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
-            {conversation.error}
-          </div>
-        )}
+          )}
+        </div>
+        {/* 只有用户上滚、不再贴底时才露出；点一下回到底部并恢复跟随 */}
+        {!atBottom && <ScrollToBottomButton onClick={jumpToBottom} />}
       </div>
 
       {/* 输入区是一整块圆角卡片：底色用 app、和面板的 surface 拉开一层，
