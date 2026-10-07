@@ -72,6 +72,16 @@ git push --follow-tags            # 连 tag 一起推
   留在预览层上（切回编辑再进预览才会纠正）。
 - 差异基线照 VS Code（暂存 `HEAD↔index`、未暂存 `index↔工作区`），两侧统一按 LF 比较；差异编辑器
   懒创建、只读、不参与脏标记，三种差异靠 model URI 的 scheme 段区分。
+- **行级**暂存 / 取消暂存 / 放弃复用整块的补丁链路：后端 `patch_for_lines` 把「选中若干行」转成
+  只含这些改动的补丁，再走同一个 `apply_patch`。未选中的改动**就地还原成基线**——正向 apply
+  （`Stage`）时没选中的删除行退回上下文、没选中的新增行整条去掉；反向 apply（`Discard` /
+  `Unstage`）正好相反。两种方向处理的是相反的那种行，因为补丁在「基线侧」和「目标侧」两头都要
+  对得上。起始行号保留、计数交给 `git apply --recount`。`Unstage` 是第三种 action（`--cached
+  --reverse`），落在暂存侧（`git diff --cached`）上。
+- 提交历史过滤：主题 / 作者 / 正文走**后端 Rust 后置匹配**（git 的 `--grep` 与 `--author` 是
+  AND，表达不了「任一命中」），路径交给 git 的 pathspec；过滤时一次拉满上限，且**不画泳道**
+  （只剩一部分提交，连线必然断开）。「回到 HEAD」按 `data-commit` 找行、用相对矩形的偏移改
+  `scrollTop`（`scrollIntoView` 会连带滚外层容器）。
 - git 状态走 `status --porcelain=v2 --branch -z`；工作区可能只是仓库子目录，先 `rev-parse --show-prefix`；
   轮询命令带 `--no-optional-locks`（写操作不带）、Windows 上加 `CREATE_NO_WINDOW`；暂存带
   `--literal-pathspecs`、「全部暂存」给 `.`。

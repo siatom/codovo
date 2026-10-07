@@ -434,6 +434,14 @@ export const IconSync = icon(
   </>,
 );
 
+/** 定位到当前提交（HEAD）：十字准星。点它把提交历史滚回 HEAD 那一行 */
+export const IconTarget = icon(
+  <>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 3v4M12 17v4M3 12h4M17 12h4" />
+  </>,
+);
+
 export const IconList = icon(
   <>
     <path d="M8 6h13M8 12h13M8 18h13" />

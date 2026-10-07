@@ -88,6 +88,7 @@ pub fn run() {
             git::git_discard,
             git::git_file_hunks,
             git::git_apply_patch,
+            git::git_apply_lines,
             git::git_commit,
             git::git_amend,
             git::git_undo_commit,
