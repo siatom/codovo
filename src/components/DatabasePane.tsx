@@ -61,8 +61,8 @@ const MENU_ITEM =
 
 const ROW = "group flex cursor-default items-center gap-1 rounded-md py-[3px] pr-1.5 hover:bg-hover";
 
-/** 每层缩进 16px：连接 → 库 →（PG 才有 schema）→ 表 */
-const INDENT = [6, 22, 38, 54];
+/** 每层缩进 16px：连接 → 库 →（PG 才有 schema）→ 表/视图分组 → 表项 */
+const INDENT = [6, 22, 38, 54, 70];
 
 const SEP = "\u0000";
 
@@ -70,6 +70,13 @@ const connNode = (connId: string) => `c:${connId}`;
 const dbNode = (connId: string, db: string) => `d:${connId}${SEP}${db}`;
 const schemaNode = (connId: string, db: string, schema: string) =>
   `s:${connId}${SEP}${db}${SEP}${schema}`;
+
+/**
+ * 「表」/「视图」两个分组文件夹。缩进层级比容器节点（库或 schema）深一层，
+ * 所以钥匙直接借用容器节点 key 的后半段，只换个前缀——`belongsTo` 靠前缀认连接。
+ */
+const groupNode = (prefix: "t" | "v", containerKey: string) =>
+  `${prefix}:${containerKey.slice(2)}`;
 
 /**
  * PG 一个连接只能连一个库、不能跨库查询，所以树里每展开一个库都要单独一条会话
@@ -81,7 +88,7 @@ function sessionKeyOf(connection: DbConnection, db?: string): string {
 
 /** 某个节点 key（或会话 key）是否属于这个连接——断开时按它整片清掉 */
 function belongsTo(key: string, connId: string): boolean {
-  const rest = /^[cds]:/.test(key) ? key.slice(2) : key;
+  const rest = /^[cdstv]:/.test(key) ? key.slice(2) : key;
   return rest === connId || rest.startsWith(`${connId}${SEP}`);
 }
 
@@ -133,7 +140,7 @@ function NodeHint({ text, danger }: { text: string; danger?: boolean }) {
 }
 
 /**
- * 右栏「数据库」模块：左栏是一棵「连接 → 数据库 →（PG 才有 schema）→ 表」的树，
+ * 右栏「数据库」模块：左栏是一棵「连接 → 数据库 →（PG 才有 schema）→ 表/视图分组 → 条目」的树，
  * 右侧是选中表的数据 / SQL 查询 / 数据库 Agent 三个子视图。
  *
  * 面板独占编辑器那一列（和浏览器 / 远程连接同款）。会话按需建立：展开哪个节点连哪个，
@@ -412,6 +419,10 @@ export function DatabasePane({
 
   const isOpen = (key: string) => expanded[key] === true;
 
+  const toggleGroup = (key: string) => {
+    setExpanded((current) => ({ ...current, [key]: !current[key] }));
+  };
+
   const tableRow = (
     sessionKey: string,
     connectionId: string,
@@ -432,16 +443,51 @@ export function DatabasePane({
       >
         <span className="w-4 shrink-0" />
         <span className="min-w-0 flex-1 truncate text-[12px] text-fg">{table.name}</span>
-        {table.kind === "view" && (
-          <span className="shrink-0 text-[10px] text-fg-faint">视图</span>
-        )}
       </div>
     );
   };
 
+  /**
+   * 一个容器节点（库或 schema）下的「表」「视图」两个分组文件夹。
+   * 视图跟表分开放，各自可折叠，点开才是具体条目。
+   */
+  const groupFolders = (
+    containerKey: string,
+    sessionKey: string,
+    connectionId: string,
+    groupIndent: number,
+    itemIndent: number,
+  ) => {
+    const list = tables[containerKey] ?? [];
+    const groups = [
+      { prefix: "t" as const, label: "表", kind: "table" as const },
+      { prefix: "v" as const, label: "视图", kind: "view" as const },
+    ];
+    return groups.map(({ prefix, label, kind }) => {
+      const key = groupNode(prefix, containerKey);
+      const open = isOpen(key);
+      const items = list.filter((item) => item.kind === kind);
+      return (
+        <div key={key}>
+          <div
+            onClick={() => toggleGroup(key)}
+            className={ROW}
+            style={{ paddingLeft: groupIndent }}
+            title={label}
+          >
+            <Chevron open={open} />
+            <span className="min-w-0 flex-1 truncate text-[12px] text-fg">{label}</span>
+            <span className="shrink-0 text-[10px] text-fg-faint">{items.length}</span>
+          </div>
+          {open && items.map((item) => tableRow(sessionKey, connectionId, item, itemIndent))}
+        </div>
+      );
+    });
+  };
+
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 bg-panel">
-      {/* 左栏：连接 → 数据库 →（PG 才有 schema）→ 表 */}
+      {/* 左栏：连接 → 数据库 →（PG 才有 schema）→ 表/视图分组 → 条目 */}
       <div className="flex h-full w-52 shrink-0 flex-col border-r border-line">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
@@ -544,22 +590,29 @@ export function DatabasePane({
                                               {nodeErrors[sk] && (
                                                 <NodeHint text={nodeErrors[sk]} danger />
                                               )}
-                                              {tables[sk]?.map((table) =>
-                                                tableRow(
-                                                  `${connection.id}${SEP}${db}`,
-                                                  connection.id,
-                                                  table,
-                                                  INDENT[3],
-                                                ),
-                                              )}
+                                              {tables[sk]
+                                                ? groupFolders(
+                                                    sk,
+                                                    `${connection.id}${SEP}${db}`,
+                                                    connection.id,
+                                                    INDENT[3],
+                                                    INDENT[4],
+                                                  )
+                                                : null}
                                             </>
                                           )}
                                         </div>
                                       );
                                     })
-                                  : tables[dk]?.map((table) =>
-                                      tableRow(connection.id, connection.id, table, INDENT[2]),
-                                    )}
+                                  : tables[dk]
+                                    ? groupFolders(
+                                        dk,
+                                        connection.id,
+                                        connection.id,
+                                        INDENT[2],
+                                        INDENT[3],
+                                      )
+                                    : null}
                               </>
                             )}
                           </div>

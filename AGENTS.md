@@ -146,8 +146,9 @@ git push --follow-tags            # 连 tag 一起推
   自带的 basic-languages，不需要额外注册），美化走 `sql-formatter`（零依赖），方言按连接类型映射
   （mysql / postgres→postgresql / sqlite）——见 `lib/sql-format.ts`；语句没写完时它会抛错，只提示不阻断编辑，
   且失败不能顶掉结果区的查询错误（两者是分开的 state）。**左栏是一棵「连接 → 数据库 →（PG 才有
-  schema）→ 表」的树**，逐级展开、缩进展示，右侧只放数据 / 查询 / Agent：MySQL / SQLite 是两级，
-  PG 是三级。PG 一个连接只能连一个库、不能跨库查询，所以**每展开一个 PG 库就单独开一条会话**
+  schema）→ 表 / 视图分组 → 条目」的树**，逐级展开、缩进展示，右侧只放数据 / 查询 / Agent：MySQL /
+  SQLite 是两级、PG 是三级，**表与视图在同一层下分成两个可折叠的分组文件夹**（分组节点 key 借用容器
+  节点 key 的后半段只换前缀 `t:` / `v:`，`belongsTo` 靠前缀认连接）。PG 一个连接只能连一个库、不能跨库查询，所以**每展开一个 PG 库就单独开一条会话**
   （建会话时按库名覆盖 `database`，会话 key 形如 `connId\0db`），断开连接时按这个前缀整片收掉；
   MySQL / SQLite 一条会话够用，库只是取表时的 `schema` 参数。三库的「库」列表各是：MySQL 的
   information_schema.schemata（剔系统库）、PG 的 `pg_database`（`datistemplate` / `datallowconn`
