@@ -34,6 +34,7 @@ import {
   IconPencil,
   IconPin,
   IconPlus,
+  IconSearch,
   IconSettings,
   IconSun,
   IconTrash,
@@ -196,6 +197,8 @@ export function Sidebar({
   const [historyOpen, setHistoryOpen] = useState(true);
   /** 工作区名过滤词。纯展示层：只影响渲染哪些行，不动列表的存储顺序 */
   const [wsQuery, setWsQuery] = useState("");
+  /** 过滤框是否展开：默认只留一个搜索图标，点开才出现输入框 */
+  const [wsSearchOpen, setWsSearchOpen] = useState(false);
   /** 等待确认删除的会话；非空时弹确认框 */
   const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
   /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
@@ -549,20 +552,42 @@ export function Sidebar({
         </button>
       </nav>
 
-      {/* 工作区标题行：名字多了就在同一行给个过滤框，只有一个工作区时不必占地方 */}
+      {/* 工作区标题行：名字多了才给过滤入口，默认收成一个搜索图标，点开才出现输入框 */}
       <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-1">
         <span className="shrink-0 text-[13px] font-semibold tracking-wide text-fg-faint">
           工作区
         </span>
-        {workspaces.length > 1 && (
-          <input
-            value={wsQuery}
-            onChange={(event) => setWsQuery(event.target.value)}
-            placeholder="过滤"
-            spellCheck={false}
-            className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
-          />
-        )}
+        {workspaces.length > 1 &&
+          (wsSearchOpen ? (
+            <input
+              autoFocus
+              value={wsQuery}
+              onChange={(event) => setWsQuery(event.target.value)}
+              // Esc 清词并收起：这是它唯一的关闭方式，所以顺带把过滤态一起清掉
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                event.preventDefault();
+                setWsQuery("");
+                setWsSearchOpen(false);
+              }}
+              // 点了别处：没敲东西就收起，敲了东西留着（否则过滤还生效、输入框却不见了）
+              onBlur={() => {
+                if (!wsQuery.trim()) setWsSearchOpen(false);
+              }}
+              placeholder="过滤"
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setWsSearchOpen(true)}
+              title="过滤工作区"
+              className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg"
+            >
+              <IconSearch className="h-3.5 w-3.5" />
+            </button>
+          ))}
       </div>
       {/* 顶部留一点内边距：「拖到最前」的落点线画在第一行上方，没有它会被 overflow 裁掉，
           用户就只看得见「插到第二项之前」那条线、以为最多只能拖到第 2 位 */}
