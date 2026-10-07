@@ -127,6 +127,11 @@ const AI_MENU_W = 150;
 /** 工作区行拖动重排：纵向移过这么多像素才算「在拖」，免得手抖把点击变成重排 */
 const DRAG_THRESHOLD = 4;
 
+/** 路径末级名字（工作目录名），用于按目录名过滤工作区 */
+function baseName(path: string): string {
+  return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
 function readCollapsed(): boolean {
   try {
     return window.sessionStorage.getItem(COLLAPSED_KEY) === "1";
@@ -189,6 +194,8 @@ export function Sidebar({
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   /** 当前工作区的对话历史是否展开；默认展开 */
   const [historyOpen, setHistoryOpen] = useState(true);
+  /** 工作区名过滤词。纯展示层：只影响渲染哪些行，不动列表的存储顺序 */
+  const [wsQuery, setWsQuery] = useState("");
   /** 等待确认删除的会话；非空时弹确认框 */
   const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
   /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
@@ -307,6 +314,8 @@ export function Sidebar({
     if (event.button !== 0 || event.pointerType !== "mouse") return;
     // 就地改名的输入框不参与拖动，否则选词会变成拖行
     if ((event.target as HTMLElement).closest("input")) return;
+    // 过滤态下屏幕上的行只是子集，按它算落点会把隐藏项的顺序写坏，干脆不拖
+    if (wsQuery.trim()) return;
     swallowClickRef.current = false;
     dragRef.current = { id: workspace.id, startY: event.clientY, started: false };
     setDragPending(true);
@@ -502,6 +511,18 @@ export function Sidebar({
   // 拖动的 window 监听只挂一次，所以顺序走 ref 传给它
   orderedRef.current = ordered;
 
+  // 过滤只是渲染层的子集：名字、或任一工作目录的末级目录名命中即可（统一小写比，
+  // 与平台的大小写敏感性无关——这里筛的是给人看的名字，不是路径）
+  const query = wsQuery.trim().toLowerCase();
+  const visible = query
+    ? ordered.filter((workspace) =>
+        [workspace.name, ...workspace.roots.map((root) => baseName(root))]
+          .join("\n")
+          .toLowerCase()
+          .includes(query),
+      )
+    : ordered;
+
   return (
     <div
       className="relative flex h-full shrink-0 flex-col border-r border-line bg-panel"
@@ -528,23 +549,38 @@ export function Sidebar({
         </button>
       </nav>
 
-      <p className="shrink-0 px-4 pt-3 pb-1 text-[13px] font-semibold tracking-wide text-fg-faint">
-        工作区
-      </p>
+      {/* 工作区标题行：名字多了就在同一行给个过滤框，只有一个工作区时不必占地方 */}
+      <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-1">
+        <span className="shrink-0 text-[13px] font-semibold tracking-wide text-fg-faint">
+          工作区
+        </span>
+        {workspaces.length > 1 && (
+          <input
+            value={wsQuery}
+            onChange={(event) => setWsQuery(event.target.value)}
+            placeholder="过滤"
+            spellCheck={false}
+            className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
+          />
+        )}
+      </div>
       {/* 顶部留一点内边距：「拖到最前」的落点线画在第一行上方，没有它会被 overflow 裁掉，
           用户就只看得见「插到第二项之前」那条线、以为最多只能拖到第 2 位 */}
       <ul ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 pt-1 pb-2">
         {ordered.length === 0 && (
           <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
         )}
-        {ordered.map((workspace, index) => {
+        {ordered.length > 0 && visible.length === 0 && (
+          <li className="px-2 py-1 text-[12px] text-fg-faint">没有匹配的工作区</li>
+        )}
+        {visible.map((workspace, index) => {
           const isCurrent = workspace.id === currentId;
           // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
           const isOpen = opened.includes(workspace.id);
           const dragging = dragOver?.id === workspace.id;
           // 落点线：插在第一项之前画在这行上面，插在最后一项之后画在最后一行下面
           const dropBefore = dragOver?.index === index;
-          const dropAfter = dragOver?.index === ordered.length && index === ordered.length - 1;
+          const dropAfter = dragOver?.index === visible.length && index === visible.length - 1;
           return (
             <li key={workspace.id} data-ws-row className="relative">
               {(dropBefore || dropAfter) && (
