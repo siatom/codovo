@@ -288,7 +288,10 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
     <>
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
-        onClick={onClose}
+        // 认「按下点就在遮罩上」而不是 click：从弹窗内按下、拖到遮罩上松开会误判成点外部
+        onMouseDown={(event) => {
+          if (event.button === 0 && event.target === event.currentTarget) onClose();
+        }}
       >
         {/* 高度写死，跟设置面板一致：内容少的 tab 不缩、多的滚动，切 tab 面板不跳大小。
             max-h-full 留着，窗口比面板还矮时还能压下来 */}

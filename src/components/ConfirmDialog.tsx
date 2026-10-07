@@ -53,7 +53,11 @@ export function ConfirmDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
-      onClick={() => onCancel(checked)}
+      // 认「按下点就在遮罩上」而不是 click：click 会派发到 mousedown/mouseup 的共同
+      // 祖先，从弹窗内按下、拖到遮罩上松开也会误判成点外部
+      onMouseDown={(event) => {
+        if (event.button === 0 && event.target === event.currentTarget) onCancel(checked);
+      }}
     >
       <div
         role="dialog"
