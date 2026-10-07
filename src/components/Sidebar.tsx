@@ -531,7 +531,9 @@ export function Sidebar({
       <p className="shrink-0 px-4 pt-3 pb-1 text-[13px] font-semibold tracking-wide text-fg-faint">
         工作区
       </p>
-      <ul ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 pb-2">
+      {/* 顶部留一点内边距：「拖到最前」的落点线画在第一行上方，没有它会被 overflow 裁掉，
+          用户就只看得见「插到第二项之前」那条线、以为最多只能拖到第 2 位 */}
+      <ul ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 pt-1 pb-2">
         {ordered.length === 0 && (
           <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
         )}
