@@ -22,6 +22,9 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
   // 关的是「当前标签页」：焦点在编辑器就关文件 / 差异标签，在终端就关终端标签，
   // 在右侧面板里也照关当前编辑器标签（含从「变更」打开的差异）
   { id: "closeTab", label: "关闭标签页", defaultCombo: "Mod+W" },
+  // 开的是「焦点所在的那处终端」的新标签页：本地终端 / 远程终端各听各的 keydown，
+  // 只有拿到焦点的那一处会响应（两处同键不冲突，见 components/RemotePane.tsx）
+  { id: "newTab", label: "新建终端标签页", defaultCombo: "Mod+T" },
   { id: "editor.save", label: "保存文件", defaultCombo: "Mod+S" },
   { id: "git.commit", label: "提交（提交信息框内）", defaultCombo: "Mod+Enter" },
 ];

@@ -82,6 +82,10 @@ interface TerminalSessionProps {
    * 会话自己不知道自己是第几个，也不知道关掉后该切到谁。
    */
   onRequestClose?: () => void;
+  /**
+   * 同理，按了「新建标签页」的快捷键。标签栏归 TerminalPane 管，新会话由它开。
+   */
+  onRequestNew?: () => void;
 }
 
 /**
@@ -92,7 +96,7 @@ export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
 >(function TerminalSession(
-  { root, active, visible = active, initialCommand, shell, onRequestClose },
+  { root, active, visible = active, initialCommand, shell, onRequestClose, onRequestNew },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -124,10 +128,15 @@ export const TerminalSession = forwardRef<
   // 所以拿 ref 存最新值，改键位立刻生效
   const closeComboRef = useRef(settings.shortcuts["closeTab"]);
   closeComboRef.current = settings.shortcuts["closeTab"];
+  // 新建标签的键位同理
+  const newComboRef = useRef(settings.shortcuts["newTab"]);
+  newComboRef.current = settings.shortcuts["newTab"];
   // 建实例的 effect 依赖是 [sessionKey, root]，塞不进这个回调：它每次渲染都变，
   // 进了依赖就等于「每关一个标签就重开 shell」。用 ref 存最新的那份。
   const onRequestCloseRef = useRef(onRequestClose);
   onRequestCloseRef.current = onRequestClose;
+  const onRequestNewRef = useRef(onRequestNew);
+  onRequestNewRef.current = onRequestNew;
 
   // 要自动敲的那条命令只在"这个会话被创建"那一次算数，所以用 useState 的初始化
   // 把它定死、不跟着 prop 走（用户手动点「重开」或 cwd 变化重建 shell 时不该重放
@@ -309,17 +318,25 @@ export const TerminalSession = forwardRef<
     };
 
     /**
-     * 快捷键认领：关闭当前终端标签（键位可配置，和编辑器共用「关闭标签页」这条命令），
-     * 以及复制/粘贴。用捕获阶段 + stopPropagation 抢在 xterm 自己的 textarea 监听之前
-     * 处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被发成 \x03（中断）。
+     * 快捷键认领：关闭 / 新建当前终端标签（键位可配置，关标签和编辑器共用「关闭标签页」
+     * 这条命令），以及复制/粘贴。用捕获阶段 + stopPropagation 抢在 xterm 自己的 textarea
+     * 监听之前处理，否则 Ctrl+V 会被 xterm 挡下、Ctrl+C 会先被发成 \x03（中断）。
      *
-     * 关闭键位先判：它可能不是主修饰键（比如用户改成 Alt+W），不能受 isPrimaryModifier 限制。
+     * 关闭 / 新建键位先判：它们可能不是主修饰键（比如用户改成 Alt+W），不能受
+     * isPrimaryModifier 限制。只有拿到终端焦点的那一处终端会收到这个事件，
+     * 所以本地终端和远程终端用同一个键位不会打架。
      */
     const onKeyDown = (event: KeyboardEvent) => {
       if (matchesShortcut(event, closeComboRef.current)) {
         event.preventDefault();
         event.stopPropagation();
         onRequestCloseRef.current?.();
+        return;
+      }
+      if (matchesShortcut(event, newComboRef.current)) {
+        event.preventDefault();
+        event.stopPropagation();
+        onRequestNewRef.current?.();
         return;
       }
       if (!isPrimaryModifier(event)) return;
