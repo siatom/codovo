@@ -38,6 +38,7 @@ import {
   gitUndoCommit,
   gitUnstage,
   gitUnpushed,
+  gitWorktreeList,
   pathKey,
   toDisplayPath,
 } from "../lib/fs";
@@ -67,6 +68,7 @@ import type {
   GitStash,
   GitStatusPayload,
   HunkAction,
+  WorktreeInfo,
 } from "../lib/types";
 import { graphTextInset, LANE_W, layoutGraph, type GraphRow } from "../lib/gitGraph";
 import { GitMarkBadge, GitMarkDot } from "./GitMarkBadge";
@@ -96,6 +98,7 @@ import {
   IconTrash,
   IconTree,
   IconUndo,
+  IconWorktree,
 } from "./icons";
 
 interface GitChangesPaneProps {
@@ -122,6 +125,11 @@ interface GitChangesPaneProps {
    * （打开的文件、差异视图的基线）都得作废——见 WorkspacePane 的实现。
    */
   onBranchChanged: () => void;
+  /**
+   * 换了 worktree：把这个面板的数据源切到目标工作树。传回工作区自己的根
+   * （`worktrees` 里那条 `current`）表示恢复默认。只有一个 worktree 时不会调。
+   */
+  onSelectWorktree: (target: string) => void;
 }
 
 /** 待确认的放弃修改。确认框弹出前先把要放弃的东西记在这里 */
@@ -1252,6 +1260,7 @@ export function GitChangesPane({
   onOpenFile,
   onBeforeBranchSwitch,
   onBranchChanged,
+  onSelectWorktree,
 }: GitChangesPaneProps) {
   const { settings } = useSettings();
   const [message, setMessage] = useState("");
@@ -1372,6 +1381,10 @@ export function GitChangesPane({
   const [branchError, setBranchError] = useState<string | null>(null);
   /** 新建分支的输入框：null = 没在输入 */
   const [newBranch, setNewBranch] = useState<string | null>(null);
+
+  // worktree 下拉：null = 还没拉到。列表只在仓库有这个仓库的多个工作树时才有意义
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
+  const [wtMenu, setWtMenu] = useState(false);
 
   // stash：null = 还没拉到
   const [stashes, setStashes] = useState<GitStash[] | null>(null);
@@ -1536,6 +1549,7 @@ export function GitChangesPane({
 
   const openBranchMenu = useCallback(() => {
     loadBranches();
+    setWtMenu(false);
     setBranchMenu(true);
   }, [loadBranches]);
 
@@ -1573,6 +1587,40 @@ export function GitChangesPane({
       return payload;
     });
   }, [newBranch, run, root, onBranchChanged, onBeforeBranchSwitch]);
+
+  // ---- worktree ----
+
+  /**
+   * 拉这个仓库的 worktree 列表。
+   *
+   * 只在当前显示、且目录是仓库时拉（换 worktree 会换 `root`，跟着重拉）。列表够稳定，
+   * 不轮询。失败当空列表——拿不到就把入口藏起来，不值得弹全局错误。
+   * 后端顺带把存在的工作树登记进白名单，所以返回的 path 之后能直接当 root 用。
+   */
+  useEffect(() => {
+    if (!visible || !snapshot.isRepo) return;
+    let cancelled = false;
+    void gitWorktreeList(root)
+      .then((list) => {
+        if (!cancelled) setWorktrees(list);
+      })
+      .catch(() => {
+        if (!cancelled) setWorktrees([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root, visible, snapshot.isRepo]);
+
+  /** 切到某个工作树。只在真有多个工作树时才给入口，选自己那条等于恢复默认 */
+  const pickWorktree = useCallback(
+    (target: WorktreeInfo) => {
+      setWtMenu(false);
+      if (target.current) return;
+      onSelectWorktree(target.path);
+    },
+    [onSelectWorktree],
+  );
 
   // ---- stash ----
 
@@ -2341,6 +2389,11 @@ export function GitChangesPane({
   const commitHint =
     staged.length > 0 && busy === null && !message.trim() ? "填好提交信息就能提交" : null;
 
+  // 只有一个工作树时不显示入口——多一个点了没用的下拉，和现有界面风格不一致
+  const wtList = worktrees && worktrees.length > 1 ? worktrees : null;
+  // 当前面板所在的那个工作树（`git worktree list` 里唯一 current 的那条）
+  const currentWt = wtList?.find((item) => item.current) ?? null;
+
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 flex-col gap-0.5 border-b border-line px-3 py-1">
@@ -2443,6 +2496,66 @@ export function GitChangesPane({
                   )}
                 </div>
               </div>
+            </>
+          )}
+
+          {/* worktree 选择：只在仓库有多个工作树时出现，紧挨着分支名。
+              切它只换「变更」面板看的是哪个工作树，终端 / 编辑器 / 文件树都不动 */}
+          {wtList && currentWt && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setBranchMenu(false);
+                  setWtMenu((open) => !open);
+                }}
+                disabled={busy !== null}
+                title={`当前工作树：${toDisplayPath(currentWt.path)}（点击切换）`}
+                className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40"
+              >
+                <IconWorktree className="h-3 w-3 shrink-0" />
+                <span className="min-w-0 truncate">{currentWt.name}</span>
+                <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+              </button>
+
+              {wtMenu && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setWtMenu(false)} />
+                  <div className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
+                    {wtList.map((item) => (
+                      <button
+                        key={item.path}
+                        type="button"
+                        onClick={() => pickWorktree(item)}
+                        disabled={item.current || !item.exists}
+                        title={
+                          item.prunable
+                            ? `${toDisplayPath(item.path)}（目录已不存在${item.pruneReason ? `：${item.pruneReason}` : ""}）`
+                            : item.locked
+                              ? `${toDisplayPath(item.path)}（已锁定${item.lockReason ? `：${item.lockReason}` : ""}）`
+                              : toDisplayPath(item.path)
+                        }
+                        className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
+                      >
+                        <span className="flex w-3 shrink-0 justify-center">
+                          {item.current && <IconCheck className="h-3 w-3 text-ok" />}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-fg-faint">
+                          {item.prunable ? (
+                            <span className="text-danger">已失效</span>
+                          ) : item.bare ? (
+                            <span>bare</span>
+                          ) : (
+                            <span className="truncate">{item.branch ?? "游离 HEAD"}</span>
+                          )}
+                          {item.locked && <span className="text-warn">已锁定</span>}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

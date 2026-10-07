@@ -81,17 +81,63 @@ export function WorkspacePane({
     setTool(readTool(root));
   }, [root]);
 
-  // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU。
-  // 一个工作区可能挂着多个工作目录，每个根都是一个独立的仓库，各轮各的
-  const git = useGitStatus(workspace.roots, visible);
+  /**
+   * 每个工作目录在「变更」面板里实际看的 git 目标。默认就是它自己；用户在面板里
+   * 选了别的 worktree 后，这里记的是那个 worktree 的路径（后端已登记进白名单）。
+   *
+   * 只影响「变更」面板这一个模块：文件树 / 终端 / 编辑器仍然跟工作区根走。
+   */
+  const [wtMap, setWtMap] = useState<Record<string, string>>({});
+  const pickWorktree = useCallback((workRoot: string, target: string) => {
+    setWtMap((current) => {
+      const next = { ...current };
+      if (target === workRoot) delete next[workRoot];
+      else next[workRoot] = target;
+      return next;
+    });
+  }, []);
+
+  // 变更面板实际看的是这些目标（根，或被选中的 worktree）；图标条的徽标也按它们算
+  const gitRoots = useMemo(
+    () => workspace.roots.map((item) => wtMap[item] ?? item),
+    [workspace.roots, wtMap],
+  );
+
+  /**
+   * 轮询目标：工作区根 **加上** 被选中的 worktree。
+   *
+   * 工作区根必须一起轮——文件树、标签页上的改动标记来自它们。只换「变更」面板看哪
+   * 个 worktree，不该让文件树上的标记跟着消失（合起来的 marks 里多出的 worktree 路径
+   * 跟工作区内的路径不会撞，是白搭的几项，无害）。
+   */
+  const pollRoots = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of [...workspace.roots, ...gitRoots]) {
+      const key = pathKey(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(item);
+    }
+    return out;
+  }, [workspace.roots, gitRoots]);
+
+  // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU
+  const git = useGitStatus(pollRoots, visible);
   const { settings } = useSettings();
 
   // 变更面板按根分组，每根挂一个完整的面板，各自拿自己的控制器
   const gitByRoot = useMemo(() => {
     const out: Record<string, GitController> = {};
-    for (const item of workspace.roots) out[item] = controllerOf(git, item);
+    for (const item of gitRoots) out[item] = controllerOf(git, item);
     return out;
-  }, [git, workspace.roots]);
+  }, [git, gitRoots]);
+
+  /** 图标条角标：只数「变更」面板实际看的那些工作树，选中的 worktree 顶替它自己的根 */
+  const changedCount = useMemo(
+    () => gitRoots.reduce((total, item) => total + (git.byRoot[item]?.changed ?? 0), 0),
+    [gitRoots, git.byRoot],
+  );
 
   const gitReady = git.isRepo;
   // 设置里关掉的模块不上图标条。顺序以图标条的注册表为准，加模块只要往那边加一条
@@ -368,7 +414,7 @@ export function WorkspacePane({
               <ToolRail
                 active={activeTool}
                 gitReady={gitReady}
-                changed={git.changed}
+                changed={changedCount}
                 visible={toolVisible}
                 onPick={pickTool}
                 rightOpen={rightOpen}
@@ -400,11 +446,13 @@ export function WorkspacePane({
                       visible={visible}
                       selected={activeTab?.kind === "file" ? activeTab.path : null}
                       gitByRoot={gitByRoot}
+                      gitTargets={wtMap}
                       gitMarks={git.marks}
                       gitReady={gitReady}
                       onSelectFile={openFile}
                       onOpenDiff={openDiff}
                       onOpenMatch={openMatch}
+                      onPickWorktree={pickWorktree}
                       onBranchChanged={() => void onBranchChanged()}
                       onBeforeBranchSwitch={saveAllEdits}
                       onBeforeReplace={saveAllEdits}
@@ -419,7 +467,7 @@ export function WorkspacePane({
                     <EditorPane
                       ref={setEditorHandle}
                       root={root}
-                      roots={workspace.roots}
+                      roots={pollRoots}
                       visible={visible}
                       tabs={openTabs}
                       active={activeTab}

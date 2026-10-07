@@ -72,6 +72,33 @@ export interface GitBranch {
   current: boolean;
 }
 
+/**
+ * 一个 git worktree。
+ *
+ * `path` 拿它当 root 调别的 git 命令：目录存在时后端已经登记过白名单（canonical
+ * 路径），不存在（prunable）时不能当 root 用。
+ */
+export interface WorktreeInfo {
+  path: string;
+  /** 目录名，下拉项的主标题 */
+  name: string;
+  /** 检出的分支短名；游离 HEAD 或 bare 时为 null */
+  branch: string | null;
+  /** 游离 HEAD（没检出任何分支） */
+  detached: boolean;
+  /** bare 仓库的主工作树 */
+  bare: boolean;
+  locked: boolean;
+  lockReason: string | null;
+  /** 目录已经不在、可以被 prune */
+  prunable: boolean;
+  pruneReason: string | null;
+  /** 目录此刻是否真实存在（prunable 的是 false） */
+  exists: boolean;
+  /** 是不是当前面板所在的那个工作树 */
+  current: boolean;
+}
+
 /** 一条 stash 记录 */
 export interface GitStash {
   /** `stash@{n}` 里的那个 n，恢复 / 丢弃时要原样带回去 */

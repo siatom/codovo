@@ -702,6 +702,16 @@ export const IconBranch = icon(
   </>,
 );
 
+/** worktree：一条干分两叉，末端挂一个方块代表工作树目录 */
+export const IconWorktree = icon(
+  <>
+    <path d="M6 3v12" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M6 9h6a3 3 0 0 1 3 3v3" />
+    <rect x="12" y="15" width="6" height="6" rx="1" />
+  </>,
+);
+
 /** 合并：岔出去的那条线又汇回主线。和 IconBranch（一条干分两叉）区分开语义 */
 export const IconMerge = icon(
   <>

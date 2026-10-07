@@ -51,6 +51,11 @@ interface ToolPaneProps {
   selected: string | null;
   /** 每根各一套 git 控制器：变更面板每个根挂一个完整的 */
   gitByRoot: Record<string, GitController>;
+  /**
+   * 工作区根 -> 「变更」面板实际看的 git 目标（被选中的 worktree 路径）。
+   * 没选过的根不在这里，取它自己。只影响变更面板，别的模块还用 `roots`。
+   */
+  gitTargets: Record<string, string>;
   /** 各根合并后的标记，供文件树查 */
   gitMarks: ReadonlyMap<string, GitMark>;
   /** 任意一根是 git 仓库。都不是时「变更」模块没有意义 */
@@ -65,6 +70,11 @@ interface ToolPaneProps {
    * 所以要在这一层显式清一次。
    */
   onBranchChanged: () => void;
+  /**
+   * 变更面板里换了 worktree：把这个根的面板数据源换成目标 worktree。
+   * 传回原根（选中它自己）表示恢复默认。
+   */
+  onPickWorktree: (root: string, target: string) => void;
   /** 切分支前的落盘；返回 false 表示有文件没存成功，切换要中止 */
   onBeforeBranchSwitch: () => Promise<boolean>;
   /** 搜索结果里点一条：打开文件并定位到那一行那一列 */
@@ -96,12 +106,14 @@ export function ToolPane({
   visible,
   selected,
   gitByRoot,
+  gitTargets,
   gitMarks,
   gitReady,
   onSelectFile,
   onOpenDiff,
   onOpenMatch,
   onBranchChanged,
+  onPickWorktree,
   onBeforeBranchSwitch,
   onBeforeReplace,
   onAfterReplace,
@@ -185,8 +197,10 @@ export function ToolPane({
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {roots.map((item) => {
           const collapsed = collapsedRoots.has(pathKey(item));
+          // 这一根的面板实际看的 git 目标：默认是它自己，选了别的 worktree 时是那个路径
+          const target = gitTargets[item] ?? item;
           // 这一根的改动数。各根相加正好是图标条上「变更」的角标（同一个来源）
-          const changed = gitByRoot[item]?.snapshot.changed ?? 0;
+          const changed = gitByRoot[target]?.snapshot.changed ?? 0;
           return (
             <div
               key={item}
@@ -224,14 +238,18 @@ export function ToolPane({
               )}
               {/* 收起是藏起来、不是卸载：提交草稿、历史加载到第几页、拖过的高度都还在 */}
               <div className={collapsed ? "hidden" : "min-h-0 flex-1"}>
+                {/* key 用 target 而不是 item：换了 worktree 要按新目标重挂，草稿、
+                    worktree 下拉、按 root 落的偏好都从头来，免得带着上一个的残留 */}
                 <GitChangesPane
-                  root={item}
+                  key={target}
+                  root={target}
                   visible={visible}
-                  git={gitByRoot[item]}
+                  git={gitByRoot[target]}
                   onOpen={onOpenDiff}
                   onOpenFile={onSelectFile}
                   onBeforeBranchSwitch={onBeforeBranchSwitch}
                   onBranchChanged={onBranchChanged}
+                  onSelectWorktree={(next) => onPickWorktree(item, next)}
                 />
               </div>
             </div>
