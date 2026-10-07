@@ -79,6 +79,7 @@ pub fn run() {
             fs_api::fs_create_directory,
             fs_api::fs_rename,
             fs_api::fs_delete,
+            fs_api::fs_move,
             installer::check_dependencies,
             installer::install_dependency,
             git::git_status,

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use base64::Engine;
@@ -550,7 +551,49 @@ fn write_text_file(file: &Path, text: &str, encoding: Option<&str>) -> Result<()
         }
     };
     let bytes = encoding::encode(text, encoding)?;
-    fs::write(file, bytes).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))
+    write_atomic(file, &bytes)
+}
+
+/// 原子写：先写同目录的临时文件，再 rename 覆盖目标。
+///
+/// 直接 `fs::write` 是"先截断再写"，中途失败（磁盘满、进程被杀）会把文件毁成半截，
+/// 旧内容也回不来。走临时文件 + rename 后，要么完整落盘、要么旧内容原封不动——
+/// 编辑器保存最怕的就是把好文件写坏。临时文件必须与目标**同目录**（同卷），
+/// 跨卷 rename 不是原子的、甚至直接失败。
+fn write_atomic(file: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = file
+        .parent()
+        .ok_or_else(|| format!("目标没有父目录: {}", display(file)))?;
+    let name = file
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+
+    // 进程内自增序号 + 进程 id：并发写同一个文件时临时名也不会撞车
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let unique = SEQ.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{name}.codedock-{}-{unique}.tmp", std::process::id()));
+
+    // 先记下原文件权限（如可执行位）：临时文件是新文件，默认权限会把原属性冲掉
+    let permissions = fs::metadata(file).ok().map(|meta| meta.permissions());
+
+    let result = (|| -> Result<(), String> {
+        fs::write(&temp, bytes).map_err(|e| format!("写入文件失败 {}: {e}", display(&temp)))?;
+        if let Some(permissions) = permissions {
+            // 设权限失败不该阻断保存，忽略即可
+            let _ = fs::set_permissions(&temp, permissions);
+        }
+        // 两端 std::fs::rename 都会覆盖已存在的目标：Unix 是 rename(2)，
+        // Windows 走 MoveFileExW + MOVEFILE_REPLACE_EXISTING，同卷下都是原子的
+        fs::rename(&temp, file).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        // 失败就把临时文件清掉，别在用户目录里留垃圾
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 #[tauri::command]
@@ -706,6 +749,70 @@ pub fn fs_delete(
     path: String,
 ) -> Result<(), String> {
     delete_entry(&state.checked_root(&root)?, &path)
+}
+
+/// 把一项（文件或目录）移动到目标目录下，返回移动后的绝对路径——前端据此把编辑器
+/// 标签上的路径一起换掉。拖到另一个目录即移动（改名留给 `fs_rename`）。
+///
+/// `from_root` / `to_root` 分别是源项与目标目录所属的工作目录：一个窗口里能同时挂着
+/// 多个工作目录，拖拽可能跨根，两边都得各自过沙箱校验。同根时就是普通 rename；
+/// 跨根但同卷也能 rename，跨卷时 `fs::rename` 会失败，把系统报错原样带出去。
+fn move_entry(
+    from_root: &Path,
+    path: &str,
+    to_root: &Path,
+    target_dir: &str,
+) -> Result<String, String> {
+    let source = resolve(from_root, path)?;
+    // 工作区根没有上级可去，挪走之后前后端的沙箱边界就对不上了
+    if source == from_root {
+        return Err("不能移动工作区根目录".to_string());
+    }
+    let dest_dir = resolve(to_root, target_dir)?;
+    let meta =
+        fs::metadata(&dest_dir).map_err(|e| format!("目标目录不存在 {}: {e}", display(&dest_dir)))?;
+    if !meta.is_dir() {
+        return Err(format!("目标不是目录: {}", display(&dest_dir)));
+    }
+
+    // 目录不能挪进自己或自己的子孙里：rename 要么失败、要么把内容悄悄弄丢
+    if source.is_dir() && (dest_dir == source || dest_dir.starts_with(&source)) {
+        return Err("不能把目录移动到它自己里面".to_string());
+    }
+
+    let name = source
+        .file_name()
+        .ok_or_else(|| format!("非法路径: {path}"))?;
+    let target = dest_dir.join(name);
+    if target == source {
+        // 已经在目标目录里了，什么都没发生
+        return Ok(display(&source));
+    }
+
+    // 目标位置已有同名项：拒绝，绝不静默覆盖。和 rename_at 一样，
+    // 先按小写比一遍，放行 Windows 上只改大小写的情况
+    let occupied = target.exists()
+        && target.to_string_lossy().to_lowercase() != source.to_string_lossy().to_lowercase();
+    if occupied {
+        return Err(format!("目标已存在: {}", display(&target)));
+    }
+
+    fs::rename(&source, &target).map_err(|e| format!("移动失败 {}: {e}", display(&source)))?;
+    Ok(display(&target))
+}
+
+/// 移动文件 / 目录到另一个目录。`targetDir` 必须是已存在的目录。
+#[tauri::command]
+pub fn fs_move(
+    state: tauri::State<'_, FsState>,
+    from_root: String,
+    path: String,
+    to_root: String,
+    target_dir: String,
+) -> Result<String, String> {
+    let from_root = state.checked_root(&from_root)?;
+    let to_root = state.checked_root(&to_root)?;
+    move_entry(&from_root, &path, &to_root, &target_dir)
 }
 
 // ==================== 全工作区的内容搜索与替换 ====================
@@ -1411,6 +1518,150 @@ mod tests {
         assert!(outside.is_dir(), "越界时不能真删");
         assert!(delete_entry(&workspace_root(&state), workspace.to_str().unwrap()).is_err());
         assert!(workspace.is_dir());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn moves_files_and_directories_between_dirs() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let src = workspace.join("src");
+        fs::create_dir_all(src.join("deep")).unwrap();
+        fs::write(src.join("a.txt"), "hi").unwrap();
+        fs::write(src.join("deep").join("b.txt"), "deep").unwrap();
+        let dst = workspace.join("dst");
+        fs::create_dir(&dst).unwrap();
+
+        // 移动文件
+        let moved = move_entry(
+            &workspace_root(&state),
+            src.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(moved, display(&dst.join("a.txt")));
+        assert!(dst.join("a.txt").is_file());
+        assert!(!src.join("a.txt").exists());
+
+        // 移动目录要连内容一起搬
+        let moved_dir = move_entry(
+            &workspace_root(&state),
+            src.join("deep").to_str().unwrap(),
+            &workspace_root(&state),
+            dst.to_str().unwrap(),
+        )
+        .unwrap();
+        assert!(moved_dir.ends_with("deep"));
+        assert!(dst.join("deep").join("b.txt").is_file());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn move_refuses_bad_targets() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let src = workspace.join("dir");
+        fs::create_dir(&src).unwrap();
+        let other = workspace.join("other");
+        fs::create_dir(&other).unwrap();
+        fs::write(workspace.join("a.txt"), "a").unwrap();
+        fs::write(other.join("a.txt"), "b").unwrap();
+
+        // 目标目录不存在
+        assert!(move_entry(
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+            &workspace_root(&state),
+            workspace.join("nope").to_str().unwrap(),
+        )
+        .is_err());
+
+        // 目标不是目录（是普通文件）
+        assert!(move_entry(
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+            &workspace_root(&state),
+            workspace.join("a.txt").to_str().unwrap(),
+        )
+        .is_err());
+
+        // 不能把目录挪进它自己
+        assert!(move_entry(
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+            &workspace_root(&state),
+            src.to_str().unwrap(),
+        )
+        .is_err());
+
+        // 目标已有同名项，拒绝覆盖
+        assert!(move_entry(
+            &workspace_root(&state),
+            workspace.join("a.txt").to_str().unwrap(),
+            &workspace_root(&state),
+            other.to_str().unwrap(),
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(other.join("a.txt")).unwrap(), "b");
+
+        // 工作区根不能被移动
+        assert!(move_entry(
+            &workspace_root(&state),
+            workspace.to_str().unwrap(),
+            &workspace_root(&state),
+            other.to_str().unwrap(),
+        )
+        .is_err());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn moves_across_workspace_roots() {
+        let (state, root) = temp_state();
+        // 先取出手上这个根，再登记第二个——否则 workspace_root 可能取到第二个
+        let workspace = workspace_root(&state);
+        let second = root.join("second");
+        fs::create_dir_all(&second).unwrap();
+        state.register(second.clone()).unwrap();
+
+        let file = workspace.join("a.txt");
+        fs::write(&file, "hi").unwrap();
+        let moved = move_entry(
+            &workspace,
+            file.to_str().unwrap(),
+            &second,
+            second.to_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(moved, display(&second.join("a.txt")));
+        assert!(second.join("a.txt").is_file());
+        assert!(!file.exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn writes_atomically_without_leaving_temp_files() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("a.txt");
+        fs::write(&file, "old").unwrap();
+
+        // 覆盖已有文件：内容被替换、目录里不留临时文件
+        write_text_file(&file, "new", Some("utf-8")).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "new");
+        let leftovers: Vec<String> = fs::read_dir(&workspace)
+            .unwrap()
+            .flatten()
+            .map(|item| item.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".codedock-"))
+            .collect();
+        assert!(leftovers.is_empty(), "不该留下临时文件: {leftovers:?}");
+
+        // 新文件也能直接创建（临时文件 + rename 落到一个还不存在的目标上）
+        let fresh = workspace.join("b.txt");
+        write_text_file(&fresh, "hi", None).unwrap();
+        assert_eq!(fs::read_to_string(&fresh).unwrap(), "hi");
         fs::remove_dir_all(&root).ok();
     }
 
