@@ -1320,14 +1320,16 @@ async fn detect_protocol(
 
 /// 从缓冲区头部切出一个完整的 SSE 帧（以空行分隔），没切到就返回 None。
 ///
-/// 只按字节找 `\n`，切点一定落在 ASCII 边界上，不会把多字节字符劈开。
-fn pop_frame(buffer: &mut String) -> Option<String> {
-    let bytes = buffer.as_bytes();
+/// **缓冲区是原始字节、只在切出完整帧后才解码**：TCP chunk 边界会随机切开一个多字节
+/// 字符（中文 / emoji），若先 `from_utf8_lossy` 再拼进字符串，被切开的前后两半会各自
+/// 变成 U+FFFD 且不可逆。帧分隔符是 ASCII `\n`，一定落在字符边界上，所以能安全地
+/// 「先按字节切帧、再对完整帧解码」——那时帧内字节必然完整。
+fn pop_frame(buffer: &mut Vec<u8>) -> Option<String> {
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\n' {
+    while i < buffer.len() {
+        if buffer[i] == b'\n' {
             // 空行才算分隔：`\n\n` 或 `\n\r\n`
-            let rest = &bytes[i + 1..];
+            let rest = &buffer[i + 1..];
             let skip = if rest.first() == Some(&b'\n') {
                 1
             } else if rest.starts_with(b"\r\n") {
@@ -1336,11 +1338,12 @@ fn pop_frame(buffer: &mut String) -> Option<String> {
                 0
             };
             if skip > 0 {
-                let mut frame = buffer[..i].to_string();
+                let mut frame = &buffer[..i];
                 // CRLF 时行尾的 \r 是分隔符的一部分，不是内容
-                if frame.ends_with('\r') {
-                    frame.pop();
+                if frame.ends_with(b"\r") {
+                    frame = &frame[..frame.len() - 1];
                 }
+                let frame = String::from_utf8_lossy(frame).into_owned();
                 buffer.drain(..i + 1 + skip);
                 return Some(frame);
             }
@@ -1387,11 +1390,12 @@ fn spawn_sse(
                 request = request.header(reqwest::header::AUTHORIZATION, &auth);
             }
             if let Ok(mut response) = request.send().await {
-                let mut buffer = String::new();
+                // 原始字节累积，帧边界处才解码，避免切开多字节字符
+                let mut buffer: Vec<u8> = Vec::new();
                 loop {
                     match response.chunk().await {
                         Ok(Some(chunk)) => {
-                            buffer.push_str(&String::from_utf8_lossy(&chunk));
+                            buffer.extend_from_slice(&chunk);
                             while let Some(frame) = pop_frame(&mut buffer) {
                                 let Some(data) = frame_data(&frame) else {
                                     continue;
@@ -2188,7 +2192,7 @@ mod tests {
 
     #[test]
     fn frame_splits_on_blank_line() {
-        let mut buffer = String::from("data: {\"a\":1}\n\ndata: {\"b\":2}\n\n");
+        let mut buffer = b"data: {\"a\":1}\n\ndata: {\"b\":2}\n\n".to_vec();
         assert_eq!(pop_frame(&mut buffer).as_deref(), Some("data: {\"a\":1}"));
         assert_eq!(pop_frame(&mut buffer).as_deref(), Some("data: {\"b\":2}"));
         assert_eq!(pop_frame(&mut buffer), None);
@@ -2197,16 +2201,34 @@ mod tests {
     #[test]
     fn frame_keeps_partial_data_buffered() {
         // 半截帧不能吐出来，否则 JSON 解析必失败
-        let mut buffer = String::from("data: {\"a\"");
+        let mut buffer = b"data: {\"a\"".to_vec();
         assert_eq!(pop_frame(&mut buffer), None);
-        buffer.push_str(":1}\n\n");
+        buffer.extend_from_slice(b":1}\n\n");
         assert_eq!(pop_frame(&mut buffer).as_deref(), Some("data: {\"a\":1}"));
     }
 
     #[test]
     fn frame_accepts_crlf_separator() {
-        let mut buffer = String::from("data: {\"a\":1}\r\n\r\n");
+        let mut buffer = b"data: {\"a\":1}\r\n\r\n".to_vec();
         assert_eq!(pop_frame(&mut buffer).as_deref(), Some("data: {\"a\":1}"));
+    }
+
+    #[test]
+    fn frame_survives_split_multibyte_char() {
+        // 一个汉字被 chunk 边界切成两半时，前半截留在缓冲里、后半截到达后仍能正确解码
+        let frame = "data: {\"t\":\"中文😀\"}\n\n";
+        let bytes = frame.as_bytes();
+        // 切点落在「中」的 UTF-8 三字节中间
+        let split = frame.find('中').unwrap() + 1;
+        assert!(!frame.is_char_boundary(split));
+
+        let mut buffer = bytes[..split].to_vec();
+        assert_eq!(pop_frame(&mut buffer), None);
+        buffer.extend_from_slice(&bytes[split..]);
+        assert_eq!(
+            pop_frame(&mut buffer).as_deref(),
+            Some("data: {\"t\":\"中文😀\"}")
+        );
     }
 
     #[test]
