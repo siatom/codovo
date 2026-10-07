@@ -790,12 +790,69 @@ fn contains_write_verb(sql: &str) -> bool {
     false
 }
 
-/// 给可翻页的查询套一层子查询，多取一行判断有没有下一页。
-/// 三库都支持 `FROM (子查询) LIMIT ... OFFSET ...`，MySQL 的派生表别名不能省。
-fn wrap_paged(sql: &str, page: u32, page_size: u32) -> String {
+/// 取 SQL 顶层（括号外）的单词序列（小写）。字符串与注释已被 `strip_noise` 抹平，
+/// 所以这里只需要跳过括号、按词边界切词——CTE / 子查询里的关键字不会被误当成顶层。
+fn top_level_words(sql: &str) -> Vec<String> {
+    let cleaned = strip_noise(sql);
+    let bytes = cleaned.as_bytes();
+    let mut words: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+            }
+            b if b.is_ascii_alphabetic() => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                if depth == 0 {
+                    words.push(cleaned[start..i].to_ascii_lowercase());
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    words
+}
+
+/// SQL 顶层是否自带分页子句（`LIMIT` / `OFFSET` / `FETCH FIRST` / `FOR UPDATE` 等）。
+///
+/// 这些子句只能出现在语句最末，再往后面接 `LIMIT` 要么语法冲突、要么语义重复，
+/// 所以这类语句只能按单页取回（翻页按钮自然停用），不能硬接分页。
+fn has_top_level_paging(sql: &str) -> bool {
+    let words = top_level_words(sql);
+    if words.iter().any(|w| w == "limit" || w == "offset") {
+        return true;
+    }
+    words.windows(2).any(|pair| {
+        // `FETCH FIRST/NEXT n ROWS ONLY` 是标准写法；只认 `fetch` 会把名为 fetch 的列误判
+        (pair[0] == "fetch" && (pair[1] == "first" || pair[1] == "next"))
+            // `FOR UPDATE` / `FOR SHARE` / `FOR NO KEY UPDATE` / `FOR KEY SHARE` 必须收尾，
+            // 其后接不了 LIMIT（MySQL/PG 都如此）
+            || (pair[0] == "for"
+                && (pair[1] == "update" || pair[1] == "share" || pair[1] == "no" || pair[1] == "key"))
+    })
+}
+
+/// 给可翻页的查询接上 `LIMIT/OFFSET`，多取一行判断有没有下一页。
+///
+/// **不包派生表**：`SELECT * FROM (<sql>) LIMIT ...` 会让优化器丢掉内层的 ORDER BY
+/// （MySQL 明确会丢、PG 也不保证），翻页从第二页起就乱序或重漏；用户 SQL 自带 LIMIT 时
+/// 外层再套一层还会直接翻空。所以顶层没有分页子句时，把分页子句直接接到原 SQL 末尾，
+/// 让用户的 ORDER BY 仍作用在最终结果上。**换行再加**：末尾若是 `-- 注释` 行注释，
+/// 同一行的 `LIMIT` 会被注释掉，换行能把它隔出来。
+fn append_paging(sql: &str, page: u32, page_size: u32) -> String {
     let limit = page_size as u64 + 1;
     let offset = page as u64 * page_size as u64;
-    format!("SELECT * FROM (\n{sql}\n) AS __codedock_pg LIMIT {limit} OFFSET {offset}")
+    format!("{sql}\nLIMIT {limit} OFFSET {offset}")
 }
 
 #[tauri::command]
@@ -838,8 +895,12 @@ pub(crate) async fn run_query(
 ) -> Result<QueryResult, String> {
     match class {
         SqlClass::RowsPaged => {
-            let wrapped = wrap_paged(sql, page, page_size);
-            fetch_rows(session, &wrapped, page, page_size, true).await
+            // 自带 LIMIT/OFFSET 的语句没法安全翻页，按单页取回（不再外包派生表，免得翻空）
+            if has_top_level_paging(sql) {
+                return fetch_rows(session, sql, 0, page_size, false).await;
+            }
+            let paged = append_paging(sql, page, page_size);
+            fetch_rows(session, &paged, page, page_size, true).await
         }
         SqlClass::RowsSingle => fetch_rows(session, sql, 0, page_size, false).await,
         SqlClass::Write => execute_write(session, sql).await,
@@ -1104,11 +1165,27 @@ mod tests {
     }
 
     #[test]
-    fn wraps_paged_query() {
-        let wrapped = wrap_paged("SELECT * FROM t", 2, 50);
-        assert!(wrapped.contains("AS __codedock_pg"));
-        assert!(wrapped.contains("LIMIT 51")); // 多取一行判断 has_more
-        assert!(wrapped.contains("OFFSET 100"));
+    fn appends_paging_without_derived_table() {
+        let paged = append_paging("SELECT * FROM t ORDER BY id", 2, 50);
+        // 不再包派生表：用户的 ORDER BY 必须留在最终结果上，否则 MySQL/PG 会丢排序
+        assert!(!paged.contains("__codedock_pg"));
+        assert!(paged.ends_with("LIMIT 51 OFFSET 100")); // 多取一行判断 has_more
+        // 末尾是行注释时靠换行把 LIMIT 隔出来，不能被注释吃掉
+        assert!(append_paging("SELECT 1 -- 说明", 0, 10).ends_with("\nLIMIT 11 OFFSET 0"));
+    }
+
+    #[test]
+    fn detects_top_level_paging() {
+        assert!(has_top_level_paging("SELECT * FROM t LIMIT 10"));
+        assert!(has_top_level_paging("SELECT * FROM t ORDER BY id LIMIT 10 OFFSET 20"));
+        assert!(has_top_level_paging("SELECT * FROM t OFFSET 5"));
+        assert!(has_top_level_paging("SELECT * FROM t FETCH FIRST 10 ROWS ONLY"));
+        assert!(has_top_level_paging("SELECT * FROM t FOR UPDATE"));
+        // 括号内 / 字符串里的不算顶层
+        assert!(!has_top_level_paging("SELECT * FROM (SELECT * FROM t LIMIT 5) x"));
+        assert!(!has_top_level_paging("SELECT 'limit 10' FROM t"));
+        assert!(!has_top_level_paging("SELECT fetch FROM t"));
+        assert!(!has_top_level_paging("SELECT * FROM t ORDER BY id"));
     }
 
     #[test]
