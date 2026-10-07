@@ -11,7 +11,8 @@ description: >-
 
 # Gitee issue 闭环
 
-两段可独立、也可首尾相接：**A 审查建单**、**B 领单修复**。B 段的每一步都可交给仓库里已有的
+两段可独立、也可首尾相接：**A 审查建单**、**B 领单修复**。修复段**按落点分组、派 subagent 执行**
+（落点重叠的 issue 合给同一个 subagent，互不重叠的组才并行），主线程只做编排。B 段的每一步都可交给仓库里已有的
 斜杠命令（`/gitee-issue-list` `/gitee-issue-fix` `/gitee-issue-close` `/git-commit` `/git-push`），
 本技能的价值在**把它们串成一条自动跑通的流水线**，尤其是 worktree 这块——照 AGENTS.md 默认是
 「不 push、等确认」，这里因为用户点了本技能而**一次性授权**修复段的 commit / push / 合并 / 评论 / 关闭。
@@ -101,11 +102,29 @@ gitee issue list -s open --no-tui -l 100 -j=number,title,state,labels,html_url,c
   ```
   `state != open` 就跳过并说明，别默默动手。
 
-## 4. 阶段 C：worktree 修复
+## 4. 阶段 C：分组 + 派 subagent 修复
 
-**一条 issue 一个 worktree**：各自分支、隔离验证、可并行、互不污染。
+**修复阶段用 subagent 执行，但先分组再派**——分组按「改动落点是否重叠」定，不是一条 issue 一个 subagent。
 
-### 4.1 建 worktree
+### 4.0 先分组，再定 worktree / subagent
+
+逐条读 issue 的落点（要改哪些文件 / 模块）后分组：
+
+- **落点重叠的 issue 归一组**：改同一个文件的、改同一模块的、或一条依赖另一条的。
+  同组**共用一个 worktree + 一个分支 + 一个 subagent**，由这个 subagent 一起改完——
+  两个 subagent 并行改同一文件必然互相覆盖 / 制造冲突，要避免。
+- **落点互不重叠的组才并行**：一组一个 worktree，一次性在同一条消息里派多个 Agent 并行跑。
+- **一组只有一条 issue** 是常态；组里有多条时，分支名 / 合并提交按组取一个能概括全部的名称。
+
+派 subagent 时（`subagent_type: general-purpose`，要能写文件）在 prompt 里给足：
+
+- 这个组的 **worktree 绝对路径**、要修的 **issue 编号 + 正文原文**。
+- 落点文件、`AGENTS.md` 的关键约定（跨平台、注释写「为什么」、只改被要求的地方）。
+- 验证命令（下一节），并明确：**只在 worktree 里改，不 commit / 不 push / 不碰别的 worktree**——
+  提交、推送、合并、评论、关闭统由主线程（你）来做，免得 subagent 各写各的提交、并发 push。
+- 要求它回报：改了哪些文件、验证结果、遇到的问题。
+
+### 4.1 建 worktree（每组一个）
 
 ```bash
 cd D:/CodeProjects/code-dock        # 回主仓库
@@ -126,18 +145,29 @@ New-Item -ItemType Junction -Path "D:\CodeProjects\code-dock\.codebuddy\worktree
 
 > 只有这条能用：`mklink` 在 Git Bash 里引号会被吃掉，`cmd.exe` 又被 PowerShell 工具的安全策略拦下。
 
-### 4.3 改 + 验证（在 worktree 里）
+### 4.3 改 + 验证（subagent 在 worktree 里做）——**先验证，后提交**
+
+**验证是提交的前置条件，不是后置动作**：这一节全部通过之前，不许 commit、更不许合并到 main。
+别图省事「先提交 / 先合并，回头再验证」——那样一旦发现问题，main 已经被污染，只能再开一轮修。
 
 - 改代码，遵守 AGENTS.md 全部约定（跨平台、注释写「为什么」、只改被要求的地方、配色/设置项/命令的联动处）。
 - 前端：`pnpm build`（Vite dev 不做类型检查）。
 - 后端：`CARGO_TARGET_DIR="D:/CodeProjects/code-dock/src-tauri/target" cargo test --lib`（+ `cargo clippy`）——
   **复用主仓库 target**，只重编本 crate（约 30s），不必整轮 cargo 重编。
-- 界面改动走 `/cdp-verify`（`scripts/cdp-check.cjs`）。
-- **不要在 worktree 里起 dev** 去抢 5273 端口；要跑应用就先用主仓库那个带 CDP 的实例，或先探端口空闲。
+- **界面改动必须实测**（`/cdp-verify` / `scripts/cdp-check.cjs`），别只看代码、只跑类型检查就算过。
+  要实测得有跑着**这一版代码**的实例：
+  - 先探 5273 / 9222 / dev 进程有没有被占——**有别的会话或用户开着的 dev 实例，就不要抢、不要杀**；
+    实在没有可用实例，才在这个 worktree 里起一个
+    （`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup bash scripts/dev-local.sh ...`）。
+  - 复用了别人的实例时，只做只读/临时动作，**验完把改过的界面状态还原**（清过滤框、收起刚展开的面板…）。
+  - 自己起的实例，验完立刻停掉、让出端口，再进下一组。
+- 验证不过就回改，别带着问题进第 5 节。
 
 ## 5. 阶段 D：提交 + 推送 + 合并
 
 ### 5.1 commit（在 worktree 内）
+
+**前置条件**：本组已通过 4.3 的全部验证（含界面实测）。没验证过就不许提交。
 
 按 `/git-commit` 的规矩：**按变更主体归类**，一条 issue 内也可能拆成多条，别一把 `git add -A`；
 中文 Conventional Commits，正文写「为什么」；提交信息带上 issue 编号。
