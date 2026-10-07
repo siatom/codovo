@@ -25,12 +25,13 @@ import {
 } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { useSettings, resolveFont } from "../lib/settings";
-import { tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
+import { sameTab, tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
 import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { IconBot, IconClose, IconEye, IconMore, IconPencil, IconTerminal } from "./icons";
 
 /** 选中浮窗的估算宽度，用来把它收进窗口右边缘 */
@@ -219,6 +220,9 @@ function diffUri(tab: Extract<Tab, { kind: "diff" }>, side: "original" | "modifi
   );
 }
 
+/** 一次关闭动作：单个标签 / 全部标签 / 除当前外的其他标签。三种共用同一套确认逻辑 */
+type CloseRequest = { kind: "one"; tab: Tab } | { kind: "all" } | { kind: "others" };
+
 export function EditorPane({
   tabs,
   active,
@@ -257,6 +261,14 @@ export function EditorPane({
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [diffStatus, setDiffStatus] = useState<Status>({ kind: "idle" });
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * 待确认的关闭动作（单个脏标签 / 关闭全部 / 关闭其他）。走自研确认框，
+   * 见 ConfirmDialog 的说明。null 表示没有待确认的关闭
+   */
+  const [closeRequest, setCloseRequest] = useState<{
+    request: CloseRequest;
+    message: string;
+  } | null>(null);
   /** 正处在预览模式的 markdown 标签（存 tabKey）；不在集合里就是编辑模式 */
   const [previewPaths, setPreviewPaths] = useState<ReadonlySet<string>>(new Set());
   const [saving, setSaving] = useState(false);
@@ -1000,20 +1012,79 @@ export function EditorPane({
     });
   }, []);
 
-  const closeTab = useCallback(
-    (tab: Tab) => {
-      const key = tabKey(tab);
-      if (
-        dirtyPaths.has(key) &&
-        !window.confirm(`${baseName(tab.path)} 有未保存的改动，确定关闭吗？`)
-      ) {
+  /**
+   * 这批关闭动作涉及的标签里哪些有未保存的改动，拼一句确认文案；一个都没有就返回 null
+   * （不用弹框，直接关）。单个关闭报文件名，批量关闭只列前几个，别把十几个名字铺满整屏。
+   */
+  const dirtyLabel = useCallback(
+    (request: CloseRequest): string | null => {
+      const targets =
+        request.kind === "one"
+          ? [request.tab]
+          : tabs.filter(
+              (tab) => request.kind === "all" || !active || !sameTab(tab, active),
+            );
+      const names = targets
+        .filter((tab) => dirtyPaths.has(tabKey(tab)))
+        .map((tab) => baseName(tab.path));
+      if (names.length === 0) return null;
+      if (names.length === 1) return `${names[0]} 有未保存的改动，确定关闭吗？`;
+      const shown =
+        names.length > 3
+          ? `${names.slice(0, 3).join("、")} 等 ${names.length} 个`
+          : names.join("、");
+      return `有未保存改动的文件：${shown}，确定关闭吗？`;
+    },
+    [tabs, active, dirtyPaths],
+  );
+
+  /**
+   * 真正执行关闭：把要关的 model 一并 dispose、清掉脏标记，再让上层收掉标签。
+   * 批量关闭必须走这里——只改标签数组的话 model 会留在缓存里，重开同一个文件
+   * 又冒出旧改动，和「标签已关」自相矛盾。
+   */
+  const performClose = useCallback(
+    (request: CloseRequest) => {
+      if (request.kind === "one") {
+        const key = tabKey(request.tab);
+        forgetKeys(disposeModels((_, current) => current === key));
+        onClose(request.tab);
         return;
       }
-
-      forgetKeys(disposeModels((_, current) => current === key));
-      onClose(tab);
+      if (request.kind === "all") {
+        forgetKeys(disposeModels(() => true));
+        onCloseAll();
+        return;
+      }
+      const keep = active ? tabKey(active) : null;
+      forgetKeys(disposeModels((_, key) => key !== keep));
+      onCloseOthers();
     },
-    [dirtyPaths, onClose, disposeModels, forgetKeys],
+    [active, onClose, onCloseAll, onCloseOthers, disposeModels, forgetKeys],
+  );
+
+  /**
+   * 关闭的统一入口：有未保存改动就先弹自研确认框——WKWebView（macOS）不支持
+   * `window.confirm`，调了会静默返回、直接跳过确认，所以不能再走原生那个。
+   * 单个关闭和关闭全部 / 关闭其他共用这一条分支，不再各写一套。
+   */
+  const requestClose = useCallback(
+    (request: CloseRequest) => {
+      // 关闭其他时当前标签要留着，没有当前标签就没得可关
+      if (request.kind === "others" && !active) return;
+      const message = dirtyLabel(request);
+      if (!message) {
+        performClose(request);
+        return;
+      }
+      setCloseRequest({ request, message });
+    },
+    [active, dirtyLabel, performClose],
+  );
+
+  const closeTab = useCallback(
+    (tab: Tab) => requestClose({ kind: "one", tab }),
+    [requestClose],
   );
   closeTabRef.current = closeTab;
 
@@ -1201,7 +1272,7 @@ export function EditorPane({
               type="button"
               onClick={() => {
                 setTabsMenu(null);
-                onCloseOthers();
+                requestClose({ kind: "others" });
               }}
               disabled={tabs.length <= 1}
               className={TABS_MENU_ITEM}
@@ -1212,7 +1283,7 @@ export function EditorPane({
               type="button"
               onClick={() => {
                 setTabsMenu(null);
-                onCloseAll();
+                requestClose({ kind: "all" });
               }}
               className={TABS_MENU_ITEM}
             >
@@ -1312,6 +1383,20 @@ export function EditorPane({
             <IconBot className="h-3.5 w-3.5" />
           </button>
         </div>
+      )}
+
+      {/* 关闭有未保存改动的标签（单个 / 全部 / 其他）前先确认，统一走自研确认框 */}
+      {closeRequest && (
+        <ConfirmDialog
+          message={closeRequest.message}
+          confirmLabel="放弃改动"
+          onConfirm={() => {
+            const { request } = closeRequest;
+            setCloseRequest(null);
+            performClose(request);
+          }}
+          onCancel={() => setCloseRequest(null)}
+        />
       )}
     </section>
   );
