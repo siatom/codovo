@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { explainChange, useEffectiveAiConfig } from "../lib/ai";
 import {
   copyEntry,
@@ -86,7 +87,9 @@ const ICON_BUTTON =
 
 /** 右键菜单：宽度和高度按最多 9 项算出来，用来贴着窗口边缘收一收 */
 const MENU_W = 132;
-const MENU_H = 250;
+// 菜单最多 11 项（含两处按条件出现的项），按每项 ~24px 估；宁可估大，
+// 估小了贴底的菜单会被窗口下沿裁掉（这个值只用于把菜单顶回可视区）。
+const MENU_H = 320;
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /** 所在目录。改名/删除之后要重新列的就是它 */
@@ -527,6 +530,30 @@ export function ExplorerPane({
   const copyPath = useCallback(async (text: string) => {
     setMenu(null);
     if (!(await copyText(text))) setActionError("复制失败：系统剪贴板不可用");
+  }, []);
+
+  /**
+   * 交给系统处理这一行：在文件管理器里定位它、或用默认关联程序打开它。
+   * 两件事失败都只是「打不开」（路径可能已被删或改名），不保留菜单、就地提示。
+   */
+  const revealInSystem = useCallback(async (entry: FileEntry) => {
+    setMenu(null);
+    setActionError(null);
+    try {
+      await revealItemInDir(entry.path);
+    } catch (reason) {
+      setActionError(`无法在文件管理器中显示：${String(reason)}`);
+    }
+  }, []);
+
+  const openWithSystem = useCallback(async (entry: FileEntry) => {
+    setMenu(null);
+    setActionError(null);
+    try {
+      await openPath(entry.path);
+    } catch (reason) {
+      setActionError(`无法打开：${String(reason)}`);
+    }
   }, []);
 
   /** 把这一行加进它所属根的 .gitignore，然后重列那个根让置灰立刻生效 */
@@ -1845,6 +1872,21 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               复制相对路径
+            </button>
+            {/* 交给系统：定位到文件管理器 / 用关联程序打开（工作区根行早就有后一项，这里补上树内条目） */}
+            <button
+              type="button"
+              onClick={() => void revealInSystem(menu.entry)}
+              className={MENU_ITEM}
+            >
+              在文件管理器中显示
+            </button>
+            <button
+              type="button"
+              onClick={() => void openWithSystem(menu.entry)}
+              className={MENU_ITEM}
+            >
+              用默认程序打开
             </button>
             {/* 已经被忽略的行不给这一项：再写一条同样的规则没有意义 */}
             {isRepo && !ignored.has(pathKey(menu.entry.path)) && (
