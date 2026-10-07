@@ -1864,6 +1864,170 @@ fn merge_continue(root: &Path) -> Result<GitStatus, String> {
     status_of(root)
 }
 
+// ---- worktree ----
+
+/// 一个 git worktree（`git worktree list --porcelain` 的一条）。
+///
+/// `path` 是给前端当 `root` 用的绝对路径：目录存在时是**登记过白名单的 canonical
+/// 路径**，前端可以原样拿它去调别的 git 命令，不会被 `checked_root` 拒掉。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeInfo {
+    /// 工作树目录的绝对路径
+    path: String,
+    /// 目录名（下拉项的主标题）
+    name: String,
+    /// 检出的分支短名；游离 HEAD 或 bare 时为 None
+    branch: Option<String>,
+    /// 游离 HEAD（没检出任何分支）
+    detached: bool,
+    /// bare 仓库的主工作树（没有工作区文件）
+    bare: bool,
+    /// 被 lock
+    locked: bool,
+    /// lock 的原因（`worktree lock --reason` 给的），可能为空
+    lock_reason: Option<String>,
+    /// 目录已经不在、可以被 prune
+    prunable: bool,
+    /// prunable 的原因，可能为空
+    prune_reason: Option<String>,
+    /// 目录此刻是否真实存在（prunable 的是 false）
+    exists: bool,
+    /// 是不是传进来的那个 root 所在的工作树
+    current: bool,
+}
+
+/// porcelain 的一条原始记录，`current` / `exists` 这些要额外查或判断的字段还没填。
+#[derive(Default)]
+struct RawWorktree {
+    path: String,
+    branch: Option<String>,
+    detached: bool,
+    bare: bool,
+    locked: bool,
+    lock_reason: Option<String>,
+    prunable: bool,
+    prune_reason: Option<String>,
+}
+
+/// 解析 `git worktree list --porcelain`。
+///
+/// 记录之间用空行分隔，但每条都以 `worktree <path>` 开头，所以逐行看前缀、遇到新
+/// `worktree` 行就收尾上一条，不必真的按空行切。`HEAD <sha>` 行用不上，忽略。
+fn parse_worktrees(text: &str) -> Vec<RawWorktree> {
+    // Git for Windows 偶发在首行前带 BOM，不剥掉第一行的 `worktree ` 就匹配不上
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let mut out: Vec<RawWorktree> = Vec::new();
+    let mut current: Option<RawWorktree> = None;
+    for line in text.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if let Some(done) = current.take() {
+                out.push(done);
+            }
+            current = Some(RawWorktree {
+                path: path.trim().to_string(),
+                ..Default::default()
+            });
+            continue;
+        }
+        let Some(item) = current.as_mut() else {
+            continue;
+        };
+        if let Some(name) = line.strip_prefix("branch ") {
+            // refs/heads/feat -> feat；别的命名空间（detached 不会走这里）原样留
+            item.branch = Some(name.trim().trim_start_matches("refs/heads/").to_string());
+        } else if line == "detached" {
+            item.detached = true;
+        } else if line == "bare" {
+            item.bare = true;
+        } else if let Some(rest) = line.strip_prefix("locked") {
+            item.locked = true;
+            let reason = rest.trim();
+            if !reason.is_empty() {
+                item.lock_reason = Some(reason.to_string());
+            }
+        } else if let Some(rest) = line.strip_prefix("prunable") {
+            item.prunable = true;
+            let reason = rest.trim();
+            if !reason.is_empty() {
+                item.prune_reason = Some(reason.to_string());
+            }
+        }
+    }
+    if let Some(done) = current.take() {
+        out.push(done);
+    }
+    out
+}
+
+/// 两个路径是不是同一个目录。Windows 上盘符大小写、`/` 与 `\` 都可能不一致，
+/// 先归一化再比（和前端 `pathKey` 同一套语义）。
+fn same_dir(a: &str, b: &str) -> bool {
+    a.replace('\\', "/").to_lowercase() == b.replace('\\', "/").to_lowercase()
+}
+
+/// 列出 root 所属仓库的全部 worktree。
+///
+/// 目录存在的工作树顺手 `register` 进白名单（返回 canonical 路径）：前端把选中的
+/// worktree 当 root 调 `git_status` 等命令时，必须先在这一层登记过，否则会被沙箱拒掉。
+/// 不存在的（prunable）只标记、不登记——它本来就没法当目录用。
+fn worktrees_of(root: &Path, state: &FsState) -> Result<Vec<WorktreeInfo>, String> {
+    // 非仓库 / 没装 git：当空列表返回，前端据此把入口藏起来
+    let Some(raw) = run_git(root, &["worktree", "list", "--porcelain"])? else {
+        return Ok(Vec::new());
+    };
+    let text = String::from_utf8_lossy(&raw);
+    let raw_items = parse_worktrees(&text);
+
+    // root 所在的工作树根（root 可能是仓库的子目录，也可能就是某个 worktree）
+    let top = run_git(root, &["rev-parse", "--show-toplevel"])?
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let mut out = Vec::with_capacity(raw_items.len());
+    for item in raw_items {
+        let dir = PathBuf::from(&item.path);
+        let exists = dir.is_dir();
+        let path = if exists {
+            state.register(dir)?.to_string_lossy().to_string()
+        } else {
+            item.path.clone()
+        };
+        let name = Path::new(&path)
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        let current = top.as_deref().is_some_and(|value| same_dir(value, &path));
+        out.push(WorktreeInfo {
+            path,
+            name,
+            branch: item.branch,
+            detached: item.detached,
+            bare: item.bare,
+            locked: item.locked,
+            lock_reason: item.lock_reason,
+            prunable: item.prunable,
+            prune_reason: item.prune_reason,
+            exists,
+            current,
+        });
+    }
+    Ok(out)
+}
+
+/// 当前仓库的全部 worktree。目录不是仓库 / 没有 worktree 时返回空数组，不是错误。
+#[tauri::command(async)]
+pub fn git_worktree_list(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<WorktreeInfo>, String> {
+    let root = state.checked_root(&root)?;
+    worktrees_of(&root, &state)
+}
+
 #[tauri::command(async)]
 pub fn git_status(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
     status_of(&state.checked_root(&root)?)
@@ -4938,5 +5102,68 @@ mod tests {
         assert_eq!(derive_repo_name("git@github.com:foo/bar.git"), "bar");
         assert_eq!(derive_repo_name("https://host/foo/bar"), "bar");
         assert_eq!(derive_repo_name("   "), "");
+    }
+
+    #[test]
+    fn parses_worktree_list() {
+        // 覆盖分支 / 游离 / locked / prunable 四种记录，外加首行的 BOM
+        let raw = concat!(
+            "\u{feff}worktree C:/repo\n",
+            "HEAD 1234567890abcdef\n",
+            "branch refs/heads/main\n",
+            "\n",
+            "worktree C:/repo-detached\n",
+            "HEAD 1234567890abcdef\n",
+            "detached\n",
+            "\n",
+            "worktree C:/repo-locked\n",
+            "HEAD 1234567890abcdef\n",
+            "branch refs/heads/feat\n",
+            "locked working on it\n",
+            "\n",
+            "worktree C:/repo-gone\n",
+            "HEAD 1234567890abcdef\n",
+            "branch refs/heads/old\n",
+            "prunable gitdir file points to non-existent location\n",
+        );
+        let items = parse_worktrees(raw);
+        assert_eq!(items.len(), 4, "BOM 不该让第一条丢匹配");
+
+        assert_eq!(items[0].path, "C:/repo");
+        assert_eq!(items[0].branch.as_deref(), Some("main"));
+        assert!(!items[0].detached && !items[0].locked && !items[0].prunable);
+
+        assert!(items[1].detached);
+        assert_eq!(items[1].branch, None);
+
+        assert!(items[2].locked);
+        assert_eq!(items[2].lock_reason.as_deref(), Some("working on it"));
+        assert_eq!(items[2].branch.as_deref(), Some("feat"));
+
+        assert!(items[3].prunable);
+        assert_eq!(
+            items[3].prune_reason.as_deref(),
+            Some("gitdir file points to non-existent location")
+        );
+    }
+
+    #[test]
+    fn parses_a_bare_worktree() {
+        let raw = "worktree C:/repo.git\nHEAD 1234567890abcdef\nbare\n";
+        let items = parse_worktrees(raw);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].bare);
+        assert_eq!(items[0].branch, None);
+    }
+
+    #[test]
+    fn no_worktrees_parses_to_empty() {
+        assert!(parse_worktrees("").is_empty());
+    }
+
+    #[test]
+    fn same_dir_ignores_case_and_separators() {
+        assert!(same_dir("C:/Repo/Main", "c:\\repo\\main"));
+        assert!(!same_dir("C:/repo", "C:/repo/other"));
     }
 }

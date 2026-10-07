@@ -83,6 +83,7 @@ pub fn run() {
             installer::check_dependencies,
             installer::install_dependency,
             git::git_status,
+            git::git_worktree_list,
             git::git_stage,
             git::git_unstage,
             git::git_discard,
