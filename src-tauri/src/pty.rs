@@ -186,6 +186,25 @@ pub fn pty_spawn(
 
     let id = state.inner.next_id.fetch_add(1, Ordering::Relaxed);
 
+    // 必须先登记会话，再启动 waiter：否则 shell 启动即退时（比如未装发行版的 wsl.exe），
+    // waiter 会在 insert 之前就 remove 掉一个还不存在的 id（空操作），主线程随后 insert，
+    // 留下一个永远删不掉的会话——master / writer / killer 全泄漏，且前端拿到的 id 已经死了。
+    // 登记在前则 waiter 的 remove 必然作用在这个会话上，退出路径也就收得干净。
+    state
+        .inner
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(
+            id,
+            PtySession {
+                master,
+                writer,
+                killer,
+                owner,
+            },
+        );
+
     let reader_channel = on_event.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -214,21 +233,6 @@ pub fn pty_spawn(
             sessions.remove(&id);
         }
     });
-
-    state
-        .inner
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(
-            id,
-            PtySession {
-                master,
-                writer,
-                killer,
-                owner,
-            },
-        );
 
     Ok(id)
 }
