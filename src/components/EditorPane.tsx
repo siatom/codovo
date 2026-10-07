@@ -32,7 +32,16 @@ import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconBot, IconClose, IconEye, IconMore, IconPencil, IconTerminal } from "./icons";
+import {
+  IconBot,
+  IconCheck,
+  IconChevronDown,
+  IconClose,
+  IconEye,
+  IconMore,
+  IconPencil,
+  IconTerminal,
+} from "./icons";
 
 /** 选中浮窗的估算宽度，用来把它收进窗口右边缘 */
 const FLOAT_BAR_W = 76;
@@ -45,6 +54,27 @@ const TABS_MENU_ITEM =
 /** 浮窗按钮：两个动作同款，禁用态（智能体没开）不给 hover 反馈 */
 const FLOAT_BAR_BUTTON =
   "flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
+
+/** 编码下拉菜单的宽度，和标签「⋯」菜单同一套写法 */
+const ENCODING_MENU_W = 156;
+
+/**
+ * 可切换的编码，顺序即下拉顺序。label 必须和后端 `Encoding::from_label` 一一对应，
+ * 保存时原样回传给后端；name 只是给人看的显示名。
+ */
+const ENCODINGS: { label: string; name: string }[] = [
+  { label: "utf-8", name: "UTF-8" },
+  { label: "utf-8-bom", name: "UTF-8 with BOM" },
+  { label: "utf-16le", name: "UTF-16 LE" },
+  { label: "utf-16be", name: "UTF-16 BE" },
+  { label: "gbk", name: "GBK" },
+  { label: "big5", name: "Big5" },
+];
+
+/** 后端编码标签 -> 显示名；认不出就原样显示，不吞掉信息 */
+function encodingName(label: string): string {
+  return ENCODINGS.find((item) => item.label === label)?.name ?? label;
+}
 
 /** Monaco 的键名和 DOM 的 event.key 有几处对不上，别名一下 */
 const MONACO_KEY_ALIASES: Record<string, string> = {
@@ -282,6 +312,14 @@ export function EditorPane({
   /** 标题栏「⋯」菜单的视口坐标；null = 不显示 */
   const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
   /**
+   * 编码菜单的位置。状态栏在底部，所以记的是按钮顶边的 y，渲染时按 `bottom` 定位到它上方
+   */
+  const [encodingMenu, setEncodingMenu] = useState<{ x: number; y: number } | null>(null);
+  /**
+   * 待确认的编码切换（脏标签才有）。切编码会从磁盘重读、丢掉未保存的改动，先确认再动手
+   */
+  const [encodingSwitch, setEncodingSwitch] = useState<{ tab: Tab; label: string } | null>(null);
+  /**
    * 浮窗对应的选中位置。点按钮那一刻编辑器可能已经失焦，现取不可靠，所以在选中那一刻就存下来
    */
   const floatLocationRef = useRef<EditorLocation | null>(null);
@@ -503,6 +541,100 @@ export function EditorPane({
   const [previewNonce, setPreviewNonce] = useState(0);
   /** 待执行的定位请求；等标签切过去、model 就绪之后再应用 */
   const [reveal, setReveal] = useState<RevealTarget | null>(null);
+
+  /**
+   * 按指定编码把当前文件**从磁盘重读**并刷新 model。编码切换本质上是一次重新加载：
+   * 旧内容的撤销历史针对的是旧解码结果，`setValue` 顺带清掉它才符合语义（保留下来会
+   * 撤销回一段用错编码读出来的乱码）。之后保存按新编码走 `cached.encoding`。
+   *
+   * 已经加载成功的标签走「替换内容」；之前没加载成功的（编码认不出来、报错留在界面上）
+   * 走「补建 model」——状态栏上的编码入口也是那种情况下的补救路径。
+   */
+  const applyEncoding = useCallback(
+    async (tab: Tab, label: string) => {
+      if (tab.kind !== "file") return;
+      const key = tabKey(tab);
+      const path = tab.path;
+      const cached = modelsRef.current.get(key);
+      // 已经是这个编码就不用重读
+      if (cached && cached.encoding === label) return;
+
+      setStatus({ kind: "loading" });
+      let content;
+      try {
+        content = await readFile(rootFor(path), path, label);
+      } catch (reason) {
+        // 只有还停在同一个标签上才把错误亮出来
+        if (activeRef.current && tabKey(activeRef.current) === key) {
+          setStatus({ kind: "error", message: String(reason) });
+        }
+        return;
+      }
+      // 等这一下的工夫用户可能已经切走 / 关了标签，别把结果盖到别的标签上
+      if (!activeRef.current || tabKey(activeRef.current) !== key) return;
+      if (content.tooLarge) {
+        setStatus({ kind: "tooLarge" });
+        return;
+      }
+      if (content.isBinary) {
+        setStatus({ kind: "binary" });
+        return;
+      }
+
+      const editor = editorRef.current;
+      if (cached) {
+        cached.model.setValue(content.text);
+        cached.savedVersionId = cached.model.getAlternativeVersionId();
+        cached.encoding = content.encoding || label;
+        // 标成干净的：刚才是整份从磁盘读回来的，和磁盘一致
+        setDirtyPaths((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        // markdown 预览层按 activeKey 从 model 缓存取内容，得让它重算
+        setPreviewNonce((count) => count + 1);
+      } else {
+        const uri = monaco.Uri.file(path);
+        const language = languageOf(path);
+        const existing = monaco.editor.getModel(uri);
+        const model = existing ?? monaco.editor.createModel(content.text, language, uri);
+        modelsRef.current.set(key, {
+          path,
+          model,
+          // 版本号在重排之前取：json5/jsonc 自动重排后会算成未保存改动（和打开时一致）
+          savedVersionId: model.getAlternativeVersionId(),
+          encoding: content.encoding || label,
+        });
+        if (!existing && (language === "json5" || language === "jsonc")) {
+          reindentModelOnOpen(model);
+        }
+        editor?.setModel(model);
+      }
+      setStatus({ kind: "ready" });
+      syncDirty();
+    },
+    [rootFor, syncDirty],
+  );
+
+  /** 状态栏里选了某个编码：脏标签先确认（会丢掉未保存的改动），干净的直接切 */
+  const requestEncodingSwitch = useCallback(
+    (label: string) => {
+      setEncodingMenu(null);
+      const current = activeRef.current;
+      if (!current || current.kind !== "file") return;
+      const key = tabKey(current);
+      const cached = modelsRef.current.get(key);
+      if (cached && cached.encoding === label) return;
+      if (cached && cached.model.getAlternativeVersionId() !== cached.savedVersionId) {
+        setEncodingSwitch({ tab: current, label });
+        return;
+      }
+      void applyEncoding(current, label);
+    },
+    [applyEncoding],
+  );
 
   useImperativeHandle(
     ref,
@@ -1169,6 +1301,22 @@ export function EditorPane({
     }
   }, [activeKey]);
 
+  // 当前文件的编码。直接从 model 缓存里现取（每次渲染都算）：加载完成、切标签、切编码
+  // 都会走一次渲染，取到的自然是最新的；不用 state 单独存一份，省得两处对不上。
+  const activeEncoding = activeKey ? modelsRef.current.get(activeKey)?.encoding || null : null;
+
+  /**
+   * 编码状态栏只在普通文本文件上出现：差异、图片没有「按原编码回写」这回事；
+   * 二进制 / 超限也没有 model 可重读。编码已知、或加载失败（认不出编码）时显示——
+   * 后者正是它的补救入口。首次加载中不显示，免得和正在跑的加载抢着建 model。
+   */
+  const showEncodingBar =
+    active?.kind === "file" &&
+    !isImageTab &&
+    status.kind !== "binary" &&
+    status.kind !== "tooLarge" &&
+    (activeEncoding !== null || status.kind === "error");
+
   const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
 
@@ -1306,6 +1454,38 @@ export function EditorPane({
         </>
       )}
 
+      {/* 编码菜单。状态栏在底部，用 bottom 定位到按钮上方（不估高度，靠 bottom 顶住） */}
+      {encodingMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setEncodingMenu(null)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: ENCODING_MENU_W,
+              left: Math.min(encodingMenu.x - ENCODING_MENU_W, window.innerWidth - ENCODING_MENU_W - 4),
+              bottom: window.innerHeight - encodingMenu.y + 4,
+            }}
+          >
+            {ENCODINGS.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => requestEncodingSwitch(item.label)}
+                title={`按 ${item.name} 重新读取这个文件`}
+                className={TABS_MENU_ITEM}
+              >
+                <span className="flex items-center gap-1.5">
+                  <span className="flex w-3 shrink-0 justify-center">
+                    {activeEncoding === item.label && <IconCheck className="h-3 w-3 text-ok" />}
+                  </span>
+                  {item.name}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
       <div className="relative min-h-0 flex-1">
         <div
           ref={containerRef}
@@ -1365,6 +1545,24 @@ export function EditorPane({
         )}
       </div>
 
+      {/* 编码状态栏。贴着编辑器底部，只放一个编码入口；点开就地切换（VS Code 那套） */}
+      {showEncodingBar && (
+        <div className="flex h-6 shrink-0 items-center justify-end border-t border-line px-1.5">
+          <button
+            type="button"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setEncodingMenu({ x: rect.right, y: rect.top });
+            }}
+            title="文件编码（点击切换，切换后按新编码重新读取）"
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
+          >
+            <span>{activeEncoding ? encodingName(activeEncoding) : "编码"}</span>
+            <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+          </button>
+        </div>
+      )}
+
       {/* 选中文本后的小浮窗：位置在选中那一刻算好就不再跟，滚动或换标签会把它收掉 */}
       {floatBar && (
         <div
@@ -1396,6 +1594,22 @@ export function EditorPane({
             <IconBot className="h-3.5 w-3.5" />
           </button>
         </div>
+      )}
+
+      {/* 切编码会从磁盘重读，等于丢掉未保存的改动，脏标签先确认 */}
+      {encodingSwitch && (
+        <ConfirmDialog
+          message={`按 ${encodingName(encodingSwitch.label)} 重新读取 ${baseName(
+            encodingSwitch.tab.path,
+          )}，未保存的改动会丢失，确定吗？`}
+          confirmLabel="丢弃改动"
+          onConfirm={() => {
+            const { tab, label } = encodingSwitch;
+            setEncodingSwitch(null);
+            void applyEncoding(tab, label);
+          }}
+          onCancel={() => setEncodingSwitch(null)}
+        />
       )}
 
       {/* 关闭有未保存改动的标签（单个 / 全部 / 其他）前先确认，统一走自研确认框 */}

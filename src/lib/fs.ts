@@ -106,8 +106,12 @@ export function replaceAll(request: {
   return invoke<ReplaceResult>("fs_replace_all", request);
 }
 
-export function readFile(root: string, path: string): Promise<FileContent> {
-  return invoke<FileContent>("fs_read_file", { root, path });
+/**
+ * 读一个文本文件。不传 `encoding` 时后端自动嗅探；传了 `encoding` 标签（如 `gbk`）就按
+ * 指定编码解码、不再嗅探——编辑器里用户手动切换编码走的就是这条。
+ */
+export function readFile(root: string, path: string, encoding?: string): Promise<FileContent> {
+  return invoke<FileContent>("fs_read_file", { root, path, encoding: encoding ?? null });
 }
 
 /**

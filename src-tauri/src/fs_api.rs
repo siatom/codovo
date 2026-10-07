@@ -404,13 +404,16 @@ fn search_files(root: &Path, query: &str) -> Vec<String> {
     hits
 }
 
-#[tauri::command]
-pub fn fs_read_file(
-    state: tauri::State<'_, FsState>,
-    root: String,
-    path: String,
+/// 读一个文本文件并按编码解码。抽出来是为了单测能直接跑（`tauri::State` 在测试里造不出来）。
+///
+/// `encoding` 为空 = 自动检测；给了标签 = 按这个编码解、不再嗅探——编辑器里用户手动切换
+/// 编码走的就是这条，编码切换的意义正是「用户说了算」。
+fn read_text_content(
+    root: &Path,
+    path: &str,
+    encoding: Option<&str>,
 ) -> Result<FileContent, String> {
-    let file = resolve(&state.checked_root(&root)?, &path)?;
+    let file = resolve(root, path)?;
     let meta = fs::metadata(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
 
     if meta.len() > MAX_TEXT_SIZE {
@@ -423,24 +426,32 @@ pub fn fs_read_file(
     }
 
     let bytes = fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
-    // UTF-16 文本里到处是 NUL，会被 `looks_binary` 误判成二进制，所以先认一遍 BOM
-    if encoding::detect_bom(&bytes).is_none() && looks_binary(&bytes) {
-        return Ok(FileContent {
-            text: String::new(),
-            is_binary: true,
-            too_large: false,
-            encoding: String::new(),
-        });
-    }
 
-    // 按检测到的编码解码。认不出编码就明确报错，不拿 lossy 的结果蒙混过去——
-    // 那正是「非 UTF-8 文件保存即损坏」的成因。
-    let encoding = encoding::detect(&bytes).ok_or_else(|| {
-        format!(
-            "无法识别文件编码（支持 UTF-8 / UTF-16 / GBK / Big5）: {}",
-            display(&file)
-        )
-    })?;
+    let explicit = encoding.is_some();
+    let encoding = match encoding {
+        Some(label) => FileEncoding::from_label(label)
+            .ok_or_else(|| format!("不支持的编码: {label}"))?,
+        None => {
+            // UTF-16 文本里到处是 NUL，会被 `looks_binary` 误判成二进制，所以先认一遍 BOM
+            if encoding::detect_bom(&bytes).is_none() && looks_binary(&bytes) {
+                return Ok(FileContent {
+                    text: String::new(),
+                    is_binary: true,
+                    too_large: false,
+                    encoding: String::new(),
+                });
+            }
+            // 按检测到的编码解码。认不出编码就明确报错，不拿 lossy 的结果蒙混过去——
+            // 那正是「非 UTF-8 文件保存即损坏」的成因。
+            encoding::detect(&bytes).ok_or_else(|| {
+                format!(
+                    "无法识别文件编码（支持 UTF-8 / UTF-16 / GBK / Big5）: {}",
+                    display(&file)
+                )
+            })?
+        }
+    };
+
     match encoding::decode(&bytes, encoding) {
         Ok(text) => Ok(FileContent {
             text,
@@ -448,7 +459,9 @@ pub fn fs_read_file(
             too_large: false,
             encoding: encoding.label().to_string(),
         }),
-        // 认出了编码却解不干净（多半是二进制被猜成了 GBK）：按二进制处理更安全，
+        // 用户指定了编码却解不干净：把原因说清楚，别含糊地报「二进制文件」
+        Err(message) if explicit => Err(message),
+        // 自动检测猜出来的编码解不干净（多半是二进制被猜成了 GBK）：按二进制处理更安全，
         // 绝不让编辑器拿着一份带替换字符的内容去保存
         Err(_) => Ok(FileContent {
             text: String::new(),
@@ -457,6 +470,16 @@ pub fn fs_read_file(
             encoding: String::new(),
         }),
     }
+}
+
+#[tauri::command]
+pub fn fs_read_file(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    path: String,
+    encoding: Option<String>,
+) -> Result<FileContent, String> {
+    read_text_content(&state.checked_root(&root)?, &path, encoding.as_deref())
 }
 
 /// 按「文本文件」的规矩读一个文件的全文，读不了就直接报错。
@@ -1679,6 +1702,40 @@ mod tests {
         assert!(error.contains("拒绝保存"), "{error}");
         assert_eq!(fs::read(&file).unwrap(), written, "拒绝时一个字节都不该动");
         assert!(write_text_file(&file, "x", Some("latin1")).is_err());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reads_with_an_explicit_encoding_overriding_detection() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        // 短文本 chardetng 认不出来，样本要够长（和 encoding.rs 的往返样本同款）
+        const CN: &str = "这是一个使用旧编码的中文文本，用来验证编码检测与往返保存。";
+        fs::write(
+            workspace.join("gbk.txt"),
+            encoding::encode(CN, FileEncoding::Gbk).unwrap(),
+        )
+        .unwrap();
+
+        // 不给编码：走自动检测
+        let auto = read_text_content(&workspace, "gbk.txt", None).unwrap();
+        assert_eq!(auto.encoding, "gbk");
+        assert_eq!(auto.text, CN);
+
+        // 指定编码时按用户说的解；GBK 字节不是合法 UTF-8，必须明确报错而不是塞乱码
+        // （`FileContent` 不带 Debug，这里用 match 取错误信息）
+        match read_text_content(&workspace, "gbk.txt", Some("utf-8")) {
+            Ok(_) => panic!("GBK 字节按 UTF-8 解不该成功"),
+            Err(message) => assert!(message.contains("UTF-8"), "{message}"),
+        }
+        // 不认识的标签也要报出来
+        assert!(read_text_content(&workspace, "gbk.txt", Some("latin1")).is_err());
+
+        // 指定正确编码时正常解回来，标签原样回传（前端据此保存）
+        let forced = read_text_content(&workspace, "gbk.txt", Some("gbk")).unwrap();
+        assert_eq!(forced.encoding, "gbk");
+        assert_eq!(forced.text, CN);
 
         fs::remove_dir_all(&root).ok();
     }
