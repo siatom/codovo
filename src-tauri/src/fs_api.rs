@@ -716,13 +716,18 @@ const MAX_MATCHES: usize = 1000;
 /// 一次搜索最多涉及多少个文件（按相对路径排序后取前面的那些）。
 const MAX_FILES: usize = 200;
 
-/// 三个开关，和 VS Code 搜索框右边那排一致
+/// 三个开关，和 VS Code 搜索框右边那排一致；后面两个是文件 glob 过滤。
+/// `include` / `exclude` 用逗号分隔多条规则，空串表示不限制。
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchOptions {
     case_sensitive: bool,
     whole_word: bool,
     regex: bool,
+    #[serde(default)]
+    include: String,
+    #[serde(default)]
+    exclude: String,
 }
 
 #[derive(Serialize)]
@@ -855,6 +860,181 @@ fn relative_path(root: &Path, path: &Path) -> String {
         .unwrap_or_else(|_| display(path))
 }
 
+// ==================== 文件 glob 过滤 ====================
+
+/// 一条 glob 规则编译出来的匹配器。
+struct GlobFilter {
+    regex: Regex,
+    /// 规则里带 `/`：整条按工作区相对路径匹配；否则只按文件名匹配（照 VS Code 的习惯，
+    /// `*.ts` 能命中任意目录下的 ts 文件，而不用写成 `**/*.ts`）。
+    by_path: bool,
+}
+
+/// 把一条 glob 翻译成正则：`*` 不跨目录、`**` 跨目录、`?` 匹配单个非分隔符字符。
+/// Windows 的文件系统不区分大小写，规则也跟着不区分，否则 `*.TS` 在本机能过、
+/// 换台 Linux 就过不了，用户很难理解。
+fn glob_to_regex(pattern: &str) -> String {
+    let mut out = String::from("^");
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => {
+                if chars.get(i + 1) == Some(&'*') {
+                    // `**/` 允许零层目录，所以后面那根斜杠一起吃掉（`**/foo` 也要能命中根下的 foo）
+                    if chars.get(i + 2) == Some(&'/') {
+                        out.push_str("(?:.*/)?");
+                        i += 3;
+                        continue;
+                    }
+                    out.push_str(".*");
+                    i += 2;
+                    continue;
+                }
+                out.push_str("[^/]*");
+            }
+            '?' => out.push_str("[^/]"),
+            other => out.push_str(&regex::escape(&other.to_string())),
+        }
+        i += 1;
+    }
+    out.push('$');
+    out
+}
+
+/// 把「逗号分隔的 glob 串」编译成一组匹配器，空项忽略。
+fn parse_globs(raw: &str) -> Result<Vec<GlobFilter>, String> {
+    let mut filters = Vec::new();
+    for pattern in raw.split(',').map(str::trim).filter(|one| !one.is_empty()) {
+        let regex = RegexBuilder::new(&glob_to_regex(pattern))
+            .case_insensitive(cfg!(windows))
+            .build()
+            .map_err(|e| format!("过滤规则有误（{pattern}）：{e}"))?;
+        filters.push(GlobFilter {
+            regex,
+            by_path: pattern.contains('/'),
+        });
+    }
+    Ok(filters)
+}
+
+/// 一次搜索的文件过滤条件：命中任一 include（为空则全收）、且不命中任何 exclude。
+struct FileFilters {
+    include: Vec<GlobFilter>,
+    exclude: Vec<GlobFilter>,
+}
+
+impl FileFilters {
+    fn parse(options: &SearchOptions) -> Result<Self, String> {
+        Ok(Self {
+            include: parse_globs(&options.include)?,
+            exclude: parse_globs(&options.exclude)?,
+        })
+    }
+
+    fn accepts(&self, root: &Path, path: &Path) -> bool {
+        let relative = relative_path(root, path);
+        let name = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // include 的「无斜杠」规则只比文件名：这一条得是文件本身，不能靠祖先目录蒙混
+        if !self.include.is_empty()
+            && !self
+                .include
+                .iter()
+                .any(|f| if f.by_path { f.regex.is_match(&relative) } else { f.regex.is_match(&name) })
+        {
+            return false;
+        }
+
+        // exclude 的「无斜杠」规则则允许命中路径里的任意一段——`node_modules` 这种
+        // 想排除的是同名目录下的所有文件，而不是某个恰好叫这名字的文件
+        let segments: Vec<&str> = relative.split('/').collect();
+        if self.exclude.iter().any(|f| {
+            if f.by_path {
+                f.regex.is_match(&relative)
+            } else {
+                segments.iter().any(|segment| f.regex.is_match(segment))
+            }
+        }) {
+            return false;
+        }
+        true
+    }
+}
+
+/// 正则模式下把替换串里的捕获组引用展开：`$1` / `$12` 数字组、`${name}` 命名组、
+/// `$$` 转义成字面量 `$`。非正则态替换串就是字面量，`$` 不该有特殊含义（否则沿用
+/// 旧行为的用户会被改坏）。
+///
+/// 故意不用 `Captures::expand`：它把 `$1_` 里的 `1_` 当成整个组名（regex crate 允许
+/// 下划线进名字），而用户写 `$1_$2` 想要的是「第一组 + 下划线 + 第二组」——VS Code 的
+/// 替换也是这个语义，不自己解析就会静默丢内容。
+fn expand_replacement(caps: &regex::Captures, replacement: &str, regex: bool, out: &mut String) {
+    if !regex {
+        out.push_str(replacement);
+        return;
+    }
+    let chars: Vec<char> = replacement.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '$' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        match chars.get(i + 1) {
+            // `$$` -> 一个字面量 $
+            Some('$') => {
+                out.push('$');
+                i += 2;
+            }
+            // `${name}`：花括号内到 `}` 为止，名字里带点、带横线都不怕
+            Some('{') => match chars[i + 2..].iter().position(|c| *c == '}') {
+                Some(offset) => {
+                    let name: String = chars[i + 2..i + 2 + offset].iter().collect();
+                    push_group(caps, &name, out);
+                    i = i + 2 + offset + 1;
+                }
+                // 没有闭合的 `}`：当普通 `$` 原样留着，别吞掉后面的内容
+                None => {
+                    out.push('$');
+                    i += 1;
+                }
+            },
+            // `$12`：连续数字当组号，所以 `$1_` 是「第一组 + 下划线」
+            Some(next) if next.is_ascii_digit() => {
+                let mut end = i + 1;
+                while end < chars.len() && chars[end].is_ascii_digit() {
+                    end += 1;
+                }
+                let number: String = chars[i + 1..end].iter().collect();
+                push_group(caps, &number, out);
+                i = end;
+            }
+            // 单独的 `$` 后面不是组引用：原样输出
+            _ => {
+                out.push('$');
+                i += 1;
+            }
+        }
+    }
+}
+
+/// 按组号或组名取一段内容；组不存在（比如只有两个组却写了 `$3`）就展开成空串。
+fn push_group(caps: &regex::Captures, name: &str, out: &mut String) {
+    let found = name
+        .parse::<usize>()
+        .ok()
+        .and_then(|index| caps.get(index))
+        .or_else(|| caps.name(name));
+    if let Some(hit) = found {
+        out.push_str(hit.as_str());
+    }
+}
+
 /// 收集一个文件里所有命中的位置，最多要 limit 条
 fn matches_in_text(
     text: &str,
@@ -909,6 +1089,7 @@ fn search_content(
         });
     }
     let pattern = build_pattern(query, options)?;
+    let filters = FileFilters::parse(options)?;
 
     let mut files: Vec<SearchFile> = Vec::new();
     let mut total = 0usize;
@@ -919,6 +1100,11 @@ fn search_content(
         if files.len() >= MAX_FILES || total >= MAX_MATCHES {
             truncated = true;
             return false;
+        }
+
+        // 先在过滤这一关挡掉：读盘和二进制探测都白费
+        if !filters.accepts(root, path) {
+            return true;
         }
 
         let Ok(meta) = fs::metadata(path) else {
@@ -1012,25 +1198,33 @@ fn replace_one(
     let (start, content) = line_at(&text, line)
         .ok_or_else(|| format!("{} 的第 {line} 行已经不在了，请重新搜索", display(file)))?;
 
-    let hits: Vec<(usize, usize)> = pattern
-        .find_iter(content)
-        .filter(|hit| !options.whole_word || is_whole_word(content, hit.start(), hit.end()))
-        .map(|hit| (hit.start(), hit.end()))
+    let hits: Vec<regex::Captures> = pattern
+        .captures_iter(content)
+        .filter(|cap| {
+            let hit = cap.get(0).expect("captures_iter 一定先给出整体匹配");
+            !options.whole_word || is_whole_word(content, hit.start(), hit.end())
+        })
         .collect();
 
     let target = hits
         .iter()
-        .find(|(from, to)| {
-            utf16_column(content, *from) == column
-                && content[*from..*to].encode_utf16().count() as u32 == length
+        .find(|cap| {
+            let hit = cap.get(0).expect("captures_iter 一定先给出整体匹配");
+            utf16_column(content, hit.start()) == column
+                && content[hit.start()..hit.end()].encode_utf16().count() as u32 == length
         })
         .or_else(|| if hits.len() == 1 { hits.first() } else { None })
         .ok_or_else(|| format!("{} 的内容已经变了，请重新搜索", display(file)))?;
 
-    let mut next = String::with_capacity(text.len() + replacement.len());
-    next.push_str(&text[..start + target.0]);
-    next.push_str(replacement);
-    next.push_str(&text[start + target.1..]);
+    // 正则态展开 `$1` / `${name}`；非正则态替换串原样当字面量
+    let mut replaced = String::new();
+    expand_replacement(target, replacement, options.regex, &mut replaced);
+
+    let hit = target.get(0).expect("captures_iter 一定先给出整体匹配");
+    let mut next = String::with_capacity(text.len() + replaced.len());
+    next.push_str(&text[..start + hit.start()]);
+    next.push_str(&replaced);
+    next.push_str(&text[start + hit.end()..]);
 
     fs::write(file, next).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))
 }
@@ -1043,13 +1237,18 @@ fn replace_all_in_file(
 ) -> Result<usize, String> {
     let text = read_utf8(file)?;
 
-    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    // 每一处都先算好要写进去的文本（正则态展开 `$1` / `${name}`），
+    // 后面只按偏移倒序写回，取代换结果长度互不影响
+    let mut ranges: Vec<(usize, usize, String)> = Vec::new();
     for_each_line(&text, |_, offset, body| {
-        for hit in pattern.find_iter(body) {
+        for cap in pattern.captures_iter(body) {
+            let hit = cap.get(0).expect("captures_iter 一定先给出整体匹配");
             if options.whole_word && !is_whole_word(body, hit.start(), hit.end()) {
                 continue;
             }
-            ranges.push((offset + hit.start(), offset + hit.end()));
+            let mut replaced = String::new();
+            expand_replacement(&cap, replacement, options.regex, &mut replaced);
+            ranges.push((offset + hit.start(), offset + hit.end(), replaced));
         }
         true
     });
@@ -1061,8 +1260,8 @@ fn replace_all_in_file(
     // 从后往前替换：前面的偏移就不会被替换结果的长度影响。
     // 这样也天然保住了原文件的行尾风格（CRLF 不会被改成 LF）
     let mut next = text;
-    for (from, to) in ranges.iter().rev() {
-        next.replace_range(*from..*to, replacement);
+    for (from, to, replaced) in ranges.iter().rev() {
+        next.replace_range(*from..*to, replaced);
     }
 
     fs::write(file, next).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))?;
@@ -1485,6 +1684,19 @@ mod tests {
             case_sensitive,
             whole_word,
             regex,
+            include: String::new(),
+            exclude: String::new(),
+        }
+    }
+
+    /// 在三个开关之上再盖一层文件过滤
+    fn opts_with(regex: bool, include: &str, exclude: &str) -> SearchOptions {
+        SearchOptions {
+            case_sensitive: false,
+            whole_word: false,
+            regex,
+            include: include.to_string(),
+            exclude: exclude.to_string(),
         }
     }
 
@@ -1636,6 +1848,111 @@ mod tests {
         let count = replace_all_in_file(&file, &pattern, &opts(false, false, false), "1").unwrap();
         assert_eq!(count, 2);
         assert_eq!(fs::read_to_string(&file).unwrap(), "1 two 1\n");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn regex_replacement_expands_capture_groups() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let options = opts(false, false, true);
+        let pattern = build_pattern(r"(\w+)-(\w+)", &options).unwrap();
+
+        // 全部替换：`$2_$1` 交换两段（`$1_` 是「第一组 + 下划线」，不是组名 `1_`）
+        let file = workspace.join("a.txt");
+        fs::write(&file, "foo-bar baz-qux\n").unwrap();
+        let count = replace_all_in_file(&file, &pattern, &options, "$2_$1").unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "bar_foo qux_baz\n");
+
+        // 单条替换：同一套展开规则
+        let one = workspace.join("b.txt");
+        fs::write(&one, "foo-bar\n").unwrap();
+        replace_one(&one, 1, 1, 7, r"(\w+)-(\w+)", &options, "${2}-${1}").unwrap();
+        assert_eq!(fs::read_to_string(&one).unwrap(), "bar-foo\n");
+
+        // 命名组 `${name}`：换成 value:key 的形式
+        let named = workspace.join("c.txt");
+        fs::write(&named, "a=1\n").unwrap();
+        replace_one(
+            &named,
+            1,
+            1,
+            3,
+            r"(?P<key>\w+)=(?P<val>\w+)",
+            &options,
+            "${val}:${key}",
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&named).unwrap(), "1:a\n");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn literal_replacement_keeps_the_dollar_sign() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        // 非正则态：替换串是字面量，`$1` 不该被当成捕获组
+        let options = opts(false, false, false);
+        let pattern = build_pattern("one", &options).unwrap();
+
+        let file = workspace.join("a.txt");
+        fs::write(&file, "one\n").unwrap();
+        replace_all_in_file(&file, &pattern, &options, "$1").unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "$1\n");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn glob_translates_star_and_double_star() {
+        // `*` 不跨目录、`**` 跨目录、`**/` 允许零层目录
+        let matches = |pattern: &str, subject: &str| {
+            let regex = RegexBuilder::new(&glob_to_regex(pattern)).build().unwrap();
+            regex.is_match(subject)
+        };
+        assert!(matches("*.rs", "main.rs"));
+        assert!(!matches("*.rs", "src/main.rs"), "* 不该跨目录");
+        assert!(matches("src/*.rs", "src/main.rs"));
+        assert!(!matches("src/*.rs", "src/deep/main.rs"));
+        assert!(matches("src/**/*.rs", "src/main.rs"), "**/ 要允许零层目录");
+        assert!(matches("src/**/*.rs", "src/a/b/main.rs"));
+        assert!(matches("**/test", "a/b/test"));
+        assert!(matches("?.txt", "a.txt"));
+        assert!(!matches("?.txt", "ab.txt"));
+    }
+
+    #[test]
+    fn content_search_applies_include_and_exclude_globs() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        fs::write(workspace.join("keep.ts"), "target\n").unwrap();
+        fs::write(workspace.join("skip.ts"), "target\n").unwrap();
+        fs::create_dir_all(workspace.join("generated")).unwrap();
+        fs::write(workspace.join("generated").join("gen.ts"), "target\n").unwrap();
+
+        // 只要 `*.ts`，同时排除掉 generated 目录
+        let filtered =
+            search_content(&workspace, "target", &opts_with(false, "*.ts", "generated")).unwrap();
+        let names: Vec<&str> = filtered
+            .files
+            .iter()
+            .map(|file| file.relative.as_str())
+            .collect();
+        assert_eq!(names, vec!["keep.ts", "skip.ts"], "应命中两个 ts 且排除 generated");
+
+        // include 换成带斜杠的路径规则
+        let by_path =
+            search_content(&workspace, "target", &opts_with(false, "generated/**", "")).unwrap();
+        assert_eq!(by_path.files.len(), 1);
+        assert_eq!(by_path.files[0].relative, "generated/gen.ts");
+
+        // 逗号分隔的多条 include 是「或」的关系
+        let multi =
+            search_content(&workspace, "target", &opts_with(false, "keep.ts, skip.ts", "")).unwrap();
+        assert_eq!(multi.files.len(), 2);
+
         fs::remove_dir_all(&root).ok();
     }
 

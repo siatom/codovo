@@ -186,11 +186,15 @@ export interface FileHunks {
 /** 一个 hunk 要往哪边落，和 DiscardSource 同一个思路 */
 export type HunkAction = { mode: "stage" } | { mode: "discard" };
 
-/** 搜索的三个开关，和 VS Code 搜索框右边那排一致 */
+/** 搜索的三个开关，和 VS Code 搜索框右边那排一致；后两个是文件 glob 过滤 */
 export interface SearchOptions {
   caseSensitive: boolean;
   wholeWord: boolean;
   regex: boolean;
+  /** 只搜这些 glob（逗号分隔）；空串表示不限 */
+  include: string;
+  /** 跳过这些 glob（逗号分隔）；空串表示不排除 */
+  exclude: string;
 }
 
 export interface SearchMatch {

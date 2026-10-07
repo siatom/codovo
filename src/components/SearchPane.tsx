@@ -7,6 +7,7 @@ import {
   IconChevronRight,
   IconClearResults,
   IconClose,
+  IconFilter,
   IconRefresh,
   IconReplaceAll,
   IconWholeWord,
@@ -16,7 +17,10 @@ import { ConfirmDialog } from "./ConfirmDialog";
 /** 打字停下来多久才真正发请求 */
 const SEARCH_DEBOUNCE_MS = 200;
 
-const SWITCHES: { key: keyof SearchOptions; label: ReactNode; title: string }[] = [
+/** 只有布尔开关能进这一排；include / exclude 是文本框，单独排 */
+type SearchSwitch = "caseSensitive" | "wholeWord" | "regex";
+
+const SWITCHES: { key: SearchSwitch; label: ReactNode; title: string }[] = [
   { key: "caseSensitive", label: "Aa", title: "区分大小写" },
   { key: "wholeWord", label: <IconWholeWord className="h-3.5 w-3.5" />, title: "全字匹配" },
   { key: "regex", label: ".*", title: "使用正则表达式" },
@@ -88,10 +92,14 @@ export function SearchPane({
   const [query, setQuery] = useState("");
   const [replacement, setReplacement] = useState("");
   const [showReplace, setShowReplace] = useState(false);
+  /** include / exclude 两行 glob 输入先收起，点漏斗图标才展开 */
+  const [showFilters, setShowFilters] = useState(false);
   const [options, setOptions] = useState<SearchOptions>({
     caseSensitive: false,
     wholeWord: false,
     regex: false,
+    include: "",
+    exclude: "",
   });
   const [result, setResult] = useState<SearchGroups | null>(null);
   const [loading, setLoading] = useState(false);
@@ -371,6 +379,18 @@ export function SearchPane({
                 {item.label}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => setShowFilters((open) => !open)}
+              title="文件过滤（包含 / 排除）"
+              className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
+                showFilters || options.include || options.exclude
+                  ? SWITCH_ON
+                  : "text-fg-dim hover:bg-hover hover:text-fg"
+              }`}
+            >
+              <IconFilter className="h-3.5 w-3.5" />
+            </button>
           </div>
 
           {showReplace && (
@@ -395,6 +415,34 @@ export function SearchPane({
               >
                 <IconReplaceAll className="h-3.5 w-3.5" />
               </button>
+            </div>
+          )}
+
+          {showFilters && (
+            <div className="flex flex-col gap-1">
+              {(
+                [
+                  ["include", "包含", "文件 glob，逗号分隔，例如 *.ts, src/**"],
+                  ["exclude", "排除", "文件 glob，逗号分隔，例如 *.min.js, dist/**"],
+                ] as const
+              ).map(([key, label, placeholder]) => (
+                <div key={key} className={FIELD}>
+                  <span className="shrink-0 pl-0.5 pr-0.5 text-[11px] text-fg-faint">
+                    {label}
+                  </span>
+                  <input
+                    type="text"
+                    value={options[key]}
+                    spellCheck={false}
+                    disabled={busy}
+                    placeholder={placeholder}
+                    onChange={(event) =>
+                      setOptions((current) => ({ ...current, [key]: event.target.value }))
+                    }
+                    className={FIELD_INPUT}
+                  />
+                </div>
+              ))}
             </div>
           )}
         </div>

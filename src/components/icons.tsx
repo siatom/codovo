@@ -620,6 +620,9 @@ export const IconClearResults = icon(
   </>,
 );
 
+/** 文件过滤（漏斗）：展开搜索的 include / exclude glob 输入 */
+export const IconFilter = icon(<path d="M4 5h16l-6 7v5.5l-4 2V12L4 5Z" />);
+
 /** 四角星，AI 的通用符号。用在 Git 面板的「生成提交信息」上 */
 export const IconSparkle = icon(
   <path d="M12 3.6 14 10l6.4 2-6.4 2-2 6.4-2-6.4L3.6 12 10 10Z" />,
