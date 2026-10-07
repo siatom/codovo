@@ -32,6 +32,9 @@ pub struct FileStatus {
     /// porcelain v2 的 XY 两列：X 是暂存区状态，Y 是工作区状态
     index: char,
     worktree: char,
+    /// 这条是不是一个目录。只有未跟踪目录会整条折叠成 `dir/`（见 parse_status），
+    /// 前端据此不把它当成文件去读——读目录会报 "Is a directory"。
+    is_dir: bool,
     /// 这一侧增删了几行。`None` = 该侧没有改动，或者统计不出来（二进制、未跟踪）。
     /// 两侧各存一份：同一个文件在两个分组里显示的是各自那一侧的改动量。
     staged_added: Option<u32>,
@@ -474,7 +477,9 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
         let Some(relative) = path.strip_prefix(prefix) else {
             continue;
         };
-        // 未跟踪目录整条折叠成 "dir/"，尾巴上的斜杠要去掉才能和文件树里的路径对上
+        // 未跟踪目录整条折叠成 "dir/"，尾巴上的斜杠要去掉才能和文件树里的路径对上。
+        // 先用尾斜杠记下"这是个目录"，去掉之后就看不出来了
+        let is_dir = relative.ends_with('/');
         let relative = relative.trim_end_matches('/');
         if relative.is_empty() {
             continue;
@@ -490,6 +495,7 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
                 relative: relative.to_string(),
                 index: xy.0,
                 worktree: xy.1,
+                is_dir,
                 // 行数 porcelain 里没有，由 status_of 再跑一次 numstat 填进来
                 staged_added: None,
                 staged_removed: None,
@@ -2373,6 +2379,15 @@ mod tests {
         assert_eq!((untracked.index, untracked.worktree), ('?', '?'));
         // relative 一律正斜杠，界面直接拿来显示
         assert_eq!(untracked.relative, "untracked.txt");
+        assert!(!untracked.is_dir, "普通文件不能标成目录");
+
+        // 未跟踪目录带尾斜杠，要标成 is_dir，前端才能不把它当文件读
+        let dir = status
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("brandnew"))
+            .expect("未跟踪目录应该在里面");
+        assert!(dir.is_dir, "未跟踪目录要标成 is_dir");
     }
 
     #[test]

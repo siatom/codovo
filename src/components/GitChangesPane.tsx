@@ -98,6 +98,11 @@ import {
 interface GitChangesPaneProps {
   /** 这个面板属于哪个工作区：所有 git / ai 命令都带着它，后端按它定位工作区 */
   root: string;
+  /**
+   * 这个工作区是不是当前显示的。非当前工作区只是 `hidden` 藏着、不卸载，
+   * 所以面板还活着——轮询这类后台动作要靠它停掉，否则每个隐藏的工作区都在白跑 git。
+   */
+  visible: boolean;
   git: GitController;
   /** 点改动项 / 提交里的文件：打开差异视图，source 决定跟谁比 */
   onOpen: (path: string, source: DiffSource) => void;
@@ -461,9 +466,16 @@ type Busy =
  * 和"未跟踪文件不给按钮"是同一条理由：不做会删文件的破坏性操作。
  * 未跟踪的 `?`、暂存区里新增的 `A` 都排除掉。空仓库里所有暂存文件都是 `A`，
  * 所以空仓库天然不支持放弃暂存改动。
+ *
+ * 重命名（`R`）也排除：放弃命令的 pathspec 只带**新路径**，而还原目标里只有旧路径
+ * （暂存组还原到 HEAD、未暂存组还原到 index），git 会报 "pathspec did not match"。
+ * 要支持得同时给旧路径 + 新路径两条 pathspec（新路径要先从 porcelain 记录里留下来），
+ * 这里不做。两种情况各看一列：暂存组看 X、未暂存组看 Y。
  */
 function canDiscard(change: GitChange, staged: boolean): boolean {
-  return staged ? change.index !== "A" : change.worktree !== "?";
+  return staged
+    ? change.index !== "A" && change.index !== "R"
+    : change.worktree !== "?" && change.worktree !== "R";
 }
 
 /**
@@ -679,8 +691,11 @@ function ChangeRow({
   const dir = slash === -1 ? "" : change.relative.slice(0, slash);
   // 暂存组看 X 列，未暂存组看 Y 列：`AM` 在两组里该显示成不同的字母
   const mark = markOfColumn(staged ? change.index : change.worktree);
+  // 未跟踪目录只是整条折叠出来的一个占位项，不是文件：点开差异等于去读目录，
+  // 后端会报 "Is a directory"。这一行既不给差异、也不给「打开文件」。
+  const isDir = change.isDir;
   // 文件已经被删了就没什么可打开的——点「打开文件」会读到一个不存在的路径
-  const exists = mark.kind !== "deleted";
+  const exists = mark.kind !== "deleted" && !isDir;
   // 行数也按分组取：同一个 `MM` 文件在两个组里改动的量本来就不一样
   const added = staged ? change.stagedAdded : change.unstagedAdded;
   const removed = staged ? change.stagedRemoved : change.unstagedRemoved;
@@ -700,17 +715,23 @@ function ChangeRow({
     >
       <button
         type="button"
-        onClick={() =>
-          onOpen(change.path, staged ? { mode: "staged" } : { mode: "unstaged" })
-        }
-        title={toDisplayPath(change.path)}
+        // 目录项点开差异会去读目录、必报错，所以不响应点击（它只是折叠出来的一行占位）
+        onClick={() => {
+          if (isDir) return;
+          onOpen(change.path, staged ? { mode: "staged" } : { mode: "unstaged" });
+        }}
+        title={isDir ? `${toDisplayPath(change.path)}（目录）` : toDisplayPath(change.path)}
         className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
       >
         {/* 树视图里空出目录行折叠箭头的宽度，文件名和同层目录名左边缘对齐；
             列表视图没有目录行，直接顶到最左 */}
         {depth !== null && <span className="w-3 shrink-0" />}
         <span className="flex shrink-0 items-center text-fg-icon">
-          <FileTypeIcon name={name} className="h-3.5 w-3.5" />
+          {isDir ? (
+            <IconFolder className="h-3.5 w-3.5" />
+          ) : (
+            <FileTypeIcon name={name} className="h-3.5 w-3.5" />
+          )}
         </span>
         <span className="min-w-0 truncate text-fg-muted">{name}</span>
         {/* 树视图里层级已经说明了在哪个目录，再补一遍目录反而啰嗦。
@@ -1126,6 +1147,7 @@ function CommitRow({
  */
 export function GitChangesPane({
   root,
+  visible,
   git,
   onOpen,
   onOpenFile,
@@ -1890,8 +1912,9 @@ export function GitChangesPane({
   // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git。
   // 还要盯住 HEAD：在终端里 commit / amend / reset 之后，改动列表靠 2 秒轮询
   // 能自己变好，历史不会，只有 HEAD 动了才说明提交列表该重拉。
+  // 非当前工作区（visible=false）同理不请求：面板只是被 hidden 藏着，还活着。
   useEffect(() => {
-    if (logCollapsed || !snapshot.isRepo) return;
+    if (logCollapsed || !visible || !snapshot.isRepo) return;
     let cancelled = false;
     void gitLog(root, logLimit)
       .then((list) => {
@@ -1907,14 +1930,14 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [logCollapsed, logLimit, logRevision, snapshot.isRepo, snapshot.head]);
+  }, [logCollapsed, visible, logLimit, logRevision, snapshot.isRepo, snapshot.head]);
 
   // 后台自动重拉：见 LOG_POLL_MS 的说明。收起时不起定时器，和上面那个 effect 一致
   useEffect(() => {
-    if (logCollapsed || !snapshot.isRepo) return;
+    if (logCollapsed || !visible || !snapshot.isRepo) return;
     const timer = window.setInterval(() => setLogRevision((revision) => revision + 1), LOG_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [logCollapsed, snapshot.isRepo]);
+  }, [logCollapsed, visible, snapshot.isRepo]);
 
   /**
    * 未推送清单单独拉一份，不和 gitLog 挤在同一个 effect 里：它只跟 ahead 有关，
@@ -1925,7 +1948,7 @@ export function GitChangesPane({
    * 不该让提交历史跟着变成错误态。
    */
   useEffect(() => {
-    if (logCollapsed || !snapshot.isRepo) return;
+    if (logCollapsed || !visible || !snapshot.isRepo) return;
     let cancelled = false;
     void gitUnpushed(root)
       .then((list) => {
@@ -1937,7 +1960,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [logCollapsed, logRevision, snapshot.isRepo, snapshot.head, snapshot.ahead]);
+  }, [logCollapsed, visible, logRevision, snapshot.isRepo, snapshot.head, snapshot.ahead]);
 
   // 展开某条提交时才去拉它的文件列表，拉过就留着。
   // 展开是多选，所以一次可能有好几条要拉——已经拉到的不再请求，只补缺的那些
@@ -2808,13 +2831,16 @@ export function GitChangesPane({
               top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
             }}
           >
-            <button
-              type="button"
-              onClick={() => startExplain(menu.change, menu.staged)}
-              className={MENU_ITEM}
-            >
-              AI 变更解读
-            </button>
+            {/* 目录不是文件：解读会去读目录而报错，这一项不给（和文件树里的口径一致） */}
+            {!menu.change.isDir && (
+              <button
+                type="button"
+                onClick={() => startExplain(menu.change, menu.staged)}
+                className={MENU_ITEM}
+              >
+                AI 变更解读
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void copyPath(menu.change.path)}
