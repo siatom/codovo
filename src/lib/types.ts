@@ -236,6 +236,11 @@ export interface AgentInfo {
   version: string;
   /** 启动时探测出来的接口代次："v1" / "v2"。界面显示用，排查时也用得上 */
   protocol: string;
+  /**
+   * 这个实例的工作目录。opencode 的会话全局存、混着各目录的记录，列历史时要拿它
+   * 按 directory 过滤（数据库 Agent 的 cwd 前端算不出来，只能后端带出来）
+   */
+  cwd: string;
 }
 
 export interface AgentStatus {

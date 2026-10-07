@@ -7,6 +7,7 @@ import {
   DEFAULT_PORTS,
   newConnectionId,
   setDbPassword,
+  testDbConnection,
   type DbConnection,
   type DbKind,
 } from "../lib/database";
@@ -52,6 +53,13 @@ export function DatabaseConnectionDialog({
   const [file, setFile] = useState(connection?.file ?? "");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  /** 测试连接的结果；null = 还没测过。改动任一参数后清掉，免得留着过期的「连接成功」 */
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    setTestResult(null);
+  }, [kind, host, port, user, password, database, file]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -79,22 +87,61 @@ export function DatabaseConnectionDialog({
     }
   };
 
+  /** 校验表单，通过返回解析后的端口（SQLite 为 0），不通过则设错误并返回 null */
+  const validate = (): number | null => {
+    if (kind === "sqlite") {
+      if (!file.trim()) {
+        setError("请选择 SQLite 数据库文件");
+        return null;
+      }
+      return 0;
+    }
+    if (!host.trim()) {
+      setError("请填写主机地址");
+      return null;
+    }
+    const portNumber = Number(port);
+    if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
+      setError("端口要在 1–65535 之间");
+      return null;
+    }
+    return portNumber;
+  };
+
+  /** 表单值 → 测试用的字段（SQLite 与网络库各取各的） */
+  const testFields = (portNumber: number) => ({
+    kind,
+    host: kind === "sqlite" ? "" : host.trim(),
+    port: kind === "sqlite" ? 0 : portNumber,
+    user: kind === "sqlite" ? "" : user.trim(),
+    database: kind === "sqlite" ? "" : database.trim(),
+    file: kind === "sqlite" ? file.trim() : "",
+  });
+
+  const runTest = async () => {
+    const portNumber = validate();
+    if (portNumber === null) return;
+    setTesting(true);
+    setError("");
+    setTestResult(null);
+    try {
+      await testDbConnection(connection?.id ?? "", testFields(portNumber), password);
+      setTestResult({ ok: true, message: "连接成功" });
+    } catch (reason) {
+      setTestResult({ ok: false, message: String(reason) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const submit = async () => {
     const connName = name.trim();
-    if (kind === "sqlite") {
-      if (!file.trim()) return setError("请选择 SQLite 数据库文件");
-    } else {
-      if (!host.trim()) return setError("请填写主机地址");
-      const portNumber = Number(port);
-      if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
-        return setError("端口要在 1–65535 之间");
-      }
-    }
+    const portNumber = validate();
+    if (portNumber === null) return;
 
     setSaving(true);
     setError("");
     const id = connection?.id ?? newConnectionId();
-    const portNumber = Number(port);
     try {
       // 只在用户填了才写，留空 = 不改动已有凭据
       if (password) await setDbPassword(id, password);
@@ -244,11 +291,27 @@ export function DatabaseConnectionDialog({
 
         {error && <p className="text-[11px] leading-relaxed text-danger">{error}</p>}
 
-        <div className="mt-1 flex justify-end gap-2">
+        <div className="mt-1 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={testing || saving}
+            onClick={() => void runTest()}
+            className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60"
+          >
+            {testing ? "测试中…" : "测试连接"}
+          </button>
+          <span
+            className={`min-w-0 flex-1 truncate text-[11px] ${
+              testResult?.ok ? "text-accent" : "text-danger"
+            }`}
+            title={testResult?.message}
+          >
+            {testResult?.message ?? ""}
+          </span>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+            className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
           >
             取消
           </button>
@@ -256,7 +319,7 @@ export function DatabaseConnectionDialog({
             type="button"
             disabled={saving}
             onClick={() => void submit()}
-            className="rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected disabled:opacity-60"
+            className="shrink-0 rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected disabled:opacity-60"
           >
             {saving ? "保存中…" : "保存"}
           </button>

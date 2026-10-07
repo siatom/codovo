@@ -148,8 +148,45 @@ export function disconnectDb(id: number): Promise<void> {
   return invoke<void>("db_disconnect", { id });
 }
 
-export function dbTables(id: number): Promise<TableInfo[]> {
-  return invoke<TableInfo[]>("db_tables", { id });
+/**
+ * 试连一次就断开（不登记会话），用来在保存前验证参数。
+ * `password` 传表单里刚敲的明文；留空则后端回退到钥匙串里已存的密码。
+ */
+export function testDbConnection(
+  connId: string,
+  fields: Pick<DbConnection, "kind" | "host" | "port" | "user" | "database" | "file">,
+  password: string,
+): Promise<void> {
+  return invoke<void>("db_test_connection", {
+    request: {
+      connId,
+      kind: fields.kind,
+      host: fields.host,
+      port: fields.port,
+      user: fields.user,
+      database: fields.database,
+      file: fields.file,
+      password: password || null,
+    },
+  });
+}
+
+/**
+ * 「数据库」这一级：MySQL 是库，SQLite 只有 main，PostgreSQL 是实例里的库。
+ * 界面在「连接」和「表」之间插这一层，免得连上就把一堆库的表全铺出来。
+ */
+export function dbDatabases(id: number): Promise<string[]> {
+  return invoke<string[]>("db_databases", { id });
+}
+
+/** PG 专用：当前库里的 schema 列表（三级结构的中间那层）。其余库返回空数组 */
+export function dbSchemas(id: number): Promise<string[]> {
+  return invoke<string[]>("db_schemas", { id });
+}
+
+/** 某个命名空间（MySQL 是库名 / PG 是 schema 名）下的表 / 视图；省略则退回全部 */
+export function dbTables(id: number, schema?: string): Promise<TableInfo[]> {
+  return invoke<TableInfo[]>("db_tables", { id, schema: schema ?? null });
 }
 
 export function dbQuery(

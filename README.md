@@ -82,7 +82,9 @@ Monaco（VS Code 内核），离线可用。多标签 + `Ctrl+S`，打开的文�
 
 ### 数据库
 
-右栏「数据库」模块：管理 MySQL / PostgreSQL / SQLite 连接（密码存系统钥匙串），连上后可浏览表与视图、点表看数据，或写 SQL 查询（含写语句，显示受影响行数）。结果表格服务端翻页，连接配置跨窗口共享。
+右栏「数据库」模块：管理 MySQL / PostgreSQL / SQLite 连接（密码存系统钥匙串），连上后可浏览表与视图、点表看数据，或写 SQL 查询（Monaco 编辑器带语法高亮，按库方言一键美化 / `Shift+Alt+F`；含写语句，显示受影响行数）。结果表格服务端翻页，连接配置跨窗口共享。
+
+「Agent」子页把「表格 / 查询」交给对话：用一句话描述想查什么，智能体自己先看表与字段、再写 SQL 并执行，结果就地铺成表格。**只读**——任何写数据或改结构的语句都会被拒绝。对话历史所有连接共用一份，工具条上的「历史」可新建 / 切换 / 重命名 / 删除会话。
 
 ### 智能体（对话式编程）
 
@@ -120,6 +122,7 @@ src-tauri/src/        Rust 后端
   ai.rs, agent.rs     大模型调用、opencode 后端
   remote.rs           远程连接：SSH 终端 + SFTP 传输
   database.rs         数据库：MySQL / PostgreSQL / SQLite 连接池与查询
+  db_agent.rs         数据库 Agent：只读 SQL 的 MCP 工具服务
   cli_sessions.rs     各 CLI 的会话历史
   secrets.rs          操作系统凭据库中的 API 密钥
   installer.rs        依赖检测与安装

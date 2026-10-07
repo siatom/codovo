@@ -124,7 +124,33 @@ git push --follow-tags            # 连 tag 一起推
   `execute()` 报影响行数，SHOW/EXPLAIN 之类只取一页。单元格按「String → i64 → f64 → bool → 时间 → …」
   依次 `try_get` 渲染成字符串（sqlx 类型严格，`String` 解不了 INT）；BigDecimal / Uuid / JSON 只在
   MySQL / PG 上试——sqlx-sqlite 没有这些 `Decode` 实现，硬塞进同一个宏整个编不过。密码存系统钥匙串
-  （前端只有布尔位），连接配置跨窗口共享。
+  （前端只有布尔位），连接配置跨窗口共享。查询页的 SQL 编辑器是 Monaco（`language: "sql"` 走 Monaco
+  自带的 basic-languages，不需要额外注册），美化走 `sql-formatter`（零依赖），方言按连接类型映射
+  （mysql / postgres→postgresql / sqlite）——见 `lib/sql-format.ts`；语句没写完时它会抛错，只提示不阻断编辑，
+  且失败不能顶掉结果区的查询错误（两者是分开的 state）。**左栏是一棵「连接 → 数据库 →（PG 才有
+  schema）→ 表」的树**，逐级展开、缩进展示，右侧只放数据 / 查询 / Agent：MySQL / SQLite 是两级，
+  PG 是三级。PG 一个连接只能连一个库、不能跨库查询，所以**每展开一个 PG 库就单独开一条会话**
+  （建会话时按库名覆盖 `database`，会话 key 形如 `connId\0db`），断开连接时按这个前缀整片收掉；
+  MySQL / SQLite 一条会话够用，库只是取表时的 `schema` 参数。三库的「库」列表各是：MySQL 的
+  information_schema.schemata（剔系统库）、PG 的 `pg_database`（`datistemplate` / `datallowconn`
+  过滤）、SQLite 固定 `main`。取表的命名空间参数统一叫 `schema`：MySQL 是库名、PG 是 schema 名、
+  SQLite 忽略。
+- **数据库 Agent**（`db_agent.rs` + `agent.rs` 的 `database` 模式）：对话式生成并执行**只读** SQL。
+  走**独立的 opencode 进程**（前端用哨兵 root `__db_agent__`，cwd 落在应用配置目录下，不占工作区），
+  工具由 CodeDock 自己当 **local MCP server** 提供：opencode 按 opencode.json 的 `mcp.db` 拉起
+  `codedock.exe --mcp-db`（`main` 在 Tauri 初始化**之前**分流，不然会多开窗口），stdio 上跑换行分隔的
+  JSON-RPC（`initialize` / `tools/list` / `tools/call`），`list_tables` / `describe_table` / `run_query`
+  复用 `database.rs` 的建池与解码。**只读三层**：技能与 agent prompt 引导 → `is_read_only` 白名单
+  （剥掉注释与字符串字面量后按首关键字放行，`WITH` 还要扫写动词、内嵌分号一律拒）→ 建池时
+  `after_connect` 给每条连接设只读（SQLite `PRAGMA query_only` / PG / MySQL）。MCP 子进程拿不到主进程的
+  连接池，「当前连接」靠前端写的 `target.json` 同步（**不含密码**，密码仍按 connId 从钥匙串取），
+  所以它放在 opencode 配置目录**之外**——那个目录停服务时会被整个删掉。MCP 形状以 schema 为准：
+  `mcp.<name>`（opencode 内部会规范化成 `mcp.servers.<name>`），`timeout` 必须调大（默认 5s 会掐断
+  慢查询）；工具名带 server 前缀（`db_list_tables`）。`tools` 里关掉 bash / edit / write / patch。
+  历史会话**所有连接共用一份**（对话不绑定库，执行时才用当前目标连接），前端复用 `agent_*` 那组会话
+  命令；但 opencode 的会话是**全局存**的、列表里混着各目录的记录，得按目录过滤，而数据库 Agent 的 cwd
+  （`app_config_dir/db-agent/cwd`）前端算不出来——所以 `AgentInfo` 带出了 `cwd` 供
+  `parseSessions(raw, cwd)` 用。会话标题不设初值，留给 opencode 按首句自动总结。
 - **单实例**：`tauri-plugin-single-instance` 在 builder 里**第一个**注册，回调把已被收进托盘的
   主窗口唤回来（`tray::show_main`）。它的锁名取自 app identifier，所以 dev 和安装版不能共用
   `tauri.conf.json` 里那个 `com.codedock`——否则本机开着安装版时 dev 一启动就被顶掉。build.rs 在

@@ -359,6 +359,8 @@ export function FileTypeIcon({ name, className = "h-4 w-4" }: { name: string; cl
 
 export const IconChevronRight = icon(<path d="m9 18 6-6-6-6" />);
 
+export const IconChevronLeft = icon(<path d="m15 18-6-6 6-6" />);
+
 export const IconChevronDown = icon(<path d="m6 9 6 6 6-6" />);
 
 /** 行尾的「更多操作」入口：三个点。描边画出来太淡，直接填实心 */

@@ -1,24 +1,39 @@
 import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DatabaseAgent } from "./DatabaseAgent";
 import { DatabaseConnectionDialog } from "./DatabaseConnectionDialog";
 import { DatabaseQuery } from "./DatabaseQuery";
-import { DatabaseTables } from "./DatabaseTables";
 import { FullscreenButton } from "./FullscreenButton";
+import { ResultGrid } from "./ResultGrid";
 import { useDbConnections } from "../lib/db-connections";
 import {
   clearDbSecrets,
   connectDb,
   connectionSummary,
+  dbDatabases,
+  dbQuery,
+  dbSchemas,
+  dbTables,
   disconnectDb,
+  selectAllSql,
   type DbConnection,
-  type DbConnectionState,
+  type QueryResult,
+  type TableInfo,
 } from "../lib/database";
-import { IconDatabase, IconMore, IconPlus } from "./icons";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconDatabase,
+  IconMore,
+  IconPlus,
+} from "./icons";
 
 const ACTIVE_KEY = "codedock.dbActiveConnection";
 const TAB_KEY = "codedock.dbTab";
 
-type SubTab = "tables" | "query";
+const PAGE_SIZE = 50;
+
+type SubTab = "tables" | "query" | "agent";
 
 function readSession(key: string): string {
   try {
@@ -44,8 +59,49 @@ const SEGMENT = "rounded px-2 py-0.5 text-[11px]";
 const MENU_ITEM =
   "flex w-full items-center rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
+const ROW = "group flex cursor-default items-center gap-1 rounded-md py-[3px] pr-1.5 hover:bg-hover";
+
+/** 每层缩进 16px：连接 → 库 →（PG 才有 schema）→ 表 */
+const INDENT = [6, 22, 38, 54];
+
+const SEP = "\u0000";
+
+const connNode = (connId: string) => `c:${connId}`;
+const dbNode = (connId: string, db: string) => `d:${connId}${SEP}${db}`;
+const schemaNode = (connId: string, db: string, schema: string) =>
+  `s:${connId}${SEP}${db}${SEP}${schema}`;
+
+/**
+ * PG 一个连接只能连一个库、不能跨库查询，所以树里每展开一个库都要单独一条会话
+ * （建会话时按库名覆盖 `database`）；MySQL / SQLite 一条会话够用，库只是查询维度。
+ */
+function sessionKeyOf(connection: DbConnection, db?: string): string {
+  return connection.kind === "postgres" && db ? `${connection.id}${SEP}${db}` : connection.id;
+}
+
+/** 某个节点 key（或会话 key）是否属于这个连接——断开时按它整片清掉 */
+function belongsTo(key: string, connId: string): boolean {
+  const rest = /^[cds]:/.test(key) ? key.slice(2) : key;
+  return rest === connId || rest.startsWith(`${connId}${SEP}`);
+}
+
+function dropConn<T>(map: Record<string, T>, connId: string): Record<string, T> {
+  const next: Record<string, T> = {};
+  for (const [key, value] of Object.entries(map)) {
+    if (!belongsTo(key, connId)) next[key] = value;
+  }
+  return next;
+}
+
+/** 会话状态。key 见 `sessionKeyOf` */
+interface SessionState {
+  id?: number;
+  phase: "connecting" | "ready" | "error";
+  error?: string;
+}
+
 /** 状态点配色 */
-function dotClass(state: DbConnectionState | undefined): string {
+function sessionDot(state: SessionState | undefined): string {
   switch (state?.phase) {
     case "connecting":
       return "bg-warn animate-pulse";
@@ -58,11 +114,30 @@ function dotClass(state: DbConnectionState | undefined): string {
   }
 }
 
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <span className="flex h-4 w-4 shrink-0 items-center justify-center text-fg-faint">
+      {open ? <IconChevronDown className="h-3 w-3" /> : <IconChevronRight className="h-3 w-3" />}
+    </span>
+  );
+}
+
+function NodeHint({ text, danger }: { text: string; danger?: boolean }) {
+  return (
+    <p
+      className={`px-3 py-1 text-[10px] leading-relaxed ${danger ? "text-danger" : "text-fg-faint"}`}
+    >
+      {text}
+    </p>
+  );
+}
+
 /**
- * 右栏「数据库」模块：左侧连接列表 + 右侧「表 / 查询」两个子视图。
+ * 右栏「数据库」模块：左栏是一棵「连接 → 数据库 →（PG 才有 schema）→ 表」的树，
+ * 右侧是选中表的数据 / SQL 查询 / 数据库 Agent 三个子视图。
  *
- * 面板独占编辑器那一列（和浏览器 / 远程连接同款）。连接按需建立：点了才连，连上后
- * 会话留在后端池里，切走不杀。
+ * 面板独占编辑器那一列（和浏览器 / 远程连接同款）。会话按需建立：展开哪个节点连哪个，
+ * 连上后留在后端池里，切走不杀。
  */
 export function DatabasePane({
   fullscreen,
@@ -79,17 +154,45 @@ export function DatabasePane({
   const [activeConnectionId, setActiveConnectionId] = useState<string>(() =>
     readSession(ACTIVE_KEY),
   );
-  const [subTab, setSubTab] = useState<SubTab>(() =>
-    readSession(TAB_KEY) === "query" ? "query" : "tables",
-  );
-  /** 用户这次会话里主动连过的连接 */
-  const [connected, setConnected] = useState<string[]>([]);
-  const connectedRef = useRef(connected);
-  connectedRef.current = connected;
-  const [states, setStates] = useState<Record<string, DbConnectionState>>({});
-  const [sessionIds, setSessionIds] = useState<Record<string, number>>({});
-  const sessionIdsRef = useRef(sessionIds);
-  sessionIdsRef.current = sessionIds;
+  const [subTab, setSubTab] = useState<SubTab>(() => {
+    const saved = readSession(TAB_KEY);
+    return saved === "query" || saved === "agent" ? saved : "tables";
+  });
+
+  const [sessions, setSessions] = useState<Record<string, SessionState>>({});
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+
+  /** connId → 库列表 */
+  const [databases, setDatabases] = useState<Record<string, string[]>>({});
+  const databasesRef = useRef(databases);
+  databasesRef.current = databases;
+  /** 库节点 key → schema 列表（仅 PG） */
+  const [schemas, setSchemas] = useState<Record<string, string[]>>({});
+  const schemasRef = useRef(schemas);
+  schemasRef.current = schemas;
+  /** 库 / schema 节点 key → 表列表 */
+  const [tables, setTables] = useState<Record<string, TableInfo[]>>({});
+  const tablesRef = useRef(tables);
+  tablesRef.current = tables;
+  /** 节点 key → 正在加载 */
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  /** 节点 key → 错误 */
+  const [nodeErrors, setNodeErrors] = useState<Record<string, string>>({});
+
+  const [selected, setSelected] = useState<{
+    sessionKey: string;
+    connectionId: string;
+    table: TableInfo;
+  } | null>(null);
+  const [result, setResult] = useState<QueryResult | null>(null);
+  const [loadingRows, setLoadingRows] = useState(false);
+  const [queryError, setQueryError] = useState("");
+
   const [dialog, setDialog] = useState<{ connection: DbConnection | null } | null>(null);
   const [menu, setMenu] = useState<{ connection: DbConnection; x: number; y: number } | null>(
     null,
@@ -100,54 +203,177 @@ export function DatabasePane({
     () => connections.find((item) => item.id === activeConnectionId) ?? null,
     [connections, activeConnectionId],
   );
-  const activeSessionId = activeConnection ? sessionIds[activeConnection.id] : undefined;
-  const activeState = activeConnection ? states[activeConnection.id] : undefined;
+  const activeSessionId = activeConnection ? sessions[activeConnection.id]?.id : undefined;
+  const activeState = activeConnection ? sessions[activeConnection.id] : undefined;
 
   const pickTab = useCallback((next: SubTab) => {
     setSubTab(next);
     writeSession(TAB_KEY, next);
   }, []);
 
-  const connect = useCallback(async (connection: DbConnection) => {
-    setStates((current) => ({ ...current, [connection.id]: { phase: "connecting" } }));
-    setConnected((list) => (list.includes(connection.id) ? list : [...list, connection.id]));
-    try {
-      const sessionId = await connectDb(connection);
-      setSessionIds((current) => ({ ...current, [connection.id]: sessionId }));
-      setStates((current) => ({ ...current, [connection.id]: { phase: "ready" } }));
-    } catch (reason) {
-      setStates((current) => ({
-        ...current,
-        [connection.id]: { phase: "error", error: String(reason) },
-      }));
-      setConnected((list) => list.filter((id) => id !== connection.id));
-    }
-  }, []);
+  /** 拿到一条可用会话；没有就现建。`db` 只对 PG 有意义（按库名另开一条） */
+  const ensureSession = useCallback(
+    async (key: string, connection: DbConnection, db?: string): Promise<number | null> => {
+      const existing = sessionsRef.current[key];
+      if (existing?.phase === "ready" && existing.id !== undefined) return existing.id;
+      if (existing?.phase === "connecting") return null;
+      setSessions((current) => ({ ...current, [key]: { phase: "connecting" } }));
+      try {
+        const id = await connectDb(db ? { ...connection, database: db } : connection);
+        setSessions((current) => ({ ...current, [key]: { id, phase: "ready" } }));
+        return id;
+      } catch (reason) {
+        setSessions((current) => ({
+          ...current,
+          [key]: { phase: "error", error: String(reason) },
+        }));
+        return null;
+      }
+    },
+    [],
+  );
 
-  const disconnect = useCallback((id: string) => {
-    const sessionId = sessionIdsRef.current[id];
-    if (sessionId !== undefined) void disconnectDb(sessionId).catch(() => {});
-    setConnected((list) => list.filter((item) => item !== id));
-    setSessionIds((current) => {
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
-    setStates((current) => {
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
-  }, []);
+  const toggleSchema = useCallback(
+    async (connection: DbConnection, db: string, schema: string) => {
+      const key = schemaNode(connection.id, db, schema);
+      if (expandedRef.current[key]) {
+        setExpanded((current) => ({ ...current, [key]: false }));
+        return;
+      }
+      setExpanded((current) => ({ ...current, [key]: true }));
+      if (tablesRef.current[key]) return;
 
-  const openConnection = useCallback(
-    (connection: DbConnection) => {
+      setBusy((current) => ({ ...current, [key]: true }));
+      const id = await ensureSession(sessionKeyOf(connection, db), connection, db);
+      if (id === null) {
+        setBusy((current) => ({ ...current, [key]: false }));
+        return;
+      }
+      try {
+        const list = await dbTables(id, schema);
+        setTables((current) => ({ ...current, [key]: list }));
+      } catch (reason) {
+        setNodeErrors((current) => ({ ...current, [key]: String(reason) }));
+      } finally {
+        setBusy((current) => ({ ...current, [key]: false }));
+      }
+    },
+    [ensureSession],
+  );
+
+  const toggleDatabase = useCallback(
+    async (connection: DbConnection, db: string) => {
+      const key = dbNode(connection.id, db);
+      if (expandedRef.current[key]) {
+        setExpanded((current) => ({ ...current, [key]: false }));
+        return;
+      }
+      setExpanded((current) => ({ ...current, [key]: true }));
+      if (schemasRef.current[key] || tablesRef.current[key]) return;
+
+      setBusy((current) => ({ ...current, [key]: true }));
+      const id = await ensureSession(sessionKeyOf(connection, db), connection, db);
+      if (id === null) {
+        setBusy((current) => ({ ...current, [key]: false }));
+        return;
+      }
+      try {
+        if (connection.kind === "postgres") {
+          const list = await dbSchemas(id);
+          setSchemas((current) => ({ ...current, [key]: list }));
+        } else {
+          const list = await dbTables(id, db);
+          setTables((current) => ({ ...current, [key]: list }));
+        }
+      } catch (reason) {
+        setNodeErrors((current) => ({ ...current, [key]: String(reason) }));
+      } finally {
+        setBusy((current) => ({ ...current, [key]: false }));
+      }
+    },
+    [ensureSession],
+  );
+
+  const toggleConnection = useCallback(
+    async (connection: DbConnection) => {
+      const key = connNode(connection.id);
       setActiveConnectionId(connection.id);
       writeSession(ACTIVE_KEY, connection.id);
-      if (!connectedRef.current.includes(connection.id)) void connect(connection);
+      if (expandedRef.current[key]) {
+        setExpanded((current) => ({ ...current, [key]: false }));
+        return;
+      }
+      setExpanded((current) => ({ ...current, [key]: true }));
+      if (databasesRef.current[connection.id]) return;
+
+      setBusy((current) => ({ ...current, [key]: true }));
+      const id = await ensureSession(connection.id, connection);
+      if (id === null) {
+        setBusy((current) => ({ ...current, [key]: false }));
+        return;
+      }
+      try {
+        const list = await dbDatabases(id);
+        setDatabases((current) => ({ ...current, [connection.id]: list }));
+        // 建连时填过库名就直接展开它，省一次点击
+        if (connection.database && list.includes(connection.database)) {
+          void toggleDatabase(connection, connection.database);
+        }
+      } catch (reason) {
+        setNodeErrors((current) => ({ ...current, [key]: String(reason) }));
+      } finally {
+        setBusy((current) => ({ ...current, [key]: false }));
+      }
     },
-    [connect],
+    [ensureSession, toggleDatabase],
   );
+
+  const loadRows = useCallback(
+    async (sessionKey: string, connectionId: string, table: TableInfo, page: number) => {
+      const connection = connectionsRef.current.find((item) => item.id === connectionId);
+      const id = sessionsRef.current[sessionKey]?.id;
+      if (!connection || id === undefined) return;
+      setLoadingRows(true);
+      setQueryError("");
+      try {
+        setResult(await dbQuery(id, selectAllSql(connection.kind, table), page, PAGE_SIZE));
+      } catch (reason) {
+        setQueryError(String(reason));
+        setResult(null);
+      } finally {
+        setLoadingRows(false);
+      }
+    },
+    [],
+  );
+
+  const openTable = useCallback(
+    (sessionKey: string, connectionId: string, table: TableInfo) => {
+      setSelected({ sessionKey, connectionId, table });
+      pickTab("tables");
+      void loadRows(sessionKey, connectionId, table, 0);
+    },
+    [loadRows, pickTab],
+  );
+
+  /** 断开一条连接：把它名下的会话（PG 每个库一条）、树数据、展开态一起清掉 */
+  const disconnect = useCallback((connectionId: string) => {
+    const keys = Object.keys(sessionsRef.current).filter((key) => belongsTo(key, connectionId));
+    for (const key of keys) {
+      const id = sessionsRef.current[key]?.id;
+      if (id !== undefined) void disconnectDb(id).catch(() => {});
+    }
+    setSessions((current) => dropConn(current, connectionId));
+    setDatabases((current) => dropConn(current, connectionId));
+    setSchemas((current) => dropConn(current, connectionId));
+    setTables((current) => dropConn(current, connectionId));
+    setBusy((current) => dropConn(current, connectionId));
+    setNodeErrors((current) => dropConn(current, connectionId));
+    setExpanded((current) => dropConn(current, connectionId));
+    setSelected(null);
+    setResult(null);
+    setQueryError("");
+  }, []);
 
   const saveConnection = useCallback(
     (connection: DbConnection) => {
@@ -158,12 +384,12 @@ export function DatabasePane({
       setActiveConnectionId(connection.id);
       writeSession(ACTIVE_KEY, connection.id);
       // 改过连接参数就重连一次，别让旧会话继续用旧配置
-      if (connectedRef.current.includes(connection.id)) {
+      if (sessionsRef.current[connection.id]) {
         disconnect(connection.id);
-        void connect(connection);
+        void toggleConnection(connection);
       }
     },
-    [addConnection, updateConnection, connect, disconnect],
+    [addConnection, updateConnection, toggleConnection, disconnect],
   );
 
   const deleteConnection = useCallback(
@@ -184,12 +410,39 @@ export function DatabasePane({
     setMenu({ connection, x: rect.right, y: rect.bottom + 4 });
   };
 
-  const isConnected = activeConnection ? connected.includes(activeConnection.id) : false;
+  const isOpen = (key: string) => expanded[key] === true;
+
+  const tableRow = (
+    sessionKey: string,
+    connectionId: string,
+    table: TableInfo,
+    indent: number,
+  ) => {
+    const active =
+      selected?.sessionKey === sessionKey &&
+      selected?.table.name === table.name &&
+      selected?.table.schema === table.schema;
+    return (
+      <div
+        key={`${sessionKey}${SEP}${table.schema}${SEP}${table.name}`}
+        onClick={() => openTable(sessionKey, connectionId, table)}
+        className={`${ROW} ${active ? "bg-selected" : ""}`}
+        style={{ paddingLeft: indent }}
+        title={table.name}
+      >
+        <span className="w-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-[12px] text-fg">{table.name}</span>
+        {table.kind === "view" && (
+          <span className="shrink-0 text-[10px] text-fg-faint">视图</span>
+        )}
+      </div>
+    );
+  };
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 bg-panel">
-      {/* 左窄栏：连接列表 */}
-      <div className="flex h-full w-44 shrink-0 flex-col border-r border-line">
+      {/* 左栏：连接 → 数据库 →（PG 才有 schema）→ 表 */}
+      <div className="flex h-full w-52 shrink-0 flex-col border-r border-line">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             数据库
@@ -210,34 +463,110 @@ export function DatabasePane({
             </p>
           ) : (
             connections.map((connection) => {
-              const state = states[connection.id];
-              const isActive = connection.id === activeConnectionId;
+              const ck = connNode(connection.id);
+              const open = isOpen(ck);
+              const session = sessions[connection.id];
+              const list = databases[connection.id];
               return (
-                <div
-                  key={connection.id}
-                  onClick={() => openConnection(connection)}
-                  className={`group flex cursor-default items-center gap-2 rounded-md px-2 py-1 ${
-                    isActive ? "bg-selected" : "hover:bg-hover"
-                  }`}
-                >
-                  <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(state)}`}
-                    title={state?.error ?? undefined}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] text-fg">{connection.name}</span>
-                    <span className="block truncate text-[10px] text-fg-faint">
-                      {connectionSummary(connection)}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={(event) => openMenu(event, connection)}
-                    title="更多"
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100"
+                <div key={connection.id}>
+                  <div
+                    onClick={() => void toggleConnection(connection)}
+                    className={`${ROW} ${connection.id === activeConnectionId ? "bg-selected" : ""}`}
+                    style={{ paddingLeft: INDENT[0] }}
                   >
-                    <IconMore className="h-3.5 w-3.5" />
-                  </button>
+                    <Chevron open={open} />
+                    <span
+                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${sessionDot(session)}`}
+                      title={session?.error}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[12px] text-fg">{connection.name}</span>
+                      <span className="block truncate text-[10px] text-fg-faint">
+                        {connectionSummary(connection)}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(event) => openMenu(event, connection)}
+                      title="更多"
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100"
+                    >
+                      <IconMore className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  {open && (
+                    <>
+                      {busy[ck] && <NodeHint text="连接中…" />}
+                      {nodeErrors[ck] && <NodeHint text={nodeErrors[ck]} danger />}
+                      {list?.map((db) => {
+                        const dk = dbNode(connection.id, db);
+                        const dbOpen = isOpen(dk);
+                        return (
+                          <div key={dk}>
+                            <div
+                              onClick={() => void toggleDatabase(connection, db)}
+                              className={ROW}
+                              style={{ paddingLeft: INDENT[1] }}
+                              title={db}
+                            >
+                              <Chevron open={dbOpen} />
+                              <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
+                                {db}
+                              </span>
+                            </div>
+                            {dbOpen && (
+                              <>
+                                {busy[dk] && <NodeHint text="加载中…" />}
+                                {nodeErrors[dk] && <NodeHint text={nodeErrors[dk]} danger />}
+                                {connection.kind === "postgres"
+                                  ? schemas[dk]?.map((schema) => {
+                                      const sk = schemaNode(connection.id, db, schema);
+                                      const schemaOpen = isOpen(sk);
+                                      return (
+                                        <div key={sk}>
+                                          <div
+                                            onClick={() =>
+                                              void toggleSchema(connection, db, schema)
+                                            }
+                                            className={ROW}
+                                            style={{ paddingLeft: INDENT[2] }}
+                                            title={schema}
+                                          >
+                                            <Chevron open={schemaOpen} />
+                                            <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
+                                              {schema}
+                                            </span>
+                                          </div>
+                                          {schemaOpen && (
+                                            <>
+                                              {busy[sk] && <NodeHint text="加载中…" />}
+                                              {nodeErrors[sk] && (
+                                                <NodeHint text={nodeErrors[sk]} danger />
+                                              )}
+                                              {tables[sk]?.map((table) =>
+                                                tableRow(
+                                                  `${connection.id}${SEP}${db}`,
+                                                  connection.id,
+                                                  table,
+                                                  INDENT[3],
+                                                ),
+                                              )}
+                                            </>
+                                          )}
+                                        </div>
+                                      );
+                                    })
+                                  : tables[dk]?.map((table) =>
+                                      tableRow(connection.id, connection.id, table, INDENT[2]),
+                                    )}
+                              </>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </>
+                  )}
                 </div>
               );
             })
@@ -245,17 +574,16 @@ export function DatabasePane({
         </div>
       </div>
 
-      {/* 右侧：表 / 查询 */}
+      {/* 右侧：数据 / 查询 / Agent */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
           <IconDatabase className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
           <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
-            {activeConnection ? activeConnection.name : "未选择连接"}
-            {activeConnection && (
-              <span className="ml-2 text-[11px] text-fg-faint">
-                {connectionSummary(activeConnection)}
-              </span>
-            )}
+            {selected
+              ? `${selected.table.schema}.${selected.table.name}`
+              : activeConnection
+                ? activeConnection.name
+                : "未选择连接"}
           </span>
           <div className="flex items-center gap-0.5 rounded-md border border-line-strong p-0.5">
             <button
@@ -263,7 +591,7 @@ export function DatabasePane({
               onClick={() => pickTab("tables")}
               className={`${SEGMENT} ${subTab === "tables" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
             >
-              表
+              表格
             </button>
             <button
               type="button"
@@ -271,6 +599,13 @@ export function DatabasePane({
               className={`${SEGMENT} ${subTab === "query" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
             >
               查询
+            </button>
+            <button
+              type="button"
+              onClick={() => pickTab("agent")}
+              className={`${SEGMENT} ${subTab === "agent" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+            >
+              Agent
             </button>
           </div>
           <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
@@ -283,46 +618,37 @@ export function DatabasePane({
         )}
 
         <div className="flex min-h-0 flex-1 flex-col">
-          {!activeConnection ? (
-            <div className="flex flex-1 items-center justify-center px-6">
-              <p className="max-w-[340px] text-center text-[12px] leading-relaxed text-fg-faint">
-                从左侧选一个连接，点一下即连接。连上后可以浏览表、看数据，或写 SQL 查询。
-              </p>
-            </div>
-          ) : !isConnected ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6">
-              <p className="text-[12px] text-fg-faint">
-                {activeState?.phase === "error" ? "连接失败。" : "已选连接，尚未连接。"}
-              </p>
-              <button
-                type="button"
-                onClick={() => void connect(activeConnection)}
-                className="rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected"
-              >
-                {activeState?.phase === "error" ? "重试" : "连接"}
-              </button>
-            </div>
-          ) : activeSessionId === undefined ? (
-            <div className="flex flex-1 items-center justify-center px-6">
-              <p className="text-[12px] text-fg-faint">正在建立连接…</p>
-            </div>
-          ) : (
+          <div className={subTab === "tables" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+            <ResultGrid
+              result={result}
+              loading={loadingRows}
+              error={queryError}
+              onPage={(page) =>
+                selected && void loadRows(selected.sessionKey, selected.connectionId, selected.table, page)
+              }
+              hint="从左侧逐级展开：连接 → 数据库 → 表，点一张表看数据。"
+            />
+          </div>
+
+          {activeConnection && activeSessionId !== undefined && (
             <>
-              <div
-                className={
-                  subTab === "tables" ? "flex min-h-0 min-w-0 flex-1" : "hidden"
-                }
-              >
-                <DatabaseTables sessionId={activeSessionId} kind={activeConnection.kind} />
+              <div className={subTab === "query" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+                <DatabaseQuery sessionId={activeSessionId} kind={activeConnection.kind} />
               </div>
-              <div
-                className={
-                  subTab === "query" ? "flex min-h-0 min-w-0 flex-1" : "hidden"
-                }
-              >
-                <DatabaseQuery sessionId={activeSessionId} />
+              {/* Agent：对话式生成并执行只读 SQL。和其它子视图一样 hidden 挂着不卸载，
+                  切走再回来对话历史还在 */}
+              <div className={subTab === "agent" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+                <DatabaseAgent connection={activeConnection} active={subTab === "agent"} />
               </div>
             </>
+          )}
+
+          {subTab !== "tables" && !activeSessionId && (
+            <div className="flex flex-1 items-center justify-center px-6">
+              <p className="max-w-[340px] text-center text-[12px] leading-relaxed text-fg-faint">
+                从左侧展开一个连接后可用。
+              </p>
+            </div>
           )}
         </div>
       </div>
@@ -364,7 +690,7 @@ export function DatabasePane({
             >
               编辑
             </button>
-            {connected.includes(menu.connection.id) && (
+            {sessions[menu.connection.id] && (
               <button
                 type="button"
                 className={MENU_ITEM}

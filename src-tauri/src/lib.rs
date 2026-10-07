@@ -4,6 +4,7 @@ mod agent;
 mod ai;
 mod cli_sessions;
 mod database;
+mod db_agent;
 mod dev;
 mod feedback;
 mod fs_api;
@@ -19,6 +20,12 @@ mod tray;
 mod watcher;
 
 use tauri::{Emitter, Manager};
+
+/// 数据库 Agent 的 MCP 服务入口。main() 在 Tauri 初始化**之前**按 `--mcp-db` 分流到这里，
+/// 所以这条路径不会建窗口、也不碰任何 Tauri 状态。返回进程退出码。
+pub fn run_db_mcp() -> i32 {
+    db_agent::run_stdio()
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -148,8 +155,12 @@ pub fn run() {
             local_fs::local_remove,
             database::db_connect,
             database::db_disconnect,
+            database::db_test_connection,
+            database::db_databases,
+            database::db_schemas,
             database::db_tables,
             database::db_query,
+            db_agent::db_agent_set_target,
             tray::app_quit,
             tray::app_hide_to_tray,
         ])

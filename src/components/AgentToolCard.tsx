@@ -43,7 +43,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function summarize(input: unknown): string {
   const record = asRecord(input);
   if (!record) return "";
-  for (const key of ["filePath", "command", "pattern", "path", "query", "url"]) {
+  for (const key of ["filePath", "command", "pattern", "path", "query", "url", "sql", "table"]) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }
@@ -57,10 +57,97 @@ const STATUS_TEXT: Record<AgentToolStatus, string> = {
   error: "失败",
 };
 
+/** 一次查询的结果表。数据库 Agent 的 run_query 工具会把结果以 `{columns, rows}` 回传。 */
+interface GridData {
+  columns: string[];
+  rows: (string | null)[][];
+  hasMore: boolean;
+}
+
+function parseJson(text: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(text);
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把工具输出解析成结果表。opencode 有时会在 JSON 前后缀点说明文字，所以先整段试，
+ * 失败再从第一个 `{` 到最后一个 `}` 截一段试。形状对不上就返回 null（按普通文本展示）。
+ */
+function parseGrid(output: string | undefined): GridData | null {
+  if (!output) return null;
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  const candidates = [output, start >= 0 && end > start ? output.slice(start, end + 1) : ""];
+  for (const text of candidates) {
+    if (!text) continue;
+    const parsed = parseJson(text);
+    if (!parsed) continue;
+    const columns = parsed.columns;
+    const rows = parsed.rows;
+    if (!Array.isArray(columns) || !Array.isArray(rows)) continue;
+    if (!columns.every((column) => typeof column === "string")) continue;
+    if (!rows.every((row) => Array.isArray(row))) continue;
+    return {
+      columns: columns as string[],
+      rows: rows as (string | null)[][],
+      hasMore: parsed.hasMore === true,
+    };
+  }
+  return null;
+}
+
+/** 结果表：列头固定、单元格截断，最多这一块自己滚，不把整条对话撑长 */
+function ResultGrid({ data }: { data: GridData }) {
+  return (
+    <div className="max-h-72 overflow-auto border-t border-line bg-app">
+      <table className="min-w-full border-collapse font-mono text-[11px]">
+        <thead>
+          <tr>
+            {data.columns.map((name, index) => (
+              <th
+                key={index}
+                className="sticky top-0 z-10 border-b border-line bg-raised px-2 py-1 text-left font-medium whitespace-nowrap text-fg-muted"
+              >
+                {name}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.rows.map((row, rowIndex) => (
+            <tr key={rowIndex} className="hover:bg-hover">
+              {row.map((cell, cellIndex) => (
+                <td
+                  key={cellIndex}
+                  title={cell ?? "NULL"}
+                  className="max-w-[240px] truncate border-b border-line px-2 py-0.5 whitespace-nowrap text-fg-dim"
+                >
+                  {cell === null ? <span className="text-fg-faint italic">NULL</span> : cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.rows.length === 0 && (
+        <div className="px-2 py-1 text-[11px] text-fg-faint">没有返回任何行</div>
+      )}
+      {data.hasMore && (
+        <div className="px-2 py-1 text-[11px] text-fg-faint">结果已截断，只显示前若干行</div>
+      )}
+    </div>
+  );
+}
+
 /**
  * 一次工具调用的卡片：一行摘要 + 可展开的输出。
  *
- * 第一版不渲染 edit/write 的改动内容，只看路径和状态——diff 预览留到后面单独做。
+ * 数据库 Agent 的查询结果（`{columns, rows}`）会**直接铺成表格**、默认可见，
+ * 不需要再点开；其余工具仍按一行摘要 + 展开文本渲染。
  */
 export function AgentToolCard({ part }: { part: ToolPart }) {
   const [open, setOpen] = useState(false);
@@ -70,6 +157,9 @@ export function AgentToolCard({ part }: { part: ToolPart }) {
   const title = state.title?.trim() || summarize(state.input) || tool;
   const detail = state.status === "error" ? state.error : state.output;
   const failed = state.status === "error";
+  // 错误输出不解析成表格（那多半是报错文本，不是结果集）
+  const grid = failed ? null : parseGrid(state.output);
+  const canExpand = !grid && Boolean(detail);
 
   return (
     <div
@@ -80,10 +170,10 @@ export function AgentToolCard({ part }: { part: ToolPart }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        disabled={!detail}
+        disabled={!canExpand}
         className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left enabled:hover:bg-hover disabled:cursor-default"
       >
-        {detail ? (
+        {canExpand ? (
           open ? (
             <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
           ) : (
@@ -109,7 +199,9 @@ export function AgentToolCard({ part }: { part: ToolPart }) {
         </span>
       </button>
 
-      {open && detail && (
+      {grid && <ResultGrid data={grid} />}
+
+      {!grid && open && detail && (
         <pre className="max-h-60 overflow-auto border-t border-line bg-app px-2.5 py-2 font-mono text-[11px] leading-relaxed text-fg-muted">
           {detail}
         </pre>

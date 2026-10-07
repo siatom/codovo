@@ -44,6 +44,11 @@ export interface AgentLaunchConfig {
   agents: AgentProfile[];
   /** 选中的 primary agent；空则不下发 default_agent */
   primary: string;
+  /**
+   * 数据库 Agent：后端会额外注入只读的数据库 MCP 工具、内置技能与专用 agent，
+   * 并关掉文件类工具。终端区智能体不传。
+   */
+  database?: boolean;
 }
 
 /**
@@ -395,7 +400,7 @@ export function parseSessions(raw: unknown, cwd: string): AgentSessionSummary[] 
       typeof record.directory === "string"
         ? record.directory
         : asRecord(record.location)?.directory;
-    if (directory !== cwd) continue;
+    if (typeof directory !== "string" || !sameDirectory(directory, cwd)) continue;
 
     const time = asRecord(record.time);
     const title = typeof record.title === "string" ? record.title.trim() : "";
@@ -407,6 +412,16 @@ export function parseSessions(raw: unknown, cwd: string): AgentSessionSummary[] 
   }
 
   return sessions.sort((a, b) => b.updated - a.updated);
+}
+
+/**
+ * 目录比对：同一个目录在不同层的表示不保证一致——sqlite 存储层里是正斜杠
+ * （`D:/x/y`），而 API 返回与工作区 root / `AgentInfo.cwd` 是 Windows 的反斜杠
+ * （`D:\x\y`）。直接 `===` 一旦碰上不一致就把本目录的会话全滤掉，这里先统一分隔符。
+ * 不折叠大小写——Linux 上目录区分大小写，折叠会误匹配两个不同目录。
+ */
+function sameDirectory(a: string, b: string): boolean {
+  return a.replace(/\\/g, "/") === b.replace(/\\/g, "/");
 }
 
 /**

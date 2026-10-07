@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { dbQuery, type QueryResult } from "../lib/database";
+import { dbQuery, type DbKind, type QueryResult } from "../lib/database";
 import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { resolveFont, useSettings } from "../lib/settings";
+import { formatSql } from "../lib/sql-format";
 import { useTheme } from "../lib/theme";
 import { ResultGrid } from "./ResultGrid";
 
@@ -11,7 +12,7 @@ const PAGE_SIZE = 50;
 const DEFAULT_EDITOR_PERCENT = 40;
 
 /** 查询页：Monaco SQL 编辑器 + 结果表格，中间一条可拖的横向分隔条。 */
-export function DatabaseQuery({ sessionId }: { sessionId: number }) {
+export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: DbKind }) {
   const { theme, palette } = useTheme();
   const { settings } = useSettings();
 
@@ -24,6 +25,8 @@ export function DatabaseQuery({ sessionId }: { sessionId: number }) {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  /** 美化失败（多半是语句还没写完）的提示，和查询错误分开——它不该顶掉结果区 */
+  const [formatError, setFormatError] = useState("");
   const [lastSql, setLastSql] = useState("");
 
   const readSql = () => editorRef.current?.getValue().trim() ?? "";
@@ -55,6 +58,33 @@ export function DatabaseQuery({ sessionId }: { sessionId: number }) {
   const runRef = useRef(run);
   runRef.current = run;
 
+  /** 一键美化：按当前连接的方言重排全文；语句没写完时 sql-formatter 会抛错，只提示不阻断编辑 */
+  const beautify = useCallback(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    if (!editor || !model) return;
+    const before = model.getValue();
+    if (!before.trim()) return;
+    let after: string;
+    try {
+      after = formatSql(before, kind, model.getOptions().tabSize);
+    } catch (reason) {
+      setFormatError(String(reason));
+      return;
+    }
+    setFormatError("");
+    if (after === before) return;
+    // 走 executeEdits 而不是 setValue：进撤销栈，一次 Ctrl+Z 就能回到美化前
+    editor.executeEdits("codedock.beautifySql", [
+      { range: model.getFullModelRange(), text: after, forceMoveMarkers: true },
+    ]);
+    editor.pushUndoStop();
+  }, [kind]);
+
+  // 同上：快捷键 / 按钮的闭包只挂一次，用 ref 兜住最新的 kind
+  const beautifyRef = useRef(beautify);
+  beautifyRef.current = beautify;
+
   /** 翻页用上次跑过的 SQL，不读编辑器——免得翻页时把用户正在改的语句也带上 */
   const loadPage = useCallback(
     async (page: number) => {
@@ -77,6 +107,7 @@ export function DatabaseQuery({ sessionId }: { sessionId: number }) {
     const host = editorHostRef.current;
     if (!host) return;
     const editor = monaco.editor.create(host, {
+      language: "sql",
       automaticLayout: true,
       minimap: { enabled: false },
       scrollBeyondLastLine: false,
@@ -87,6 +118,15 @@ export function DatabaseQuery({ sessionId }: { sessionId: number }) {
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
       void runRef.current(0);
     });
+    // Shift+Alt+F 是 Monaco / VS Code 的格式化键位，这里绑到自己的美化上
+    editor.addAction({
+      id: "codedock.beautifySql",
+      label: "美化 SQL",
+      keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
+      run: () => beautifyRef.current(),
+    });
+    // 用户一开始改代码就把上次的美化报错收掉，免得一直挂在工具栏上误导
+    editor.onDidChangeModelContent(() => setFormatError(""));
     editorRef.current = editor;
     return () => {
       editor.dispose();
@@ -112,6 +152,7 @@ export function DatabaseQuery({ sessionId }: { sessionId: number }) {
   useEffect(() => {
     setResult(null);
     setError("");
+    setFormatError("");
     setLastSql("");
   }, [sessionId]);
 
@@ -148,7 +189,23 @@ export function DatabaseQuery({ sessionId }: { sessionId: number }) {
           运行
         </button>
         <span className="text-[11px] text-fg-faint">Ctrl / Cmd + Enter</span>
+        <button
+          type="button"
+          onClick={beautify}
+          title="美化 SQL（Shift + Alt + F）"
+          className="rounded-md border border-line-strong px-2.5 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
+        >
+          美化
+        </button>
         <span className="flex-1" />
+        {formatError && (
+          <span
+            className="min-w-0 max-w-[45%] truncate text-[11px] text-danger"
+            title={formatError}
+          >
+            美化失败：{formatError}
+          </span>
+        )}
         {loading && <span className="text-[11px] text-fg-dim">执行中…</span>}
       </div>
 

@@ -50,15 +50,15 @@ pub enum DbKind {
     Sqlite,
 }
 
-/// 三库的连接池。分派用，不对外暴露。
-enum DbPool {
+/// 三库的连接池。分派用；`db_agent`（数据库 Agent 的 MCP 工具）也复用同一套建池与解码。
+pub(crate) enum DbPool {
     Mysql(MySqlPool),
     Postgres(PgPool),
     Sqlite(SqlitePool),
 }
 
 impl DbPool {
-    async fn close(&self) {
+    pub(crate) async fn close(&self) {
         match self {
             DbPool::Mysql(pool) => pool.close().await,
             DbPool::Postgres(pool) => pool.close().await,
@@ -67,8 +67,8 @@ impl DbPool {
     }
 }
 
-struct DbSession {
-    pool: DbPool,
+pub(crate) struct DbSession {
+    pub(crate) pool: DbPool,
 }
 
 struct Inner {
@@ -105,7 +105,8 @@ impl Default for DbState {
 }
 
 /// `db_connect` 的入参。参数多，打包成一个对象传，免得命令签名太长。
-#[derive(Deserialize)]
+/// 也用作数据库 Agent 的目标连接文件（target.json）的读写结构。
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbConnectRequest {
     pub conn_id: String,
@@ -152,7 +153,7 @@ pub struct QueryResult {
 }
 
 /// 连接 id 要拼进钥匙串条目名，secrets.rs 那边有条目名长度与合法性约束，这里先挡一道。
-fn valid_conn_id(conn_id: &str) -> bool {
+pub(crate) fn valid_conn_id(conn_id: &str) -> bool {
     !conn_id.is_empty()
         && conn_id.len() <= 64
         && conn_id
@@ -219,6 +220,130 @@ fn session_of(state: &DbState, id: u32) -> Result<Arc<DbSession>, String> {
         .ok_or_else(|| "数据库连接不存在（可能已断开）".to_string())
 }
 
+/// `db_test_connection` 的入参。比 `DbConnectRequest` 多一个 `password`：表单里刚敲的密码
+/// 还没写进钥匙串，得直接传进来试；留空则回退到钥匙串里已存的那个（编辑连接时常见）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbTestRequest {
+    pub conn_id: String,
+    pub kind: DbKind,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+    pub file: String,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+/// 按类型建池。`db_connect` / `db_test_connection` / 数据库 Agent 的 MCP 工具共用；
+/// 密码由调用方给——前者来自钥匙串，后者可能来自表单里刚敲的值。
+///
+/// `read_only` 为真时给池里每条连接都设上只读（数据库 Agent 专用）：这是语句白名单之外的
+/// 第二道兜底。设置语句在个别只读实例 / 老版本上可能报错，所以**失败只忽略、不拦建连**。
+// 参数是一组建连字段，打包成结构体反而多一层转发；这里就按原样摊开
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_pool(
+    kind: DbKind,
+    host: &str,
+    port: u16,
+    user: &str,
+    password: &str,
+    database: &str,
+    file: &str,
+    read_only: bool,
+) -> Result<DbPool, String> {
+    Ok(match kind {
+        DbKind::Mysql => {
+            if host.is_empty() {
+                return Err("请填写主机地址".to_string());
+            }
+            let options = MySqlConnectOptions::new()
+                .host(host)
+                .port(port)
+                .username(user)
+                .password(password)
+                .database(database);
+            let mut pool_options = MySqlPoolOptions::new()
+                .max_connections(MAX_CONNECTIONS)
+                .acquire_timeout(CONNECT_TIMEOUT);
+            if read_only {
+                pool_options = pool_options.after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        let _ = sqlx::query("SET SESSION TRANSACTION READ ONLY")
+                            .execute(&mut *conn)
+                            .await;
+                        Ok(())
+                    })
+                });
+            }
+            DbPool::Mysql(
+                pool_options
+                    .connect_with(options)
+                    .await
+                    .map_err(|e| describe_connect_error(&e.to_string()))?,
+            )
+        }
+        DbKind::Postgres => {
+            if host.is_empty() {
+                return Err("请填写主机地址".to_string());
+            }
+            let options = PgConnectOptions::new()
+                .host(host)
+                .port(port)
+                .username(user)
+                .password(password)
+                .database(database);
+            let mut pool_options = PgPoolOptions::new()
+                .max_connections(MAX_CONNECTIONS)
+                .acquire_timeout(CONNECT_TIMEOUT);
+            if read_only {
+                pool_options = pool_options.after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        let _ = sqlx::query("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
+                            .execute(&mut *conn)
+                            .await;
+                        Ok(())
+                    })
+                });
+            }
+            DbPool::Postgres(
+                pool_options
+                    .connect_with(options)
+                    .await
+                    .map_err(|e| describe_connect_error(&e.to_string()))?,
+            )
+        }
+        DbKind::Sqlite => {
+            if file.is_empty() {
+                return Err("请选择 SQLite 数据库文件".to_string());
+            }
+            // create_if_missing(false)：路径打错时直接报错，不会凭空建一个空库
+            let options = SqliteConnectOptions::new()
+                .filename(file)
+                .create_if_missing(false);
+            let mut pool_options = SqlitePoolOptions::new()
+                .max_connections(MAX_CONNECTIONS)
+                .acquire_timeout(CONNECT_TIMEOUT);
+            if read_only {
+                pool_options = pool_options.after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        // query_only 是 SQLite 官方的只读开关：写语句直接报错
+                        let _ = sqlx::query("PRAGMA query_only = ON").execute(&mut *conn).await;
+                        Ok(())
+                    })
+                });
+            }
+            DbPool::Sqlite(
+                pool_options
+                    .connect_with(options)
+                    .await
+                    .map_err(|e| describe_connect_error(&e.to_string()))?,
+            )
+        }
+    })
+}
+
 #[tauri::command]
 pub async fn db_connect(
     state: tauri::State<'_, DbState>,
@@ -230,64 +355,17 @@ pub async fn db_connect(
     // 钥匙串读取是同步阻塞的系统调用，必须在第一个 await 之前完成（照 ai.rs 的注释）
     let password = crate::secrets::get(&password_secret_id(&request.conn_id))?.unwrap_or_default();
 
-    let pool = match request.kind {
-        DbKind::Mysql => {
-            if request.host.trim().is_empty() {
-                return Err("请填写主机地址".to_string());
-            }
-            let options = MySqlConnectOptions::new()
-                .host(request.host.trim())
-                .port(request.port)
-                .username(request.user.trim())
-                .password(&password)
-                .database(request.database.trim());
-            DbPool::Mysql(
-                MySqlPoolOptions::new()
-                    .max_connections(MAX_CONNECTIONS)
-                    .acquire_timeout(CONNECT_TIMEOUT)
-                    .connect_with(options)
-                    .await
-                    .map_err(|e| describe_connect_error(&e.to_string()))?,
-            )
-        }
-        DbKind::Postgres => {
-            if request.host.trim().is_empty() {
-                return Err("请填写主机地址".to_string());
-            }
-            let options = PgConnectOptions::new()
-                .host(request.host.trim())
-                .port(request.port)
-                .username(request.user.trim())
-                .password(&password)
-                .database(request.database.trim());
-            DbPool::Postgres(
-                PgPoolOptions::new()
-                    .max_connections(MAX_CONNECTIONS)
-                    .acquire_timeout(CONNECT_TIMEOUT)
-                    .connect_with(options)
-                    .await
-                    .map_err(|e| describe_connect_error(&e.to_string()))?,
-            )
-        }
-        DbKind::Sqlite => {
-            let path = request.file.trim();
-            if path.is_empty() {
-                return Err("请选择 SQLite 数据库文件".to_string());
-            }
-            // create_if_missing(false)：路径打错时直接报错，不会凭空建一个空库
-            let options = SqliteConnectOptions::new()
-                .filename(path)
-                .create_if_missing(false);
-            DbPool::Sqlite(
-                SqlitePoolOptions::new()
-                    .max_connections(MAX_CONNECTIONS)
-                    .acquire_timeout(CONNECT_TIMEOUT)
-                    .connect_with(options)
-                    .await
-                    .map_err(|e| describe_connect_error(&e.to_string()))?,
-            )
-        }
-    };
+    let pool = create_pool(
+        request.kind,
+        request.host.trim(),
+        request.port,
+        request.user.trim(),
+        &password,
+        request.database.trim(),
+        request.file.trim(),
+        false,
+    )
+    .await?;
 
     let id = state.inner.next_id.fetch_add(1, Ordering::Relaxed);
     let session = Arc::new(DbSession { pool });
@@ -314,25 +392,162 @@ pub async fn db_disconnect(state: tauri::State<'_, DbState>, id: u32) -> Result<
     Ok(())
 }
 
+/// 试连一次就断开，用来在保存前验证参数。不登记会话，池建完立刻关。
+/// 密码优先用表单里刚敲的（还没进钥匙串），没填才回退到钥匙串里已存的。
 #[tauri::command]
-pub async fn db_tables(state: tauri::State<'_, DbState>, id: u32) -> Result<Vec<TableInfo>, String> {
+pub async fn db_test_connection(request: DbTestRequest) -> Result<(), String> {
+    let password = match request.password.as_deref() {
+        Some(value) if !value.is_empty() => value.to_string(),
+        // 没传明文就回退到钥匙串里已存的（编辑连接时常见）；
+        // 新建连接还没有 id，没有可回退的条目，直接用空密码试
+        _ if valid_conn_id(&request.conn_id) => {
+            // 同步阻塞调用，放在第一个 await 之前
+            crate::secrets::get(&password_secret_id(&request.conn_id))?.unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+
+    let pool = create_pool(
+        request.kind,
+        request.host.trim(),
+        request.port,
+        request.user.trim(),
+        &password,
+        request.database.trim(),
+        request.file.trim(),
+        false,
+    )
+    .await?;
+    pool.close().await;
+    Ok(())
+}
+
+/// `db_tables` 取一个文本列。MySQL 的 information_schema 列带 BINARY 标志、sqlx 的 `String`
+/// 解不了（见 `bytes_mysql`），所以补一道字节兜底；PG / SQLite 一般走不到兜底那步。
+macro_rules! text_cell {
+    ($row:expr, $idx:expr, $bytes:path) => {
+        match $row.try_get::<String, _>($idx) {
+            Ok(value) => value,
+            Err(_) => match $row.try_get::<Vec<u8>, _>($idx) {
+                Ok(value) => $bytes(&value),
+                Err(_) => String::new(),
+            },
+        }
+    };
+}
+
+/// 可切换的「数据库」这一级：MySQL 是库，SQLite 只有 main，PostgreSQL 是实例里的库。
+///
+/// MySQL / SQLite 是「库 → 表」两级；PG 是「库 → schema → 表」三级，而 PG 一个连接只能连
+/// 一个库、不能跨库查询，所以界面上每展开一个 PG 库就单独开一条会话（建会话时按库名覆盖
+/// `database`）——列库这一步才用得上当前这条连接里的 `pg_database`。
+#[tauri::command]
+pub async fn db_databases(
+    state: tauri::State<'_, DbState>,
+    id: u32,
+) -> Result<Vec<String>, String> {
     let session = session_of(&state, id)?;
+    databases_of(&session).await
+}
+
+pub(crate) async fn databases_of(session: &DbSession) -> Result<Vec<String>, String> {
     match &session.pool {
         DbPool::Mysql(pool) => {
-            const SQL: &str = "SELECT table_schema, table_name, table_type \
-                 FROM information_schema.tables \
-                 WHERE table_schema = DATABASE() \
-                 ORDER BY table_name";
+            const SQL: &str = "SELECT schema_name FROM information_schema.schemata \
+                 WHERE schema_name NOT IN \
+                    ('information_schema', 'mysql', 'performance_schema', 'sys') \
+                 ORDER BY schema_name";
             let rows = sqlx::query(SQL)
                 .fetch_all(pool)
                 .await
                 .map_err(|e| e.to_string())?;
+            Ok(rows.iter().map(|row| text_cell!(row, 0, bytes_mysql)).collect())
+        }
+        DbPool::Postgres(pool) => {
+            // datname 是 name 类型，显式转 text 免得类型解码挑食；
+            // datallowconn=false 的库（比如 template0）连不上，别列出来
+            const SQL: &str = "SELECT datname::text FROM pg_database \
+                 WHERE NOT datistemplate AND datallowconn \
+                 ORDER BY datname";
+            let rows = sqlx::query(SQL)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows.iter().map(|row| text_cell!(row, 0, format_bytes)).collect())
+        }
+        DbPool::Sqlite(_) => Ok(vec!["main".to_string()]),
+    }
+}
+
+/// PG 专用：当前库里的 schema 列表（界面的第三级）。其余库没有这一层，返回空。
+#[tauri::command]
+pub async fn db_schemas(
+    state: tauri::State<'_, DbState>,
+    id: u32,
+) -> Result<Vec<String>, String> {
+    let session = session_of(&state, id)?;
+    schemas_of(&session).await
+}
+
+pub(crate) async fn schemas_of(session: &DbSession) -> Result<Vec<String>, String> {
+    match &session.pool {
+        DbPool::Postgres(pool) => {
+            // pg_ 前缀是 PG 自己的内部 schema（pg_toast / pg_temp_N 之类），别摆给用户看
+            const SQL: &str = "SELECT schema_name FROM information_schema.schemata \
+                 WHERE schema_name NOT IN ('pg_catalog', 'information_schema') \
+                   AND schema_name NOT LIKE 'pg\\_%' \
+                 ORDER BY schema_name";
+            let rows = sqlx::query(SQL)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(rows.iter().map(|row| text_cell!(row, 0, format_bytes)).collect())
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
+#[tauri::command]
+pub async fn db_tables(
+    state: tauri::State<'_, DbState>,
+    id: u32,
+    schema: Option<String>,
+) -> Result<Vec<TableInfo>, String> {
+    let session = session_of(&state, id)?;
+    tables_of(&session, schema.as_deref()).await
+}
+
+/// 列出某个命名空间下的表与视图。`schema` 是「表挂在哪」那一层的名字：
+/// MySQL 是库名、PG 是 schema 名、SQLite 忽略。传 None 时退回「所有非系统命名空间」。
+pub(crate) async fn tables_of(
+    session: &DbSession,
+    schema: Option<&str>,
+) -> Result<Vec<TableInfo>, String> {
+    match &session.pool {
+        DbPool::Mysql(pool) => {
+            // 指定了库就按库过滤；没指定时退回原来的行为（DATABASE() 为 NULL 则列出所有
+            // 非系统库）——建连时没填库名的话 DATABASE() 是 NULL，只按它过滤会一条都查不到。
+            const SQL_ONE: &str = "SELECT table_schema, table_name, table_type \
+                 FROM information_schema.tables \
+                 WHERE table_schema = ? \
+                 ORDER BY table_name";
+            const SQL_ALL: &str = "SELECT table_schema, table_name, table_type \
+                 FROM information_schema.tables \
+                 WHERE table_schema = DATABASE() \
+                    OR (DATABASE() IS NULL AND table_schema NOT IN \
+                        ('information_schema', 'mysql', 'performance_schema', 'sys')) \
+                 ORDER BY table_schema, table_name";
+            let rows = match schema {
+                Some(name) => sqlx::query(SQL_ONE).bind(name).fetch_all(pool).await,
+                None => sqlx::query(SQL_ALL).fetch_all(pool).await,
+            }
+            .map_err(|e| e.to_string())?;
             Ok(rows
                 .iter()
                 .map(|row| {
-                    let schema: String = row.try_get(0).unwrap_or_default();
-                    let name: String = row.try_get(1).unwrap_or_default();
-                    let table_type: String = row.try_get(2).unwrap_or_default();
+                    let schema: String = text_cell!(row, 0, bytes_mysql);
+                    let name: String = text_cell!(row, 1, bytes_mysql);
+                    let table_type: String = text_cell!(row, 2, bytes_mysql);
                     TableInfo {
                         schema,
                         name,
@@ -342,20 +557,25 @@ pub async fn db_tables(state: tauri::State<'_, DbState>, id: u32) -> Result<Vec<
                 .collect())
         }
         DbPool::Postgres(pool) => {
-            const SQL: &str = "SELECT table_schema, table_name, table_type \
+            const SQL_ONE: &str = "SELECT table_schema, table_name, table_type \
+                 FROM information_schema.tables \
+                 WHERE table_schema = $1 \
+                 ORDER BY table_name";
+            const SQL_ALL: &str = "SELECT table_schema, table_name, table_type \
                  FROM information_schema.tables \
                  WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
                  ORDER BY table_schema, table_name";
-            let rows = sqlx::query(SQL)
-                .fetch_all(pool)
-                .await
-                .map_err(|e| e.to_string())?;
+            let rows = match schema {
+                Some(name) => sqlx::query(SQL_ONE).bind(name).fetch_all(pool).await,
+                None => sqlx::query(SQL_ALL).fetch_all(pool).await,
+            }
+            .map_err(|e| e.to_string())?;
             Ok(rows
                 .iter()
                 .map(|row| {
-                    let schema: String = row.try_get(0).unwrap_or_default();
-                    let name: String = row.try_get(1).unwrap_or_default();
-                    let table_type: String = row.try_get(2).unwrap_or_default();
+                    let schema: String = text_cell!(row, 0, format_bytes);
+                    let name: String = text_cell!(row, 1, format_bytes);
+                    let table_type: String = text_cell!(row, 2, format_bytes);
                     TableInfo {
                         schema,
                         name,
@@ -375,8 +595,8 @@ pub async fn db_tables(state: tauri::State<'_, DbState>, id: u32) -> Result<Vec<
             Ok(rows
                 .iter()
                 .map(|row| {
-                    let name: String = row.try_get(0).unwrap_or_default();
-                    let table_type: String = row.try_get(1).unwrap_or_default();
+                    let name: String = text_cell!(row, 0, format_bytes);
+                    let table_type: String = text_cell!(row, 1, format_bytes);
                     TableInfo {
                         schema: "main".to_string(),
                         name,
@@ -399,7 +619,7 @@ fn table_kind(table_type: &str) -> String {
 
 /// 语句分三类，决定怎么执行。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SqlClass {
+pub(crate) enum SqlClass {
     /// 返回行的查询，可翻页（SELECT / WITH / VALUES / TABLE）
     RowsPaged,
     /// 返回行但没法翻页（SHOW / EXPLAIN / PRAGMA 之类），只取一页
@@ -409,7 +629,7 @@ enum SqlClass {
 }
 
 /// 去掉首部的注释与空白、尾部的分号——分号留在里面会被包进子查询，直接语法错。
-fn strip_sql(sql: &str) -> String {
+pub(crate) fn strip_sql(sql: &str) -> String {
     let mut rest = sql.trim();
     loop {
         let trimmed = rest.trim_start();
@@ -439,7 +659,7 @@ fn first_keyword(sql: &str) -> String {
         .collect()
 }
 
-fn classify_sql(sql: &str) -> SqlClass {
+pub(crate) fn classify_sql(sql: &str) -> SqlClass {
     match first_keyword(sql).as_str() {
         "select" | "with" | "values" | "table" => SqlClass::RowsPaged,
         "insert" | "update" | "delete" | "replace" | "merge" | "create" | "drop" | "alter"
@@ -448,6 +668,126 @@ fn classify_sql(sql: &str) -> SqlClass {
         | "release" | "start" => SqlClass::Write,
         _ => SqlClass::RowsSingle,
     }
+}
+
+/// 只读判定（数据库 Agent 的 `run_query` 专用）。比 `classify_sql` 严：后者只看第一个关键字，
+/// `WITH x AS (...) INSERT ...` 会被当成可翻页查询放过去。
+///
+/// 规则：先剥掉注释与字符串/反引号字面量（它们不是 SQL 语义的一部分，留着会让关键字扫描
+/// 误判，比如 `SELECT 'drop table'`），再要求首个有效关键字在白名单里；对可能藏写操作的
+/// 几类（select / with / values / table / explain）再扫一遍写动词；内嵌分号（多语句）一律拒绝。
+pub(crate) fn is_read_only(sql: &str) -> bool {
+    let stripped = strip_sql(sql);
+    if stripped.is_empty() {
+        return false;
+    }
+    let cleaned = strip_noise(&stripped);
+    // 内嵌分号 = 多条语句。`strip_sql` 已经去掉尾部分号，这里再遇到就说明是拼接
+    if cleaned.contains(';') {
+        return false;
+    }
+    let keyword = first_keyword(&cleaned);
+    // 这几类的正文里可能藏写操作，要再扫一遍动词
+    let scanned = matches!(
+        keyword.as_str(),
+        "select" | "with" | "values" | "table" | "explain"
+    );
+    // show / describe / desc 语法固定、只读；pragma 刻意不放行（`PRAGMA query_only = OFF`
+    // 能关掉下面的池级只读兜底，看表结构请走 describe_table 工具）
+    let allowed = scanned || matches!(keyword.as_str(), "show" | "describe" | "desc");
+    if !allowed {
+        return false;
+    }
+    if scanned && contains_write_verb(&cleaned) {
+        return false;
+    }
+    true
+}
+
+/// 把注释与字符串/反引号字面量替换成空格，只留下关键字与标点。
+///
+/// 逐字节扫描（注释 / 引号的边界都是 ASCII），但输出走 `Vec<u8>`——直接按字节 push 到
+/// `String` 会把多字节 UTF-8 字符拆坏，中文标识符就没了。
+fn strip_noise(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // `--` 行注释
+        if b == b'-' && bytes.get(i + 1) == Some(&b'-') {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // MySQL 的 `#` 行注释
+        if b == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // `/* */` 块注释
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            out.push(b' ');
+            continue;
+        }
+        // 单引号 / 双引号 / 反引号字面量（含反斜杠转义与双写转义）
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    if bytes.get(i + 1) == Some(&quote) {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            out.push(b' ');
+            continue;
+        }
+        out.push(b);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 扫描写动词，按词边界匹配（`updated_at`、`deleted_at` 这类标识符不该命中）。
+fn contains_write_verb(sql: &str) -> bool {
+    const WRITE_VERBS: &[&str] = &[
+        "insert", "update", "delete", "merge", "replace", "upsert", "create", "drop", "alter",
+        "truncate", "grant", "revoke", "into", "set", "reset", "copy", "call", "do", "load",
+        "vacuum", "attach", "detach", "reindex", "begin", "commit", "rollback", "savepoint",
+        "release", "lock", "analyze", "refresh", "comment",
+    ];
+    let lower = sql.to_lowercase();
+    let bytes = lower.as_bytes();
+    let is_word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    for verb in WRITE_VERBS {
+        for (start, _) in lower.match_indices(verb) {
+            let end = start + verb.len();
+            let before_ok = start == 0 || !is_word(bytes[start - 1]);
+            let after_ok = end >= bytes.len() || !is_word(bytes[end]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// 给可翻页的查询套一层子查询，多取一行判断有没有下一页。
@@ -489,7 +829,7 @@ pub async fn db_query(
     Ok(result)
 }
 
-async fn run_query(
+pub(crate) async fn run_query(
     session: &DbSession,
     sql: &str,
     class: SqlClass,
@@ -627,8 +967,9 @@ fn assemble(
 ///
 /// 后面 `[$($extra),*]` 是「只在某些库上有实现」的类型（BigDecimal / Uuid / JSON 在 SQLite
 /// 上没有 Decode 实现，硬塞进去整个宏都编不过），按库传。要求都实现 `Display`。
+/// 末尾的 `$bytes` 是「拿到字节数组后怎么渲染」的函数，三库口径不同（见 `bytes_mysql`）。
 macro_rules! decode_cell {
-    ($row:expr, $idx:expr, [$($extra:ty),* $(,)?]) => {{
+    ($row:expr, $idx:expr, [$($extra:ty),* $(,)?], $bytes:path) => {{
         let row = $row;
         let idx = $idx;
         let raw = match row.try_get_raw(idx) {
@@ -668,7 +1009,7 @@ macro_rules! decode_cell {
             }
         )*
         if let Ok(value) = row.try_get::<Vec<u8>, _>(idx) {
-            return Some(format_bytes(&value));
+            return Some($bytes(&value));
         }
         Some("<无法显示>".to_string())
     }};
@@ -676,13 +1017,13 @@ macro_rules! decode_cell {
 
 fn cells_mysql(row: &MySqlRow) -> Vec<Option<String>> {
     (0..row.columns().len())
-        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value]))
+        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value], bytes_mysql))
         .collect()
 }
 
 fn cells_pg(row: &PgRow) -> Vec<Option<String>> {
     (0..row.columns().len())
-        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value]))
+        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value], format_bytes))
         .collect()
 }
 
@@ -690,7 +1031,7 @@ fn cells_pg(row: &PgRow) -> Vec<Option<String>> {
 // BigDecimal / Uuid / JSON 在 sqlx-sqlite 里没有 Decode 实现，传了反而编不过。
 fn cells_sqlite(row: &SqliteRow) -> Vec<Option<String>> {
     (0..row.columns().len())
-        .map(|idx| decode_cell!(row, idx, []))
+        .map(|idx| decode_cell!(row, idx, [], format_bytes))
         .collect()
 }
 
@@ -715,6 +1056,19 @@ fn format_bytes(bytes: &[u8]) -> String {
         let _ = write!(out, "{byte:02x}");
     }
     out
+}
+
+/// MySQL 专用：`utf8mb3_bin` 这类 `_bin` 排序规则的**文本**列会带上 BINARY 标志，
+/// sqlx 因此拒收 `String`、只肯按字节数组给（information_schema 和 SHOW 的结果列全是这种）。
+/// 直接当二进制渲染就是一串 `0x...`——表名、库名全成了乱码。这里补一道 UTF-8 解码，
+/// 只有真解不出来（或带控制字符，那就是真的二进制）才退回十六进制。
+fn bytes_mysql(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(text) if !text.chars().any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r') => {
+            clamp_cell(text.to_string())
+        }
+        _ => format_bytes(bytes),
+    }
 }
 
 #[cfg(test)]
@@ -758,6 +1112,36 @@ mod tests {
     }
 
     #[test]
+    fn only_read_only_statements_pass() {
+        // 放行
+        assert!(is_read_only("SELECT * FROM t"));
+        assert!(is_read_only("  select 1 ; "));
+        assert!(is_read_only("with x as (select 1) select * from x"));
+        assert!(is_read_only("SHOW TABLES"));
+        assert!(is_read_only("SHOW CREATE TABLE t"));
+        assert!(is_read_only("EXPLAIN SELECT 1"));
+        assert!(is_read_only("-- 注释\nSELECT 1"));
+        // 注释 / 字符串里的关键字不算数
+        assert!(is_read_only("SELECT * FROM t WHERE name = 'drop table'"));
+        assert!(is_read_only("SELECT deleted_at, updated_at FROM t"));
+
+        // 写语句一律拒
+        assert!(!is_read_only("INSERT INTO t VALUES (1)"));
+        assert!(!is_read_only("UPDATE t SET a=1"));
+        assert!(!is_read_only("DELETE FROM t"));
+        assert!(!is_read_only("DROP TABLE t"));
+        assert!(!is_read_only("CREATE TABLE t (id int)"));
+        assert!(!is_read_only(""));
+        // 绕过手法
+        assert!(!is_read_only("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x"));
+        assert!(!is_read_only("SELECT 1; DROP TABLE t"));
+        assert!(!is_read_only("SELECT * FROM t INTO OUTFILE '/tmp/x'"));
+        assert!(!is_read_only("EXPLAIN ANALYZE INSERT INTO t VALUES (1)"));
+        // PRAGMA 能关掉池级只读，刻意不放行
+        assert!(!is_read_only("PRAGMA query_only = OFF"));
+    }
+
+    #[test]
     fn describes_connect_errors() {
         assert!(describe_connect_error("Connection refused (os error 10061)").contains("连接被拒绝"));
         assert!(describe_connect_error("由于目标计算机积极拒绝").contains("连接被拒绝"));
@@ -771,6 +1155,19 @@ mod tests {
         assert_eq!(table_kind("BASE TABLE"), "table");
         assert_eq!(table_kind("VIEW"), "view");
         assert_eq!(table_kind("view"), "view");
+    }
+
+    #[test]
+    fn mysql_bytes_prefers_text_but_keeps_binary_as_hex() {
+        // information_schema / SHOW 的文本列（utf8mb3_bin）走这条
+        assert_eq!(bytes_mysql(b"air_db"), "air_db");
+        assert_eq!(bytes_mysql("中文库".as_bytes()), "中文库");
+        // 带控制字符 → 当成真二进制
+        assert_eq!(bytes_mysql(&[0x01, 0x02, 0x03, 0x04]), "0x01020304");
+        // 非 UTF-8 → 十六进制
+        assert_eq!(bytes_mysql(&[0xff, 0xfe]), "0xfffe");
+        // 换行 / 制表符不算控制字符，文本里带着也得照样显示
+        assert_eq!(bytes_mysql(b"a\tb\nc"), "a\tb\nc");
     }
 
     #[tokio::test]
@@ -794,6 +1191,14 @@ mod tests {
         let session = DbSession {
             pool: DbPool::Sqlite(pool),
         };
+
+        // SQLite 只有 main 一个库、没有 schema 这一层
+        assert_eq!(databases_of(&session).await.unwrap(), vec!["main"]);
+        assert!(schemas_of(&session).await.unwrap().is_empty());
+        let tables = tables_of(&session, Some("main")).await.unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "t");
+        assert_eq!(tables[0].kind, "table");
 
         let first = run_query(&session, "SELECT * FROM t ORDER BY id", SqlClass::RowsPaged, 0, 2)
             .await

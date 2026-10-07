@@ -62,6 +62,44 @@ const CHILD_LOG_LINES: usize = 40;
 /// 子进程输出的环形缓冲。启动失败时靠它把原因带回给用户。
 type ChildLog = Arc<Mutex<VecDeque<String>>>;
 
+/// 数据库 Agent 的内置技能正文（frontmatter 由 `render_skill` 补）。
+/// 目的：把「先看表、再确认字段、最后只写 SELECT」这套工作流写死给模型。
+///
+/// 工具名带 MCP server 前缀：opencode 把 `mcp.db` 下的工具注册成 `db_<name>`
+/// （见 opencode 文档里 `"my-mcp*"` 匹配 `my-mcp_search` 的例子），所以这里写全名。
+const DB_AGENT_SKILL_BODY: &str = "\
+# 数据库查询
+
+你连的是一个**只读**的数据库连接，只能查数据，绝不能写数据或改结构。
+
+工作流：
+
+1. 不确定有哪些表时，先用 `db_list_tables` 列出全部表与视图。
+2. 用 `db_describe_table` 看目标表的列、类型、主键，确认字段名再写 SQL。
+3. 用 `db_run_query` 执行 **SELECT / WITH / SHOW / EXPLAIN** 之类的只读语句，把结果拿回来。
+4. 结果集可能被截断（只回前若干行），必要时用 `LIMIT` 与 `ORDER BY` 缩小范围。
+
+硬性约束：
+
+- 只生成只读 SQL。任何 INSERT / UPDATE / DELETE / DDL 都会被拒绝，不要尝试绕过。
+- 用当前数据库的方言写（MySQL 用反引号、PostgreSQL / SQLite 用双引号）。
+- 查询大表时务必带 `LIMIT`，别把整张表拉出来。
+- 拿不准用户想问什么就先澄清，不要凭猜测写复杂 SQL。";
+
+/// 数据库 Agent 专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
+const DB_AGENT_PROMPT: &str = "\
+你是 CodeDock 里面向数据库的查询助手。你能看到的工具只有一组只读数据库工具\
+（db_list_tables / db_describe_table / db_run_query）。\n\
+把用户的中文问题翻成准确的 SQL，用工具执行后把结果讲清楚：先给结论，再附上执行的 SQL。\
+除非用户要求，不要罗列原始行，用一两条代表性数据说明即可。\n\
+你**只能查询**：任何写数据、改结构、事务控制的操作都被禁止，被拒绝时如实告诉用户，不要反复重试。";
+
+/// 数据库 Agent 内置技能的名字（同时也是配置目录里那个文件夹名）。
+const DB_AGENT_SKILL_NAME: &str = "db-query";
+
+/// 数据库 Agent 专用 primary agent 的名字。
+const DB_AGENT_AGENT_NAME: &str = "database";
+
 /// 对接的是哪一带 opencode 的接口。
 ///
 /// 两代差异不小，但**相对路径几乎一样**：除了探针、发消息、中断这三处名字真的不同，
@@ -239,6 +277,10 @@ pub struct AgentConfig {
     /// 对话面板里选中的 primary agent；空则不下发 default_agent
     #[serde(default)]
     primary: String,
+    /// 数据库 Agent：额外注入只读数据库 MCP 工具、内置技能与专用 agent，并关掉文件类工具。
+    /// 由数据库面板传 true；终端区智能体不传（默认 false）。
+    #[serde(default)]
+    database: bool,
 }
 
 impl AgentConfig {
@@ -377,6 +419,9 @@ pub struct AgentInfo {
     version: String,
     /// 探测出来的接口代次（"v1" / "v2"），界面拿它显示、排查时也用得上
     protocol: String,
+    /// 这个实例的工作目录。opencode 的会话是全局存的，列表里混着各个目录的记录，
+    /// 前端得拿它按目录过滤（数据库 Agent 的 cwd 在前端算不出来，只能后端带出去）
+    cwd: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -795,7 +840,14 @@ fn provider_hint() -> String {
 /// - 选中的 primary agent → `default_agent`。
 ///
 /// 配置目录整体是「每次启动重新生成」的产物，所以 `kill()` 里删掉它没关系。
-fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
+///
+/// `db_target` 为 `Some` 表示这次起的是数据库 Agent：除常规配置外，再注入只读的数据库
+/// MCP 工具（本 exe 的 `--mcp-db` 子命令）、内置技能与专用 primary agent。
+fn write_config(
+    dir: &Path,
+    cfg: &AgentConfig,
+    db_target: Option<&Path>,
+) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
 
     let mut instructions: Vec<String> = Vec::new();
@@ -815,6 +867,21 @@ fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
         let target = skills_dir.join(name);
         std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
         std::fs::write(target.join("SKILL.md"), render_skill(skill))
+            .map_err(|e| format!("写入技能失败: {e}"))?;
+        wrote_skill = true;
+    }
+
+    // 数据库 Agent 内置一份技能：把「先看表、再确认字段、只写 SELECT」的流程写死给模型
+    if db_target.is_some() {
+        let target = skills_dir.join(DB_AGENT_SKILL_NAME);
+        std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
+        let skill = SkillSpec {
+            name: DB_AGENT_SKILL_NAME.to_string(),
+            description: "用只读 SQL 查询当前数据库连接：先列表、再看表结构、最后执行查询"
+                .to_string(),
+            content: DB_AGENT_SKILL_BODY.to_string(),
+        };
+        std::fs::write(target.join("SKILL.md"), render_skill(&skill))
             .map_err(|e| format!("写入技能失败: {e}"))?;
         wrote_skill = true;
     }
@@ -887,6 +954,18 @@ fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
         agents.insert(name.to_string(), entry);
     }
 
+    if db_target.is_some() {
+        // 数据库 Agent 固定用自己的 primary agent：角色与边界要盖在用户的通用配置之上
+        agents.insert(
+            DB_AGENT_AGENT_NAME.to_string(),
+            serde_json::json!({
+                "description": "只读数据库查询助手",
+                "mode": "primary",
+                "prompt": DB_AGENT_PROMPT,
+            }),
+        );
+    }
+
     let mut config = serde_json::json!({
         "provider": serde_json::Value::Object(providers),
         "model": default_model,
@@ -908,6 +987,29 @@ fn write_config(dir: &Path, cfg: &AgentConfig) -> Result<(), String> {
     }
     if !cfg.primary.trim().is_empty() {
         config["default_agent"] = serde_json::json!(cfg.primary.trim());
+    }
+
+    if let Some(target) = db_target {
+        // 只读数据库工具走本 exe 的 `--mcp-db` 子命令。`timeout` 要放宽：默认 5s 会把
+        // 慢查询直接掐断（它是 MCP 请求超时，不只是握手）。
+        let exe = std::env::current_exe().map_err(|e| format!("拿不到程序路径: {e}"))?;
+        config["mcp"] = serde_json::json!({
+            "db": {
+                "type": "local",
+                "command": [exe.to_string_lossy(), "--mcp-db"],
+                "environment": { "CODEDOCK_DB_TARGET": target.to_string_lossy() },
+                "timeout": 60000,
+            }
+        });
+        // 数据库 Agent 用不到文件 / 命令工具，关掉免得它去翻磁盘或跑 shell
+        config["tools"] = serde_json::json!({
+            "bash": false,
+            "edit": false,
+            "write": false,
+            "patch": false,
+        });
+        // 强制用内置的 database agent，盖掉面板传上来的 primary
+        config["default_agent"] = serde_json::json!(DB_AGENT_AGENT_NAME);
     }
 
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
@@ -1424,11 +1526,24 @@ pub async fn agent_start(
     }
     let secrets = config.secrets()?;
 
-    // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await
-    let cwd = fs_state.checked_root(&root)?;
+    // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await。
+    // 数据库 Agent 用一个固定的哨兵 root（前端传的常量），它不属于任何工作区、
+    // 走不了 checked_root 的白名单，所以 cwd 固定落在应用配置目录下的一个空目录里
+    let cwd = if config.database {
+        let dir = app
+            .path()
+            .app_config_dir()
+            .map_err(|e| format!("拿不到配置目录: {e}"))?
+            .join("db-agent")
+            .join("cwd");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        dir
+    } else {
+        fs_state.checked_root(&root)?
+    };
     let slot = state.slot(&root);
 
-    let (port, generation) = {
+    let (port, generation, cwd_text) = {
         let mut guard = slot.inner.lock().map_err(|e| e.to_string())?;
 
         // 同一个工作区已经在跑：直接复用，不重启
@@ -1438,6 +1553,7 @@ pub async fn agent_start(
                     port: running.port,
                     version: String::new(),
                     protocol: running.protocol.label().to_string(),
+                    cwd: running.cwd.to_string_lossy().to_string(),
                 });
             }
         }
@@ -1463,7 +1579,13 @@ pub async fn agent_start(
             .map_err(|e| format!("拿不到配置目录: {e}"))?
             .join("opencode")
             .join(workspace_dir_name(&cwd));
-        write_config(&config_dir, &config)?;
+        // 数据库 Agent 的目标连接文件由主进程维护（前端切连接时更新），这里只把路径写进配置
+        let db_target = if config.database {
+            Some(crate::db_agent::target_path(&app)?)
+        } else {
+            None
+        };
+        write_config(&config_dir, &config, db_target.as_deref())?;
 
         let password = random_password();
         let (child, log) = spawn_opencode(
@@ -1476,6 +1598,8 @@ pub async fn agent_start(
         )?;
         let generation = slot.generation.load(Ordering::SeqCst);
 
+        // cwd 马上要被 move 进 Running，先把字符串形态留下来给返回用
+        let cwd_text = cwd.to_string_lossy().to_string();
         *guard = Some(Running {
             child,
             port,
@@ -1488,7 +1612,7 @@ pub async fn agent_start(
             log,
         });
 
-        (port, generation)
+        (port, generation, cwd_text)
     };
 
     // 探测是异步的，放在锁外面
@@ -1533,6 +1657,7 @@ pub async fn agent_start(
         port,
         version,
         protocol: protocol.label().to_string(),
+        cwd: cwd_text,
     })
 }
 
@@ -1874,6 +1999,7 @@ mod tests {
             skills: Vec::new(),
             agents: Vec::new(),
             primary: String::new(),
+            database: false,
         }
     }
 
@@ -1899,7 +2025,7 @@ mod tests {
         }];
         cfg.primary = "reviewer".to_string();
 
-        write_config(&dir, &cfg).unwrap();
+        write_config(&dir, &cfg, None).unwrap();
 
         // 规则 / 记忆落成文件，并在 instructions 里用绝对路径引用
         assert!(dir.join("rules.md").exists());
@@ -1938,7 +2064,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codedock-agent-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg).unwrap();
+        write_config(&dir, &cfg, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1947,6 +2073,39 @@ mod tests {
         assert!(value.get("skills").is_none());
         assert!(value.get("agent").is_none());
         assert!(value.get("default_agent").is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn database_agent_config_injects_readonly_mcp_and_skill() {
+        let dir = std::env::temp_dir().join(format!("codedock-agent-db-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut cfg = bare_config();
+        cfg.database = true;
+        let target = dir.join("target.json");
+        write_config(&dir, &cfg, Some(&target)).unwrap();
+
+        let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // MCP：本地 stdio，命令是本 exe 的 --mcp-db，环境变量指向 target 文件
+        assert_eq!(value["mcp"]["db"]["type"], "local");
+        assert_eq!(value["mcp"]["db"]["command"][1], "--mcp-db");
+        assert_eq!(
+            value["mcp"]["db"]["environment"]["CODEDOCK_DB_TARGET"]
+                .as_str()
+                .unwrap(),
+            target.to_string_lossy()
+        );
+        // 只读专用 agent 顶掉面板传的 primary；文件 / 命令类工具关掉
+        assert_eq!(value["default_agent"], "database");
+        assert_eq!(value["agent"]["database"]["mode"], "primary");
+        assert_eq!(value["tools"]["bash"], false);
+        assert_eq!(value["tools"]["edit"], false);
+        // 内置技能落盘，并登记进 skills.paths
+        assert!(dir.join("skills").join("db-query").join("SKILL.md").exists());
+        assert!(value.get("skills").is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2063,7 +2222,7 @@ mod tests {
         let dir = std::env::temp_dir().join("codedock-agent-test-config");
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg).unwrap();
+        write_config(&dir, &cfg, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2112,7 +2271,7 @@ mod tests {
             },
         ];
         cfg.default_model = "deepseek/deepseek-reasoner".to_string();
-        write_config(&dir, &cfg).unwrap();
+        write_config(&dir, &cfg, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2136,7 +2295,7 @@ mod tests {
             default_model: "my-vendor/m".to_string(),
             ..cfg
         };
-        write_config(&dir, &cfg).unwrap();
+        write_config(&dir, &cfg, None).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
                 .unwrap();
@@ -2175,7 +2334,7 @@ mod tests {
                 prompt: String::new(),
             },
         ];
-        write_config(&dir, &cfg).unwrap();
+        write_config(&dir, &cfg, None).unwrap();
 
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
