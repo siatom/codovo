@@ -1,15 +1,21 @@
 import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FullscreenButton } from "./FullscreenButton";
-import { RemoteFiles } from "./RemoteFiles";
+import { RemoteBrowser } from "./RemoteBrowser";
 import { RemoteHostDialog } from "./RemoteHostDialog";
 import { RemoteTerminal } from "./RemoteTerminal";
 import { useRemoteHosts } from "../lib/remote-hosts";
 import { clearHostSecrets, type RemoteConnectionState, type RemoteHost } from "../lib/remote";
-import { IconMore, IconPlus, IconServer } from "./icons";
+import { IconArrowsLeftRight, IconClose, IconMore, IconPlus, IconServer, IconTerminal } from "./icons";
 
 const ACTIVE_KEY = "codedock.remoteActiveHost";
 const TAB_KEY = "codedock.remoteTab";
+/** 主机列表宽度（像素）与「本地/远程」左右顺序，都是窗口级偏好，存 sessionStorage */
+const RAIL_KEY = "codedock.remoteRailWidth";
+const SWAP_KEY = "codedock.remoteSwapped";
+const RAIL_MIN = 140;
+const RAIL_MAX = 420;
+const RAIL_DEFAULT = 176;
 
 type SubTab = "terminal" | "files";
 
@@ -27,6 +33,20 @@ function writeSession(key: string, value: string) {
   } catch {
     // 记不住只影响下次打开时的还原，不影响使用
   }
+}
+
+function readSessionNumber(key: string, fallback: number): number {
+  const value = Number(readSession(key));
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** 从「按标签 id 索引」的表里删掉一批键（关标签 / 断开主机共用）。空列表直接原样返回，
+ * 免得每次都造个新对象把下游的 memo 打穿 */
+function without<T>(table: Record<number, T>, keys: number[]): Record<number, T> {
+  if (keys.length === 0) return table;
+  const next = { ...table };
+  for (const key of keys) delete next[key];
+  return next;
 }
 
 const HEAD_BUTTON =
@@ -74,55 +94,144 @@ export function RemotePane({
   const [subTab, setSubTab] = useState<SubTab>(() =>
     readSession(TAB_KEY) === "files" ? "files" : "terminal",
   );
-  /** 用户这次会话里主动连过的主机（点了才连，不在挂载时自动连） */
-  const [connected, setConnected] = useState<string[]>([]);
-  const [states, setStates] = useState<Record<string, RemoteConnectionState>>({});
-  const [sessionIds, setSessionIds] = useState<Record<string, number>>({});
-  /** 点「重连」或改了连接参数后 +1，靠 key 变化把 RemoteTerminal 重挂一次 */
-  const [nonces, setNonces] = useState<Record<string, number>>({});
+  /**
+   * 每台已连接主机各自一组终端标签（hostId -> 标签 id 列表）。一台主机开几个终端就是
+   * 几条独立的 SSH 会话；切走的主机那组留着不动（标签 display:none 藏着不卸载，
+   * SSH 会话不会断）——和终端、智能体一个路子。
+   */
+  const [tabsByHost, setTabsByHost] = useState<Record<string, number[]>>({});
+  // 回调里要读最新的标签表（关标签时算该切到哪个），用 ref 免得闭包读到旧值
+  const tabsByHostRef = useRef(tabsByHost);
+  tabsByHostRef.current = tabsByHost;
+  /** 每台主机当前选中的标签 */
+  const [activeTabByHost, setActiveTabByHost] = useState<Record<string, number>>({});
+  /** 标签 -> 它那条 SSH 会话 id（SFTP 与主机状态点用它） */
+  const [sessionByTab, setSessionByTab] = useState<Record<number, number>>({});
+  const [stateByTab, setStateByTab] = useState<Record<number, RemoteConnectionState>>({});
+  /** 点「重连」或改了连接参数后 +1，靠 key 变化把 RemoteTerminal 重挂一次（重开 SSH 会话） */
+  const [nonceByTab, setNonceByTab] = useState<Record<number, number>>({});
+  const nextTabIdRef = useRef(1);
   const [dialog, setDialog] = useState<{ host: RemoteHost | null } | null>(null);
   const [menu, setMenu] = useState<{ host: RemoteHost; x: number; y: number } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RemoteHost | null>(null);
+  /** 主机列表宽度（可拖动）与「本地/远程」左右顺序 */
+  const [railWidth, setRailWidth] = useState(() => readSessionNumber(RAIL_KEY, RAIL_DEFAULT));
+  const [resizing, setResizing] = useState(false);
+  const [swapped, setSwapped] = useState(() => readSession(SWAP_KEY) === "1");
+  const containerRef = useRef<HTMLElement>(null);
 
   const activeHost = useMemo(
     () => hosts.find((host) => host.id === activeHostId) ?? null,
     [hosts, activeHostId],
   );
+  // 有标签就算连上了（关掉最后一个标签即断开，不存在「连着但没标签」的主机）
   const connectedHosts = useMemo(
-    () => hosts.filter((host) => connected.includes(host.id)),
-    [hosts, connected],
+    () => hosts.filter((host) => (tabsByHost[host.id]?.length ?? 0) > 0),
+    [hosts, tabsByHost],
   );
-  const activeSessionId = activeHost ? sessionIds[activeHost.id] : undefined;
-  const activeState = activeHost ? states[activeHost.id] : undefined;
+  const isConnected = useCallback(
+    (hostId: string) => (tabsByHost[hostId]?.length ?? 0) > 0,
+    [tabsByHost],
+  );
+  const activeTabs = activeHost ? (tabsByHost[activeHost.id] ?? []) : [];
+  const activeTabId = activeHost ? activeTabByHost[activeHost.id] : undefined;
+  // SFTP 与错误横幅都跟着「当前标签」走
+  const activeSessionId = activeTabId === undefined ? undefined : sessionByTab[activeTabId];
+  const activeState = activeTabId === undefined ? undefined : stateByTab[activeTabId];
+
+  /** 主机列表上那个状态点：反映这台主机当前选中标签的连接状态 */
+  const stateOfHost = (hostId: string): RemoteConnectionState | undefined => {
+    const tabId = activeTabByHost[hostId];
+    return tabId === undefined ? undefined : stateByTab[tabId];
+  };
 
   const pickTab = useCallback((next: SubTab) => {
     setSubTab(next);
     writeSession(TAB_KEY, next);
   }, []);
 
-  const bumpNonce = useCallback((id: string) => {
-    setNonces((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+  /** 新建一个终端标签（也是「连接这台主机」的动作）。返回它的 id */
+  const addTab = useCallback((hostId: string): number => {
+    const id = nextTabIdRef.current;
+    nextTabIdRef.current += 1;
+    setTabsByHost((current) => ({ ...current, [hostId]: [...(current[hostId] ?? []), id] }));
+    setActiveTabByHost((current) => ({ ...current, [hostId]: id }));
+    return id;
   }, []);
 
-  const openHost = useCallback((host: RemoteHost) => {
-    setActiveHostId(host.id);
-    writeSession(ACTIVE_KEY, host.id);
-    setConnected((list) => (list.includes(host.id) ? list : [...list, host.id]));
+  const selectTab = useCallback((hostId: string, tabId: number) => {
+    setActiveTabByHost((current) => ({ ...current, [hostId]: tabId }));
   }, []);
 
-  const disconnectHost = useCallback((id: string) => {
-    setConnected((list) => list.filter((item) => item !== id));
-    setSessionIds((current) => {
+  /** 清掉一批标签的会话 / 状态 / 重连计数 */
+  const dropTabs = useCallback((removed: number[]) => {
+    setSessionByTab((current) => without(current, removed));
+    setStateByTab((current) => without(current, removed));
+    setNonceByTab((current) => without(current, removed));
+  }, []);
+
+  /** 改过连接参数 / 换了指纹：这台主机下每个终端都重连一次，别让旧会话继续用旧配置 */
+  const reconnectHost = useCallback((hostId: string) => {
+    const tabs = tabsByHostRef.current[hostId] ?? [];
+    if (tabs.length === 0) return;
+    setNonceByTab((current) => {
       const next = { ...current };
-      delete next[id];
-      return next;
-    });
-    setStates((current) => {
-      const next = { ...current };
-      delete next[id];
+      for (const id of tabs) next[id] = (next[id] ?? 0) + 1;
       return next;
     });
   }, []);
+
+  const openHost = useCallback(
+    (host: RemoteHost) => {
+      setActiveHostId(host.id);
+      writeSession(ACTIVE_KEY, host.id);
+      // 点了才连、不在挂载时自动连：选中一台还没连的主机就顺手开第一个终端
+      if ((tabsByHostRef.current[host.id]?.length ?? 0) === 0) addTab(host.id);
+    },
+    [addTab],
+  );
+
+  /** 关一个终端标签。关掉该主机最后一个就等于断开连接 */
+  const closeTab = useCallback(
+    (hostId: string, tabId: number) => {
+      const list = tabsByHostRef.current[hostId] ?? [];
+      const index = list.indexOf(tabId);
+      const rest = list.filter((item) => item !== tabId);
+      setTabsByHost((current) => {
+        const next = { ...current };
+        if (rest.length === 0) delete next[hostId];
+        else next[hostId] = rest;
+        return next;
+      });
+      // 关的是当前标签时，焦点落到它右边那个（没有就往左退一格）
+      setActiveTabByHost((current) => {
+        const next = { ...current };
+        if (rest.length === 0) delete next[hostId];
+        else if (current[hostId] === tabId) next[hostId] = rest[Math.min(index, rest.length - 1)];
+        return next;
+      });
+      dropTabs([tabId]);
+    },
+    [dropTabs],
+  );
+
+  const disconnectHost = useCallback(
+    (id: string) => {
+      const removed = tabsByHostRef.current[id] ?? [];
+      setTabsByHost((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      setActiveTabByHost((current) => {
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+      dropTabs(removed);
+    },
+    [dropTabs],
+  );
 
   const saveHost = useCallback(
     (host: RemoteHost) => {
@@ -133,9 +242,9 @@ export function RemotePane({
       setActiveHostId(host.id);
       writeSession(ACTIVE_KEY, host.id);
       // 改过连接参数就重连一次，别让旧会话继续用旧配置
-      if (connected.includes(host.id)) bumpNonce(host.id);
+      reconnectHost(host.id);
     },
-    [addHost, updateHost, bumpNonce, connected],
+    [addHost, updateHost, reconnectHost],
   );
 
   const deleteHost = useCallback(
@@ -150,20 +259,20 @@ export function RemotePane({
     [disconnectHost, removeHost],
   );
 
-  const handleSession = useCallback((hostId: string, sessionId: number | null) => {
-    setSessionIds((current) => {
+  const handleSession = useCallback((tabId: number, sessionId: number | null) => {
+    setSessionByTab((current) => {
       if (sessionId === null) {
-        if (!(hostId in current)) return current;
+        if (!(tabId in current)) return current;
         const next = { ...current };
-        delete next[hostId];
+        delete next[tabId];
         return next;
       }
-      return { ...current, [hostId]: sessionId };
+      return { ...current, [tabId]: sessionId };
     });
   }, []);
 
-  const handleState = useCallback((hostId: string, state: RemoteConnectionState) => {
-    setStates((current) => ({ ...current, [hostId]: state }));
+  const handleState = useCallback((tabId: number, state: RemoteConnectionState) => {
+    setStateByTab((current) => ({ ...current, [tabId]: state }));
   }, []);
 
   const handleFingerprint = useCallback(
@@ -180,9 +289,9 @@ export function RemotePane({
   const trustFingerprint = useCallback(
     (host: RemoteHost) => {
       updateHost({ ...host, fingerprint: "" });
-      bumpNonce(host.id);
+      reconnectHost(host.id);
     },
-    [updateHost, bumpNonce],
+    [updateHost, reconnectHost],
   );
 
   const openMenu = (event: ReactMouseEvent, host: RemoteHost) => {
@@ -191,10 +300,43 @@ export function RemotePane({
     setMenu({ host, x: rect.right, y: rect.bottom + 4 });
   };
 
+  const toggleSwap = useCallback(() => {
+    setSwapped((current) => {
+      const next = !current;
+      writeSession(SWAP_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
+
+  // 拖动主机列表的右边缘改宽度。照 SplitPane 那套：按下捕获指针，
+  // 拖动期间给 body 挂个类（全局禁用选中），松手才把宽度写进 sessionStorage
+  const onResizeDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setResizing(true);
+    document.body.classList.add("codedock-dragging");
+  };
+
+  const onResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizing) return;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setRailWidth(Math.min(RAIL_MAX, Math.max(RAIL_MIN, event.clientX - rect.left)));
+  };
+
+  const onResizeUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setResizing(false);
+    document.body.classList.remove("codedock-dragging");
+    writeSession(RAIL_KEY, String(railWidth));
+  };
+
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-1 bg-panel">
-      {/* 左窄栏：主机列表 */}
-      <div className="flex h-full w-44 shrink-0 flex-col border-r border-line">
+    <section ref={containerRef} className="flex h-full min-h-0 min-w-0 flex-1 bg-panel">
+      {/* 左窄栏：主机列表。宽度可拖动 */}
+      <div className="flex h-full shrink-0 flex-col" style={{ width: railWidth }}>
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             远程连接
@@ -215,7 +357,7 @@ export function RemotePane({
             </p>
           ) : (
             hosts.map((host) => {
-              const state = states[host.id];
+              const state = stateOfHost(host.id);
               const isActive = host.id === activeHostId;
               return (
                 <div
@@ -251,6 +393,21 @@ export function RemotePane({
         </div>
       </div>
 
+      {/* 拖动条：改主机列表宽度。加宽命中区，视觉上仍是一条细线 */}
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        onPointerDown={onResizeDown}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeUp}
+        onPointerCancel={onResizeUp}
+        className={`relative w-px shrink-0 cursor-col-resize bg-line-strong transition-colors ${
+          resizing ? "bg-accent-strong" : "hover:bg-line-hover"
+        }`}
+      >
+        <span className="absolute inset-y-0 -left-1 -right-1" />
+      </div>
+
       {/* 右侧：终端 / 文件 */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
@@ -280,8 +437,65 @@ export function RemotePane({
               文件
             </button>
           </div>
+          {/* 文件视图下才需要：交换「本地 / 远程」两个面板的左右位置 */}
+          {subTab === "files" && (
+            <button
+              type="button"
+              onClick={toggleSwap}
+              title="左右交换位置"
+              className={HEAD_BUTTON}
+            >
+              <IconArrowsLeftRight className="h-3.5 w-3.5" />
+            </button>
+          )}
           <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
         </header>
+
+        {/* 标签栏：这台主机开了几个终端。只终端视图下才有意义，切到文件视图整条不画。
+            Ctrl/Cmd+T 新建、Ctrl/Cmd+W 关闭（键位可配置），和中间那个本地终端同一套 */}
+        {activeHost && isConnected(activeHost.id) && subTab === "terminal" && (
+          <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-2">
+            <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+              {activeTabs.map((tabId, index) => {
+                const isActiveTab = tabId === activeTabId;
+                return (
+                  <div
+                    key={tabId}
+                    className={`flex shrink-0 items-center rounded ${
+                      isActiveTab ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => selectTab(activeHost.id, tabId)}
+                      title={`${activeHost.user ? `${activeHost.user}@` : ""}${activeHost.host}`}
+                      className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
+                    >
+                      <IconTerminal className="h-3 w-3" />
+                      <span className="truncate">终端 {index + 1}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => closeTab(activeHost.id, tabId)}
+                      title="关闭这个终端"
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"
+                    >
+                      <IconClose className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => addTab(activeHost.id)}
+                title="新建终端"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+              >
+                <IconPlus className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {activeHost && activeState?.phase === "error" && (
           <div className="flex shrink-0 items-start gap-2 border-b border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
@@ -305,7 +519,7 @@ export function RemotePane({
                 从左侧选一台主机，点一下即连接。连接后可以在这里开远程终端，或浏览、上传下载远端文件。
               </p>
             </div>
-          ) : !connected.includes(activeHost.id) ? (
+          ) : !isConnected(activeHost.id) ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6">
               <p className="text-[12px] text-fg-faint">已选主机，尚未连接。</p>
               <button
@@ -318,17 +532,30 @@ export function RemotePane({
             </div>
           ) : (
             <>
-              {connectedHosts.map((host) => (
-                <RemoteTerminal
-                  key={`${host.id}:${nonces[host.id] ?? 0}`}
-                  host={host}
-                  active={host.id === activeHostId}
-                  visible={host.id === activeHostId && subTab === "terminal"}
-                  onSession={handleSession}
-                  onState={handleState}
-                  onFingerprint={handleFingerprint}
-                />
-              ))}
+              {/* 所有已连接主机的所有终端都挂着，非当前那个 display:none 藏着不卸载——
+                  切走的主机、切走的标签，SSH 会话和滚动历史都留着 */}
+              {connectedHosts.flatMap((host) =>
+                (tabsByHost[host.id] ?? []).map((tabId) => {
+                  const shown =
+                    host.id === activeHostId &&
+                    tabId === activeTabByHost[host.id] &&
+                    subTab === "terminal";
+                  return (
+                    <RemoteTerminal
+                      key={`${host.id}:${tabId}:${nonceByTab[tabId] ?? 0}`}
+                      host={host}
+                      active={shown}
+                      visible={shown}
+                      // 每个实例只认自己那个标签，闭包按 tabId 包一层
+                      onSession={(_hostId, sessionId) => handleSession(tabId, sessionId)}
+                      onState={(_hostId, state) => handleState(tabId, state)}
+                      onFingerprint={handleFingerprint}
+                      onRequestClose={() => closeTab(host.id, tabId)}
+                      onRequestNew={() => addTab(host.id)}
+                    />
+                  );
+                }),
+              )}
               {activeSessionId === undefined ? (
                 subTab === "files" && (
                   <div className="absolute inset-0 flex items-center justify-center px-6">
@@ -346,7 +573,7 @@ export function RemotePane({
                     subTab === "files" ? "absolute inset-0 flex flex-col" : "hidden"
                   }
                 >
-                  <RemoteFiles sessionId={activeSessionId} />
+                  <RemoteBrowser sessionId={activeSessionId} swapped={swapped} />
                 </div>
               )}
             </>
@@ -391,7 +618,7 @@ export function RemotePane({
             >
               编辑
             </button>
-            {connected.includes(menu.host.id) && (
+            {isConnected(menu.host.id) && (
               <button
                 type="button"
                 className={MENU_ITEM}

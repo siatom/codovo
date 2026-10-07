@@ -9,6 +9,7 @@ mod feedback;
 mod fs_api;
 mod git;
 mod installer;
+mod local_fs;
 mod pty;
 mod remote;
 mod secrets;
@@ -140,6 +141,11 @@ pub fn run() {
             remote::sftp_rename,
             remote::sftp_upload,
             remote::sftp_download,
+            local_fs::local_home,
+            local_fs::local_list_dir,
+            local_fs::local_mkdir,
+            local_fs::local_rename,
+            local_fs::local_remove,
             database::db_connect,
             database::db_disconnect,
             database::db_tables,

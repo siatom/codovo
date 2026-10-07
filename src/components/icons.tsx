@@ -478,6 +478,42 @@ export const IconServer = icon(
   </>,
 );
 
+/** 本地面板：台式显示器 */
+export const IconDeviceDesktop = icon(
+  <>
+    <rect x="2" y="3" width="20" height="14" rx="2" />
+    <path d="M8 21h8M12 17v4" />
+  </>,
+);
+
+/** 左右交换：双向箭头。双文件面板用它换位置 */
+export const IconArrowsLeftRight = icon(
+  <>
+    <path d="M8 3 4 7l4 4" />
+    <path d="M4 7h16" />
+    <path d="m16 21 4-4-4-4" />
+    <path d="M20 17H4" />
+  </>,
+);
+
+/** 传到右侧面板（双文件面板用） */
+export const IconArrowRightToLine = icon(
+  <>
+    <path d="M17 12H3" />
+    <path d="m11 18 6-6-6-6" />
+    <path d="M21 5v14" />
+  </>,
+);
+
+/** 传到左侧面板（双文件面板用） */
+export const IconArrowLeftToLine = icon(
+  <>
+    <path d="M3 5v14" />
+    <path d="M21 12H7" />
+    <path d="m7 18-6-6 6-6" />
+  </>,
+);
+
 /** 右栏的「数据库」模块：经典的三层柱体 */
 export const IconDatabase = icon(
   <>

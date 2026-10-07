@@ -8,6 +8,7 @@ import {
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
 import { isPrimaryModifier } from "../lib/keys";
+import { matchesShortcut } from "../lib/shortcuts";
 import {
   connectRemote,
   type RemoteConnectionState,
@@ -63,6 +64,13 @@ interface RemoteTerminalProps {
   onState: (hostId: string, state: RemoteConnectionState) => void;
   /** 首次信任时把服务器指纹交回上层保存 */
   onFingerprint: (hostId: string, fingerprint: string) => void;
+  /**
+   * 焦点在这个远程终端里时按了「关闭当前标签」/「新建标签页」。标签栏归 RemotePane 管，
+   * 会话自己不知道自己是第几个。只有拿到焦点的那一处终端会收到键盘事件，所以这里
+   * 和本地终端用同一套键位也不会打架。
+   */
+  onRequestClose?: () => void;
+  onRequestNew?: () => void;
 }
 
 /**
@@ -76,6 +84,8 @@ export function RemoteTerminal({
   onSession,
   onState,
   onFingerprint,
+  onRequestClose,
+  onRequestNew,
 }: RemoteTerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<RemoteHandle | null>(null);
@@ -111,6 +121,16 @@ export function RemoteTerminal({
   onFingerprintRef.current = onFingerprint;
   const hostRef = useRef(host);
   hostRef.current = host;
+  // 关 / 新建标签的键位可配置，而建实例的 effect 挂一次就不重建，用 ref 存最新值；
+  // 回调每次渲染都换身份，同样只能走 ref 进不了依赖数组
+  const closeComboRef = useRef(settings.shortcuts["closeTab"]);
+  closeComboRef.current = settings.shortcuts["closeTab"];
+  const newComboRef = useRef(settings.shortcuts["newTab"]);
+  newComboRef.current = settings.shortcuts["newTab"];
+  const onRequestCloseRef = useRef(onRequestClose);
+  onRequestCloseRef.current = onRequestClose;
+  const onRequestNewRef = useRef(onRequestNew);
+  onRequestNewRef.current = onRequestNew;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -224,6 +244,19 @@ export function RemoteTerminal({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // 关 / 新建标签先判：键位可能不是主修饰键，不受 isPrimaryModifier 限制
+      if (matchesShortcut(event, closeComboRef.current)) {
+        event.preventDefault();
+        event.stopPropagation();
+        onRequestCloseRef.current?.();
+        return;
+      }
+      if (matchesShortcut(event, newComboRef.current)) {
+        event.preventDefault();
+        event.stopPropagation();
+        onRequestNewRef.current?.();
+        return;
+      }
       if (!isPrimaryModifier(event)) return;
       const key = event.key.toLowerCase();
       if (key === "c") {

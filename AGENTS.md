@@ -105,7 +105,17 @@ git push --follow-tags            # 连 tag 一起推
 - 远程连接（`remote.rs`）：SSH 走纯 Rust 的 `russh` + `russh-sftp`。交互式 shell 由**一个** tokio 任务
   独占通道（`wait()` 要 `&mut`，而 `data`/`window_change` 只要 `&self`——拆成两个任务就够不到改尺寸），
   前端指令走 mpsc 汇进同一个 `select!`。密码 / 私钥口令存系统钥匙串（前端只有布尔位），主机密钥按
-  TOFU 记指纹、对不上就拒绝；已连接的主机各留一个终端实例，`display:none` 藏着不卸载。
+  TOFU 记指纹、对不上就拒绝。**每台主机各自一组终端标签**，每个标签是一条独立 SSH 会话
+  （`remote_connect` 自己建连 + 认证，不复用别的标签的连接），切走的主机与标签都 `display:none`
+  藏着不卸载；会话 / 状态 / 重连计数都按标签 id 索引（不是按主机）。**关掉某台主机的最后一个标签
+  就等于断开这台主机**（`connected` 不再单独存，由「有没有标签」派生）。`Ctrl+T` 新建 / `Ctrl+W`
+  关闭和中间那个本地终端是**同一套键位**：各终端只在自己的容器上挂 keydown，谁拿到焦点谁响应。
+- 远程连接的「文件」视图是**左右双面板**（`RemoteBrowser`）：本地（`local_fs.rs`）和远程（SFTP）各一个
+  `FilePanel` 实例，选中文件传到对侧当前目录（只传文件，目录不递归）。**本地面板走 `local_fs` 的命令，
+  刻意不查 `FsState` 工作区白名单**——它要像 WinSCP 那样自由浏览整个文件系统（主目录起、可一直退到
+  「此电脑」列盘符）。这是本地桌面应用、前端即应用本体，且 `sftp_download` 本就写任意本地路径，风险
+  可接受；这些命令只做文件管理、不做内容编辑。主机列表宽度与「本地/远程」左右顺序都是窗口级偏好，
+  存 sessionStorage。两面板共用的界面在 `FilePanel.tsx`（纯展示），数据容器是 `RemoteFiles` / `LocalFiles`。
 - 数据库（`database.rs`）：MySQL / PostgreSQL / SQLite 走 `sqlx`，**三库各持一个池**（`enum DbPool`）而不是
   用 `Any` 驱动——`Any` 的类型映射和 URL 解析都有限制，`*ConnectOptions` 的 builder 反而更干净（不拼 URL、
   不管转义）。TLS 特性必须是 `tls-rustls-aws-lc-rs`：reqwest / russh 已经在用 aws-lc，引 ring 会同时装
