@@ -184,7 +184,7 @@ export interface FileHunks {
 }
 
 /** 一个 hunk 要往哪边落，和 DiscardSource 同一个思路 */
-export type HunkAction = { mode: "stage" } | { mode: "discard" };
+export type HunkAction = { mode: "stage" } | { mode: "unstage" } | { mode: "discard" };
 
 /** 搜索的三个开关，和 VS Code 搜索框右边那排一致 */
 export interface SearchOptions {

@@ -242,16 +242,17 @@ export function gitDiscard(
 }
 
 /**
- * 一个文件未暂存侧的 hunk 列表：界面按块给「暂存 / 放弃」。
+ * 一个文件的 hunk 列表：界面按块给「暂存 / 取消暂存 / 放弃」。
+ * `staged` 为 true 时取暂存侧（HEAD↔index），否则取未暂存侧（index↔工作区）。
  * 二进制、纯新增 / 删除、非 UTF-8 文本的 hunks 是空的，只能整文件操作。
  */
-export function gitFileHunks(root: string, path: string): Promise<FileHunks> {
-  return invoke<FileHunks>("git_file_hunks", { root, path });
+export function gitFileHunks(root: string, path: string, staged: boolean): Promise<FileHunks> {
+  return invoke<FileHunks>("git_file_hunks", { root, path, staged });
 }
 
 /**
- * 应用一段补丁：`stage` 进暂存区、`discard` 从工作区撤掉。**discard 不可撤销**，
- * 调用前先跟用户确认。patch 由界面用文件级头拼选中的 hunk 原文得到。
+ * 应用一段补丁：`stage` 进暂存区、`unstage` 退回暂存区、`discard` 从工作区撤掉。
+ * **discard 不可撤销**，调用前先跟用户确认。patch 由界面用文件级头拼选中的 hunk 原文得到。
  */
 export function gitApplyPatch(
   root: string,
@@ -259,6 +260,19 @@ export function gitApplyPatch(
   action: HunkAction,
 ): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_apply_patch", { root, patch, action });
+}
+
+/**
+ * 只对补丁里选中的几行动手：`lines` 是 hunk 正文（`@@` 行之后）里选中的行下标，
+ * 其余改动由后端还原成基线。补丁走和整块操作同一套 apply 逻辑。
+ */
+export function gitApplyLines(
+  root: string,
+  patch: string,
+  lines: number[],
+  action: HunkAction,
+): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_apply_lines", { root, patch, lines, action });
 }
 
 export function gitCommit(root: string, message: string): Promise<GitStatusPayload> {
@@ -277,9 +291,24 @@ export function gitFileDiff(
   return invoke<FileDiff>("git_file_diff", { root, path, source });
 }
 
-/** 提交历史，最新的在最前；不传 limit 就取一页 */
-export function gitLog(root: string, limit?: number): Promise<GitCommit[]> {
-  return invoke<GitCommit[]>("git_log", { root, limit: limit ?? null });
+/**
+ * 提交历史，最新的在最前；不传 limit 就取一页。
+ *
+ * `filter` 按主题 / 作者 / 正文匹配、`path` 按改动过的路径过滤，两者互斥，
+ * 一次只传一个（后端也只在带过滤时把拉取条数顶到上限）。
+ */
+export function gitLog(
+  root: string,
+  limit?: number,
+  filter?: string,
+  path?: string,
+): Promise<GitCommit[]> {
+  return invoke<GitCommit[]>("git_log", {
+    root,
+    limit: limit ?? null,
+    filter: filter ?? null,
+    path: path ?? null,
+  });
 }
 
 /** 某个提交改了哪些文件 */

@@ -12,6 +12,7 @@ import {
 import {
   gitAddToIgnore,
   gitAmend,
+  gitApplyLines,
   gitApplyPatch,
   gitBranches,
   gitCommit,
@@ -65,6 +66,7 @@ import type {
   GitCommitFile,
   GitStash,
   GitStatusPayload,
+  HunkAction,
 } from "../lib/types";
 import { graphTextInset, LANE_W, layoutGraph, type GraphRow } from "../lib/gitGraph";
 import { GitMarkBadge, GitMarkDot } from "./GitMarkBadge";
@@ -90,6 +92,7 @@ import {
   IconPlus,
   IconSparkle,
   IconSync,
+  IconTarget,
   IconTrash,
   IconTree,
   IconUndo,
@@ -131,6 +134,16 @@ interface PendingDiscard {
 
 /** 提交历史一次拉多少条，「加载更多」再叠加 */
 const LOG_PAGE = 50;
+
+/**
+ * 过滤提交历史时一次拉多少条。过滤会把结果筛掉一部分，还按普通一页取的话，
+ * 前面一段没命中就看着像「没有」。顶到后端的上限（git.rs 的 LOG_MAX = 500），
+ * 让过滤在尽量长的历史里找。
+ */
+const LOG_FILTER_LIMIT = 500;
+
+/** 过滤输入框的防抖：每敲一个字就去拉一次 git 太浪费，静一下再查 */
+const LOG_FILTER_DEBOUNCE_MS = 250;
 
 /**
  * 提交行里最多平铺几个引用 chip，多出来的收成「+N」。
@@ -479,8 +492,8 @@ function canDiscard(change: GitChange, staged: boolean): boolean {
 }
 
 /**
- * 能不能逐块（hunk 级）操作。**只在未暂存组用**：补丁是从「index ↔ 工作区」
- * 的 diff 生成的，两个方向（`--cached` 暂存、`--reverse` 放弃）都落在这份 diff 上。
+ * 未暂存组能不能逐块 / 逐行操作：补丁从「index ↔ 工作区」的 diff 生成，
+ * 两个方向（`--cached` 暂存、`--reverse` 放弃）都落在这份 diff 上。
  *
  * 排除新增 / 删除 / 冲突：新增（未跟踪的 `?`）在 index 里没有基线，删除
  * （`D`）在工作区里没有文件，两边都生成不出能 apply 的补丁；冲突（`U`）
@@ -489,6 +502,18 @@ function canDiscard(change: GitChange, staged: boolean): boolean {
 function canHunk(change: GitChange): boolean {
   const { index, worktree } = change;
   return worktree !== "?" && worktree !== "U" && worktree !== "D" && index !== "U";
+}
+
+/**
+ * 暂存组能不能逐块 / 逐行操作：补丁从「HEAD ↔ index」的 diff 生成，
+ * `--cached --reverse` 应用就是「取消暂存这些改动」。
+ *
+ * 同理排除 index 侧的新增（`A`，HEAD 里没有基线）、删除（`D`，index 里没有文件）
+ * 与冲突（`U`）。
+ */
+function canHunkStaged(change: GitChange): boolean {
+  const { index, worktree } = change;
+  return index !== "A" && index !== "D" && index !== "U" && worktree !== "U";
 }
 
 /** 标题栏那几个图标按钮的样式，和刷新按钮同一套 */
@@ -560,33 +585,47 @@ function hunkLineClass(line: string): string {
 }
 
 /**
- * 未暂存文件的逐块操作。**暂存组不给这一份**：补丁来自「index ↔ 工作区」的
- * diff，只有未暂存侧才有工作区文件可比，暂存侧那半截生成不出能 apply 的补丁。
+ * 一个文件的逐块 / 逐行操作。两组各传一份——同一个路径可能同时出现在两组里
+ * （`MM`），所以除了 path 还要带上它属于哪一组，否则同一行会在两组里一起展开。
  */
 interface HunkSection {
   /** 展开着的那个文件（绝对路径）；null = 一个都没展开 */
   open: string | null;
+  /** 展开的文件属于哪一组 */
+  staged: boolean;
   /** 展开文件的 hunk 列表；null = 还没拉到 */
   data: FileHunks | null;
   loading: boolean;
-  onToggle: (path: string) => void;
-  onStage: (patch: string) => void;
+  /** 每个 hunk 里选中的正文行下标（key 是 hunk 序号）；空集 = 没选，按钮作用于整块 */
+  selection: ReadonlyMap<number, ReadonlySet<number>>;
+  onToggle: (path: string, staged: boolean) => void;
+  /** 点某一行：切换它的选中状态；`shift` 时从上次点的位置连选一段 */
+  onLineClick: (hunkIndex: number, bodyIndex: number, changeLine: boolean, shift: boolean) => void;
+  onStage: (patch: string, lines: number[]) => void;
+  onUnstage: (patch: string, lines: number[]) => void;
   /** 放弃不可撤销，这里只记下来弹确认框，用户点了才真跑 */
-  onDiscard: (patch: string, what: string) => void;
+  onDiscard: (patch: string, lines: number[], what: string) => void;
 }
 
 /**
- * 展开出来的逐块列表：一块一个头（`@@` 行 + 增删数 + 暂存 / 放弃）加它的 diff 正文。
+ * 展开出来的逐块列表：一块一个头（`@@` 行 + 增删数 + 操作按钮）加它的 diff 正文。
  *
  * 交给后端的补丁是「文件级头 + 这一块的原文」拼出来的，中间的每个字节都原样保留——
  * 补丁要和 `git diff` 的输出完全一致才 apply 得上。
+ *
+ * 正文里的改动行（`+` / `-`）可以点选：选中若干行后，头部的按钮只作用于这些行
+ * （后端把没选中的改动还原回基线）；没选中时按钮作用于整块，和原来一样。
  */
 function HunkList({
   file,
   loading,
   busy,
   indent,
+  staged,
+  selection,
+  onLineClick,
   onStage,
+  onUnstage,
   onDiscard,
 }: {
   file: FileHunks | null;
@@ -594,8 +633,12 @@ function HunkList({
   busy: boolean;
   /** 和文件行左边缘对齐（树视图里有层级） */
   indent: number;
-  onStage: (patch: string) => void;
-  onDiscard: (patch: string) => void;
+  staged: boolean;
+  selection: ReadonlyMap<number, ReadonlySet<number>>;
+  onLineClick: (hunkIndex: number, bodyIndex: number, changeLine: boolean, shift: boolean) => void;
+  onStage: (patch: string, lines: number[]) => void;
+  onUnstage: (patch: string, lines: number[]) => void;
+  onDiscard: (patch: string, lines: number[], what: string) => void;
 }) {
   const notice = (text: string) => (
     <p className="py-1 text-[11px] text-fg-faint" style={{ paddingLeft: indent }}>
@@ -605,7 +648,11 @@ function HunkList({
 
   if (!file) return notice(loading ? "加载中…" : "读不到这个文件的改动");
   if (file.hunks.length === 0) {
-    return notice("这个文件只能整文件暂存 / 放弃（新增、删除或二进制）");
+    return notice(
+      staged
+        ? "这个文件只能整文件取消暂存（新增、删除或二进制）"
+        : "这个文件只能整文件暂存 / 放弃（新增、删除或二进制）",
+    );
   }
 
   return (
@@ -619,39 +666,77 @@ function HunkList({
         // 原文以换行结尾，split 会多出一个空串；首行是 `@@`，正文从第二行起
         if (lines[lines.length - 1] === "") lines.pop();
         const body = lines.slice(1);
+        // 选中的行下标排好序传回后端（顺序无所谓，排一下好读）
+        const selected = selection.get(index);
+        const picked = selected ? [...selected].sort((a, b) => a - b) : [];
+        const scope = picked.length > 0 ? `选中的 ${picked.length} 行` : "这块改动";
         return (
           <div key={index} className="border-b border-line last:border-b-0">
             <div className="flex items-center gap-1.5 bg-surface px-2 py-0.5 font-mono text-[11px]">
               <span className="min-w-0 flex-1 truncate text-fg-dim" title={hunk.header}>
                 {hunk.header}
               </span>
+              {picked.length > 0 && (
+                <span className="shrink-0 text-accent" title="按钮只作用于选中的行">
+                  已选 {picked.length} 行
+                </span>
+              )}
               {hunk.added > 0 && <span className="shrink-0 text-ok">+{hunk.added}</span>}
               {hunk.removed > 0 && <span className="shrink-0 text-danger">-{hunk.removed}</span>}
-              <button
-                type="button"
-                onClick={() => onDiscard(patch)}
-                disabled={busy}
-                title="放弃这块改动（还原到暂存区）"
-                className={HUNK_DANGER}
-              >
-                <IconUndo className="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                onClick={() => onStage(patch)}
-                disabled={busy}
-                title="暂存这块改动"
-                className={HUNK_ACTION}
-              >
-                <IconPlus className="h-3 w-3" />
-              </button>
+              {staged ? (
+                <button
+                  type="button"
+                  onClick={() => onUnstage(patch, picked)}
+                  disabled={busy}
+                  title={`取消暂存${scope}`}
+                  className={HUNK_ACTION}
+                >
+                  <IconMinus className="h-3 w-3" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onDiscard(patch, picked, scope)}
+                    disabled={busy}
+                    title={`放弃${scope}（还原到暂存区）`}
+                    className={HUNK_DANGER}
+                  >
+                    <IconUndo className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onStage(patch, picked)}
+                    disabled={busy}
+                    title={`暂存${scope}`}
+                    className={HUNK_ACTION}
+                  >
+                    <IconPlus className="h-3 w-3" />
+                  </button>
+                </>
+              )}
             </div>
-            <div className="overflow-x-auto py-1 font-mono text-[11px] leading-[1.55]">
-              {body.map((line, lineIndex) => (
-                <div key={lineIndex} className={`whitespace-pre px-2 ${hunkLineClass(line)}`}>
-                  {line === "" ? " " : line}
-                </div>
-              ))}
+            <div className="overflow-x-auto py-1 font-mono text-[11px] leading-[1.55] select-none">
+              {body.map((line, lineIndex) => {
+                // 只有改动行可选：上下文行选它没有意义（后端也不看）
+                const change = line.startsWith("+") || line.startsWith("-");
+                const on = selected?.has(lineIndex) ?? false;
+                return (
+                  <div
+                    key={lineIndex}
+                    onClick={(event) => {
+                      if (!change) return;
+                      onLineClick(index, lineIndex, change, event.shiftKey);
+                    }}
+                    title={change ? "点击选中这一行（Shift 点击连选一段）" : undefined}
+                    className={`whitespace-pre px-2 ${hunkLineClass(line)} ${
+                      change ? "cursor-pointer hover:bg-hover" : ""
+                    } ${on ? "bg-accent/15" : ""}`}
+                  >
+                    {line === "" ? " " : line}
+                  </div>
+                );
+              })}
             </div>
           </div>
         );
@@ -678,7 +763,7 @@ function ChangeRow({
   busy: boolean;
   /** 树视图里的层级；null = 列表视图（不缩进、不画文件图标、名字后面补目录） */
   depth: number | null;
-  /** 逐块操作；只在未暂存组给，暂存组没有这一份（见 HunkSection） */
+  /** 逐块 / 逐行操作；两组都传，具体给哪些按钮由 staged 决定（见 HunkSection） */
   hunks?: HunkSection;
   onOpen: (path: string, source: DiffSource) => void;
   onOpenFile: (path: string) => void;
@@ -699,10 +784,12 @@ function ChangeRow({
   // 行数也按分组取：同一个 `MM` 文件在两个组里改动的量本来就不一样
   const added = staged ? change.stagedAdded : change.unstagedAdded;
   const removed = staged ? change.stagedRemoved : change.unstagedRemoved;
-  /** 这一行能不能逐块操作。整行（含箭头占位）都跟着它走 */
-  const hunkable = hunks !== undefined && canHunk(change);
-  // 多带一次 `hunks !== undefined`：JSX 里靠它把类型收窄，才能取 hunks.data
-  const hunkOpen = hunkable && hunks !== undefined && hunks.open === change.path;
+  /** 这一行能不能逐块操作。整行（含箭头占位）都跟着它走。两组判据不同，见 canHunk* */
+  const hunkable = hunks !== undefined && (staged ? canHunkStaged(change) : canHunk(change));
+  // 多带一次 `hunks !== undefined`：JSX 里靠它把类型收窄，才能取 hunks.data。
+  // 还要对上是哪一组：同一路径可能同时在两组里，不判的话会在两组里一起展开
+  const hunkOpen =
+    hunkable && hunks !== undefined && hunks.open === change.path && hunks.staged === staged;
   // 展开区缩进到和文件名对齐：树视图里层级已经占了前导空白
   const hunkIndent = depth === null ? 4 : depth * INDENT + 4;
 
@@ -786,8 +873,8 @@ function ChangeRow({
           {!hunkOpen && hunks !== undefined && hunkable && (
             <button
               type="button"
-              onClick={() => hunks.onToggle(change.path)}
-              title="展开逐块操作（逐块暂存 / 放弃）"
+              onClick={() => hunks.onToggle(change.path, staged)}
+              title={staged ? "展开逐块操作（逐块 / 逐行取消暂存）" : "展开逐块操作（逐块 / 逐行暂存 / 放弃）"}
               className={ROW_HUNK_TOGGLE}
             >
               <IconChevronRight className="h-3 w-3" />
@@ -799,7 +886,7 @@ function ChangeRow({
         {hunkOpen && hunks !== undefined && (
           <button
             type="button"
-            onClick={() => hunks.onToggle(change.path)}
+            onClick={() => hunks.onToggle(change.path, staged)}
             title="收起逐块操作"
             className={ROW_HUNK_TOGGLE}
           >
@@ -815,8 +902,14 @@ function ChangeRow({
         loading={hunks.loading}
         busy={busy}
         indent={hunkIndent}
+        staged={staged}
+        selection={hunks.selection}
+        onLineClick={hunks.onLineClick}
         onStage={hunks.onStage}
-        onDiscard={(patch) => hunks.onDiscard(patch, change.relative)}
+        onUnstage={hunks.onUnstage}
+        onDiscard={(patch, lines, scope) =>
+          hunks.onDiscard(patch, lines, `${change.relative}：${scope}`)
+        }
       />
     )}
     </>
@@ -867,7 +960,7 @@ function ChangeDirRow({
 interface ChangeRowActions {
   staged: boolean;
   busy: boolean;
-  /** 逐块操作；只有未暂存组传 */
+  /** 逐块 / 逐行操作；两组都传 */
   hunks?: HunkSection;
   onOpen: (path: string, source: DiffSource) => void;
   /** 行内「打开文件」：开文件内容而不是差异 */
@@ -1026,7 +1119,8 @@ function CommitRow({
   onStat,
 }: {
   commit: GitCommit;
-  graph: GraphRow;
+  /** 泳道图那一格；null = 不画图（过滤后只剩一部分提交，泳道接不上，干脆让位给文字） */
+  graph: GraphRow | null;
   /** 图列的统一宽度，各行一致，后面的文字才左对齐 */
   graphWidth: number;
   expanded: boolean;
@@ -1053,6 +1147,8 @@ function CommitRow({
   return (
     <div
       className="flex"
+      // 定位「回到 HEAD」用：按 hash 在滚动容器里找到这一行
+      data-commit={commit.hash}
       onMouseEnter={(event) => {
         onHover(event.currentTarget.getBoundingClientRect());
         onStat();
@@ -1061,9 +1157,12 @@ function CommitRow({
       // 滚动时行会跑掉、浮框留在原地，干脆收起来
       onWheel={onUnhover}
     >
-      <CommitGraph row={graph} width={graphWidth} local={unpushed} />
+      {graph && <CommitGraph row={graph} width={graphWidth} local={unpushed} />}
       {/* 负 margin：文字贴住本行圆圈，图列右边没线的那截让它盖上去 */}
-      <div className="min-w-0 flex-1" style={{ marginLeft: graphTextInset(graph, graphWidth) }}>
+      <div
+        className="min-w-0 flex-1"
+        style={{ marginLeft: graph ? graphTextInset(graph, graphWidth) : 0 }}
+      >
         <button
           type="button"
           onClick={onToggle}
@@ -1165,16 +1264,26 @@ export function GitChangesPane({
   const [pendingAmend, setPendingAmend] = useState(false);
   /** 放弃 stash：只删记录，但丢了就找不回来，照样确认一下 */
   const [pendingStashDrop, setPendingStashDrop] = useState<GitStash | null>(null);
-  /** 展开逐块操作的那个未暂存文件（绝对路径）；null = 一个都没展开 */
-  const [hunkPath, setHunkPath] = useState<string | null>(null);
+  /**
+   * 展开逐块操作的那个文件：绝对路径 + 它属于哪一组。同一个路径可能同时出现在
+   * 暂存 / 未暂存两组里（`MM`），所以要连组一起记，只有对上那个组的行才展开。
+   */
+  const [hunkOpen, setHunkOpen] = useState<{ path: string; staged: boolean } | null>(null);
   /** 展开文件的 hunk 列表；null = 还没拉到（或者拉失败了） */
   const [hunkData, setHunkData] = useState<FileHunks | null>(null);
   const [hunkLoading, setHunkLoading] = useState(false);
   /** 每次应用完一块 +1：apply 只回新的状态快照，不带块列表，得自己重拉 */
   const [hunkRevision, setHunkRevision] = useState(0);
-  /** 待确认的「放弃这一块」。补丁先记在这儿，用户点了才真跑 */
+  /** 每个 hunk 里选中的正文行下标（key 是 hunk 序号）。选中若干行后按钮只作用于这些行 */
+  const [lineSelection, setLineSelection] = useState<ReadonlyMap<number, ReadonlySet<number>>>(
+    () => new Map(),
+  );
+  /** Shift 连选的锚点：上一次点的那一行（hunk 之间互不影响） */
+  const lineAnchor = useRef<{ hunk: number; line: number } | null>(null);
+  /** 待确认的「放弃这一块 / 这些行」。补丁和选中行先记这儿，用户点了才真跑 */
   const [pendingHunkDiscard, setPendingHunkDiscard] = useState<{
     patch: string;
+    lines: number[];
     what: string;
   } | null>(null);
   /**
@@ -1215,6 +1324,14 @@ export function GitChangesPane({
   const [unpushed, setUnpushed] = useState<ReadonlySet<string>>(new Set());
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
   const [logRevision, setLogRevision] = useState(0);
+  /** 提交历史的过滤词（输入框原文）。临时状态，不落盘 */
+  const [logFilter, setLogFilter] = useState("");
+  /** 过滤按什么匹配：false = 主题 / 作者 / 正文，true = 改动过的路径 */
+  const [logFilterPath, setLogFilterPath] = useState(false);
+  /** 过滤词的防抖值：真正拿去查历史的是它，不是每敲一下都变 */
+  const [logNeedle, setLogNeedle] = useState("");
+  /** 历史滚动容器，「回到 HEAD」要让它滚过去 */
+  const logScrollRef = useRef<HTMLDivElement>(null);
 
   /**
    * 悬停浮框挂在哪个提交上、贴着哪个矩形；null = 没开着。
@@ -1708,13 +1825,15 @@ export function GitChangesPane({
   }, [pendingDiscard, run]);
 
   /**
-   * 展开 / 收起某个文件的逐块操作。
+   * 展开 / 收起某个文件的逐块操作。点同一个文件的另一组会切过去，不是收起。
    *
    * 展开时**不去自动拉取**：拉取放在下面的 effect 里，入口有「点展开」和「应用完
    * 重拉」两处，写在按钮里会让重拉漏掉。
    */
-  const toggleHunks = useCallback((path: string) => {
-    setHunkPath((current) => (current === path ? null : path));
+  const toggleHunks = useCallback((path: string, staged: boolean) => {
+    setHunkOpen((current) =>
+      current && current.path === path && current.staged === staged ? null : { path, staged },
+    );
   }, []);
 
   /**
@@ -1724,13 +1843,13 @@ export function GitChangesPane({
    * 在终端里改了文件之后这里的块会过期，apply 时报错、重拉一次就对上——比每次都拉划算。
    */
   useEffect(() => {
-    if (!hunkPath) {
+    if (!hunkOpen) {
       setHunkData(null);
       return;
     }
     let alive = true;
     setHunkLoading(true);
-    gitFileHunks(root, hunkPath)
+    gitFileHunks(root, hunkOpen.path, hunkOpen.staged)
       .then((data) => {
         if (alive) setHunkData(data);
       })
@@ -1745,25 +1864,89 @@ export function GitChangesPane({
     return () => {
       alive = false;
     };
-  }, [root, hunkPath, hunkRevision]);
+  }, [root, hunkOpen, hunkRevision]);
 
-  /** 展开的文件不在未暂存列表里了（暂存完、放弃完、或者被提交掉了）就收起 */
+  /** 换了展开目标 / 应用过改动之后清空行选择：行号对不上了，留着会误伤 */
   useEffect(() => {
-    if (hunkPath && !unstaged.some((item) => item.path === hunkPath)) {
-      setHunkPath(null);
-    }
-  }, [hunkPath, unstaged]);
+    setLineSelection(new Map());
+    lineAnchor.current = null;
+  }, [hunkOpen, hunkRevision]);
 
-  /** 暂存选中的一块：补丁进 index，工作区不动 */
+  /** 展开的文件不在它那一组里了（暂存完、放弃完、或者被提交掉了）就收起 */
+  useEffect(() => {
+    if (!hunkOpen) return;
+    const list = hunkOpen.staged ? staged : unstaged;
+    if (!list.some((item) => item.path === hunkOpen.path)) {
+      setHunkOpen(null);
+    }
+  }, [hunkOpen, staged, unstaged]);
+
+  /**
+   * 点 diff 里的某一行：切换选中，或（按住 Shift）从锚点连选到这一行。
+   *
+   * 只认改动行（`+` / `-`）：上下文行选它没有意义，后端也不看。范围里夹着的
+   * 上下文行会一并标上（看着连贯），对生成补丁没有影响。
+   */
+  const clickLine = useCallback(
+    (hunkIndex: number, bodyIndex: number, changeLine: boolean, shift: boolean) => {
+      if (!changeLine) return;
+      setLineSelection((current) => {
+        const next = new Map(current);
+        const anchor = lineAnchor.current;
+        if (shift && anchor && anchor.hunk === hunkIndex) {
+          const from = Math.min(anchor.line, bodyIndex);
+          const to = Math.max(anchor.line, bodyIndex);
+          const range = new Set<number>();
+          for (let index = from; index <= to; index += 1) range.add(index);
+          next.set(hunkIndex, range);
+          return next;
+        }
+        const set = new Set(current.get(hunkIndex) ?? []);
+        if (set.has(bodyIndex)) set.delete(bodyIndex);
+        else set.add(bodyIndex);
+        if (set.size === 0) next.delete(hunkIndex);
+        else next.set(hunkIndex, set);
+        lineAnchor.current = { hunk: hunkIndex, line: bodyIndex };
+        return next;
+      });
+    },
+    [],
+  );
+
+  /**
+   * 应用一块 / 几行：`lines` 为空时作用于整块（原来的行为），否则只对选中的行。
+   * 两处都落在后端同一套 apply 上（行级只是先把补丁裁剪成只含选中行）。
+   */
+  const applyHunk = useCallback(
+    (action: HunkAction, patch: string, lines: number[]): Promise<GitStatusPayload> =>
+      lines.length === 0
+        ? gitApplyPatch(root, patch, action)
+        : gitApplyLines(root, patch, lines, action),
+    [root],
+  );
+
+  /** 暂存选中的一块 / 几行：补丁进 index，工作区不动 */
   const stageHunk = useCallback(
-    (patch: string) => {
+    (patch: string, lines: number[]) => {
       void run("stage", async () => {
-        const payload = await gitApplyPatch(root, patch, { mode: "stage" });
+        const payload = await applyHunk({ mode: "stage" }, patch, lines);
         setHunkRevision((revision) => revision + 1);
         return payload;
       });
     },
-    [root, run],
+    [applyHunk, run],
+  );
+
+  /** 取消暂存选中的一块 / 几行：`--cached --reverse`，工作区不动 */
+  const unstageHunk = useCallback(
+    (patch: string, lines: number[]) => {
+      void run("unstage", async () => {
+        const payload = await applyHunk({ mode: "unstage" }, patch, lines);
+        setHunkRevision((revision) => revision + 1);
+        return payload;
+      });
+    },
+    [applyHunk, run],
   );
 
   const confirmHunkDiscard = useCallback(() => {
@@ -1771,23 +1954,27 @@ export function GitChangesPane({
     if (!pending) return;
     setPendingHunkDiscard(null);
     void run("discard", async () => {
-      const payload = await gitApplyPatch(root, pending.patch, { mode: "discard" });
+      const payload = await applyHunk({ mode: "discard" }, pending.patch, pending.lines);
       setHunkRevision((revision) => revision + 1);
       return payload;
     });
-  }, [pendingHunkDiscard, root, run]);
+  }, [applyHunk, pendingHunkDiscard, run]);
 
-  /** 逐块操作那一组，只给未暂存的分组（见 HunkSection） */
+  /** 逐块 / 逐行操作那一组，暂存和未暂存两组共用一份（靠 onToggle 的目标区分） */
   const hunkSection = useMemo<HunkSection>(
     () => ({
-      open: hunkPath,
+      open: hunkOpen?.path ?? null,
+      staged: hunkOpen?.staged ?? false,
       data: hunkData,
       loading: hunkLoading,
+      selection: lineSelection,
       onToggle: toggleHunks,
+      onLineClick: clickLine,
       onStage: stageHunk,
-      onDiscard: (patch, what) => setPendingHunkDiscard({ patch, what }),
+      onUnstage: unstageHunk,
+      onDiscard: (patch, lines, what) => setPendingHunkDiscard({ patch, lines, what }),
     }),
-    [hunkPath, hunkData, hunkLoading, toggleHunks, stageHunk],
+    [hunkOpen, hunkData, hunkLoading, lineSelection, toggleHunks, clickLine, stageHunk, unstageHunk],
   );
 
   const discardAllStaged = useCallback(() => {
@@ -1909,6 +2096,15 @@ export function GitChangesPane({
     document.body.classList.remove("codedock-dragging-row");
   };
 
+  /** 输入框里静一下之后才真去查，避免每敲一个字拉一次 git */
+  useEffect(() => {
+    const timer = window.setTimeout(() => setLogNeedle(logFilter.trim()), LOG_FILTER_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [logFilter]);
+
+  /** 有没有在过滤。过滤时泳道图、翻页、自动加载都得让位（见下） */
+  const filteringLog = logNeedle.length > 0;
+
   // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git。
   // 还要盯住 HEAD：在终端里 commit / amend / reset 之后，改动列表靠 2 秒轮询
   // 能自己变好，历史不会，只有 HEAD 动了才说明提交列表该重拉。
@@ -1916,7 +2112,10 @@ export function GitChangesPane({
   useEffect(() => {
     if (logCollapsed || !visible || !snapshot.isRepo) return;
     let cancelled = false;
-    void gitLog(root, logLimit)
+    // 过滤时顶到上限并把条件交给后端：主题 / 作者走后端后置匹配，路径交给 git 的 pathspec
+    const filter = filteringLog && !logFilterPath ? logNeedle : undefined;
+    const path = filteringLog && logFilterPath ? logNeedle : undefined;
+    void gitLog(root, filteringLog ? LOG_FILTER_LIMIT : logLimit, filter, path)
       .then((list) => {
         if (cancelled) return;
         setCommits(list);
@@ -1930,7 +2129,17 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [logCollapsed, visible, logLimit, logRevision, snapshot.isRepo, snapshot.head]);
+  }, [
+    logCollapsed,
+    visible,
+    logLimit,
+    logRevision,
+    snapshot.isRepo,
+    snapshot.head,
+    filteringLog,
+    logFilterPath,
+    logNeedle,
+  ]);
 
   // 后台自动重拉：见 LOG_POLL_MS 的说明。收起时不起定时器，和上面那个 effect 一致
   useEffect(() => {
@@ -2010,17 +2219,44 @@ export function GitChangesPane({
   /**
    * 泳道布局。列表一变就整段重排——每翻一页也是从头算，图不会跳变。
    * `rows[i]` 和 `commits[i]` 一一对应，取行直接用下标即可。
+   *
+   * **过滤时不画图**：泳道要靠完整的一串父子关系才接得上，过滤掉一部分之后
+   * 剩下的行之间连线必然断开，画出来反而像坏了。这时把图列收起来，让位给文字。
    */
-  const graph = useMemo(() => layoutGraph(commits ?? []), [commits]);
-  const graphWidth = graph.laneCount * LANE_W;
+  const graph = useMemo(
+    () => (filteringLog ? null : layoutGraph(commits ?? [])),
+    [commits, filteringLog],
+  );
+  const graphWidth = graph ? graph.laneCount * LANE_W : 0;
 
   /**
-   * 提交历史滚到底就自动加载下一页。
+   * 回到 HEAD：把当前提交那一行滚到视野里。
+   *
+   * 不用 scrollIntoView——它会连带滚动外层容器；改成算出这一行相对滚动容器的
+   * 偏移、直接调 scrollTop。找不到 HEAD 行（过滤掉了）就退回顶部。
+   */
+  const jumpToHead = useCallback(() => {
+    const container = logScrollRef.current;
+    if (!container) return;
+    const row = snapshot.head
+      ? container.querySelector<HTMLElement>(`[data-commit="${snapshot.head}"]`)
+      : null;
+    if (!row) {
+      container.scrollTo({ top: 0 });
+      return;
+    }
+    const delta = row.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    container.scrollTop += delta;
+  }, [snapshot.head]);
+
+  /**
+   * 提交历史滚到底就自动加载下一页。过滤时不再往下翻——后端已经一次顶到上限。
    *
    * 只在真有滚动事件时触发：内容本来就不够高、滚不动时不会自己一直往下加载
    * （那样会把 500 条上限一口气拉满）。滚不动的情形留给「加载更多」按钮。
    */
   const onLogScroll = (event: ReactUIEvent<HTMLDivElement>) => {
+    if (filteringLog) return;
     if (commits === null || commits.length < logLimit) return;
     const el = event.currentTarget;
     // 留 48px 余量：真正贴到底之前就开始拉，滚动手感上不会断
@@ -2609,6 +2845,7 @@ export function GitChangesPane({
                 view={view}
                 staged
                 busy={busy !== null}
+                hunks={hunkSection}
                 collapsedDirs={collapsedDirs}
                 onToggleDir={toggleDir}
                 onOpen={onOpen}
@@ -2698,38 +2935,100 @@ export function GitChangesPane({
         className="flex min-h-0 shrink-0 flex-col"
         style={logCollapsed ? undefined : { height: logHeight }}
       >
-        <button
-          type="button"
-          onClick={() => setLogCollapsedPersisted(!logCollapsed)}
-          title={logCollapsed ? "展开提交历史" : "收起提交历史"}
-          className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:text-fg"
-        >
-          {logCollapsed ? (
-            <IconChevronRight className="h-3 w-3" />
-          ) : (
-            <IconChevronDown className="h-3 w-3" />
+        {/* 历史标题栏：左边收起 / 展开，右边「回到 HEAD」。
+            不能再整行做成一个 button——里面套 button 是非法的 */}
+        <div className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-[11px] font-medium tracking-wide text-fg-dim">
+          <button
+            type="button"
+            onClick={() => setLogCollapsedPersisted(!logCollapsed)}
+            title={logCollapsed ? "展开提交历史" : "收起提交历史"}
+            className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-fg"
+          >
+            {logCollapsed ? (
+              <IconChevronRight className="h-3 w-3 shrink-0" />
+            ) : (
+              <IconChevronDown className="h-3 w-3 shrink-0" />
+            )}
+            <span>提交历史</span>
+            {commits && commits.length > 0 && (
+              <span className="text-fg-faint">{commits.length}</span>
+            )}
+          </button>
+          {!logCollapsed && snapshot.head && (
+            <button
+              type="button"
+              onClick={jumpToHead}
+              title="回到当前提交（HEAD）"
+              className={HEADER_ACTION}
+            >
+              <IconTarget className="h-3.5 w-3.5" />
+            </button>
           )}
-          <span>提交历史</span>
-          {commits && commits.length > 0 && (
-            <span className="text-fg-faint">{commits.length}</span>
-          )}
-        </button>
+        </div>
+
+        {/* 过滤行：历史太短时不摆——和改动列表的筛选框同一个门槛（见 FILTER_MIN_CHANGES），
+            已经筛出结果时（可能只剩几条）则保持可见，免得一打字就把输入框弄没了 */}
+        {!logCollapsed && ((commits?.length ?? 0) >= FILTER_MIN_CHANGES || filteringLog) && (
+          // 一个输入框 + 一个模式开关。主题 / 作者走后端后置匹配、路径交给 git 的
+          // pathspec，模式开关让用户明说是哪一种，省得靠「有没有斜杠」去猜
+          <div className="flex shrink-0 items-center gap-1 px-1 pb-1">
+            <div className="relative min-w-0 flex-1">
+              <input
+                type="text"
+                value={logFilter}
+                onChange={(event) => setLogFilter(event.target.value)}
+                placeholder={logFilterPath ? "按改动过的路径过滤" : "按主题 / 作者过滤"}
+                className={`${TEXT_INPUT} pr-7`}
+              />
+              {logFilter && (
+                <button
+                  type="button"
+                  onClick={() => setLogFilter("")}
+                  title="清空过滤"
+                  className="absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+                >
+                  <IconClose className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setLogFilterPath((value) => !value)}
+              title={
+                logFilterPath
+                  ? "当前按路径过滤，点击改为按主题 / 作者"
+                  : "当前按主题 / 作者过滤，点击改为按路径"
+              }
+              className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${
+                logFilterPath ? "bg-accent-strong text-app" : "text-fg-faint hover:bg-hover hover:text-fg"
+              }`}
+            >
+              路径
+            </button>
+          </div>
+        )}
 
         {!logCollapsed && (
-          <div className="min-h-0 flex-1 overflow-auto px-1 pb-2" onScroll={onLogScroll}>
+          <div
+            ref={logScrollRef}
+            className="min-h-0 flex-1 overflow-auto px-1 pb-2"
+            onScroll={onLogScroll}
+          >
             {logError && <p className="px-1 py-1 text-[11px] text-danger">{logError}</p>}
             {commits === null && !logError && (
               <p className="px-1 py-1 text-[11px] text-fg-faint">加载中…</p>
             )}
             {commits?.length === 0 && !logError && (
-              <p className="px-1 py-1 text-[11px] text-fg-faint">还没有提交</p>
+              <p className="px-1 py-1 text-[11px] text-fg-faint">
+                {filteringLog ? `没有匹配「${logNeedle}」的提交` : "还没有提交"}
+              </p>
             )}
 
             {commits?.map((commit, index) => (
               <CommitRow
                 key={commit.hash}
                 commit={commit}
-                graph={graph.rows[index]}
+                graph={graph ? graph.rows[index] : null}
                 graphWidth={graphWidth}
                 expanded={openCommits.has(commit.hash)}
                 files={commitFiles.get(commit.hash)}
@@ -2747,8 +3046,9 @@ export function GitChangesPane({
               />
             ))}
 
-            {/* 滚到底会自动加载；这个按钮留给「内容不够高、滚不动」的情形 */}
-            {commits && commits.length >= logLimit && (
+            {/* 滚到底会自动加载；这个按钮留给「内容不够高、滚不动」的情形。
+                过滤时后端已经一次顶到上限，不再分页 */}
+            {commits && !filteringLog && commits.length >= logLimit && (
               <button
                 type="button"
                 onClick={() => setLogLimit((limit) => limit + LOG_PAGE)}
@@ -2775,7 +3075,7 @@ export function GitChangesPane({
 
       {pendingHunkDiscard && (
         <ConfirmDialog
-          message={`放弃 ${pendingHunkDiscard.what} 的这块改动？将还原到暂存区里的版本，无法撤销。`}
+          message={`放弃 ${pendingHunkDiscard.what}？将还原到暂存区里的版本，无法撤销。`}
           confirmLabel="放弃"
           onConfirm={confirmHunkDiscard}
           onCancel={() => setPendingHunkDiscard(null)}

@@ -126,6 +126,9 @@ pub enum DiscardSource {
 pub enum HunkAction {
     /// 把这个 hunk 加进暂存区（`git apply --cached`）
     Stage,
+    /// 把这个 hunk 从暂存区退回去（`git apply --cached --reverse`）。基线是 HEAD 侧，
+    /// 工作区一个字节都不动。
+    Unstage,
     /// 把这个 hunk 从工作区丢掉（`git apply --reverse`）
     Discard,
 }
@@ -754,17 +757,23 @@ fn split_patch(text: &str) -> (String, Vec<PatchHunk>) {
     (header, hunks)
 }
 
-/// 取某个文件未暂存侧的 hunk 列表。
+/// 取某个文件某一侧的 hunk 列表。
 ///
-/// 只做未暂存侧：`git diff` 的原始输出一份两用——`--cached` 应用就是「暂存这块」，
-/// `--reverse` 应用就是「丢掉这块」，不用为两个方向各生成一份。
+/// 未暂存侧（`git diff`）的原始输出一份两用——`--cached` 应用就是「暂存这块」，
+/// `--reverse` 应用就是「丢掉这块」，不用为两个方向各生成一份；暂存侧（`git diff
+/// --cached`）的基线是 HEAD，`--cached --reverse` 应用就是「取消暂存这块」。
 ///
 /// `--no-color` 是必须的，带了颜色码的补丁交给 `git apply` 会直接认不出来。
 /// 不加 `normalize_newlines`——那条链是为了让**比对**不被 CRLF 干扰，补丁必须和
 /// 工作区字节一致，归一过就 apply 不上了。
-fn file_hunks(root: &Path, path: &str) -> Result<FileHunks, String> {
+fn file_hunks(root: &Path, path: &str, staged: bool) -> Result<FileHunks, String> {
     let (_, spec) = workspace_relative(root, path)?;
-    let raw = run_git_literal(root, &["diff", "--no-color", "-U3", "--", &spec])?.unwrap_or_default();
+    let args: Vec<&str> = if staged {
+        vec!["diff", "--cached", "--no-color", "-U3", "--", &spec]
+    } else {
+        vec!["diff", "--no-color", "-U3", "--", &spec]
+    };
+    let raw = run_git_literal(root, &args)?.unwrap_or_default();
 
     // diff 里混进非 UTF-8 字节（文件是别的编码）就没法原样走 JSON 往返，跨过去
     // 会变成替换字符、补丁当场失效。这种情况退回整文件操作，界面不给逐块按钮
@@ -803,6 +812,11 @@ fn apply_patch(root: &Path, patch: &str, action: &HunkAction) -> Result<GitStatu
     let mut args: Vec<&str> = vec!["apply", "--recount"];
     match action {
         HunkAction::Stage => args.push("--cached"),
+        HunkAction::Unstage => {
+            // 退回暂存区：反向作用在 index 上，工作区不动
+            args.push("--cached");
+            args.push("--reverse");
+        }
         HunkAction::Discard => args.push("--reverse"),
     }
     args.push("--");
@@ -813,6 +827,135 @@ fn apply_patch(root: &Path, patch: &str, action: &HunkAction) -> Result<GitStatu
     fs::remove_file(&file).ok();
     result?;
     status_of(root)
+}
+
+/// 从 `@@ -a,b +c,d @@` 里抠出两侧的起始行号（不含计数）。解析不出来时给 (0, 0)。
+///
+/// 只取起始行号：行数由我们按选中的行重算（`--recount` 也会兜一层），起始行号则要
+/// 原样保留——它决定补丁往哪一行的上下文上贴。
+fn hunk_start(header: &str) -> (u32, u32) {
+    let rest = header.strip_prefix("@@ -").unwrap_or("");
+    let mut parts = rest.split(' ');
+    let parse_start = |field: &str| -> u32 {
+        field
+            .trim_start_matches('+')
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .parse()
+            .unwrap_or(0)
+    };
+    let old = parse_start(parts.next().unwrap_or(""));
+    let new = parse_start(parts.next().unwrap_or(""));
+    (old, new)
+}
+
+/// 把「选中若干行」转成一份只含这些改动的补丁。
+///
+/// 补丁仍由 `git diff` 生成、原样交给 `git apply`（不为行级操作另起一套 apply），
+/// 这里只做一件事：**把没选中的改动在补丁里还原成基线**，让它们不被这次操作带走。
+///
+/// 还原方向取决于补丁是正向还是反向 apply：
+/// - 正向（`Stage`，`--cached`）：补丁的「old 侧」是 index。没选中的删除行要退回
+///   上下文（index 里这行还在），没选中的新增行整条去掉（不许进 index）。
+/// - 反向（`Discard` / `Unstage`，`--reverse`）：补丁匹配的是目标侧（工作区 / index）。
+///   正好相反——没选中的新增行退回上下文（目标里这行还在），没选中的删除行整条去掉。
+///
+/// 之所以两种方向处理的是相反的那种行：未选中的行只有退回上下文才能让补丁在
+/// 「基线侧」和「目标侧」两头都对得上，凭空删一行会让其中一头对不齐。
+///
+/// `selected` 是 hunk 正文（`@@` 行之后）里选中的行下标，与界面上的行号一致。
+/// `patch` 一次只带一个 hunk（界面按块调用），多了说明调用方拼错了。
+fn patch_for_lines(patch: &str, selected: &[u32], action: &HunkAction) -> Result<String, String> {
+    let (header, hunks) = split_patch(patch);
+    let hunk = match hunks.as_slice() {
+        [only] => only,
+        [] => return Err("没有可以应用的改动".to_string()),
+        _ => return Err("行级操作一次只能处理一个改动块".to_string()),
+    };
+
+    let picked: std::collections::HashSet<u32> = selected.iter().copied().collect();
+    // 反向 apply 的两类动作都按「目标侧」理解（见上）
+    let reverse = matches!(action, HunkAction::Discard | HunkAction::Unstage);
+    let (old_start, new_start) = hunk_start(&hunk.header);
+
+    let mut body = String::new();
+    let mut old_count = 0u32;
+    let mut new_count = 0u32;
+    let mut has_change = false;
+    // 上一行有没有被保留：`\ No newline at end of file` 要跟着它，被丢掉就没意义了
+    let mut kept_previous = false;
+
+    // 只按换行切、保留行尾——补丁的字节要和 `git diff` 输出完全一致才 apply 得上
+    for (offset, line) in hunk.text.split_inclusive('\n').enumerate() {
+        if offset == 0 {
+            continue; // `@@` 行，稍后按新计数重写
+        }
+        let body_index = (offset - 1) as u32;
+        let tag = line.as_bytes().first().copied().unwrap_or(b' ');
+        match tag {
+            b'\\' => {
+                // 末尾无换行的标记：上一行还在就原样留下，丢了它也没意义
+                if kept_previous {
+                    body.push_str(line);
+                }
+            }
+            b'+' => {
+                if picked.contains(&body_index) {
+                    body.push_str(line);
+                    new_count += 1;
+                    has_change = true;
+                    kept_previous = true;
+                } else if reverse {
+                    // 退回上下文：目标侧这一行还在，结果里也保留
+                    body.push(' ');
+                    body.push_str(&line[1..]);
+                    old_count += 1;
+                    new_count += 1;
+                    kept_previous = true;
+                } else {
+                    // 正向：不许进 index，整条去掉
+                    kept_previous = false;
+                }
+            }
+            b'-' => {
+                if picked.contains(&body_index) {
+                    body.push_str(line);
+                    old_count += 1;
+                    has_change = true;
+                    kept_previous = true;
+                } else if reverse {
+                    // 反向：它本来就不在目标侧，整条去掉
+                    kept_previous = false;
+                } else {
+                    // 正向：退回上下文，index 里这行还在
+                    body.push(' ');
+                    body.push_str(&line[1..]);
+                    old_count += 1;
+                    new_count += 1;
+                    kept_previous = true;
+                }
+            }
+            _ => {
+                // 上下文行原样保留（两侧都在）
+                body.push_str(line);
+                old_count += 1;
+                new_count += 1;
+                kept_previous = true;
+            }
+        }
+    }
+
+    if !has_change {
+        return Err("选中的行里没有可应用的改动".to_string());
+    }
+
+    // hunk 头保留原起始行号、按新内容重算计数；`@@` 后面那段函数提示也原样带回去
+    let suffix = hunk.header.find(" @@").map(|i| &hunk.header[i + 3..]).unwrap_or("");
+    let new_hunk = format!(
+        "@@ -{old_start},{old_count} +{new_start},{new_count} @@{suffix}\n{body}"
+    );
+    Ok(format!("{header}{new_hunk}"))
 }
 
 fn commit_staged(root: &Path, message: &str) -> Result<GitStatus, String> {
@@ -1370,22 +1513,63 @@ fn parse_log(raw: &[u8]) -> Vec<Commit> {
         .collect()
 }
 
-fn log_of(root: &Path, limit: u32) -> Result<Vec<Commit>, String> {
+/// 按主题 / 作者 / 正文做不区分大小写的子串匹配。
+///
+/// 用 Rust 后置过滤，而不是 git 的 `--grep` + `--author`：git 把这两个条件是
+/// **AND** 起来的（实测 `--grep=X --author=X` 只返回同时命中两者的提交），我们要的是
+/// 「任一命中」，没有单条 git 命令能表达。代价是过滤只作用于已经拉下来的那一段，
+/// 所以过滤时把拉取条数顶到上限（见 log_filtered）。
+fn filter_commits(commits: Vec<Commit>, needle: &str) -> Vec<Commit> {
+    let needle = needle.to_lowercase();
+    commits
+        .into_iter()
+        .filter(|commit| {
+            commit.subject.to_lowercase().contains(&needle)
+                || commit.author.to_lowercase().contains(&needle)
+                || commit.body.to_lowercase().contains(&needle)
+        })
+        .collect()
+}
+
+/// 拉提交历史，可带过滤。`path` 给 git 当 pathspec（`git log -- <path>`），
+/// `filter` 走 filter_commits 后置匹配。
+fn log_filtered(
+    root: &Path,
+    limit: u32,
+    filter: Option<&str>,
+    path: Option<&str>,
+) -> Result<Vec<Commit>, String> {
     if repo_prefix(root)?.is_none() {
         return Ok(Vec::new());
     }
 
-    let count = limit.clamp(1, LOG_MAX).to_string();
+    let filter = filter.map(str::trim).filter(|text| !text.is_empty());
+    let path = path.map(str::trim).filter(|text| !text.is_empty());
+
+    // 过滤是把结果筛掉一部分，还按普通的一页去取的话，前面一段没命中就看着像「没有」，
+    // 所以过滤时一次顶到上限。
+    let want = if filter.is_some() || path.is_some() {
+        LOG_MAX
+    } else {
+        limit
+    };
+    let count = want.clamp(1, LOG_MAX).to_string();
     let arg = format!("--max-count={count}");
     // 空仓库（还没有任何提交）时 git log 非 0 退出，那不是错误，给空列表。
     // `--topo-order` 保证父提交一定排在子提交之后（画泳道图的前提，默认的时间序做不到）；
     // `--decorate=full` 让 `%D` 给出 refs/… 全名，好把分支 / 远程 / 标签分开。
-    let raw = run_git(
-        root,
-        &["log", &arg, "--topo-order", "--decorate=full", LOG_FORMAT],
-    )?
-    .unwrap_or_default();
-    Ok(parse_log(&raw))
+    let mut args: Vec<&str> = vec!["log", &arg, "--topo-order", "--decorate=full", LOG_FORMAT];
+    if let Some(path) = path {
+        // `--` 之后一律按字面路径理解，省得带 `*`、`[` 的路径名被当通配符
+        args.push("--");
+        args.push(path);
+    }
+    let raw = run_git(root, &args)?.unwrap_or_default();
+    let commits = parse_log(&raw);
+    Ok(match filter {
+        Some(needle) => filter_commits(commits, needle),
+        None => commits,
+    })
 }
 
 /// 还没推送到上游的提交号（HEAD 有、上游没有的那几条），界面拿它在历史里标出来。
@@ -1705,17 +1889,19 @@ pub fn git_discard(
     discard_paths(&state.checked_root(&root)?, &paths, &source)
 }
 
-/// 某个未暂存文件的 hunk 列表，界面据此逐个列出、逐个暂存 / 放弃。
+/// 某个文件的 hunk 列表，界面据此逐个列出、逐块 / 逐行操作。
+/// `staged` 为 true 时取暂存侧（HEAD↔index），否则取未暂存侧（index↔工作区）。
 #[tauri::command(async)]
 pub fn git_file_hunks(
     state: tauri::State<'_, FsState>,
     root: String,
     path: String,
+    staged: Option<bool>,
 ) -> Result<FileHunks, String> {
-    file_hunks(&state.checked_root(&root)?, &path)
+    file_hunks(&state.checked_root(&root)?, &path, staged.unwrap_or(false))
 }
 
-/// 应用一段补丁：把选中的 hunk 加进暂存区，或把工作区里的这些改动撤掉。
+/// 应用一段补丁：把选中的 hunk 加进暂存区 / 退回暂存区，或把工作区里的这些改动撤掉。
 #[tauri::command(async)]
 pub fn git_apply_patch(
     state: tauri::State<'_, FsState>,
@@ -1724,6 +1910,21 @@ pub fn git_apply_patch(
     action: HunkAction,
 ) -> Result<GitStatus, String> {
     apply_patch(&state.checked_root(&root)?, &patch, &action)
+}
+
+/// 应用一段补丁里**选中的那几行**：其余改动在补丁里还原成基线，只有选中的行进
+/// 暂存区 / 退回暂存区 / 从工作区撤掉。补丁走和整块操作同一套 `apply_patch`。
+#[tauri::command(async)]
+pub fn git_apply_lines(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    patch: String,
+    lines: Vec<u32>,
+    action: HunkAction,
+) -> Result<GitStatus, String> {
+    let root = state.checked_root(&root)?;
+    let patch = patch_for_lines(&patch, &lines, &action)?;
+    apply_patch(&root, &patch, &action)
 }
 
 /// 提交暂存区。
@@ -1843,13 +2044,24 @@ pub fn git_file_diff(
 }
 
 /// 提交历史，最新的在最前。`limit` 不传就取一页。
+///
+/// `filter` 按主题 / 作者 / 正文匹配，`path` 按改动过的路径过滤——两者互斥，
+/// 前端一次只传一个（路径必须交给 git 的 pathspec，正文 / 作者却没法用单条 git
+/// 命令「任一命中」，见 filter_commits）。
 #[tauri::command(async)]
 pub fn git_log(
     state: tauri::State<'_, FsState>,
     root: String,
     limit: Option<u32>,
+    filter: Option<String>,
+    path: Option<String>,
 ) -> Result<Vec<Commit>, String> {
-    log_of(&state.checked_root(&root)?, limit.unwrap_or(LOG_PAGE))
+    log_filtered(
+        &state.checked_root(&root)?,
+        limit.unwrap_or(LOG_PAGE),
+        filter.as_deref(),
+        path.as_deref(),
+    )
 }
 
 /// 某个提交改了哪些文件。
@@ -2954,7 +3166,7 @@ mod tests {
         let (_state, repo, top) = temp_repo();
         init_repo(&repo);
         // 空仓库里 git log 非 0 退出，这不是错误
-        assert!(log_of(&repo, LOG_PAGE).unwrap().is_empty());
+        assert!(log_filtered(&repo, LOG_PAGE, None, None).unwrap().is_empty());
         cleanup(&top);
     }
 
@@ -2974,7 +3186,7 @@ mod tests {
         stage_paths(&repo, &None).unwrap();
         commit_staged(&repo, "第二条 带 空格").unwrap();
 
-        let commits = log_of(&repo, LOG_PAGE).unwrap();
+        let commits = log_filtered(&repo, LOG_PAGE, None, None).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].subject, "第二条 带 空格", "最新的排最前");
         assert_eq!(commits[1].subject, "第一条");
@@ -2984,7 +3196,7 @@ mod tests {
         assert!(commits[0].time > 0);
 
         // limit 要生效
-        assert_eq!(log_of(&repo, 1).unwrap().len(), 1);
+        assert_eq!(log_filtered(&repo, 1, None, None).unwrap().len(), 1);
 
         cleanup(&top);
     }
@@ -3003,7 +3215,7 @@ mod tests {
         stage_paths(&repo, &None).unwrap();
         let head = commit_staged(&repo, "init").unwrap();
         let _ = head;
-        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let rev = log_filtered(&repo, 1, None, None).unwrap()[0].hash.clone();
 
         // 工作区切到 sub/：仓库根那个 outside.txt 不该出现在列表里
         let sub = state.register(repo.join("sub")).unwrap();
@@ -3038,13 +3250,13 @@ mod tests {
         commit_staged(&repo, "改一行").unwrap();
         fs::write(&path, "a\nb\nc\n").unwrap();
 
-        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let rev = log_filtered(&repo, 1, None, None).unwrap()[0].hash.clone();
         let diff = file_diff(&repo, &path, &DiffSource::Commit { rev }).unwrap();
         assert_eq!(diff.original, "a\n");
         assert_eq!(diff.modified, "a\nb\n", "看的是提交里的版本，不是工作区");
 
         // 根提交没有父，基线该落到空
-        let root_rev = log_of(&repo, 2).unwrap()[1].hash.clone();
+        let root_rev = log_filtered(&repo, 2, None, None).unwrap()[1].hash.clone();
         let first = file_diff(&repo, &path, &DiffSource::Commit { rev: root_rev }).unwrap();
         assert_eq!(first.original, "");
         assert_eq!(first.modified, "a\n");
@@ -3068,7 +3280,7 @@ mod tests {
         stage_paths(&repo, &None).unwrap();
         commit_staged(&repo, "删掉一个").unwrap();
 
-        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let rev = log_filtered(&repo, 1, None, None).unwrap()[0].hash.clone();
         let files = files_of(&repo, &rev).unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative, "gone.txt");
@@ -3250,7 +3462,7 @@ mod tests {
         init_repo(&repo);
         let file = repo_with_two_hunks(&repo);
 
-        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts"), false).unwrap();
         assert_eq!(hunks.hunks.len(), 2, "两处相隔 24 行，应该切成两个 hunk");
 
         // 只暂存第二个 hunk
@@ -3286,7 +3498,7 @@ mod tests {
         init_repo(&repo);
         let file = repo_with_two_hunks(&repo);
 
-        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts"), false).unwrap();
         assert_eq!(hunks.hunks.len(), 2);
 
         // 只丢掉第一个 hunk：第 2 行回到原样，第 26 行的改动留着
@@ -3329,7 +3541,7 @@ mod tests {
         fs::write(&file, crlf(&changed)).unwrap();
 
         // 提交后工作区是 CRLF，但整文件不该显示成"改过了"：autocrlf 已经把它折算掉
-        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts"), false).unwrap();
         assert_eq!(hunks.hunks.len(), 2, "行尾不该被算成改动");
 
         // 暂存第二块，再丢掉第一块：一个动 index、一个动工作区
@@ -3348,7 +3560,7 @@ mod tests {
         assert!(staged.contains("line 26 changed"), "{staged}");
         assert!(!staged.contains("line 2 changed"), "{staged}");
 
-        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts"), false).unwrap();
         assert_eq!(hunks.hunks.len(), 1, "刚暂存过的那块不该再出现");
         apply_patch(
             &repo,
@@ -3379,7 +3591,7 @@ mod tests {
         commit_staged(&repo, "init").unwrap();
 
         // 已经提交、工作区没动：diff 是空的，不该报错也不该有 hunk
-        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts")).unwrap();
+        let hunks = file_hunks(&repo, &path_of_file(&repo, "app.ts"), false).unwrap();
         assert!(hunks.hunks.is_empty());
 
         cleanup(&top);
@@ -3389,6 +3601,196 @@ mod tests {
     fn applying_an_empty_patch_is_refused() {
         let (_state, repo, top) = temp_repo();
         assert!(apply_patch(&repo, "  \n", &HunkAction::Stage).is_err());
+        cleanup(&top);
+    }
+
+    // ---- 行级：在一个 hunk 里只对选中的几行动手 ----
+
+    /// 一个 hunk、两处相邻的改动（l2→l2x、l5→l5x），正文下标固定：
+    /// 1 = `-l2`、2 = `+l2x`、5 = `-l5`、6 = `+l5x`
+    fn one_hunk_patch() -> &'static str {
+        "diff --git a/x b/x\n\
+         index 1111111..2222222 100644\n\
+         --- a/x\n\
+         +++ b/x\n\
+         @@ -1,7 +1,7 @@\n\
+         \x20l1\n\
+         -l2\n\
+         +l2x\n\
+         \x20l3\n\
+         \x20l4\n\
+         -l5\n\
+         +l5x\n\
+         \x20l6\n\
+         \x20l7\n"
+    }
+
+    /// 造一个只有这一个 hunk 的仓库，工作区已改，还没暂存
+    fn repo_with_one_hunk(repo: &Path) -> PathBuf {
+        let file = repo.join("x");
+        let base = "l1\nl2\nl3\nl4\nl5\nl6\nl7\n";
+        fs::write(&file, base).unwrap();
+        stage_paths(repo, &None).unwrap();
+        commit_staged(repo, "init").unwrap();
+        fs::write(&file, "l1\nl2x\nl3\nl4\nl5x\nl6\nl7\n").unwrap();
+        file
+    }
+
+    #[test]
+    fn lines_to_patch_keeps_only_the_selected_change() {
+        // 正向（进暂存）：没选中的删除行退回上下文、没选中的新增行整条去掉
+        let stage = patch_for_lines(one_hunk_patch(), &[6], &HunkAction::Stage).unwrap();
+        assert!(stage.contains("@@ -1,7 +1,8 @@"), "{stage}");
+        assert!(stage.contains("\x20l2\n"), "没选中的删除行要退回上下文：{stage}");
+        assert!(!stage.contains("+l2x"), "没选中的新增行该整条去掉：{stage}");
+        assert!(stage.contains("\x20l5\n"), "{stage}");
+        assert!(stage.contains("+l5x"), "{stage}");
+
+        // 反向（放弃 / 取消暂存）：正好相反
+        let reverse = patch_for_lines(one_hunk_patch(), &[6], &HunkAction::Discard).unwrap();
+        assert!(reverse.contains("@@ -1,6 +1,7 @@"), "{reverse}");
+        assert!(!reverse.contains("-l2"), "没选中的删除行该整条去掉：{reverse}");
+        assert!(reverse.contains("\x20l2x\n"), "没选中的新增行要退回上下文：{reverse}");
+        assert!(reverse.contains("+l5x"), "{reverse}");
+    }
+
+    #[test]
+    fn lines_to_patch_refuses_a_multi_hunk_patch() {
+        let patch = format!("{}{}", one_hunk_patch(), "@@ -20,1 +20,1 @@\n-a\n+b\n");
+        assert!(patch_for_lines(&patch, &[0], &HunkAction::Stage).is_err());
+        assert!(patch_for_lines("", &[0], &HunkAction::Stage).is_err());
+    }
+
+    #[test]
+    fn stages_only_the_selected_lines() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo_with_one_hunk(&repo);
+
+        let patch = one_hunk_patch();
+        let staged = patch_for_lines(patch, &[5, 6], &HunkAction::Stage).unwrap();
+        apply_patch(&repo, &staged, &HunkAction::Stage).unwrap();
+
+        let cached = String::from_utf8(
+            run_git(&repo, &["diff", "--cached", "--no-color"]).unwrap().unwrap(),
+        )
+        .unwrap();
+        assert!(cached.contains("+l5x"), "{cached}");
+        assert!(!cached.contains("l2x"), "没选中的那处不该进暂存区：{cached}");
+        // 工作区两处改动都还在
+        assert_eq!(read_text(&file), "l1\nl2x\nl3\nl4\nl5x\nl6\nl7\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn discards_only_the_selected_lines() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo_with_one_hunk(&repo);
+
+        let patch = patch_for_lines(one_hunk_patch(), &[5, 6], &HunkAction::Discard).unwrap();
+        apply_patch(&repo, &patch, &HunkAction::Discard).unwrap();
+
+        // 只有 l5 那一处回到原样，l2x 的改动留着
+        assert_eq!(read_text(&file), "l1\nl2x\nl3\nl4\nl5\nl6\nl7\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn unstages_only_the_selected_lines() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        let file = repo_with_one_hunk(&repo);
+        // 先把两处改动都暂存
+        stage_paths(&repo, &None).unwrap();
+        assert!(file_hunks(&repo, &path_of_file(&repo, "x"), true).unwrap().hunks.len() == 1);
+
+        let patch = patch_for_lines(one_hunk_patch(), &[5, 6], &HunkAction::Unstage).unwrap();
+        apply_patch(&repo, &patch, &HunkAction::Unstage).unwrap();
+
+        let cached = String::from_utf8(
+            run_git(&repo, &["diff", "--cached", "--no-color"]).unwrap().unwrap(),
+        )
+        .unwrap();
+        assert!(cached.contains("+l2x"), "没选中的那处该留在暂存区：{cached}");
+        assert!(!cached.contains("l5x"), "选中的那处该退回：{cached}");
+        // 取消暂存不动工作区
+        assert_eq!(read_text(&file), "l1\nl2x\nl3\nl4\nl5x\nl6\nl7\n");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn filters_commits_by_subject_author_or_body() {
+        let make = |subject: &str, author: &str, body: &str| Commit {
+            hash: subject.to_string(),
+            short: subject.to_string(),
+            author: author.to_string(),
+            time: 0,
+            subject: subject.to_string(),
+            body: body.to_string(),
+            parents: Vec::new(),
+            refs: Vec::new(),
+        };
+        let commits = || {
+            vec![
+                make("Add login", "Alice", ""),
+                make("Fix parser", "Bob", "touches the lexer"),
+                make("Docs", "Carol", ""),
+            ]
+        };
+        // 主题命中
+        assert_eq!(filter_commits(commits(), "login").len(), 1);
+        // 作者命中（不是用 --author 拼出来的 AND）
+        assert_eq!(filter_commits(commits(), "bob").len(), 1);
+        // 正文命中
+        assert_eq!(filter_commits(commits(), "lexer").len(), 1);
+        // 大小写不敏感
+        assert_eq!(filter_commits(commits(), "ALICE").len(), 1);
+        // 都不命中
+        assert_eq!(filter_commits(commits(), "zzz").len(), 0);
+    }
+
+    #[test]
+    fn log_filters_by_text_and_by_path() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("a.txt"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "add alpha feature").unwrap();
+        fs::write(repo.join("b.txt"), "b\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "fix beta bug").unwrap();
+
+        // 主题过滤
+        let hits = log_filtered(&repo, 50, Some("alpha"), None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subject, "add alpha feature");
+
+        // 路径过滤走 git 的 pathspec：只有碰过 b.txt 的那条
+        let hits = log_filtered(&repo, 50, None, Some("b.txt")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subject, "fix beta bug");
+
+        // 过滤不命中就是空
+        assert!(log_filtered(&repo, 50, Some("nope"), None).unwrap().is_empty());
+        // 不带过滤时照旧
+        assert_eq!(log_filtered(&repo, 50, None, None).unwrap().len(), 2);
+
         cleanup(&top);
     }
 
@@ -3602,7 +4004,7 @@ mod tests {
         assert!(!error.trim().is_empty());
         assert_eq!(status_of(&repo).unwrap().head, head_before);
         // 没有被带进合并状态：仍然是干净的单线历史，随时可以在终端里处理
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 2);
 
         cleanup(&top);
     }
@@ -3669,7 +4071,7 @@ mod tests {
         assert!(!error.trim().is_empty());
         assert_eq!(status_of(&repo).unwrap().head, head_before);
         // 没有被带进合并状态，也没有凭空多出一条提交
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 2);
 
         cleanup(&top);
     }
@@ -3834,7 +4236,7 @@ mod tests {
         assert!(!after.merging);
         assert_eq!(after.conflicts, 0);
         // init + 远程那条 + 本地那条 + 合并提交本身
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 4);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 4);
         assert_eq!((after.ahead, after.behind), (2, 0));
         assert!(repo.join("remote-side.txt").exists());
         assert!(repo.join("local-side.txt").exists());
@@ -3862,7 +4264,7 @@ mod tests {
         // 本地没有自己的提交：应当快进，不该凭空多一个合并提交（没加 --no-ff）
         let after = merge_upstream(&repo).unwrap();
         assert_eq!((after.ahead, after.behind), (0, 0));
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 2);
         assert!(repo.join("from-other.txt").exists());
 
         cleanup(&top);
@@ -3881,7 +4283,7 @@ mod tests {
         assert!(after.conflicts >= 1);
         assert!(is_merging(&repo).unwrap());
         // 冲突期间没有产生提交
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 2);
         assert!(read_text(&repo.join("app.ts")).contains("<<<<<<<"));
 
         cleanup(&top);
@@ -3899,7 +4301,7 @@ mod tests {
         assert_eq!(after.conflicts, 0);
         assert!(!is_merging(&repo).unwrap());
         assert_eq!(after.head, head_before);
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 2);
         // 冲突标记被清掉，文件回到本地那一版
         assert_eq!(read_text(&repo.join("app.ts")).trim(), "local");
 
@@ -3937,7 +4339,7 @@ mod tests {
         let error = merge_continue(&repo).unwrap_err();
         assert!(!error.trim().is_empty());
         assert!(is_merging(&repo).unwrap());
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 2);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 2);
 
         cleanup(&top);
     }
@@ -3957,7 +4359,7 @@ mod tests {
         assert!(!after.merging);
         assert_eq!(after.conflicts, 0);
         // init + 远程那条 + 本地那条 + 合并提交本身
-        assert_eq!(log_of(&repo, 5).unwrap().len(), 4);
+        assert_eq!(log_filtered(&repo, 5, None, None).unwrap().len(), 4);
         assert_eq!((after.ahead, after.behind), (2, 0));
         assert_eq!(read_text(&repo.join("app.ts")).trim(), "resolved");
 
@@ -4454,7 +4856,7 @@ mod tests {
         stage_paths(&repo, &None).unwrap();
         commit_staged(&repo, "init").unwrap();
 
-        let rev = log_of(&repo, 1).unwrap()[0].hash.clone();
+        let rev = log_filtered(&repo, 1, None, None).unwrap()[0].hash.clone();
         let stat = stat_of(&repo, &rev).unwrap();
         assert_eq!(stat.files, 2);
         assert_eq!(stat.insertions, 4);
