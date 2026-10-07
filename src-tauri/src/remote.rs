@@ -95,6 +95,33 @@ pub struct ConnectRequest {
     pub expected_fingerprint: Option<String>,
 }
 
+/// `remote_test_connection` 的入参。比 `ConnectRequest` 多两个可选明文凭据：表单里刚敲的
+/// 密码 / 私钥口令还没写进钥匙串，测试时得直接用；留空才回退到钥匙串里已存的。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestRequest {
+    pub host_id: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    /// "password" | "key"
+    pub auth_kind: String,
+    pub key_path: Option<String>,
+    /// 上次记下的服务器指纹；空表示首次连接
+    pub expected_fingerprint: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+/// `remote_test_connection` 的返回：这次连到的服务器指纹，供前端展示 / 更新 TOFU。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestResult {
+    pub fingerprint: String,
+}
+
 /// SSH 客户端回调。`connect` 会按值消费 handler，所以「本次连到的指纹」用 `Arc` 从外部带出来。
 struct Client {
     /// 上次记下的指纹；空表示首次连接、直接信任
@@ -449,6 +476,114 @@ pub async fn remote_connect(
         session_id: id,
         fingerprint,
     })
+}
+
+/// 试连一次就断开，用来在保存前验证参数。不登记会话、不写钥匙串。
+///
+/// 密码 / 私钥口令优先用表单里刚敲的明文，留空才回退到钥匙串里已存的（编辑主机时常见）；
+/// 新建主机还没有 id，没有可回退的条目，此时按「没填就不给认证凭据」处理。
+/// 主机密钥沿用既有 TOFU：传了 expected_fingerprint 就校验，对不上如实报出来。
+#[tauri::command]
+pub async fn remote_test_connection(request: TestRequest) -> Result<TestResult, String> {
+    let TestRequest {
+        host_id,
+        host,
+        port,
+        user,
+        auth_kind,
+        key_path,
+        expected_fingerprint,
+        password,
+        passphrase,
+    } = request;
+    if host.trim().is_empty() || user.trim().is_empty() {
+        return Err("主机地址和用户名都不能为空".to_string());
+    }
+
+    // 凭据解析：表单明文优先，留空才回退钥匙串。读钥匙串是同步阻塞调用，
+    // 必须放在第一个 await 之前。新建主机（id 非法 / 为空）没有可回退的条目。
+    let from_store = valid_host_id(&host_id);
+    let password = match password.filter(|p| !p.is_empty()) {
+        Some(value) => Some(value),
+        None if from_store => crate::secrets::get(&password_secret_id(&host_id))?,
+        None => None,
+    };
+    let passphrase = match passphrase.filter(|p| !p.is_empty()) {
+        Some(value) => Some(value),
+        None if from_store => crate::secrets::get(&passphrase_secret_id(&host_id))?,
+        None => None,
+    };
+
+    let expected = expected_fingerprint.filter(|s| !s.is_empty());
+    let seen = Arc::new(Mutex::new(None));
+    let handler = Client {
+        expected: expected.clone(),
+        seen: seen.clone(),
+    };
+    let config = Arc::new(client::Config {
+        inactivity_timeout: None,
+        ..Default::default()
+    });
+
+    let connected = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect(config, (host.as_str(), port), handler),
+    )
+    .await;
+
+    let mut handle = match connected {
+        Err(_) => return Err("连接超时：检查主机地址、端口和网络".to_string()),
+        Ok(Err(error)) => {
+            let got = seen.lock().ok().and_then(|s| s.clone());
+            if let (Some(expected), Some(got)) = (expected.as_ref(), got.as_ref()) {
+                if expected != got {
+                    return Err(format!(
+                        "服务器指纹已变化（原 {expected}，现 {got}）。确认无误后再连接。"
+                    ));
+                }
+            }
+            return Err(describe_connect_error(&error));
+        }
+        Ok(Ok(handle)) => handle,
+    };
+
+    // 认证，凭据口径与 remote_connect 一致
+    let auth_ok = if auth_kind == "key" {
+        let path = key_path
+            .filter(|p| !p.trim().is_empty())
+            .ok_or("私钥认证需要指定私钥文件路径")?;
+        let key = tokio::task::spawn_blocking(move || load_secret_key(path, passphrase.as_deref()))
+            .await
+            .map_err(|e| format!("加载私钥任务失败：{e}"))?
+            .map_err(|e| format!("读取私钥失败：{e}"))?;
+        let hash = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
+        handle
+            .authenticate_publickey(user.clone(), PrivateKeyWithHashAlg::new(Arc::new(key), hash))
+            .await
+            .map_err(|e| format!("私钥认证失败：{e}"))?
+    } else {
+        let password = password.ok_or("没有可用密码，请在对话框里填写")?;
+        handle
+            .authenticate_password(user.clone(), password)
+            .await
+            .map_err(|e| format!("密码认证失败：{e}"))?
+    };
+
+    if !auth_ok.success() {
+        return Err("认证失败：用户名、密码或私钥不正确".to_string());
+    }
+
+    // 认证通过即算测试成功：主动断开，不建 shell、不登记会话
+    let _ = handle
+        .disconnect(russh::Disconnect::ByApplication, "", "en")
+        .await;
+
+    let fingerprint = seen
+        .lock()
+        .ok()
+        .and_then(|s| s.clone())
+        .unwrap_or_default();
+    Ok(TestResult { fingerprint })
 }
 
 #[tauri::command]

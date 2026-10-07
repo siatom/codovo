@@ -139,6 +139,7 @@ pub fn run() {
             agent::agent_delete_session,
             agent::agent_rename_session,
             remote::remote_connect,
+            remote::remote_test_connection,
             remote::remote_write,
             remote::remote_resize,
             remote::remote_disconnect,
