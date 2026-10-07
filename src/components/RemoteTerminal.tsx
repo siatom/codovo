@@ -244,18 +244,22 @@ export function RemoteTerminal({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
-      // 关 / 新建标签先判：键位可能不是主修饰键，不受 isPrimaryModifier 限制
-      if (matchesShortcut(event, closeComboRef.current)) {
-        event.preventDefault();
-        event.stopPropagation();
-        onRequestCloseRef.current?.();
-        return;
-      }
-      if (matchesShortcut(event, newComboRef.current)) {
-        event.preventDefault();
-        event.stopPropagation();
-        onRequestNewRef.current?.();
-        return;
+      // 关 / 新建标签先判：键位可能不是主修饰键，不受 isPrimaryModifier 限制。
+      // 但前台跑着全屏程序时让行——备用屏缓冲（normal / alternate）能直接判出来，
+      // CodeBuddy CLI 的 Ctrl+T、vim 的 Ctrl+W 这些得留给它们自己（同 TerminalSession）
+      if (term.buffer.active.type === "normal") {
+        if (matchesShortcut(event, closeComboRef.current)) {
+          event.preventDefault();
+          event.stopPropagation();
+          onRequestCloseRef.current?.();
+          return;
+        }
+        if (matchesShortcut(event, newComboRef.current)) {
+          event.preventDefault();
+          event.stopPropagation();
+          onRequestNewRef.current?.();
+          return;
+        }
       }
       if (!isPrimaryModifier(event)) return;
       const key = event.key.toLowerCase();

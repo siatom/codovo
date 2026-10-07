@@ -16,6 +16,12 @@ export interface ShortcutCommand {
   label: string;
   /** 出厂默认键位（token 形式） */
   defaultCombo: string;
+  /**
+   * 改过默认值的命令：把**老的出厂默认键位**填在这儿。用户存下来的键位若正好等于它，
+   * 视为「没特意设过」、跟着换到新默认——否则升级上来的用户还攥着旧键，新默认形同虚设
+   * （`newTab` 从 Mod+T 挪开就是因为旧键撞 AI CLI，见下）。
+   */
+  legacyDefault?: string;
 }
 
 export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
@@ -23,8 +29,10 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
   // 在右侧面板里也照关当前编辑器标签（含从「变更」打开的差异）
   { id: "closeTab", label: "关闭标签页", defaultCombo: "Mod+W" },
   // 开的是「焦点所在的那处终端」的新标签页：本地终端 / 远程终端各听各的 keydown，
-  // 只有拿到焦点的那一处会响应（两处同键不冲突，见 components/RemotePane.tsx）
-  { id: "newTab", label: "新建终端标签页", defaultCombo: "Mod+T" },
+  // 只有拿到焦点的那一处会响应（两处同键不冲突，见 components/RemotePane.tsx）。
+  // **默认刻意不用 Mod+T**：Ctrl+T 是 CodeBuddy / Claude Code 这类 TUI 的常用键
+  // （展开 tasks），宿主抢了前台程序就没法用；Mod+Shift+T 是浏览器 / VS Code 的新建标签惯例
+  { id: "newTab", label: "新建终端标签页", defaultCombo: "Mod+Shift+T", legacyDefault: "Mod+T" },
   { id: "editor.save", label: "保存文件", defaultCombo: "Mod+S" },
   { id: "git.commit", label: "提交（提交信息框内）", defaultCombo: "Mod+Enter" },
   // 文件树的复制 / 剪切 / 粘贴：只在树里某一行有焦点时生效（事件走行自己的 keydown，
@@ -228,6 +236,7 @@ export function defaultShortcuts(): Record<string, string> {
 /**
  * 从存下来的数据还原键位表：逐条校验合法性并去重，任何一条非法、或与前面已占用的
  * 组合撞车，都回落默认——宁可回到出厂，也不让两条命令抢同一个键。
+ * 存着老出厂默认值的（`legacyDefault`）按「没设过」处理，换到新默认。
  * 缺失的 id 补默认，多出来的键忽略。
  */
 export function resolveShortcuts(value: unknown): Record<string, string> {
@@ -237,7 +246,8 @@ export function resolveShortcuts(value: unknown): Record<string, string> {
   for (const command of SHORTCUT_COMMANDS) {
     const saved =
       typeof raw[command.id] === "string" ? normalizeCombo(raw[command.id] as string) : null;
-    const combo = saved && !used.has(saved) ? saved : command.defaultCombo;
+    const legacy = saved !== null && saved === command.legacyDefault;
+    const combo = saved && !legacy && !used.has(saved) ? saved : command.defaultCombo;
     used.add(combo);
     out[command.id] = combo;
   }

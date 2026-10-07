@@ -325,19 +325,26 @@ export const TerminalSession = forwardRef<
      * 关闭 / 新建键位先判：它们可能不是主修饰键（比如用户改成 Alt+W），不能受
      * isPrimaryModifier 限制。只有拿到终端焦点的那一处终端会收到这个事件，
      * 所以本地终端和远程终端用同一个键位不会打架。
+     *
+     * 但**前台跑着全屏 TUI 时这两条键一律让行**：xterm 的备用屏缓冲能直接判出来——
+     * CodeBuddy CLI、Claude Code、vim、less、top 一启动就切到备用屏，退出时切回。这类程序
+     * 大量占用 Ctrl+字母（CodeBuddy 的 Ctrl+T 是展开 tasks、vim 的 Ctrl+W 是切窗），宿主抢了
+     * 它们就没法用；只有裸 shell 提示符（normal 缓冲）下才落到我们手上。
      */
     const onKeyDown = (event: KeyboardEvent) => {
-      if (matchesShortcut(event, closeComboRef.current)) {
-        event.preventDefault();
-        event.stopPropagation();
-        onRequestCloseRef.current?.();
-        return;
-      }
-      if (matchesShortcut(event, newComboRef.current)) {
-        event.preventDefault();
-        event.stopPropagation();
-        onRequestNewRef.current?.();
-        return;
+      if (term.buffer.active.type === "normal") {
+        if (matchesShortcut(event, closeComboRef.current)) {
+          event.preventDefault();
+          event.stopPropagation();
+          onRequestCloseRef.current?.();
+          return;
+        }
+        if (matchesShortcut(event, newComboRef.current)) {
+          event.preventDefault();
+          event.stopPropagation();
+          onRequestNewRef.current?.();
+          return;
+        }
       }
       if (!isPrimaryModifier(event)) return;
       const key = event.key.toLowerCase();
