@@ -118,8 +118,18 @@ export function readImage(root: string, path: string): Promise<ImageContent> {
   return invoke<ImageContent>("fs_read_image", { root, path });
 }
 
-export function writeFile(root: string, path: string, text: string): Promise<void> {
-  return invoke("fs_write_file", { root, path, text });
+/**
+ * 写回文件内容。`encoding` 是打开时 `readFile` 检测到的编码标签，必须原样回传：
+ * 后端按它把文本编回原编码，非 UTF-8 的老工程（GBK / Big5 / UTF-16）才不会被
+ * UTF-8 覆盖而损坏。不传（新建文件等）就按 UTF-8 写。
+ */
+export function writeFile(
+  root: string,
+  path: string,
+  text: string,
+  encoding?: string,
+): Promise<void> {
+  return invoke("fs_write_file", { root, path, text, encoding: encoding ?? null });
 }
 
 export function createFile(root: string, path: string): Promise<void> {

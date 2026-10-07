@@ -116,6 +116,11 @@ interface CachedModel {
   path: string;
   model: monaco.editor.ITextModel;
   savedVersionId: number;
+  /**
+   * 打开时后端检测到的编码标签。保存时原样回传，按原编码写回——
+   * 不带着它的话 GBK / Big5 / UTF-16 文件会被 UTF-8 覆盖而损坏。
+   */
+  encoding: string;
 }
 
 /** 一个差异标签的一对 model，销毁时必须一起走 */
@@ -444,7 +449,12 @@ export function EditorPane({
     let ok = true;
     try {
       for (const [key, cached] of targets) {
-        await writeFile(rootFor(cached.path), cached.path, cached.model.getValue());
+        await writeFile(
+          rootFor(cached.path),
+          cached.path,
+          cached.model.getValue(),
+          cached.encoding,
+        );
         cached.savedVersionId = cached.model.getAlternativeVersionId();
         saved.add(key);
       }
@@ -506,6 +516,8 @@ export function EditorPane({
             if (cached.model.getValue() === content.text) continue;
             cached.model.setValue(content.text);
             cached.savedVersionId = cached.model.getAlternativeVersionId();
+            // 外部可能用别的编码重写过这个文件，跟着更新，保存时按新编码回写
+            cached.encoding = content.encoding;
             done.push(key);
             touched = true;
           } catch {
@@ -938,6 +950,7 @@ export function EditorPane({
           path,
           model,
           savedVersionId: model.getAlternativeVersionId(),
+          encoding: content.encoding,
         });
         // 只对首次创建的 json5 / jsonc 自动重排；缓存 model 与差异 model 都到不了这里
         if (!existing && (language === "json5" || language === "jsonc")) {

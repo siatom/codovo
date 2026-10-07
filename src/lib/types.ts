@@ -10,6 +10,11 @@ export interface FileContent {
   text: string;
   isBinary: boolean;
   tooLarge: boolean;
+  /**
+   * 后端检测到的编码标签（如 `gbk`）。保存时原样回传给 `writeFile`，
+   * 才能按原编码写回；二进制 / 超限时为空串。
+   */
+  encoding: string;
 }
 
 /** 图片预览的内容：`data` 是能直接喂给 `<img src>` 的 data URL，超限时为空串 */

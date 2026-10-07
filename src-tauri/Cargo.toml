@@ -33,6 +33,11 @@ tauri-plugin-opener = "2.5.5"
 tauri-plugin-clipboard-manager = "2"
 regex = "1.13.1"
 notify = "8.2"
+# 文本文件按原编码读写（见 `encoding.rs`）：GBK / Big5 / UTF-16 的老工程
+# 不能被 UTF-8 覆盖。encoding_rs 是 WHATWG 编码标准的实现，chardetng 是
+# Firefox 的编码探测器，两者同作者、依赖同一版 encoding_rs。
+encoding_rs = "0.8.42"
+chardetng = "1"
 # AI 生成提交信息用。自带 rustls 而不是 native-tls：不带 OpenSSL 依赖，
 # 三端统一。注意 reqwest 0.13 起该特性叫 `rustls`（不再是 rustls-tls）。
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

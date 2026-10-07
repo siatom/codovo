@@ -8,6 +8,8 @@ use base64::Engine;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
+use crate::encoding::{self, FileEncoding};
+
 /// 文本类操作（读文件、看差异）的大小上限，两个模块共用
 pub(crate) const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
 
@@ -166,6 +168,9 @@ pub struct FileContent {
     text: String,
     is_binary: bool,
     too_large: bool,
+    /// 检测到的编码标签（如 `gbk`）。前端保存时原样回传给 `fs_write_file`，
+    /// 才能按原编码写回；二进制 / 超限时为空串。
+    encoding: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -413,23 +418,45 @@ pub fn fs_read_file(
             text: String::new(),
             is_binary: false,
             too_large: true,
+            encoding: String::new(),
         });
     }
 
     let bytes = fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
-    if looks_binary(&bytes) {
+    // UTF-16 文本里到处是 NUL，会被 `looks_binary` 误判成二进制，所以先认一遍 BOM
+    if encoding::detect_bom(&bytes).is_none() && looks_binary(&bytes) {
         return Ok(FileContent {
             text: String::new(),
             is_binary: true,
             too_large: false,
+            encoding: String::new(),
         });
     }
 
-    Ok(FileContent {
-        text: String::from_utf8_lossy(&bytes).into_owned(),
-        is_binary: false,
-        too_large: false,
-    })
+    // 按检测到的编码解码。认不出编码就明确报错，不拿 lossy 的结果蒙混过去——
+    // 那正是「非 UTF-8 文件保存即损坏」的成因。
+    let encoding = encoding::detect(&bytes).ok_or_else(|| {
+        format!(
+            "无法识别文件编码（支持 UTF-8 / UTF-16 / GBK / Big5）: {}",
+            display(&file)
+        )
+    })?;
+    match encoding::decode(&bytes, encoding) {
+        Ok(text) => Ok(FileContent {
+            text,
+            is_binary: false,
+            too_large: false,
+            encoding: encoding.label().to_string(),
+        }),
+        // 认出了编码却解不干净（多半是二进制被猜成了 GBK）：按二进制处理更安全，
+        // 绝不让编辑器拿着一份带替换字符的内容去保存
+        Err(_) => Ok(FileContent {
+            text: String::new(),
+            is_binary: true,
+            too_large: false,
+            encoding: String::new(),
+        }),
+    }
 }
 
 /// 按「文本文件」的规矩读一个文件的全文，读不了就直接报错。
@@ -501,15 +528,41 @@ pub fn fs_read_image(
     read_image_at(&state.checked_root(&root)?, &path)
 }
 
+/// 按指定编码把文本写回文件。
+///
+/// `encoding` 是打开时检测到的编码标签，由前端原样回传。为空表示调用方没带
+/// （新建文件，或非编辑器调用），这时只允许写 UTF-8；已有文件若不是 UTF-8，
+/// 宁可报错也不能按 UTF-8 覆盖——那正是原编码被冲掉的成因。
+fn write_text_file(file: &Path, text: &str, encoding: Option<&str>) -> Result<(), String> {
+    let encoding = match encoding {
+        Some(label) => FileEncoding::from_label(label)
+            .ok_or_else(|| format!("不支持的编码: {label}"))?,
+        None => {
+            if let Ok(existing) = fs::read(file) {
+                if !existing.is_empty() && std::str::from_utf8(&existing).is_err() {
+                    return Err(format!(
+                        "{} 不是 UTF-8 文件，缺少原编码信息，已拒绝保存以免损坏",
+                        display(file)
+                    ));
+                }
+            }
+            FileEncoding::Utf8
+        }
+    };
+    let bytes = encoding::encode(text, encoding)?;
+    fs::write(file, bytes).map_err(|e| format!("写入文件失败 {}: {e}", display(file)))
+}
+
 #[tauri::command]
 pub fn fs_write_file(
     state: tauri::State<'_, FsState>,
     root: String,
     path: String,
     text: String,
+    encoding: Option<String>,
 ) -> Result<(), String> {
     let file = resolve(&state.checked_root(&root)?, &path)?;
-    fs::write(&file, text).map_err(|e| format!("写入文件失败 {}: {e}", display(&file)))
+    write_text_file(&file, &text, encoding.as_deref())
 }
 
 /// 名称校验：只能是一段名字，不能是空 / `.` / `..`，也不许夹分隔符。
@@ -1598,6 +1651,47 @@ mod tests {
         let error = replace_one(&file, 1, 1, 1, "a", &opts(false, false, false), "b").unwrap_err();
         assert!(error.contains("UTF-8"), "{error}");
         assert_eq!(fs::read(&file).unwrap(), original, "原文件一个字节都不该动");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn writes_back_the_original_non_utf8_encoding() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("gbk.txt");
+
+        let original = encoding::encode("旧编码", FileEncoding::Gbk).unwrap();
+        fs::write(&file, &original).unwrap();
+
+        // 前端回传打开时检测到的编码，保存必须按同一个编码写回
+        let next = "新的 GBK 内容";
+        write_text_file(&file, next, Some("gbk")).unwrap();
+        let written = fs::read(&file).unwrap();
+        assert_eq!(
+            encoding::decode(&written, FileEncoding::Gbk).unwrap(),
+            next,
+            "写回的内容要能用 GBK 解回来"
+        );
+        assert_ne!(written, next.as_bytes(), "不能偷偷写成 UTF-8");
+
+        // 带上不认识 / 缺失的编码信息时，非 UTF-8 文件必须拒绝，不能被 UTF-8 覆盖
+        let error = write_text_file(&file, "x", None).unwrap_err();
+        assert!(error.contains("拒绝保存"), "{error}");
+        assert_eq!(fs::read(&file).unwrap(), written, "拒绝时一个字节都不该动");
+        assert!(write_text_file(&file, "x", Some("latin1")).is_err());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn writes_utf8_when_no_encoding_is_given_for_a_new_file() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("new.txt");
+
+        // 文件还不存在（新建后立刻保存）：没有编码信息就按 UTF-8 写
+        write_text_file(&file, "你好，世界", None).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "你好，世界");
         fs::remove_dir_all(&root).ok();
     }
 

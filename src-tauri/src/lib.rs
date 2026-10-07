@@ -6,6 +6,7 @@ mod cli_sessions;
 mod database;
 mod db_agent;
 mod dev;
+mod encoding;
 mod feedback;
 mod fs_api;
 mod git;
