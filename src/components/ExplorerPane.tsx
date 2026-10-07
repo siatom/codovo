@@ -41,6 +41,11 @@ import {
 interface ExplorerPaneProps {
   /** 工作区的全部工作目录：每一根在树里各成一棵子树，并列显示 */
   roots: string[];
+  /**
+   * 这个工作区是不是当前显示的。由隐藏切回可见时要补一次重列：目录监听只跟当前
+   * 工作区（切走时后端整体换掉），后台期间这个根上的结构变化一条事件都收不到。
+   */
+  visible: boolean;
   selected: string | null;
   /** 归一化路径 -> git 标记，行尾那个字母 */
   gitMarks: ReadonlyMap<string, GitMark>;
@@ -161,6 +166,7 @@ function buildFilter(roots: string[], hits: string[]): FilterTree {
 
 export function ExplorerPane({
   roots,
+  visible,
   selected,
   gitMarks,
   isRepo,
@@ -581,15 +587,37 @@ export function ExplorerPane({
     return keys;
   }, [rootsKey, children]);
 
+  /** 同上，但要的是真实路径——`loadedDirs` 存的是归一化 key，不能直接喂给后端 */
+  const loadedDirPaths = useMemo(() => {
+    const list = new Set<string>(roots);
+    for (const dir of children.keys()) list.add(dir);
+    return [...list];
+  }, [rootsKey, children]);
+
   // 磁盘上的目录结构变了就跟着刷新。订阅只建一次：回调通过 ref 拿最新的
   // 目录快照，否则每展开一个目录都要重新 listen 一遍
   const loadedDirsRef = useRef(loadedDirs);
+  const loadedDirPathsRef = useRef(loadedDirPaths);
   const refreshDirRef = useRef(refreshDir);
   // 必须排在下面那个订阅 effect 前面：挂载时它先跑，ref 里才是当前工作区的版本
   useEffect(() => {
     loadedDirsRef.current = loadedDirs;
+    loadedDirPathsRef.current = loadedDirPaths;
     refreshDirRef.current = refreshDir;
-  }, [loadedDirs, refreshDir]);
+  }, [loadedDirs, loadedDirPaths, refreshDir]);
+
+  /**
+   * 工作区从隐藏切回可见时补一次重列。目录监听只跟当前工作区，后台期间这个根上的
+   * 结构变化（终端跑构建、git checkout 生成/删掉文件）全错过了，回到前台时后端才
+   * 恢复监听、事件早发完了，不补就得手动点刷新。只重列已经在树里的目录，展开态不丢。
+   */
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    if (visible && !wasVisible.current) {
+      for (const dir of loadedDirPathsRef.current) void refreshDirRef.current(dir);
+    }
+    wasVisible.current = visible;
+  }, [visible]);
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
