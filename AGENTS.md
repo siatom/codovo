@@ -22,7 +22,7 @@ git push --follow-tags            # 连 tag 一起推
 - 颜色只用语义类（`bg-surface`…），新增要同时改 `styles.css` 的 `:root` / `:root[data-theme="light"]` /
   `@theme`；组件具名导出（`App.tsx` 例外）、状态用 Context、图标走 `icons.tsx`。
 - 只改被要求改的地方：不重排 import、不改命名、不清理"看起来没用"的代码；宁可重复三行。
-- 设置项要动五处（`settings.tsx` → `SettingsDialog.tsx` → 消费方）；后端命令 `*.rs` 写
+- 设置项要动三处（`settings.tsx` 的类型与默认值 → `SettingsDialog.tsx` 的表单 → 消费方）；后端命令 `*.rs` 写
   `#[tauri::command]` → `lib.rs` 注册 → 前端 `lib/*.ts` 包一层，组件不直接 invoke。
 - 版本号**只有一个来源**：`package.json` 的 `version`——`tauri.conf.json` 的 `version` 指向
   `../package.json`（安装包文件名、exe 版本资源都从那儿取），前端由 vite 的 `define` 注入
