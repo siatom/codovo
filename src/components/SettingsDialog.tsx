@@ -2223,6 +2223,16 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   <Field label="主题">
                     <ThemeSelect />
                   </Field>
+                  <Field
+                    label="智能体（GUI）"
+                    hint="终端区顶栏的「智能体」入口；隐藏后只剩终端"
+                  >
+                    <BoolToggle
+                      value={settings.agentEnabled}
+                      options={VISIBLE_OPTIONS}
+                      onChange={(agentEnabled) => update({ agentEnabled })}
+                    />
+                  </Field>
                   <p className="text-[11px] leading-relaxed text-fg-faint">
                     右边栏：关掉的模块不再出现在图标条上，至少留一个。
                   </p>
@@ -2681,16 +2691,6 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     title="运行"
                     hint="终端区顶栏的 GUI tab 里起一个 headless opencode，需要单独安装"
                   >
-                    <Field label="智能体（GUI）">
-                      <BoolToggle
-                        value={settings.agentEnabled}
-                        options={[
-                          { value: true, label: "开启" },
-                          { value: false, label: "关闭" },
-                        ]}
-                        onChange={(next) => update({ agentEnabled: next })}
-                      />
-                    </Field>
                     <Field
                       label="opencode 可执行文件"
                       hint="填裸命令名会去 PATH 里找；找不到时填完整路径。改完下次启动才生效"
