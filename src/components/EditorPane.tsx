@@ -14,7 +14,7 @@ import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
 import { renderMarkdown } from "../lib/markdown";
-import { parseShortcut, matchesShortcut } from "../lib/shortcuts";
+import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
 import {
   gitFileDiff,
   isPathInside,
@@ -1610,7 +1610,8 @@ export function EditorPane({
             disabled={saving}
             className="shrink-0 rounded border border-accent-line px-2 py-0.5 text-[11px] text-accent-soft hover:bg-active disabled:opacity-50"
           >
-            {saving ? "保存中…" : "保存 Ctrl+S"}
+            {/* 文案跟随可配置快捷键，改键后这里也跟着变，不再写死 Ctrl+S */}
+            {saving ? "保存中…" : `保存 ${formatShortcut(settings.shortcuts["editor.save"])}`}
           </button>
         )}
         {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}

@@ -281,10 +281,10 @@ export function TerminalPane({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      {/* 顶栏只剩居中的 TUI / GUI 入口，收放右边栏的按钮在图标条底部 */}
-      <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
-        {/* 关掉智能体后这组按钮整个不出，终端区的行为和以前一模一样 */}
-        {settings.agentEnabled && (
+      {/* 顶栏只剩居中的 TUI / GUI 入口，收放右边栏的按钮在图标条底部。
+          关掉智能体后整条栏都不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
+      {settings.agentEnabled && (
+        <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
           <div className="flex items-center gap-0.5 rounded-full bg-app p-0.5">
             <button
               type="button"
@@ -313,8 +313,8 @@ export function TerminalPane({
               智能体
             </button>
           </div>
-        )}
-      </header>
+        </header>
+      )}
 
       {/* TUI 界面：标签栏和终端本体都归这一套自己管，不和其他界面共用一行 */}
       <div className={view === "terminal" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
