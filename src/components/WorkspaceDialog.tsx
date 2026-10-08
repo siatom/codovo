@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   gitClone,
@@ -77,13 +77,34 @@ export function WorkspaceDialog({
   const [nameTouched, setNameTouched] = useState(false);
   const [cloning, setCloning] = useState(false);
   const [progress, setProgress] = useState<CloneProgress | null>(null);
+  /** 取消 / 关闭后置位：克隆即使随后成功，也不再拿它的结果去建工作区 */
+  const cancelledRef = useRef(false);
 
   // 编辑模式没有切换器，即使 state 停在 clone 也要落回本地表单
   const activeTab = mode === "create" ? tab : "local";
 
+  /**
+   * 取消 / 关闭对话框：先置标志再调 onCancel。上层卸载本对话框并不能中止
+   * startClone 里已经发起的 gitClone，所以得靠这个标志作废那次克隆的结果。
+   */
+  const cancel = () => {
+    cancelledRef.current = true;
+    onCancel();
+  };
+
+  // 卸载同样算放弃：组件被上层摘掉后，克隆结果不该再触发 onSubmit。
+  // 这里在 setup 里先复位——StrictMode 在 dev 下会「挂载→卸载→再挂载」模拟一次卸载，
+  // 不复位的话那次模拟卸载会把标志永久置位，之后真克隆会被误判成已取消。
+  useEffect(() => {
+    cancelledRef.current = false;
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel();
+      if (event.key === "Escape") cancel();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -147,8 +168,11 @@ export function WorkspaceDialog({
         branch: branch.trim() || undefined,
         depth: shallow ? 1 : undefined,
       });
+      // 用户已取消 / 对话框已卸载：这次克隆作废，别再把结果交给上层建工作区
+      if (cancelledRef.current) return;
       onSubmit({ name: dirName.trim() || repoNameFromUrl(url), roots: [target] });
     } catch (reason) {
+      if (cancelledRef.current) return;
       setError(String(reason));
       setCloning(false);
     } finally {
@@ -203,7 +227,7 @@ export function WorkspaceDialog({
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
       // 认「按下点就在遮罩上」而不是 click：从弹窗内按下、拖到遮罩上松开会误判成点外部
       onMouseDown={(event) => {
-        if (event.button === 0 && event.target === event.currentTarget) onCancel();
+        if (event.button === 0 && event.target === event.currentTarget) cancel();
       }}
     >
       <div
@@ -218,7 +242,7 @@ export function WorkspaceDialog({
           </h2>
           <button
             type="button"
-            onClick={onCancel}
+            onClick={cancel}
             title="关闭"
             className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
           >
@@ -440,7 +464,7 @@ export function WorkspaceDialog({
             </button>
           )}
           <div className="ml-auto flex items-center gap-2">
-            <button type="button" onClick={onCancel} className={CANCEL_BUTTON}>
+            <button type="button" onClick={cancel} className={CANCEL_BUTTON}>
               取消
             </button>
             {activeTab === "clone" ? (
