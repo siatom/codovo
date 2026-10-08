@@ -3,8 +3,8 @@ name: gitee-issue-loop
 description: >-
   「审查建单 → 领单 → worktree 修复 → 提交推送 → 评论关闭」的 Gitee issue 闭环。
   A 段：通读代码找功能缺口与 bug，按 feature / enhancement / bug 分类批量提 Gitee issue；
-  B 段：拉取 open issue，逐条在独立 git worktree 里修复并验证，自动 commit + push 特性分支、
-  `--no-ff` 合并回 main 再 push，最后补评论并关闭 issue。当用户要「检查代码提改进项」「批量建 issue」
+  B 段：拉取 open issue，逐条在独立 git worktree 里修复并验证，自动 commit、`--no-ff` 合并回 main
+  再 push（**特性分支只留本地、不推远程**），最后补评论并关闭 issue。当用户要「检查代码提改进项」「批量建 issue」
   「拉 issue 修一批」「分 worktree 修 issue 并自动提交」时使用。单条建单 / 修复 / 关闭仍可走
   `/gitee-issue-add`、`/gitee-issue-fix`、`/gitee-issue-close`。
 ---
@@ -27,10 +27,11 @@ description: >-
 2. **开工前先确认范围**（第 3 节）：拉到的 issue 要修哪几条，等用户定。
 
 除此之外，**调用本技能即视为用户授权**：对本流程新建的 `feat/*` `fix/*` 分支及其对应 issue，
-自动 commit / push / `--no-ff` 合并 / 评论 / 关闭，不再逐步等确认。
+自动 commit / `--no-ff` 合并回 main / push main / 评论 / 关闭，不再逐步等确认。
+**特性分支只留本地、不推远程**——合并进 main 后连同分支一起在本地删掉（见 5.2、第 7 节）。
 
 这条授权**只覆盖本流程创建的分支与 issue**，不延伸。仍然永不：`--force` / `--no-verify` /
-改 git config / 推 tag / 开 PR / `git push --all` / 碰安装版 CodeDock。
+改 git config / 推 tag / 开 PR / `git push --all` / 推特性分支 / 碰安装版 CodeDock。
 
 ## 1. 前置检查
 
@@ -163,7 +164,7 @@ New-Item -ItemType Junction -Path "D:\CodeProjects\code-dock\.codebuddy\worktree
   - 自己起的实例，验完立刻停掉、让出端口，再进下一组。
 - 验证不过就回改，别带着问题进第 5 节。
 
-## 5. 阶段 D：提交 + 推送 + 合并
+## 5. 阶段 D：提交 + 合并 + 推送 main
 
 ### 5.1 commit（在 worktree 内）
 
@@ -181,12 +182,13 @@ EOF
 )"
 ```
 
-### 5.2 push 特性分支 + 合并回 main
+### 5.2 合并回 main + push main（**特性分支不推远程**）
+
+**特性分支只留本地**，别 `git push` 它——本流程的特性分支是临时的，合并完就连同分支一起在本地删掉
+（第 7 节），推到远程只会留下一堆已合并的孤儿分支。**远程只动 `main`。**
 
 ```bash
-git push -u origin <fix|feat>/<topic>          # 先推特性分支
-
-cd D:/CodeProjects/code-dock
+cd D:/CodeProjects/code-dock            # 回主仓库
 git checkout main && git pull --ff-only
 git merge --no-ff <fix|feat>/<topic> -m "Merge <fix|feat>/<topic>: 描述 (#IK...)"
 git push origin main
@@ -242,10 +244,13 @@ git worktree prune
 git branch -d <fix|feat>/<topic>            # 已合并，可安全删
 ```
 
+分支没推过远程（见 5.2），删本地即可，不用去动远端。
+
 ## 8. 红线
 
 - 授权的范围**只有本流程创建的 `feat/*` `fix/*` 分支与其对应 issue**；其它分支、其它 issue 一律不动。
 - 永不 `--force` / `--force-with-lease` / `--no-verify` / 改 git config / 推 tag / `git push --all` / 开 PR。
+- **特性分支不推远程**：`fix/*` `feat/*` 只留本地，合并进 main 后本地删除；远程只动 `main`。
 - **安装版 CodeDock 一律不碰**：它 identifier 是 `com.codedock`、dev 是 `com.codedock.dev`，本就并存；
   唯一不能动的是用户正在用的安装版。
 - 验证时 `localStorage` 是用户真实状态（主题、工作区列表、别名…），改完要还原。
