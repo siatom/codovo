@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { dbQuery, type DbKind, type QueryResult } from "../lib/database";
+import { save } from "@tauri-apps/plugin-dialog";
+import {
+  dbExport,
+  dbQuery,
+  defaultExportName,
+  type DbExportFormat,
+  type DbExportScope,
+  type DbKind,
+  type QueryResult,
+} from "../lib/database";
 import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { resolveFont, useSettings } from "../lib/settings";
 import { formatSql } from "../lib/sql-format";
@@ -28,6 +37,9 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
   /** 美化失败（多半是语句还没写完）的提示，和查询错误分开——它不该顶掉结果区 */
   const [formatError, setFormatError] = useState("");
   const [lastSql, setLastSql] = useState("");
+  const [exporting, setExporting] = useState(false);
+  /** 导出结果提示（成功行数 / 失败原因），和查询、美化错误分开 */
+  const [exportNotice, setExportNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   const readSql = () => editorRef.current?.getValue().trim() ?? "";
 
@@ -41,6 +53,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
       }
       setLoading(true);
       setError("");
+      setExportNotice(null);
       try {
         setResult(await dbQuery(sessionId, sql, page, PAGE_SIZE));
         setLastSql(sql);
@@ -101,6 +114,46 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
     },
     [sessionId, lastSql],
   );
+
+  /**
+   * 导出结果：用系统保存对话框选路径，再让后端取数 + 写盘。
+   * 导出用的 SQL 取「上次运行的语句（lastSql）」而不是编辑器当前内容——结果区显示的就是它，
+   * 导出的内容要和眼前所见一致。翻页交给后端按 page/pageSize 重跑。
+   */
+  const handleExport = async (format: DbExportFormat, scope: DbExportScope) => {
+    if (!lastSql || !result || result.kind !== "rows") {
+      setExportNotice({ ok: false, text: "先运行一条查询再导出" });
+      return;
+    }
+    setExporting(true);
+    setExportNotice(null);
+    try {
+      const path = await save({
+        title: "导出查询结果",
+        defaultPath: defaultExportName("query", format),
+        filters: [{ name: format === "csv" ? "CSV 文件" : "Excel 工作簿", extensions: [format] }],
+      });
+      if (!path) return; // 用户取消
+      const out = await dbExport({
+        id: sessionId,
+        sql: lastSql,
+        format,
+        path,
+        scope,
+        page: result.page,
+        pageSize: result.pageSize,
+        title: "query",
+      });
+      setExportNotice({
+        ok: true,
+        text: `已导出 ${out.rows} 行${out.truncated ? "（超过上限，已截断）" : ""}`,
+      });
+    } catch (reason) {
+      setExportNotice({ ok: false, text: String(reason) });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // 编辑器只建一次
   useEffect(() => {
@@ -206,6 +259,16 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
             美化失败：{formatError}
           </span>
         )}
+        {exportNotice && (
+          <span
+            className={`min-w-0 max-w-[45%] truncate text-[11px] ${
+              exportNotice.ok ? "text-accent" : "text-danger"
+            }`}
+            title={exportNotice.text}
+          >
+            {exportNotice.text}
+          </span>
+        )}
         {loading && <span className="text-[11px] text-fg-dim">执行中…</span>}
       </div>
 
@@ -236,6 +299,8 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
           error={error}
           onPage={(page) => void loadPage(page)}
           hint="写一条 SQL，按「运行」或 Ctrl/Cmd + Enter 执行。"
+          onExport={result?.kind === "rows" ? handleExport : undefined}
+          exportBusy={exporting}
         />
       </div>
     </div>

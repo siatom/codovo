@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import type { QueryResult } from "../lib/database";
+import type { DbExportFormat, DbExportScope, QueryResult } from "../lib/database";
+import { DbExportMenu } from "./DbExportMenu";
 
 interface ResultGridProps {
   result: QueryResult | null;
@@ -10,6 +11,10 @@ interface ResultGridProps {
   onPage: (page: number) => void;
   /** 还没有结果时的提示 */
   hint: string;
+  /** 传了才在底部显示「导出」入口；调用方负责弹保存框与调后端 */
+  onExport?: (format: DbExportFormat, scope: DbExportScope) => void;
+  /** 导出进行中：把入口置为「导出中…」 */
+  exportBusy?: boolean;
 }
 
 const PAGE_BUTTON =
@@ -41,7 +46,15 @@ function Centered({ children }: { children: string }) {
  * 查询结果的表格：表头吸顶、横向滚动、NULL 灰显、底部翻页。
  * 表页（点表看数据）和查询页共用，所以结果与翻页都从外面传进来。
  */
-export function ResultGrid({ result, loading, error, onPage, hint }: ResultGridProps) {
+export function ResultGrid({
+  result,
+  loading,
+  error,
+  onPage,
+  hint,
+  onExport,
+  exportBusy,
+}: ResultGridProps) {
   /** 右键菜单：位置 + 被点单元格的值与整行文本（NULL 统一按空串处理） */
   const [menu, setMenu] = useState<{
     x: number;
@@ -160,6 +173,7 @@ export function ResultGrid({ result, loading, error, onPage, hint }: ResultGridP
         )}
       </div>
       <footer className="flex h-8 shrink-0 items-center gap-2 border-t border-line px-2 text-[11px] text-fg-dim">
+        {onExport && <DbExportMenu onExport={onExport} busy={exportBusy} />}
         <span className="tabular-nums">
           第 {result.page + 1} 页 · {result.rows.length} 行 · {result.elapsedMs} ms
           {result.hasMore ? "" : " · 已到末页"}

@@ -198,6 +198,61 @@ export function dbQuery(
   return invoke<QueryResult>("db_query", { id, sql, page, pageSize });
 }
 
+/** 导出格式 */
+export type DbExportFormat = "csv" | "xlsx";
+/** 导出范围：当前页 / 全部（整条语句的所有行） */
+export type DbExportScope = "page" | "all";
+
+export interface DbExportResult {
+  /** 实际写出的文件路径 */
+  path: string;
+  /** 写出的数据行数（不含表头） */
+  rows: number;
+  /** 是否因超过行数上限被截断 */
+  truncated: boolean;
+}
+
+/**
+ * 把查询结果导出成文件。取数与写盘都在后端完成（前端只用系统对话框选路径），
+ * 且导出**不做单元格截断**——见 database.rs 的 db_export。
+ */
+export function dbExport(request: {
+  id: number;
+  sql: string;
+  format: DbExportFormat;
+  path: string;
+  scope: DbExportScope;
+  page: number;
+  pageSize: number;
+  /** 标题（表名 / "query"）：后端拿它当 Excel 工作表名 */
+  title: string;
+}): Promise<DbExportResult> {
+  return invoke<DbExportResult>("db_export", { request });
+}
+
+/** 默认文件名用：清掉路径分隔符与各平台非法字符、去掉开头的点，空则给兜底名 */
+export function sanitizeFileName(name: string): string {
+  const cleaned = name
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+    .replace(/^\.+/, "")
+    .trim();
+  return cleaned || "export";
+}
+
+/** `yyyyMMdd-HHmmss`：给默认文件名加上，避免重复导出时同名覆盖 */
+export function fileTimestamp(date: Date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return (
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+    `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+  );
+}
+
+/** 保存对话框的默认文件名：标题 + 时间戳 + 扩展名 */
+export function defaultExportName(title: string, format: DbExportFormat): string {
+  return `${sanitizeFileName(title)}-${fileTimestamp()}.${format}`;
+}
+
 /** 写密码进系统钥匙串。空串按删除处理（清空输入框 = 不想留了） */
 export function setDbPassword(connId: string, password: string): Promise<void> {
   return setSecret(dbPasswordSecretId(connId), password);

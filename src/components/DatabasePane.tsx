@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DatabaseAgent } from "./DatabaseAgent";
 import { DatabaseConnectionDialog } from "./DatabaseConnectionDialog";
@@ -11,12 +12,16 @@ import {
   connectDb,
   connectionSummary,
   dbDatabases,
+  dbExport,
   dbQuery,
   dbSchemas,
   dbTables,
+  defaultExportName,
   disconnectDb,
   selectAllSql,
   type DbConnection,
+  type DbExportFormat,
+  type DbExportScope,
   type QueryResult,
   type TableInfo,
 } from "../lib/database";
@@ -205,6 +210,17 @@ export function DatabasePane({
     null,
   );
   const [pendingDelete, setPendingDelete] = useState<DbConnection | null>(null);
+  /** 表节点右键菜单：位置 + 目标表（按整表导出） */
+  const [tableMenu, setTableMenu] = useState<{
+    sessionKey: string;
+    connectionId: string;
+    table: TableInfo;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [exporting, setExporting] = useState(false);
+  /** 导出结果提示（成功行数 / 失败原因） */
+  const [exportNotice, setExportNotice] = useState<{ ok: boolean; text: string } | null>(null);
 
   const activeConnection = useMemo(
     () => connections.find((item) => item.id === activeConnectionId) ?? null,
@@ -357,10 +373,65 @@ export function DatabasePane({
   const openTable = useCallback(
     (sessionKey: string, connectionId: string, table: TableInfo) => {
       setSelected({ sessionKey, connectionId, table });
+      setExportNotice(null);
       pickTab("tables");
       void loadRows(sessionKey, connectionId, table, 0);
     },
     [loadRows, pickTab],
+  );
+
+  /**
+   * 导出：系统保存对话框选路径 → 后端取数并写盘。两个入口（结果区、表节点右键）共用。
+   * `page`/`pageSize` 只在范围是「当前页」时有意义，整表导出固定传 scope=all。
+   */
+  const runExport = useCallback(
+    async (
+      sessionId: number,
+      sql: string,
+      title: string,
+      format: DbExportFormat,
+      scope: DbExportScope,
+      page: number,
+      pageSize: number,
+    ) => {
+      setExporting(true);
+      setExportNotice(null);
+      try {
+        const path = await save({
+          title: "导出数据",
+          defaultPath: defaultExportName(title, format),
+          filters: [{ name: format === "csv" ? "CSV 文件" : "Excel 工作簿", extensions: [format] }],
+        });
+        if (!path) return; // 用户取消
+        const out = await dbExport({ id: sessionId, sql, format, path, scope, page, pageSize, title });
+        setExportNotice({
+          ok: true,
+          text: `已导出 ${out.rows} 行${out.truncated ? "（超过上限，已截断）" : ""}`,
+        });
+      } catch (reason) {
+        setExportNotice({ ok: false, text: String(reason) });
+      } finally {
+        setExporting(false);
+      }
+    },
+    [],
+  );
+
+  /** 表节点右键选「导出为 CSV / Excel」：整表导出（范围固定为全部） */
+  const exportTableNode = useCallback(
+    (format: DbExportFormat) => {
+      if (!tableMenu) return;
+      const { sessionKey, connectionId, table } = tableMenu;
+      setTableMenu(null);
+      const id = sessionsRef.current[sessionKey]?.id;
+      const connection = connectionsRef.current.find((item) => item.id === connectionId);
+      if (id === undefined || !connection) {
+        setExportNotice({ ok: false, text: "连接已断开，无法导出" });
+        return;
+      }
+      void runExport(id, selectAllSql(connection.kind, table), table.name, format, "all", 0, PAGE_SIZE);
+    },
+    [tableMenu, runExport],
   );
 
   /** 断开一条连接：把它名下的会话（PG 每个库一条）、树数据、展开态一起清掉 */
@@ -437,6 +508,11 @@ export function DatabasePane({
       <div
         key={`${sessionKey}${SEP}${table.schema}${SEP}${table.name}`}
         onClick={() => openTable(sessionKey, connectionId, table)}
+        onContextMenu={(event) => {
+          // 应用全局屏蔽了原生右键菜单，这里自己声明一个（见 main.tsx）
+          event.preventDefault();
+          setTableMenu({ sessionKey, connectionId, table, x: event.clientX, y: event.clientY });
+        }}
         className={`${ROW} ${active ? "bg-selected" : ""}`}
         style={{ paddingLeft: indent }}
         title={table.name}
@@ -670,6 +746,18 @@ export function DatabasePane({
           </div>
         )}
 
+        {exportNotice && (
+          <div
+            className={`flex shrink-0 items-start gap-2 border-b px-2 py-1 text-[11px] ${
+              exportNotice.ok
+                ? "border-line bg-panel text-fg-muted"
+                : "border-danger-line bg-danger-bg text-danger"
+            }`}
+          >
+            <span className="flex-1 break-all">{exportNotice.text}</span>
+          </div>
+        )}
+
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={subTab === "tables" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
             <ResultGrid
@@ -680,6 +768,27 @@ export function DatabasePane({
                 selected && void loadRows(selected.sessionKey, selected.connectionId, selected.table, page)
               }
               hint="从左侧逐级展开：连接 → 数据库 → 表，点一张表看数据。"
+              onExport={
+                selected && result?.kind === "rows"
+                  ? (format, scope) => {
+                      const id = sessions[selected.sessionKey]?.id;
+                      const connection = connectionsRef.current.find(
+                        (item) => item.id === selected.connectionId,
+                      );
+                      if (id === undefined || !connection) return;
+                      void runExport(
+                        id,
+                        selectAllSql(connection.kind, selected.table),
+                        selected.table.name,
+                        format,
+                        scope,
+                        result.page,
+                        result.pageSize,
+                      );
+                    }
+                  : undefined
+              }
+              exportBusy={exporting}
             />
           </div>
 
@@ -764,6 +873,34 @@ export function DatabasePane({
               }}
             >
               删除
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* 表节点右键：整表导出。fixed 定位，树在 overflow-auto 里，绝对定位会被裁掉 */}
+      {tableMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setTableMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setTableMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 w-40 rounded-lg border border-line-strong bg-raised p-1 shadow-lg"
+            style={{
+              left: Math.min(tableMenu.x, window.innerWidth - 168),
+              top: Math.min(tableMenu.y, window.innerHeight - 72),
+            }}
+          >
+            <button type="button" className={MENU_ITEM} onClick={() => exportTableNode("csv")}>
+              导出为 CSV
+            </button>
+            <button type="button" className={MENU_ITEM} onClick={() => exportTableNode("xlsx")}>
+              导出为 Excel
             </button>
           </div>
         </>
