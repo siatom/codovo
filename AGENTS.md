@@ -167,6 +167,15 @@ git push --follow-tags            # 连 tag 一起推
   information_schema.schemata（剔系统库）、PG 的 `pg_database`（`datistemplate` / `datallowconn`
   过滤）、SQLite 固定 `main`。取表的命名空间参数统一叫 `schema`：MySQL 是库名、PG 是 schema 名、
   SQLite 忽略。
+- 数据库结果导出（`database.rs` 的 `db_export` + `DbExportMenu.tsx`）：**后端取数 + 写文件**，前端只用
+  `plugin-dialog` 的 `save` 选路径（Tauri 没有浏览器那套下载语义，前端拼 Blob 没处放）。CSV 必须带
+  **UTF-8 BOM**（否则 Windows 版 Excel 打开中文乱码）、按 RFC4180 转义、NULL 空字段、统一 CRLF；xlsx 用
+  纯 Rust 的 `rust_xlsxwriter`（默认无 C 依赖），首行表头、NULL 空单元格。**导出必须绕过单元格截断**：
+  解码链路（`decode_cell!` / `fetch_rows`）加了 `clamp` 开关，交互查询传 true（4096 字符上限）、导出传
+  false 取全量——二进制列仍按 `format_bytes` 渲染。范围：`page` 按传入页码重跑（与界面所见一致）、`all`
+  不分页一次取全（自带 LIMIT 的语句按原样取，不外包分页）；导出超时单独放宽到 300s，且**行数上限 10 万**
+  ——超了**截断**并回 `truncated` 标记由前端提示（不报错，免得用户无从下手）。两个入口（结果区底部、
+  表节点右键=整表导出）共用 `DbExportMenu`，invoke 只在调用方，组件不直接调后端。
 - **数据库 Agent**（`db_agent.rs` + `agent.rs` 的 `database` 模式）：对话式生成并执行**只读** SQL。
   走**独立的 opencode 进程**（前端用哨兵 root `__db_agent__`，cwd 落在应用配置目录下，不占工作区），
   工具由 CodeDock 自己当 **local MCP server** 提供：opencode 按 opencode.json 的 `mcp.db` 拉起
