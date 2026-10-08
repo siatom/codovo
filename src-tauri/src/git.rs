@@ -640,6 +640,20 @@ fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, St
     Ok(status)
 }
 
+/// 把工作区根初始化成一个 git 仓库（默认分支 main）。
+///
+/// 目录已经是仓库时 `git init` 是幂等的：不会报错、也不会清掉已有历史，所以不用先
+/// 探一次。写完直接回新状态，前端一次 IPC 就能把界面刷到位，不用等下一个轮询周期。
+///
+/// 分支名写死 main 而不是让 git 用全局的 init.defaultBranch：界面上的按钮说的就是
+/// 「初始化 Git 仓库」，用户按下去该拿到和 CodeDock 仓库本身一致的结果，而不是被
+/// 本机配置决定；另外 git 2.28+ 才会在空仓库的 status 里报出分支名，`-b` 顺带保证了
+/// 刚初始化完的面板能显示分支。
+fn init_git_repo(root: &Path) -> Result<GitStatus, String> {
+    run_git_checked(root, &["init", "-b", "main"])?;
+    status_of(root)
+}
+
 /// 把前端传来的绝对路径折算成"工作区内的相对路径（正斜杠）"。
 ///
 /// 一律先过 `fs_api::resolve` 的沙箱校验。返回的第二个值是 resolve 之后
@@ -2201,6 +2215,12 @@ pub fn git_status(
 ) -> Result<GitStatus, String> {
     // 缺省当 true：老前端不传这个参数时行为不变
     status_of_with_counts(&state.checked_root(&root)?, with_counts.unwrap_or(true))
+}
+
+/// 把工作区根初始化成 git 仓库（默认分支 main）。已经是仓库时幂等，不动已有历史。
+#[tauri::command(async)]
+pub fn git_init(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
+    init_git_repo(&state.checked_root(&root)?)
 }
 
 /// 暂存。`paths` 为空表示全部暂存。
@@ -5524,5 +5544,34 @@ mod tests {
     fn same_dir_ignores_case_and_separators() {
         assert!(same_dir("C:/Repo/Main", "c:\\repo\\main"));
         assert!(!same_dir("C:/repo", "C:/repo/other"));
+    }
+
+    #[test]
+    fn initializes_a_plain_directory_on_main_and_is_idempotent() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        // 还没 init：状态就是"不是仓库"，界面上那个按钮正是照它冒出来的
+        assert!(!status_of(&repo).unwrap().is_repo);
+
+        let after = init_git_repo(&repo).unwrap();
+        assert!(after.is_repo);
+        // 分支名由 `-b main` 定死，不受本机 init.defaultBranch 影响
+        assert_eq!(after.branch.as_deref(), Some("main"));
+
+        // 幂等：已经有历史之后再跑一次不报错，HEAD 也不动
+        assert!(git(&repo, &["config", "user.email", "codedock@test"]));
+        assert!(git(&repo, &["config", "user.name", "codedock"]));
+        fs::write(repo.join("a.ts"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "first").unwrap();
+        let head = status_of(&repo).unwrap().head;
+        assert!(head.is_some());
+
+        assert!(init_git_repo(&repo).unwrap().is_repo);
+        assert_eq!(status_of(&repo).unwrap().head, head);
+
+        cleanup(&top);
     }
 }
