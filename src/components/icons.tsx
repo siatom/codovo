@@ -609,6 +609,25 @@ export const IconCopy = icon(
   </>,
 );
 
+/** 剪切：一把张开的剪刀。和 IconCopy（两张纸）区分开 */
+export const IconScissors = icon(
+  <>
+    <circle cx="6" cy="6" r="3" />
+    <path d="M8.12 8.12 12 12" />
+    <path d="M20 4 8.12 15.88" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M14.8 14.8 20 20" />
+  </>,
+);
+
+/** 粘贴：一块带夹子的剪贴板。和 IconCopy 区分开 */
+export const IconClipboard = icon(
+  <>
+    <rect x="8" y="2" width="8" height="4" rx="1" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+  </>,
+);
+
 /** 搜索面板的「全部替换」：上下两条反向箭头，表示整体换掉 */
 export const IconReplaceAll = icon(
   <>
@@ -793,6 +812,16 @@ export const IconPencil = icon(
   <>
     <path d="M21.17 6.81a1 1 0 0 0-3.98-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.63l4.35-1.32a2 2 0 0 0 .83-.5Z" />
     <path d="m15 5 4 4" />
+  </>,
+);
+
+/** 忽略：眼睛上划一道斜杠。用在「加入 .gitignore」上，表示让 git 看不见它 */
+export const IconEyeOff = icon(
+  <>
+    <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+    <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+    <path d="M2 2l20 20" />
   </>,
 );
 

@@ -86,6 +86,8 @@ import {
   IconChevronRight,
   IconClose,
   IconCloudDownload,
+  IconEyeOff,
+  IconFile,
   IconFolder,
   IconList,
   IconMerge,
@@ -544,8 +546,15 @@ const MENU_W = 148;
 const MENU_ITEM_H = 24;
 const MENU_PAD = 8;
 const MENU_MAX_ITEMS = 4;
-const MENU_H = MENU_ITEM_H * MENU_MAX_ITEMS + MENU_PAD;
-const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+/** 分组分隔线：my-1 上下各 4px + 1px 线；最多三组（AI / 路径 / git） */
+const MENU_DIVIDER_H = 9;
+const MENU_MAX_DIVIDERS = 3;
+const MENU_H = MENU_ITEM_H * MENU_MAX_ITEMS + MENU_DIVIDER_H * MENU_MAX_DIVIDERS + MENU_PAD;
+/** 菜单项统一「图标 + 文字」两段；nowrap 免得长文案折行 */
+const MENU_ITEM =
+  "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+/** 分组之间的一条细线 */
+const MENU_DIVIDER = "my-1 h-px shrink-0 bg-line";
 
 /** 写系统剪贴板。走插件而不是 navigator.clipboard：WebView2 会弹系统授权框 */
 async function copyText(text: string): Promise<boolean> {
@@ -3250,21 +3259,27 @@ export function GitChangesPane({
               top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
             }}
           >
-            {/* 目录不是文件：解读会去读目录而报错，这一项不给（和文件树里的口径一致） */}
+            {/* 一、AI：目录不是文件，解读会去读目录而报错，这一项不给（和文件树里的口径一致） */}
             {!menu.change.isDir && (
-              <button
-                type="button"
-                onClick={() => startExplain(menu.change, menu.staged)}
-                className={MENU_ITEM}
-              >
-                AI 变更解读
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => startExplain(menu.change, menu.staged)}
+                  className={MENU_ITEM}
+                >
+                  <IconSparkle className="h-3.5 w-3.5" />
+                  AI 变更解读
+                </button>
+                <div className={MENU_DIVIDER} />
+              </>
             )}
+            {/* 二、路径 */}
             <button
               type="button"
               onClick={() => void copyPath(menu.change.path)}
               className={MENU_ITEM}
             >
+              <IconFile className="h-3.5 w-3.5" />
               复制路径
             </button>
             <button
@@ -3272,18 +3287,24 @@ export function GitChangesPane({
               onClick={() => void copyPath(menu.change.relative)}
               className={MENU_ITEM}
             >
+              <IconTree className="h-3.5 w-3.5" />
               复制相对路径
             </button>
-            {/* 已经跟踪的文件加 .gitignore 不生效（规则只管未跟踪的），不给这一项 */}
+            {/* 三、git：已经跟踪的文件加 .gitignore 不生效（规则只管未跟踪的），不给这一项。
+                整组连分隔线一起藏在条件里，否则它不出现时会多出一条孤线 */}
             {markOfColumn(menu.staged ? menu.change.index : menu.change.worktree).kind ===
               "untracked" && (
-              <button
-                type="button"
-                onClick={() => void addToIgnore(menu.change)}
-                className={MENU_ITEM}
-              >
-                加入 .gitignore
-              </button>
+              <>
+                <div className={MENU_DIVIDER} />
+                <button
+                  type="button"
+                  onClick={() => void addToIgnore(menu.change)}
+                  className={MENU_ITEM}
+                >
+                  <IconEyeOff className="h-3.5 w-3.5" />
+                  加入 .gitignore
+                </button>
+              </>
             )}
           </div>
         </>

@@ -46,11 +46,22 @@ import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
   IconChevronDown,
   IconChevronRight,
+  IconClipboard,
   IconClose,
+  IconCopy,
+  IconExternalLink,
+  IconEyeOff,
+  IconFile,
+  IconFolderOpen,
   IconFolderPlus,
+  IconPencil,
   IconPlus,
   IconRefresh,
+  IconScissors,
   IconSearch,
+  IconSparkle,
+  IconTrash,
+  IconTree,
 } from "./icons";
 
 interface ExplorerPaneProps {
@@ -85,12 +96,20 @@ const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
 const ICON_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
-/** 右键菜单：宽度和高度按最多 9 项算出来，用来贴着窗口边缘收一收 */
-const MENU_W = 132;
-// 菜单最多 11 项（含两处按条件出现的项），按每项 ~24px 估；宁可估大，
-// 估小了贴底的菜单会被窗口下沿裁掉（这个值只用于把菜单顶回可视区）。
-const MENU_H = 320;
-const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+/**
+ * 右键菜单宽度：按最长的「在文件管理器中显示」估出来（图标 + 间距 + 8 个中文字 +
+ * 左右内边距），贴着窗口边缘时用它往回收。窄了这一行就会折成两行。
+ */
+const MENU_W = 168;
+// 菜单最多 11 项（含两处按条件出现的项）+ 最多 5 条分组分隔线；按每项 ~24px、
+// 每条分隔线 ~9px 估。宁可估大，估小了贴底的菜单会被窗口下沿裁掉
+// （这个值只用于把菜单顶回可视区）。
+const MENU_H = 340;
+/** 菜单项统一「图标 + 文字」两段；nowrap 免得长文案折行 */
+const MENU_ITEM =
+  "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+/** 分组之间的一条细线 */
+const MENU_DIVIDER = "my-1 h-px shrink-0 bg-line";
 
 /** 所在目录。改名/删除之后要重新列的就是它 */
 function parentOf(path: string): string {
@@ -1837,33 +1856,43 @@ export function ExplorerPane({
               top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
             }}
           >
-            {/* 解读要读文件全文，目录没有内容可解读，只给文件 */}
+            {/* 一、AI：解读要读文件全文，目录没有内容可解读，只给文件 */}
             {!menu.entry.isDir && (
-              <button
-                type="button"
-                onClick={() => startExplainFile(menu.entry)}
-                className={MENU_ITEM}
-              >
-                AI 解读文件
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => startExplainFile(menu.entry)}
+                  className={MENU_ITEM}
+                >
+                  <IconSparkle className="h-3.5 w-3.5" />
+                  AI 解读文件
+                </button>
+                <div className={MENU_DIVIDER} />
+              </>
             )}
-            {/* 文件操作三件套。粘贴只在剪贴板有东西时给（本菜单已有按条件隐藏项的先例） */}
+            {/* 二、剪贴板。粘贴只在剪贴板有东西时给 */}
             <button type="button" onClick={() => doCopy(menu.entry)} className={MENU_ITEM}>
+              <IconCopy className="h-3.5 w-3.5" />
               复制
             </button>
             <button type="button" onClick={() => doCut(menu.entry)} className={MENU_ITEM}>
+              <IconScissors className="h-3.5 w-3.5" />
               剪切
             </button>
             {clipboard && (
               <button type="button" onClick={() => requestPaste(menu.entry)} className={MENU_ITEM}>
+                <IconClipboard className="h-3.5 w-3.5" />
                 粘贴
               </button>
             )}
+            <div className={MENU_DIVIDER} />
+            {/* 三、路径 */}
             <button
               type="button"
               onClick={() => void copyPath(menu.entry.path)}
               className={MENU_ITEM}
             >
+              <IconFile className="h-3.5 w-3.5" />
               复制路径
             </button>
             <button
@@ -1871,14 +1900,17 @@ export function ExplorerPane({
               onClick={() => void copyPath(relativePath(menu.entry.path))}
               className={MENU_ITEM}
             >
+              <IconTree className="h-3.5 w-3.5" />
               复制相对路径
             </button>
-            {/* 交给系统：定位到文件管理器 / 用关联程序打开（工作区根行早就有后一项，这里补上树内条目） */}
+            <div className={MENU_DIVIDER} />
+            {/* 四、交给系统：定位到文件管理器 / 用关联程序打开 */}
             <button
               type="button"
               onClick={() => void revealInSystem(menu.entry)}
               className={MENU_ITEM}
             >
+              <IconFolderOpen className="h-3.5 w-3.5" />
               在文件管理器中显示
             </button>
             <button
@@ -1886,23 +1918,32 @@ export function ExplorerPane({
               onClick={() => void openWithSystem(menu.entry)}
               className={MENU_ITEM}
             >
+              <IconExternalLink className="h-3.5 w-3.5" />
               用默认程序打开
             </button>
-            {/* 已经被忽略的行不给这一项：再写一条同样的规则没有意义 */}
+            {/* 五、git：已经被忽略的行不给这一项，再写一条同样的规则没有意义。
+                整组连分隔线一起藏在条件里，否则它不出现时会多出一条孤线 */}
             {isRepo && !ignored.has(pathKey(menu.entry.path)) && (
-              <button
-                type="button"
-                onClick={() => void addToIgnore(menu.entry)}
-                className={MENU_ITEM}
-              >
-                加入 .gitignore
-              </button>
+              <>
+                <div className={MENU_DIVIDER} />
+                <button
+                  type="button"
+                  onClick={() => void addToIgnore(menu.entry)}
+                  className={MENU_ITEM}
+                >
+                  <IconEyeOff className="h-3.5 w-3.5" />
+                  加入 .gitignore
+                </button>
+              </>
             )}
+            <div className={MENU_DIVIDER} />
+            {/* 六、修改 */}
             <button
               type="button"
               onClick={() => startRename(menu.entry)}
               className={MENU_ITEM}
             >
+              <IconPencil className="h-3.5 w-3.5" />
               重命名
             </button>
             <button
@@ -1910,6 +1951,7 @@ export function ExplorerPane({
               onClick={() => requestDelete(menu.entry)}
               className={MENU_ITEM}
             >
+              <IconTrash className="h-3.5 w-3.5" />
               删除
             </button>
           </div>
@@ -1945,6 +1987,7 @@ export function ExplorerPane({
               }}
               className={MENU_ITEM}
             >
+              <IconClipboard className="h-3.5 w-3.5" />
               粘贴
             </button>
           </div>
