@@ -109,6 +109,15 @@ export function isUnstaged(change: GitChange): boolean {
 }
 
 /**
+ * 这条改动是不是一个未合并（冲突）的文件。判据与上面的 markOfXY 保持一致：
+ * XY 里含 `U`，或 XY 是 `AA`（双方都新增）/ `DD`（双方都删）——后两种 XY 里没有 U。
+ */
+export function isConflict(change: GitChange): boolean {
+  const xy = `${change.index}${change.worktree}`;
+  return xy.includes("U") || xy === "AA" || xy === "DD";
+}
+
+/**
  * 这条改动能不能被 `git stash push` 收走。
  *
  * 未跟踪的新文件（`?`）**不在** stash 的默认范围内（要收得加 `-u`，那会让文件从

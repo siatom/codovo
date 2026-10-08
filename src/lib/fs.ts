@@ -542,6 +542,15 @@ export function gitMergeContinue(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_merge_continue", { root });
 }
 
+/** 解决一个冲突文件：接受当前侧 / 传入侧 / 保留两者，然后标记为已解决 */
+export function gitResolveConflict(
+  root: string,
+  path: string,
+  choice: "ours" | "theirs" | "both",
+): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_resolve_conflict", { root, path, choice });
+}
+
 /**
  * 从仓库 URL 推导目录名：`https://github.com/foo/bar.git` -> bar。
  * 与后端 `derive_repo_name` 同规则（scp 风格的冒号、结尾斜杠都兼容），只用来给

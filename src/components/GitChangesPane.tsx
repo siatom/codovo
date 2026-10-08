@@ -33,6 +33,7 @@ import {
   gitMergeContinue,
   gitPull,
   gitPush,
+  gitResolveConflict,
   gitStage,
   gitStashApply,
   gitStashDrop,
@@ -48,6 +49,7 @@ import {
   toDisplayPath,
 } from "../lib/fs";
 import {
+  isConflict,
   isStaged,
   isStashable,
   isUnstaged,
@@ -89,6 +91,8 @@ import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
   FileTypeIcon,
   IconArrowDownToLine,
+  IconArrowLeftToLine,
+  IconArrowRightToLine,
   IconArrowUpFromLine,
   IconArrowsLeftRight,
   IconBranch,
@@ -453,39 +457,29 @@ const MERGE_ABORT_BUTTON =
   "shrink-0 rounded-md border border-danger-line px-3 py-1.5 text-[12px] text-danger hover:bg-danger-bg disabled:opacity-40";
 
 /**
- * 主按钮位在"非 merge 的进行中操作"下显示的短标签。
+ * 进行中的四种多步操作：中文名 + "继续"时用的动词。
  *
- * 变基 / 拣选 / 还原的收尾命令和 merge 不同，面板里没有能用的按钮（给了点了就报错），
- * 所以这里只放一句只读说明，具体引导看下面的提示条。用 `Record<string, string>` 而不是
- * 精确联合：调用处拿到的是可能为 null 的 mergeKind，宽松一点省掉一处无谓的窄化。
+ * merge 收尾是生成合并提交，说"完成合并"；变基 / 拣选 / 还原都是 `--continue`，
+ * 说"继续××"。四种现在都能在面板里收尾，文案按类型分开，不再指回终端。
  */
-const ONGOING_LABEL: Record<string, string> = {
-  rebase: "变基进行中",
-  cherryPick: "拣选提交中",
-  revert: "还原提交中",
+const ONGOING: Record<string, { name: string; verb: string }> = {
+  merge: { name: "合并", verb: "完成" },
+  rebase: { name: "变基", verb: "继续" },
+  cherryPick: { name: "拣选", verb: "继续" },
+  revert: { name: "还原", verb: "继续" },
 };
 
-/**
- * "进行中"提示条的整句文案。merge 有自己的收尾按钮，其余三种只能在终端里
- * `--continue` / `--abort`，所以文案直接指回终端。
- */
+/** 认不出的类型（理论上不会发生）也给个能读的兜底，别把 undefined 拼进文案里 */
+function ongoingLabels(kind: GitStatusPayload["mergeKind"]): { name: string; verb: string } {
+  return (kind && ONGOING[kind]) || { name: "操作", verb: "继续" };
+}
+
+/** "进行中"提示条的整句文案：还剩几个冲突 + 点哪个按钮收尾 */
 function ongoingText(kind: GitStatusPayload["mergeKind"], conflicts: number): string {
-  switch (kind) {
-    case "rebase":
-      return conflicts > 0
-        ? `正在进行变基：还有 ${conflicts} 个冲突未解决，请在终端解决后 git rebase --continue`
-        : "正在进行变基：请在终端 git rebase --continue 完成，或用 git rebase --abort 中止";
-    case "cherryPick":
-      return conflicts > 0
-        ? `正在拣选提交：还有 ${conflicts} 个冲突未解决，请在终端解决后 git cherry-pick --continue`
-        : "正在拣选提交：请在终端 git cherry-pick --continue 完成，或用 git cherry-pick --abort 中止";
-    case "revert":
-      return conflicts > 0
-        ? `正在还原提交：还有 ${conflicts} 个冲突未解决，请在终端解决后 git revert --continue`
-        : "正在还原提交：请在终端 git revert --continue 完成，或用 git revert --abort 中止";
-    default:
-      return "";
-  }
+  const { name, verb } = ongoingLabels(kind);
+  return conflicts > 0
+    ? `正在进行${name}：还有 ${conflicts} 个冲突未解决，解决后点「${verb}${name}」`
+    : `正在进行${name}：点「${verb}${name}」完成，或「中止${name}」放弃`;
 }
 
 /** AI 生成：塞进提交框内部的纯图标按钮，居中对齐、平时淡、悬停才亮 */
@@ -554,7 +548,8 @@ type Busy =
   | "push"
   | "merge"
   | "mergeAbort"
-  | "mergeContinue";
+  | "mergeContinue"
+  | "resolve";
 
 /**
  * 能不能「放弃修改」。
@@ -612,8 +607,8 @@ const SYNC_NOTICE = {
   commitPush: "正在提交并推送…",
   commitSync: "正在提交并同步…",
   merge: "正在合并…",
-  mergeAbort: "正在中止合并…",
-  mergeContinue: "正在完成合并…",
+  mergeAbort: "正在中止当前操作…",
+  mergeContinue: "正在完成当前操作…",
 } as const;
 
 /** 右键菜单：宽度按最长的一项量，高度按项数算出来，用来贴着窗口边缘收一收 */
@@ -626,6 +621,12 @@ const MENU_MAX_ITEMS = 4;
 const MENU_DIVIDER_H = 9;
 const MENU_MAX_DIVIDERS = 3;
 const MENU_H = MENU_ITEM_H * MENU_MAX_ITEMS + MENU_DIVIDER_H * MENU_MAX_DIVIDERS + MENU_PAD;
+/**
+ * 冲突行的解决菜单项更多（四条解决方式 + AI + 两条路径），文案也更长
+ * （「接受当前更改」+ `checkout --ours`），148px 装不下，单独宽一档、高度也重算。
+ */
+const CONFLICT_MENU_W = 220;
+const CONFLICT_MENU_H = MENU_ITEM_H * 8 + MENU_DIVIDER_H * 3 + MENU_PAD;
 /** 菜单项统一「图标 + 文字」两段；nowrap 免得长文案折行 */
 const MENU_ITEM =
   "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -1234,6 +1235,65 @@ function ChangeList({
   );
 }
 
+/**
+ * 「合并冲突」组里的一行：文件名 + 状态徽标 + 一个常驻的「解决」按钮。
+ *
+ * 冲突行不给暂存 / 放弃那套——它们对未合并文件没有正确的语义。点行打开文件
+ * （让用户看冲突标记、必要时手改），点解决按钮（或右键）开解决菜单。
+ *
+ * 解决按钮**常驻可见**：冲突组本来就短，藏进悬停反而看不出这一行能干什么。
+ */
+function ConflictRow({
+  change,
+  busy,
+  onOpenFile,
+  onMenu,
+}: {
+  change: GitChange;
+  busy: boolean;
+  onOpenFile: (path: string) => void;
+  /** 开「解决冲突」菜单（固定定位，画在面板底部那一层） */
+  onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+}) {
+  const slash = change.relative.lastIndexOf("/");
+  const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
+  const dir = slash === -1 ? "" : change.relative.slice(0, slash);
+  return (
+    <div
+      className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
+      onContextMenu={(event) => onMenu(change, false, event)}
+    >
+      <button
+        type="button"
+        onClick={() => onOpenFile(change.path)}
+        title={`${toDisplayPath(change.path)}（冲突）`}
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+      >
+        <span className="flex shrink-0 items-center text-fg-icon">
+          <FileTypeIcon name={name} className="h-3.5 w-3.5" />
+        </span>
+        <span className="min-w-0 truncate text-fg-muted">{name}</span>
+        {dir && (
+          <span className="min-w-0 shrink-[999] truncate text-[11px] text-fg-faint">{dir}</span>
+        )}
+      </button>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          onClick={(event) => onMenu(change, false, event)}
+          disabled={busy}
+          title="解决冲突（接受当前 / 接受传入 / 保留两者）"
+          className={ROW_HUNK_TOGGLE}
+        >
+          <IconMerge className="h-3 w-3" />
+        </button>
+        {/* 冲突统一显示 C，和文件树 / 标签页那份 markOfXY 的徽标一致 */}
+        <GitMarkBadge mark={{ label: "C", kind: "conflict" }} className="text-[10px]" />
+      </div>
+    </div>
+  );
+}
+
 /** 引用 chip 的 kind -> 中文说明，只用在 title 上 */
 const REF_KIND_LABEL: Record<CommitRef["kind"], string> = {
   head: "当前分支",
@@ -1760,8 +1820,17 @@ export function GitChangesPane({
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
   const { changes } = snapshot;
 
-  const staged = useMemo(() => changes.filter(isStaged), [changes]);
-  const unstaged = useMemo(() => changes.filter(isUnstaged), [changes]);
+  // 冲突（U / AA / DD）单独成组，并从暂存 / 未暂存两组里排除——否则一个 `UU`
+  // 会同时落进两组，行内那些整文件操作（暂存 / 放弃）对冲突文件也不适用
+  const conflicts = useMemo(() => changes.filter(isConflict), [changes]);
+  const staged = useMemo(
+    () => changes.filter((change) => isStaged(change) && !isConflict(change)),
+    [changes],
+  );
+  const unstaged = useMemo(
+    () => changes.filter((change) => isUnstaged(change) && !isConflict(change)),
+    [changes],
+  );
 
   /** 筛选词归一化一次，供两条列表和「有没有筛掉东西」的判断共用 */
   const needle = filter.trim().toLowerCase();
@@ -1778,6 +1847,11 @@ export function GitChangesPane({
     () =>
       needle ? unstaged.filter((item) => item.relative.toLowerCase().includes(needle)) : unstaged,
     [unstaged, needle],
+  );
+  const conflictsShown = useMemo(
+    () =>
+      needle ? conflicts.filter((item) => item.relative.toLowerCase().includes(needle)) : conflicts,
+    [conflicts, needle],
   );
 
   // 两棵树只在树视图里用得上，但提前算好——改动列表通常就几十条，不值当再懒一层。
@@ -1874,12 +1948,13 @@ export function GitChangesPane({
     (change: GitChange) => selection.has(selectKey(false, change.path)),
     [selection],
   );
-  /** 筛完之后两边都没东西了（但改动本身还在），值得单独说一句 */
+  /** 筛完之后三组都没东西了（但改动本身还在），值得单独说一句 */
   const filteredOut =
     needle.length > 0 &&
-    (staged.length > 0 || unstaged.length > 0) &&
+    (staged.length > 0 || unstaged.length > 0 || conflicts.length > 0) &&
     stagedShown.length === 0 &&
-    unstagedShown.length === 0;
+    unstagedShown.length === 0 &&
+    conflictsShown.length === 0;
   /**
    * 真正能被 `git stash push` 收走的那些改动。
    *
@@ -2408,6 +2483,24 @@ export function GitChangesPane({
     // 中止丢掉一次合并尝试：本来就没产生提交，不用重拉历史
     void run("mergeAbort", () => gitMergeAbort(root));
   }, [run, root]);
+
+  /** 冲突行：接受某一侧 / 保留两者，后端把结果写回工作区并标记为已解决 */
+  const resolveConflict = useCallback(
+    (path: string, choice: "ours" | "theirs" | "both") => {
+      setMenu(null);
+      void run("resolve", () => gitResolveConflict(root, path, choice));
+    },
+    [run, root],
+  );
+
+  /** 冲突行：不选边，直接把工作区当前内容标记为已解决（等价于 `git add`） */
+  const markResolved = useCallback(
+    (path: string) => {
+      setMenu(null);
+      void run("resolve", () => gitStage(root, [path]));
+    },
+    [run, root],
+  );
 
   /**
    * 放弃修改不可撤销，落手前先记下来弹确认框，用户点了才真跑。
@@ -3716,38 +3809,36 @@ export function GitChangesPane({
 
         <div className={`flex shrink-0 items-center gap-1.5 ${plan ? "hidden" : ""}`}>
           {snapshot.merging ? (
-            snapshot.mergeKind === "merge" ? (
-              // 合并中：主操作只有"收尾"两件事。冲突没清完时「完成合并」禁用，
-              // 按钮上直接写着还剩几个，省得用户去列表里数
-              <>
-                <button
-                  type="button"
-                  onClick={mergeContinue}
-                  disabled={busy !== null || snapshot.conflicts > 0}
-                  className={PRIMARY_BUTTON}
-                >
-                  {busy === "mergeContinue"
-                    ? "完成合并中…"
-                    : snapshot.conflicts > 0
-                      ? `还有 ${snapshot.conflicts} 个冲突`
-                      : "完成合并"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingMergeAbort(true)}
-                  disabled={busy !== null}
-                  className={MERGE_ABORT_BUTTON}
-                >
-                  {busy === "mergeAbort" ? "中止中…" : "中止合并"}
-                </button>
-              </>
-            ) : (
-              // 变基 / 拣选 / 还原进行中：它们的收尾命令和 merge 不同，这里没有能用的
-              // 按钮（给了点了就报错），只放一句只读说明，具体引导看下面的提示条
-              <span className="px-1 text-[11px] text-danger">
-                {ONGOING_LABEL[snapshot.mergeKind ?? ""] ?? "操作进行中"}
-              </span>
-            )
+            // 四种进行中操作（合并 / 变基 / 拣选 / 还原）都能在面板里收尾：
+            // 主操作是"继续"，冲突没清完时禁用（按钮上直接写着还剩几个，省得去列表里数），
+            // 旁边是"中止"。文案按类型区分（完成合并 / 继续变基 / …）
+            (() => {
+              const { name, verb } = ongoingLabels(snapshot.mergeKind);
+              return (
+                <>
+                  <button
+                    type="button"
+                    onClick={mergeContinue}
+                    disabled={busy !== null || snapshot.conflicts > 0}
+                    className={PRIMARY_BUTTON}
+                  >
+                    {busy === "mergeContinue"
+                      ? "处理中…"
+                      : snapshot.conflicts > 0
+                        ? `还有 ${snapshot.conflicts} 个冲突`
+                        : `${verb}${name}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingMergeAbort(true)}
+                    disabled={busy !== null}
+                    className={MERGE_ABORT_BUTTON}
+                  >
+                    {busy === "mergeAbort" ? "中止中…" : `中止${name}`}
+                  </button>
+                </>
+              );
+            })()
           ) : staged.length > 0 ? (
             // 分裂按钮：左边提交，右边箭头拉出其它提交方式（照 VS Code）
             <div className="relative flex min-w-0 flex-1 items-stretch">
@@ -3901,13 +3992,7 @@ export function GitChangesPane({
 
         {snapshot.merging && (
           <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
-            {snapshot.mergeKind === "merge"
-              ? `正在合并：${
-                  snapshot.conflicts > 0
-                    ? `还有 ${snapshot.conflicts} 个冲突未解决，改完文件后暂存，再点「完成合并」`
-                    : "冲突已解决，点「完成合并」生成合并提交"
-                }`
-              : ongoingText(snapshot.mergeKind, snapshot.conflicts)}
+            {ongoingText(snapshot.mergeKind, snapshot.conflicts)}
           </p>
         )}
 
@@ -4022,7 +4107,7 @@ export function GitChangesPane({
             </>
           ) : (
             <>
-          {staged.length === 0 && unstaged.length === 0 && (
+          {staged.length === 0 && unstaged.length === 0 && conflicts.length === 0 && (
             <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的更改</p>
           )}
 
@@ -4030,6 +4115,27 @@ export function GitChangesPane({
             <p className="px-1 py-1 text-[11px] text-fg-faint">
               没有匹配「{filter.trim()}」的更改
             </p>
+          )}
+
+          {/* 「合并冲突」组排在最上面：它就是最该先处理的东西。筛空了整个不画 */}
+          {conflictsShown.length > 0 && (
+            <>
+              <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-danger">
+                  合并冲突 ({conflictsShown.length}
+                  {conflictsShown.length === conflicts.length ? "" : `/${conflicts.length}`})
+                </span>
+              </div>
+              {conflictsShown.map((change) => (
+                <ConflictRow
+                  key={pathKey(change.path)}
+                  change={change}
+                  busy={busy !== null}
+                  onOpenFile={onOpenFile}
+                  onMenu={openMenu}
+                />
+              ))}
+            </>
           )}
 
           {/* 筛掉的分组整个不画：只留一个空标题行反而让人以为里面没东西 */}
@@ -4480,12 +4586,65 @@ export function GitChangesPane({
           <div
             className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
-              width: MENU_W,
+              // 冲突行的菜单多一组"解决冲突"，并带 git 命令提示，宽度和估算高度都要大一号
+              width: isConflict(menu.change) ? CONFLICT_MENU_W : MENU_W,
               // 贴到窗口右边/下边时往回收，别把菜单顶出可视区
-              left: Math.min(menu.x, window.innerWidth - MENU_W - 4),
-              top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
+              left: Math.min(
+                menu.x,
+                window.innerWidth - (isConflict(menu.change) ? CONFLICT_MENU_W : MENU_W) - 4,
+              ),
+              top: Math.min(
+                menu.y,
+                window.innerHeight - (isConflict(menu.change) ? CONFLICT_MENU_H : MENU_H) - 4,
+              ),
             }}
           >
+            {/* 零、冲突：未合并的文件优先给解决入口，置顶于其它项 */}
+            {isConflict(menu.change) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => resolveConflict(menu.change.path, "ours")}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconArrowLeftToLine className="h-3.5 w-3.5 shrink-0" />
+                  接受当前更改
+                  <span className={MENU_CMD}>checkout --ours</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resolveConflict(menu.change.path, "theirs")}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconArrowRightToLine className="h-3.5 w-3.5 shrink-0" />
+                  接受传入更改
+                  <span className={MENU_CMD}>checkout --theirs</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resolveConflict(menu.change.path, "both")}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconMerge className="h-3.5 w-3.5 shrink-0" />
+                  保留两者
+                  <span className={MENU_CMD}>both</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => markResolved(menu.change.path)}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconCheck className="h-3.5 w-3.5 shrink-0" />
+                  标记为已解决
+                  <span className={MENU_CMD}>add</span>
+                </button>
+                <div className={MENU_DIVIDER} />
+              </>
+            )}
             {/* 一、AI：目录不是文件，解读会去读目录而报错，这一项不给（和文件树里的口径一致） */}
             {!menu.change.isDir && (
               <>
