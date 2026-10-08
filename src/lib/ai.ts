@@ -54,12 +54,20 @@ export function listProviderModels(config: AiConfig, apiKey?: string): Promise<R
   });
 }
 
+/** AI 给出的「分条提交」方案里的一条：一条提交信息 + 归属它的文件（工作区相对路径）。 */
+export interface CommitPlanItem {
+  message: string;
+  files: string[];
+}
+
 /**
- * 让后端取暂存区改动 + 分支 + 近期提交主题，调大模型生成一条提交信息。
+ * 让后端取当前全部未提交改动（相对 HEAD）+ 分支 + 近期提交主题，调大模型给一份分条方案。
+ *
+ * 只围绕一个主题时数组里就一条——调用方据此退回到「填一条提交信息」的老行为。
  * 走 Rust 侧的 HTTP，密钥不进 WebView；字段没配全时后端会直接报错。
  */
-export function generateCommitMessage(root: string, config: AiConfig): Promise<string> {
-  return invoke<string>("ai_generate_commit_message", { root, config });
+export function generateCommitPlan(root: string, config: AiConfig): Promise<CommitPlanItem[]> {
+  return invoke<CommitPlanItem[]>("ai_generate_commit_plan", { root, config });
 }
 
 /**

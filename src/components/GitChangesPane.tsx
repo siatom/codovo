@@ -17,6 +17,7 @@ import {
   gitBranches,
   gitCommit,
   gitCommitFiles,
+  gitCommitGroups,
   gitCommitStat,
   gitCreateBranch,
   gitCreateTag,
@@ -55,7 +56,12 @@ import {
   type GitMark,
   type GitMarkKind,
 } from "../lib/git";
-import { explainChange, generateCommitMessage, useEffectiveAiConfig } from "../lib/ai";
+import {
+  explainChange,
+  generateCommitPlan,
+  useEffectiveAiConfig,
+  type CommitPlanItem,
+} from "../lib/ai";
 import { useSettings } from "../lib/settings";
 import { formatShortcut, matchesShortcut } from "../lib/shortcuts";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -91,10 +97,12 @@ import {
   IconCloudDownload,
   IconEyeOff,
   IconFile,
+  IconFilter,
   IconFolder,
   IconList,
   IconMerge,
   IconMinus,
+  IconMore,
   IconPencil,
   IconPlus,
   IconSparkle,
@@ -151,11 +159,11 @@ interface PendingDiscard {
   what: string;
 }
 
-/** 提交历史一次拉多少条，「加载更多」再叠加 */
+/** 时间线一次拉多少条，「加载更多」再叠加 */
 const LOG_PAGE = 50;
 
 /**
- * 过滤提交历史时一次拉多少条。过滤会把结果筛掉一部分，还按普通一页取的话，
+ * 过滤时间线时一次拉多少条。过滤会把结果筛掉一部分，还按普通一页取的话，
  * 前面一段没命中就看着像「没有」。顶到后端的上限（git.rs 的 LOG_MAX = 500），
  * 让过滤在尽量长的历史里找。
  */
@@ -172,7 +180,7 @@ const LOG_FILTER_DEBOUNCE_MS = 250;
 const MAX_REF_CHIPS = 2;
 
 /**
- * 提交历史的后台重拉间隔。
+ * 时间线的后台重拉间隔。
  * 只盯 HEAD 的话，终端里 `fetch` / `tag` 这类不改 HEAD 的操作会漏掉——远程分支、
  * 标签这些行内装饰就一直是旧的。挂个比 status（2 秒）慢的轮询兜底。
  */
@@ -206,11 +214,11 @@ function messageMetrics(el: HTMLTextAreaElement) {
   return { line, border, padding, oneRow: line + padding + border };
 }
 
-// 提交历史这摊都是窗口级偏好，存 sessionStorage：多窗口下各收各的、各拖各的
+// 时间线这摊都是窗口级偏好，存 sessionStorage：多窗口下各收各的、各拖各的
 const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed.";
 const LOG_HEIGHT_KEY = "codedock.commitLogHeight.";
 
-/** 提交历史那块能拖到多高/多矮 */
+/** 时间线那块能拖到多高/多矮 */
 const MIN_LOG_HEIGHT = 80;
 const MAX_LOG_HEIGHT = 600;
 const DEFAULT_LOG_HEIGHT = 224;
@@ -218,7 +226,7 @@ const DEFAULT_LOG_HEIGHT = 224;
 /** 上面至少要留出来的高度：工具条 + 提交框 + 两三行改动列表 */
 const RESERVED_ABOVE = 200;
 
-/** 拖动条上按方向键每次调整的像素步长（提交框 / 提交历史两条共用） */
+/** 拖动条上按方向键每次调整的像素步长（提交框 / 时间线两条共用） */
 const KEY_RESIZE_STEP = 16;
 
 function readLogCollapsed(root: string): boolean {
@@ -426,6 +434,15 @@ const TEXT_INPUT =
 const PRIMARY_BUTTON =
   "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
 
+/**
+ * 「提交」分裂按钮（照 VS Code）：左边提交，右边一个小箭头拉出其它提交方式。
+ * 两块压在同一个主色块上、中间一条半透明分隔线，看着是一个按钮、两个点击区。
+ */
+const SPLIT_MAIN =
+  "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md bg-accent px-3 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
+const SPLIT_CARET =
+  "flex shrink-0 items-center justify-center rounded-r-md border-l border-app/30 bg-accent px-1.5 text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
+
 /** 合并中的「中止合并」：这一下会丢掉整次合并尝试，用危险色描边 */
 const MERGE_ABORT_BUTTON =
   "shrink-0 rounded-md border border-danger-line px-3 py-1.5 text-[12px] text-danger hover:bg-danger-bg disabled:opacity-40";
@@ -519,6 +536,8 @@ type Busy =
   | "unstage"
   | "discard"
   | "commit"
+  | "commitPush"
+  | "commitSync"
   | "amend"
   | "undo"
   | "branch"
@@ -585,6 +604,8 @@ const SYNC_NOTICE = {
   fetch: "正在获取远程更新…",
   pull: "正在拉取…",
   push: "正在推送…",
+  commitPush: "正在提交并推送…",
+  commitSync: "正在提交并同步…",
   merge: "正在合并…",
   mergeAbort: "正在中止合并…",
   mergeContinue: "正在完成合并…",
@@ -608,10 +629,13 @@ const MENU_DIVIDER = "my-1 h-px shrink-0 bg-line";
 
 /**
  * 提交行的右键菜单（打标签 / 删标签）比改动行那份宽：项文案更长（「在此提交打标签…」
- * 8 个中文字，删标签还要带上标签名）。菜单项自己 `whitespace-nowrap`，所以宽度得够，
- * 标签名再长由行内 span 截断。
+ * 8 个中文字，删标签还要带上标签名），右边还要跟一个 git 命令提示（tag / tag -d）。
+ * 菜单项自己 `whitespace-nowrap`，所以宽度得够，标签名再长由行内 span 截断。
  */
-const COMMIT_MENU_W = 176;
+const COMMIT_MENU_W = 200;
+
+/** 菜单项右侧的 git 命令提示：小一号、灰色，和左边的中文说明拉开一眼能分 */
+const MENU_CMD = "ml-auto shrink-0 pl-3 text-[10px] text-fg-faint";
 
 /** 打标签对话框里的按钮，照 ConfirmDialog 那一套 */
 const DIALOG_CANCEL =
@@ -1426,7 +1450,7 @@ function TagDialog({
 }
 
 /**
- * 改动列表 + 提交框 + 提交历史，右栏「变更」模块的整屏内容。
+ * 改动列表 + 提交框 + 时间线，右栏「变更」模块的整屏内容。
  * 目录不是仓库时渲染空状态 + 「初始化 Git 仓库」按钮（见下面 `!snapshot.isRepo` 那段），
  * 不再整个不渲染——工具列表那边也不把这行置灰了。
  */
@@ -1443,6 +1467,11 @@ export function GitChangesPane({
 }: GitChangesPaneProps) {
   const { settings } = useSettings();
   const [message, setMessage] = useState("");
+  /**
+   * AI 给的「分条提交」方案；null = 没在预览。
+   * 只围绕一个主题时不用它（直接填进 message 走原来的单条提交），横跨多个主题才摆出预览面板。
+   */
+  const [plan, setPlan] = useState<CommitPlanItem[] | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
@@ -1484,7 +1513,7 @@ export function GitChangesPane({
   /** 提交框拖动的起点，null 表示没在拖 */
   const messageDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
 
-  // 提交历史
+  // 时间线
   const [logCollapsed, setLogCollapsed] = useState(() => readLogCollapsed(root));
   const [logHeight, setLogHeight] = useState(() => readLogHeight(root));
   const [draggingLog, setDraggingLog] = useState(false);
@@ -1512,8 +1541,10 @@ export function GitChangesPane({
   const [unpushed, setUnpushed] = useState<ReadonlySet<string>>(new Set());
   /** 提交完 / 手动刷新时 +1，用来重拉历史 */
   const [logRevision, setLogRevision] = useState(0);
-  /** 提交历史的过滤词（输入框原文）。临时状态，不落盘 */
+  /** 时间线的过滤词（输入框原文）。临时状态，不落盘 */
   const [logFilter, setLogFilter] = useState("");
+  /** 过滤框是否展开：默认只留标题栏右边一个漏斗图标，点开才出现输入框 */
+  const [logFilterOpen, setLogFilterOpen] = useState(false);
   /** 过滤按什么匹配：false = 主题 / 作者 / 正文，true = 改动过的路径 */
   const [logFilterPath, setLogFilterPath] = useState(false);
   /** 过滤词的防抖值：真正拿去查历史的是它，不是每敲一下都变 */
@@ -1553,6 +1584,8 @@ export function GitChangesPane({
    * 下次进应用还得重新收一遍反而碍事（同 collapsedDirs）。
    */
   const [filter, setFilter] = useState("");
+  /** 路径筛选框是否展开：默认只留工具行右边一个漏斗图标，点开才出现输入框 */
+  const [filterOpen, setFilterOpen] = useState(false);
 
   // 分支下拉：null = 没开着。列表每次打开都重拉，切完分支/新建完都会自动重拉
   const [branchMenu, setBranchMenu] = useState(false);
@@ -1565,9 +1598,15 @@ export function GitChangesPane({
   const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
   const [wtMenu, setWtMenu] = useState(false);
 
+  /** 「更多」下拉：装不常用的改写历史 / 储藏操作，默认收成工具行末尾一个图标按钮 */
+  const [moreMenu, setMoreMenu] = useState(false);
+
+  /** 「提交」右侧的分裂下拉：提交 / 提交（修改）/ 提交并推送 / 提交并同步。
+      不复用 commitMenu——那个是提交行的右键菜单，两者互不相干 */
+  const [commitMenuOpen, setCommitMenuOpen] = useState(false);
+
   // stash：null = 还没拉到
   const [stashes, setStashes] = useState<GitStash[] | null>(null);
-  const [stashCollapsed, setStashCollapsed] = useState(false);
   /** 收 stash 时的说明，留空就让 git 自己生成 WIP on <branch>: ... */
   const [stashMessage, setStashMessage] = useState("");
   /** 每次动完 stash +1，用来重拉列表（不靠 payload，它只带 git 状态不带 stash 清单） */
@@ -1711,6 +1750,52 @@ export function GitChangesPane({
       return payload;
     });
   }, [message, busy, staged, run]);
+
+  /**
+   * 提交并推送：一次 run 里先提交再推。合成一个写操作是为了绕开忙碌互斥——
+   * 分两次调 commit() / push()，第二次会被 busyRef 挡掉。提交成功才继续推，
+   * 提交失败直接抛出去，不会留下半截状态。
+   */
+  const commitAndPush = useCallback(() => {
+    if (!message.trim() || busy !== null || staged.length === 0) return;
+    void run("commitPush", async () => {
+      await gitCommit(root, message);
+      setMessage("");
+      setLogRevision((revision) => revision + 1);
+      return await gitPush(root);
+    });
+  }, [message, busy, staged, run, root]);
+
+  /**
+   * 提交并同步：提交之后先「拉取（只允许快进）」把远程的带下来，再推上去。
+   * 和「拉取」按钮同一套语义——本地远程分叉时分不清该快进还是合并，快进拉取会直接报错。
+   */
+  const commitAndSync = useCallback(() => {
+    if (!message.trim() || busy !== null || staged.length === 0) return;
+    void run("commitSync", async () => {
+      await gitCommit(root, message);
+      setMessage("");
+      setLogRevision((revision) => revision + 1);
+      await gitPull(root);
+      setLogRevision((revision) => revision + 1);
+      return await gitPush(root);
+    });
+  }, [message, busy, staged, run, root]);
+
+  /**
+   * 确认分条方案：后端一次性「清空暂存 → 逐组暂存 + 提交」，走和单条提交同一套链路。
+   * 成功后才收起面板、清空输入框——失败了方案留着，用户可以直接重试。
+   */
+  const commitPlan = useCallback(() => {
+    if (!plan || busy !== null) return;
+    void run("commit", async () => {
+      const payload = await gitCommitGroups(root, plan);
+      setPlan(null);
+      setMessage("");
+      setLogRevision((revision) => revision + 1); // 一次多了好几条提交
+      return payload;
+    });
+  }, [plan, busy, run, root]);
 
   /**
    * 修正上一次提交。提交框里写了信息就用它当新的提交信息，没写就沿用原来的。
@@ -1928,11 +2013,12 @@ export function GitChangesPane({
   }, [pendingStashDrop, run, root, resolveStash]);
 
   /**
-   * 让 AI 生成提交信息填进框里由用户自己确认，不自动提交。
+   * 让 AI 依据当前所有未提交的改动给一份提交方案。
    *
-   * 暂存区空着、但工作区有改动时，先把改动全部暂存再生成——否则 `diff --cached`
-   * 是空的，什么也生成不出来。只要有暂存（哪怕只是部分），就只按暂存区生成，
-   * 不擅自把剩下那些没暂存的改动也带上。
+   * 只围绕一个主题时它返回一条：填进框里由用户自己确认，不自动提交；暂存区空着、
+   * 但工作区有改动时先把改动全部暂存（否则界面停在「未暂存」、用户点不了提交）。
+   * 横跨多个主题时返回多条：摆出预览面板，等用户确认后逐条提交（见 commitPlan），
+   * 这时**不动**暂存区——生成是只读的，重排留到确认那一刻。
    */
   const generate = useCallback(() => {
     // 配置齐不齐由 useEffectiveAiConfig 判（.env 覆盖也算数），文案和原来一致
@@ -1942,12 +2028,17 @@ export function GitChangesPane({
     }
     const stageAllFirst = staged.length === 0 && unstaged.length > 0;
     void run("generate", async () => {
-      // 暂存返回新状态，跟着一起落地，免得按钮还停在"未暂存"的旧状态上
-      const payload = stageAllFirst ? await gitStage(root) : undefined;
-      setMessage(await generateCommitMessage(root, aiConfig));
-      return payload;
+      const plans = await generateCommitPlan(root, aiConfig);
+      if (plans.length <= 1) {
+        // 单条：沿用老行为，必要时先全部暂存，让用户能立刻点提交
+        const payload = stageAllFirst ? await gitStage(root) : undefined;
+        setMessage(plans[0]?.message ?? "");
+        return payload;
+      }
+      // 多条：只摆预览，暂存区一个字都不动
+      setPlan(plans);
     });
-  }, [aiConfig, aiReady, run, staged.length, unstaged.length]);
+  }, [aiConfig, aiReady, run, root, staged.length, unstaged.length]);
 
   /** 右键一个改动行：开菜单。菜单由这里统一画（它才知道该贴哪、点完怎么解读） */
   const openMenu = useCallback((change: GitChange, staged: boolean, event: ReactMouseEvent) => {
@@ -1962,7 +2053,7 @@ export function GitChangesPane({
   }, []);
 
   /**
-   * 在某个提交上建标签。标签变了要重拉提交历史——行内的标签 chip 是从
+   * 在某个提交上建标签。标签变了要重拉时间线——行内的标签 chip 是从
    * `git log` 的装饰里来的，不重拉就看不到新标签。
    */
   const createTag = useCallback(
@@ -2059,7 +2150,7 @@ export function GitChangesPane({
     [refresh, root],
   );
 
-  /** 只取回引用，不动工作区，所以提交历史不用重拉 */
+  /** 只取回引用，不动工作区，所以时间线不用重拉 */
   const fetch = useCallback(() => {
     void run("fetch", () => gitFetch(root));
   }, [run]);
@@ -2315,7 +2406,7 @@ export function GitChangesPane({
   }, []);
 
   /**
-   * 拖动提交历史的上边缘改高度。
+   * 拖动时间线的上边缘改高度。
    * 走指针捕获而不是监听 window：指针移出这个 1px 的细条后照样收得到事件。
    */
   const onHandleDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2353,7 +2444,7 @@ export function GitChangesPane({
   };
 
   /**
-   * 方向键调提交历史高度：上下限和拖动那条路径完全一致（MIN/MAX 再受面板高度约束），
+   * 方向键调时间线高度：上下限和拖动那条路径完全一致（MIN/MAX 再受面板高度约束），
    * 只是把指针位移换成固定步长。这条在上，分隔条上移就是历史变高，所以 ArrowUp 加、ArrowDown 减。
    */
   const onHandleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -2438,7 +2529,21 @@ export function GitChangesPane({
   /** 有没有在过滤。过滤时泳道图、翻页、自动加载都得让位（见下） */
   const filteringLog = logNeedle.length > 0;
 
-  // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git。
+  /**
+   * 标题栏右侧的过滤入口要不要摆。门槛和原先的常驻过滤行一致：历史太短时没东西可筛，
+   * 就不占这个位置；但框已经开着、或正筛着（可能只剩几条）时保持可见，免得一打字入口就没了。
+   */
+  const showLogFilter =
+    (commits?.length ?? 0) >= FILTER_MIN_CHANGES || filteringLog || logFilterOpen;
+
+  /**
+   * 工具行右侧的路径筛选入口要不要摆。门槛和原先的常驻输入框一致：改动太少时没东西可筛，
+   * 就不占位置；但框已经开着、或正筛着时保持可见，免得一打字入口就没了。
+   */
+  const showPathFilter =
+    staged.length + unstaged.length >= FILTER_MIN_CHANGES || filter.length > 0 || filterOpen;
+
+  // 拉时间线。收起时完全不请求——这个面板收起是常态，别白跑 git。
   // 还要盯住 HEAD：在终端里 commit / amend / reset 之后，改动列表靠 2 秒轮询
   // 能自己变好，历史不会，只有 HEAD 动了才说明提交列表该重拉。
   // 非当前工作区（visible=false）、或右栏收起 / 停在别的模块（moduleVisible=false）同理
@@ -2489,7 +2594,7 @@ export function GitChangesPane({
    * 又会白重拉一遍提交列表——那份内容这时其实没变。
    *
    * 失败就当空集合：没有上游时后端本来就回空列表，真出错（git 挂了）也只是少几个标记，
-   * 不该让提交历史跟着变成错误态。
+   * 不该让时间线跟着变成错误态。
    */
   useEffect(() => {
     if (logCollapsed || !visible || !moduleVisible || !snapshot.isRepo) return;
@@ -2585,7 +2690,7 @@ export function GitChangesPane({
   }, [snapshot.head]);
 
   /**
-   * 提交历史滚到底就自动加载下一页。过滤时不再往下翻——后端已经一次顶到上限。
+   * 时间线滚到底就自动加载下一页。过滤时不再往下翻——后端已经一次顶到上限。
    *
    * 只在真有滚动事件时触发：内容本来就不够高、滚不动时不会自己一直往下加载
    * （那样会把 500 条上限一口气拉满）。滚不动的情形留给「加载更多」按钮。
@@ -2682,11 +2787,15 @@ export function GitChangesPane({
     busy === "fetch" ||
     busy === "pull" ||
     busy === "push" ||
+    busy === "commitPush" ||
+    busy === "commitSync" ||
     busy === "merge" ||
     busy === "mergeAbort" ||
     busy === "mergeContinue"
       ? SYNC_NOTICE[busy]
       : null;
+  /** 三个提交类动作共用一个「提交中…」的按钮态 */
+  const commitBusy = busy === "commit" || busy === "commitPush" || busy === "commitSync";
   /**
    * 「提交」灰着时的原因。按钮是 disabled，WebView 不会给 disabled 控件发鼠标事件，
    * 所以 title 那套悬停提示在这儿不可靠——直接写成一行字摆出来。
@@ -2751,7 +2860,7 @@ export function GitChangesPane({
             <>
               <div className="fixed inset-0 z-30" onClick={() => setBranchMenu(false)} />
               <div
-                className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+                className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 max-w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
               >
                 {branchError && (
                   <p className="px-3 py-1 text-[11px] whitespace-pre-wrap text-danger">
@@ -2788,6 +2897,7 @@ export function GitChangesPane({
                         {item.behind > 0 && <span>↓{item.behind}</span>}
                       </span>
                     )}
+                    <span className={MENU_CMD}>switch</span>
                   </button>
                 ))}
 
@@ -2802,6 +2912,7 @@ export function GitChangesPane({
                     >
                       <IconPlus className="h-3 w-3 shrink-0" />
                       新建分支
+                      <span className={MENU_CMD}>switch -c</span>
                     </button>
                   ) : (
                     <div className="flex items-center gap-1 px-2 py-0.5">
@@ -2854,7 +2965,7 @@ export function GitChangesPane({
               {wtMenu && (
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setWtMenu(false)} />
-                  <div className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
+                  <div className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 max-w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
                     {wtList.map((item) => (
                       <button
                         key={item.path}
@@ -2893,8 +3004,9 @@ export function GitChangesPane({
           )}
         </div>
 
-        {/* 第二行：左边领先/落后，右边远程/视图按钮 */}
-        <div className="flex items-center gap-1.5">
+        {/* 第二行：左边领先/落后，右边远程/视图按钮。
+            relative 放在这一整行上（而不是那组按钮上）：下拉菜单按整行宽度收，面板窄时也不会溢出被裁 */}
+        <div className="relative flex items-center gap-1.5">
         {/* 领先/落后上游的提交数：只在非零时出现（没有上游时天然是 0），
             紧挨着拉取/推送按钮，一眼能看出该点哪个 */}
         {snapshot.ahead > 0 && (
@@ -2969,13 +3081,192 @@ export function GitChangesPane({
               <IconTree className="h-3.5 w-3.5" />
             )}
           </button>
+
+          {/* 路径筛选收成这个漏斗按钮：默认不占地方，点开才在改动列表上方出现输入框 */}
+          {showPathFilter && (
+            <button
+              type="button"
+              onClick={() => setFilterOpen((open) => !open)}
+              // 按下别让输入框失焦：否则「失焦收起」和这次 toggle 会打架
+              onMouseDown={(event) => event.preventDefault()}
+              title={filterOpen ? "关闭路径筛选" : "按路径筛选"}
+              className={`${HEADER_ACTION} ${filterOpen ? "bg-active text-fg" : ""}`}
+            >
+              <IconFilter className="h-3.5 w-3.5" />
+            </button>
+          )}
+
+          {/* 不常用的写历史 / 储藏操作收进这个「更多」按钮：默认只占一个图标，
+              点开才展开菜单。定位照分支下拉：absolute 锚在这组按钮上 + 透明遮罩接外部点击 */}
+          <button
+            type="button"
+            onClick={() => setMoreMenu((open) => !open)}
+            disabled={busy !== null}
+            title="更多 Git 操作"
+            className={`${HEADER_ACTION} ${moreMenu ? "bg-active text-fg" : ""}`}
+          >
+            <IconMore className="h-3.5 w-3.5" />
+          </button>
+
+          {moreMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setMoreMenu(false)} />
+              <div className="absolute top-full right-0 z-40 mt-1 flex max-h-80 w-64 max-w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
+                {/* 改写历史：修正 / 撤销上一次提交。都动 HEAD，只在有 HEAD 且不在合并时给 */}
+                {snapshot.head && !snapshot.merging && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoreMenu(false);
+                        setPendingAmend(true);
+                      }}
+                      disabled={busy !== null}
+                      title="修正上一次提交（把已暂存的改动并进去，提交框里有信息就顺便改掉）"
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconPencil className="h-3.5 w-3.5 shrink-0" />
+                      修正上一次提交
+                      <span className={MENU_CMD}>amend</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoreMenu(false);
+                        undoCommit();
+                      }}
+                      disabled={busy !== null}
+                      title="撤销上一次提交（改动回到暂存区，再提交一次就是重提）"
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconUndo className="h-3.5 w-3.5 shrink-0" />
+                      撤销上一次提交
+                      <span className={MENU_CMD}>reset</span>
+                    </button>
+                  </>
+                )}
+
+                {/* 有改动但都收不走（只有未跟踪的新文件）：说一句，别让人以为漏了入口 */}
+                {changes.length > 0 && stashable.length === 0 && (
+                  <p className="px-3 py-1 text-[11px] text-fg-faint">
+                    只有未跟踪的新文件，储藏收不走
+                  </p>
+                )}
+
+                {/* 储藏：把手上这摊改动收起来去做别的事。有可收的改动时才给——
+                    未跟踪的新文件收不走，按 stashable 判免得给出一个点了没反应的按钮 */}
+                {stashable.length > 0 && (
+                  <>
+                    {snapshot.head && !snapshot.merging && <div className={MENU_DIVIDER} />}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMoreMenu(false);
+                        stash();
+                      }}
+                      disabled={busy !== null}
+                      title={`把当前 ${stashable.length} 处改动收进 stash（未跟踪的新文件不在此列）`}
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
+                      储藏改动
+                      <span className={MENU_CMD}>stash</span>
+                    </button>
+                    {/* 说明留空就让 git 自己生成 WIP on <branch>: ... */}
+                    <div className="px-2 pb-1">
+                      <input
+                        value={stashMessage}
+                        onChange={(event) => setStashMessage(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter") return;
+                          setMoreMenu(false);
+                          stash();
+                        }}
+                        disabled={busy !== null}
+                        placeholder="说明（可留空）"
+                        className={`${TEXT_INPUT} w-full`}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* 已存的储藏：每条带恢复 / 应用 / 丢弃 */}
+                {stashes && stashes.length > 0 && (
+                  <>
+                    <div className={MENU_DIVIDER} />
+                    <p className="px-3 py-1 text-[10px] text-fg-faint">储藏</p>
+                    {stashes.map((entry) => (
+                      <div
+                        key={entry.index}
+                        className="flex items-center gap-1 rounded px-2 py-1 text-[11px] hover:bg-hover"
+                      >
+                        <span className="min-w-0 flex-1 truncate text-fg-muted" title={entry.message}>
+                          {entry.message}
+                        </span>
+                        <span className="shrink-0 text-[10px] text-fg-faint">
+                          {formatTime(entry.time)}
+                        </span>
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMoreMenu(false);
+                              stashBack(entry);
+                            }}
+                            disabled={busy !== null}
+                            title="恢复并删掉这条记录（stash pop）"
+                            className={ROW_ACTION}
+                          >
+                            <IconArrowDownToLine className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMoreMenu(false);
+                              applyStash(entry);
+                            }}
+                            disabled={busy !== null}
+                            title="恢复，但保留记录（stash apply，可以再应用到别的分支）"
+                            className={ROW_ACTION}
+                          >
+                            <IconCheck className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMoreMenu(false);
+                              setPendingStashDrop(entry);
+                            }}
+                            disabled={busy !== null}
+                            title="丢掉这条储藏（stash drop，不动工作区）"
+                            className={ROW_DANGER}
+                          >
+                            <IconTrash className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+
+                {/* 什么都没得做：给一句空态，别弹出一个空壳 */}
+                {!(snapshot.head && !snapshot.merging) &&
+                  stashable.length === 0 &&
+                  changes.length === 0 &&
+                  !(stashes && stashes.length > 0) && (
+                    <p className="px-3 py-1 text-[11px] text-fg-faint">没有更多操作</p>
+                  )}
+              </div>
+            </>
+          )}
         </div>
         </div>
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 py-2">
-        {/* 生成按钮放进输入框内部右侧，外面那排整条让给主操作（提交 / 同步） */}
-        <div className="relative shrink-0">
+        {/* 生成按钮放进输入框内部右侧，外面那排整条让给主操作（提交 / 同步）。
+            有分条方案时这一块和下面的拖动条、主操作按钮一起藏起来，让位给方案预览 */}
+        <div className={`relative shrink-0 ${plan ? "hidden" : ""}`}>
           <textarea
             ref={messageRef}
             rows={1}
@@ -2993,7 +3284,7 @@ export function GitChangesPane({
             type="button"
             onClick={generate}
             disabled={!canGenerate}
-            title="用 AI 生成提交信息（没有暂存时会先全部暂存）"
+            title="用 AI 生成提交信息（没暂存时会先全部暂存；改动跨主题时给出分条方案）"
             className={GENERATE_ICON}
           >
             <IconSparkle
@@ -3019,11 +3310,11 @@ export function GitChangesPane({
           onKeyDown={onMessageHandleKeyDown}
           title="拖动调整提交框的高度"
           className={`-my-1.5 h-1.5 shrink-0 cursor-row-resize rounded-full transition-colors focus-visible:bg-accent-strong focus-visible:outline-none ${
-            draggingMessage ? "bg-accent-strong" : "hover:bg-line-hover"
+            plan ? "hidden" : draggingMessage ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
         />
 
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className={`flex shrink-0 items-center gap-1.5 ${plan ? "hidden" : ""}`}>
           {snapshot.merging ? (
             snapshot.mergeKind === "merge" ? (
               // 合并中：主操作只有"收尾"两件事。冲突没清完时「完成合并」禁用，
@@ -3058,9 +3349,81 @@ export function GitChangesPane({
               </span>
             )
           ) : staged.length > 0 ? (
-            <button type="button" onClick={commit} disabled={!canCommit} className={PRIMARY_BUTTON}>
-              {busy === "commit" ? "提交中…" : "提交"}
-            </button>
+            // 分裂按钮：左边提交，右边箭头拉出其它提交方式（照 VS Code）
+            <div className="relative flex min-w-0 flex-1 items-stretch">
+              <button type="button" onClick={commit} disabled={!canCommit} className={SPLIT_MAIN}>
+                {commitBusy ? "提交中…" : "提交"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCommitMenuOpen((open) => !open)}
+                disabled={busy !== null}
+                title="更多提交方式"
+                className={SPLIT_CARET}
+              >
+                <IconChevronDown className="h-3.5 w-3.5" />
+              </button>
+
+              {commitMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-30" onClick={() => setCommitMenuOpen(false)} />
+                  <div className="absolute top-full left-0 z-40 mt-1 flex w-64 max-w-full flex-col rounded border border-line-strong bg-raised py-1 shadow-lg">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitMenuOpen(false);
+                        commit();
+                      }}
+                      disabled={!canCommit}
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconCheck className="h-3.5 w-3.5 shrink-0" />
+                      提交
+                      <span className={MENU_CMD}>commit</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitMenuOpen(false);
+                        setPendingAmend(true);
+                      }}
+                      disabled={busy !== null || staged.length === 0}
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconPencil className="h-3.5 w-3.5 shrink-0" />
+                      提交（修改）
+                      <span className={MENU_CMD}>amend</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitMenuOpen(false);
+                        commitAndPush();
+                      }}
+                      disabled={!canCommit}
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
+                      提交并推送
+                      <span className={MENU_CMD}>commit + push</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCommitMenuOpen(false);
+                        commitAndSync();
+                      }}
+                      disabled={!canCommit}
+                      className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
+                    >
+                      <IconSync className="h-3.5 w-3.5 shrink-0" />
+                      提交并同步
+                      <span className={MENU_CMD}>commit + sync</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           ) : showSync ? (
             // 改动都提交完了、本地还领先上游：主操作顺势变成把提交推上去
             <button
@@ -3077,32 +3440,60 @@ export function GitChangesPane({
               提交
             </button>
           )}
+        </div>
 
-          {/* 修正 / 撤销上一次提交。两个都改写历史，所以只有「有 HEAD」时才给；
-              合并期间藏起来——那会儿该先收尾，动 HEAD 会让合并状态更乱 */}
-          {snapshot.head && !snapshot.merging && (
-            <div className="flex shrink-0 items-center gap-0.5">
+        {/* 分条方案预览：AI 判定横跨多个主题时才出现。逐条列出「信息 + 归属文件」，
+            确认后走 commitPlan 一次性提交；确认前暂存区一个字都不动 */}
+        {plan && (
+          <div className="flex max-h-[50%] min-h-0 shrink-0 flex-col overflow-hidden rounded-md border border-line bg-raised">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-2 py-1.5">
+              <span className="text-[11px] font-medium text-fg">
+                分条提交方案（{plan.length} 条）
+              </span>
+              <span className="text-[10px] text-fg-faint">按主题自动拆分</span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-1.5">
+              <ol className="flex flex-col gap-1.5">
+                {plan.map((item, index) => (
+                  <li
+                    key={index}
+                    className="flex items-start gap-1.5 rounded border border-line bg-surface px-2 py-1.5"
+                  >
+                    <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-active text-[10px] text-fg-dim">
+                      {index + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <pre className="font-mono text-[11px] leading-4 whitespace-pre-wrap break-words text-fg">
+                        {item.message}
+                      </pre>
+                      <p className="mt-1 text-[10px] break-words text-fg-faint">
+                        {item.files.join("  ")}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+            <div className="flex shrink-0 items-center justify-end gap-1.5 border-t border-line px-2 py-1.5">
               <button
                 type="button"
-                onClick={() => setPendingAmend(true)}
+                onClick={() => setPlan(null)}
                 disabled={busy !== null}
-                title="修正上一次提交（把已暂存的改动并进去，提交框里有信息就顺便改掉）"
-                className={HEADER_ACTION}
+                className={DIALOG_CANCEL}
               >
-                <IconPencil className="h-3.5 w-3.5" />
+                取消
               </button>
               <button
                 type="button"
-                onClick={undoCommit}
+                onClick={commitPlan}
                 disabled={busy !== null}
-                title="撤销上一次提交（改动回到暂存区，再提交一次就是重提）"
-                className={HEADER_ACTION}
+                className={DIALOG_CONFIRM}
               >
-                <IconUndo className="h-3.5 w-3.5" />
+                {busy === "commit" ? "提交中…" : `提交 ${plan.length} 条`}
               </button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {commitHint && (
           <p className="shrink-0 px-1 text-[11px] text-fg-faint">{commitHint}</p>
@@ -3130,120 +3521,29 @@ export function GitChangesPane({
           </p>
         )}
 
-        {/* stash：把手上这摊改动先收起来去做别的事。
-            门禁用 changes.length 而不是 stashable.length：只有未跟踪的新文件时
-            也要把这块画出来，好在那句说明里告诉用户为什么收不了——按 stashable
-            判的话这种情形整块都不渲染，提示就没地方放了 */}
-        {(stashes === null || stashes.length > 0 || changes.length > 0) && (
-          <div className="shrink-0">
-            <div className="flex items-center gap-1 px-1">
-              <button
-                type="button"
-                onClick={() => setStashCollapsed((value) => !value)}
-                className="flex min-w-0 flex-1 items-center gap-1 text-left text-[11px] text-fg-faint hover:text-fg"
-              >
-                {stashCollapsed ? (
-                  <IconChevronRight className="h-3 w-3 shrink-0" />
-                ) : (
-                  <IconChevronDown className="h-3 w-3 shrink-0" />
-                )}
-                <span>储藏</span>
-                {stashes && stashes.length > 0 && <span>{stashes.length}</span>}
-              </button>
-              {/* 有可收的改动时才给按钮。判据用 stashable 而不是改动总数：
-                  未跟踪的新文件收不走，只按总数判会给出一个点了没反应的按钮 */}
-              {stashable.length > 0 && (
-                <button
-                  type="button"
-                  onClick={stash}
-                  disabled={busy !== null}
-                  title={`把当前 ${stashable.length} 处改动收进 stash（未跟踪的新文件不在此列）`}
-                  className={GROUP_ACTION}
-                >
-                  储藏改动
-                </button>
-              )}
-            </div>
-
-            {!stashCollapsed && (
-              <div className="mt-0.5 flex flex-col gap-0.5">
-                {/* 说明留空就让 git 自己生成 WIP on <branch>: ... */}
-                {stashable.length > 0 && (
-                  <input
-                    value={stashMessage}
-                    onChange={(event) => setStashMessage(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") stash();
-                    }}
-                    disabled={busy !== null}
-                    placeholder="说明（可留空）"
-                    className={`${TEXT_INPUT} mx-1 w-auto`}
-                  />
-                )}
-                {stashes?.map((entry) => (
-                  <div
-                    key={entry.index}
-                    className="group flex items-center gap-1 rounded px-1 py-[3px] text-[11px] hover:bg-hover"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-fg-muted" title={entry.message}>
-                      {entry.message}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-fg-faint">
-                      {formatTime(entry.time)}
-                    </span>
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      <button
-                        type="button"
-                        onClick={() => stashBack(entry)}
-                        disabled={busy !== null}
-                        title="恢复并删掉这条记录"
-                        className={ROW_ACTION}
-                      >
-                        <IconArrowDownToLine className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => applyStash(entry)}
-                        disabled={busy !== null}
-                        title="恢复，但保留记录（可以再应用到别的分支）"
-                        className={ROW_ACTION}
-                      >
-                        <IconCheck className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPendingStashDrop(entry)}
-                        disabled={busy !== null}
-                        title="丢掉这条储藏（不动工作区）"
-                        className={ROW_DANGER}
-                      >
-                        <IconTrash className="h-3 w-3" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {stashes?.length === 0 && stashable.length === 0 && (
-                  <p className="px-2 py-0.5 text-[11px] text-fg-faint">
-                    {/* 有改动但都收不走时把原因说出来，别让人对着空的储藏区发愣 */}
-                    {staged.length + unstaged.length > 0
-                      ? "当前只有未跟踪的新文件，储藏收不走它们"
-                      : "没有储藏"}
-                  </p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 路径筛选。放在列表正上方而不是塞进 header：它只作用在这块列表上，
-            贴着列表才不会被误认成整个面板的搜索框。
-            改动不多时（两边加起来不到 10 条）不显示，省得占地方 */}
-        {staged.length + unstaged.length >= FILTER_MIN_CHANGES && (
-          <div className="relative shrink-0">
+        {/* 路径筛选行：由工具行右边的漏斗按钮唤出，改动太少时连入口都不给。
+            输入框仍贴在列表正上方——它只作用在这块列表上，不会被误认成整个面板的搜索框 */}
+        {filterOpen && (
+          <div
+            className="relative shrink-0"
+            // 焦点还在这一行里（去点清空按钮）就不收；点到外面且没敲东西才收起
+            onBlur={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              if (!filter.trim()) setFilterOpen(false);
+            }}
+          >
             <input
               type="text"
+              autoFocus
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape") return;
+                // 别让 Esc 冒到窗口上（那里接着「退出全屏」），顺带清词并收起
+                event.stopPropagation();
+                setFilter("");
+                setFilterOpen(false);
+              }}
               placeholder="按路径筛选"
               className={`${TEXT_INPUT} pr-7`}
             />
@@ -3372,7 +3672,7 @@ export function GitChangesPane({
         </div>
       </div>
 
-      {/* 拖动条把提交历史的上边缘变成可拖的：往下拖历史变高。
+      {/* 拖动条把时间线的上边缘变成可拖的：往下拖历史变高。
           收起时不画——没有东西可调 */}
       {!logCollapsed && (
         <div
@@ -3387,7 +3687,7 @@ export function GitChangesPane({
           onPointerUp={onHandleUp}
           onPointerCancel={onHandleUp}
           onKeyDown={onHandleKeyDown}
-          title="拖动调整提交历史的高度"
+          title="拖动调整时间线的高度"
           className={`relative h-px shrink-0 cursor-row-resize bg-line-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-strong ${
             draggingLog ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
@@ -3397,18 +3697,18 @@ export function GitChangesPane({
         </div>
       )}
 
-      {/* 提交历史。改完的东西在上一区，翻过的旧账在下面，别再挤同一块滚动区 */}
+      {/* 时间线。改完的东西在上一区，翻过的旧账在下面，别再挤同一块滚动区 */}
       <div
         className="flex min-h-0 shrink-0 flex-col"
         style={logCollapsed ? undefined : { height: logHeight }}
       >
-        {/* 历史标题栏：左边收起 / 展开，右边「回到 HEAD」。
+        {/* 时间线标题栏：左边收起 / 展开，右边「回到 HEAD」与过滤入口。
             不能再整行做成一个 button——里面套 button 是非法的 */}
         <div className="flex h-7 w-full shrink-0 items-center gap-1 px-2 text-[11px] font-medium tracking-wide text-fg-dim">
           <button
             type="button"
             onClick={() => setLogCollapsedPersisted(!logCollapsed)}
-            title={logCollapsed ? "展开提交历史" : "收起提交历史"}
+            title={logCollapsed ? "展开时间线" : "收起时间线"}
             className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-fg"
           >
             {logCollapsed ? (
@@ -3416,7 +3716,7 @@ export function GitChangesPane({
             ) : (
               <IconChevronDown className="h-3 w-3 shrink-0" />
             )}
-            <span>提交历史</span>
+            <span>时间线</span>
             {commits && commits.length > 0 && (
               <span className="text-fg-faint">{commits.length}</span>
             )}
@@ -3431,19 +3731,47 @@ export function GitChangesPane({
               <IconTarget className="h-3.5 w-3.5" />
             </button>
           )}
+          {!logCollapsed && showLogFilter && (
+            <button
+              type="button"
+              onClick={() => setLogFilterOpen((open) => !open)}
+              // 按下别让输入框失焦：否则「失焦收起」和这次 toggle 会打架，
+              // 空词时点一下收起又被 toggle 打开
+              onMouseDown={(event) => event.preventDefault()}
+              title={logFilterOpen ? "关闭过滤" : "过滤提交"}
+              className={`${HEADER_ACTION} ${logFilterOpen ? "bg-active text-fg" : ""}`}
+            >
+              <IconFilter className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
-        {/* 过滤行：历史太短时不摆——和改动列表的筛选框同一个门槛（见 FILTER_MIN_CHANGES），
-            已经筛出结果时（可能只剩几条）则保持可见，免得一打字就把输入框弄没了 */}
-        {!logCollapsed && ((commits?.length ?? 0) >= FILTER_MIN_CHANGES || filteringLog) && (
-          // 一个输入框 + 一个模式开关。主题 / 作者走后端后置匹配、路径交给 git 的
-          // pathspec，模式开关让用户明说是哪一种，省得靠「有没有斜杠」去猜
-          <div className="flex shrink-0 items-center gap-1 px-1 pb-1">
+        {/* 过滤行：由标题栏右边的漏斗按钮唤出，历史太短时连入口都不给。
+            一个输入框 + 一个模式开关——主题 / 作者走后端后置匹配、路径交给 git 的
+            pathspec，模式开关让用户明说是哪一种，省得靠「有没有斜杠」去猜 */}
+        {!logCollapsed && logFilterOpen && (
+          <div
+            className="flex shrink-0 items-center gap-1 px-1 pb-1"
+            // 焦点还在这一行里（去点「路径」开关、清空按钮）就不收；
+            // 点到外面且没敲东西才收起（有词就留着，否则过滤还生效、输入框却不见了）
+            onBlur={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              if (!logFilter.trim()) setLogFilterOpen(false);
+            }}
+          >
             <div className="relative min-w-0 flex-1">
               <input
                 type="text"
+                autoFocus
                 value={logFilter}
                 onChange={(event) => setLogFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  // 别让 Esc 冒到窗口上（那里接着「退出全屏」），顺带清词并收起
+                  event.stopPropagation();
+                  setLogFilter("");
+                  setLogFilterOpen(false);
+                }}
                 placeholder={logFilterPath ? "按改动过的路径过滤" : "按主题 / 作者过滤"}
                 className={`${TEXT_INPUT} pr-7`}
               />
@@ -3691,6 +4019,7 @@ export function GitChangesPane({
             >
               <IconTarget className="h-3.5 w-3.5 shrink-0" />
               在此提交打标签…
+              <span className={MENU_CMD}>tag</span>
             </button>
             {/* 这个提交上已经带的标签，逐条给一个删除入口。整组连分隔线一起藏在条件里，
                 否则没有标签时会多出一条孤线 */}
@@ -3709,6 +4038,7 @@ export function GitChangesPane({
                   >
                     <IconTrash className="h-3.5 w-3.5 shrink-0" />
                     <span className="min-w-0 truncate">删除标签 {reference.name}</span>
+                    <span className={MENU_CMD}>tag -d</span>
                   </button>
                 ))}
               </>

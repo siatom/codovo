@@ -443,7 +443,7 @@ export const IconSync = icon(
   </>,
 );
 
-/** 定位到当前提交（HEAD）：十字准星。点它把提交历史滚回 HEAD 那一行 */
+/** 定位到当前提交（HEAD）：十字准星。点它把时间线滚回 HEAD 那一行 */
 export const IconTarget = icon(
   <>
     <circle cx="12" cy="12" r="9" />

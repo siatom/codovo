@@ -159,7 +159,7 @@ export interface CommitRef {
   kind: "head" | "branch" | "remote" | "tag";
 }
 
-/** 提交历史里的一条 */
+/** 时间线里的一条 */
 export interface GitCommit {
   hash: string;
   short: string;

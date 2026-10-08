@@ -50,7 +50,7 @@ pub struct GitStatus {
     branch: Option<String>,
     /// HEAD 指向的提交号；还没提交过（`(initial)`）时为 None。
     /// 前端拿它的变化当"历史该重拉了"的信号——在终端里 commit/amend/reset
-    /// 之后，改动列表靠轮询能自己好，提交历史不会。
+    /// 之后，改动列表靠轮询能自己好，时间线不会。
     head: Option<String>,
     ahead: u32,
     behind: u32,
@@ -173,7 +173,7 @@ pub struct CommitRef {
     kind: String,
 }
 
-/// 提交历史里的一条。
+/// 时间线里的一条。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Commit {
@@ -1177,7 +1177,7 @@ fn create_branch(root: &Path, name: &str) -> Result<GitStatus, String> {
 
 // ---- 标签 ----
 
-/// 一个标签，提交历史的行内 chip 和「打标签 / 删标签」菜单都用它。
+/// 一个标签，时间线的行内 chip 和「打标签 / 删标签」菜单都用它。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagInfo {
@@ -1277,7 +1277,7 @@ fn create_tag(
     run_git_checked(root, &args)
 }
 
-/// 删标签。只动标签引用，不碰提交历史。
+/// 删标签。只动标签引用，不碰时间线。
 fn delete_tag(root: &Path, name: &str) -> Result<(), String> {
     run_git_checked(root, &["tag", "-d", name])
 }
@@ -1584,7 +1584,7 @@ fn checked_rev(raw: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
-// ---- 提交历史 ----
+// ---- 时间线 ----
 
 /// `%x1f` 分隔字段、`%x00` 结尾。字段里可能带空格（作者名、提交信息、装饰名），
 /// 所以不能用空格或换行当分隔符。`%P` 是父 hash（空格分隔，可能多个）、`%D` 是引用装饰、
@@ -1717,7 +1717,7 @@ fn filter_commits(commits: Vec<Commit>, needle: &str) -> Vec<Commit> {
         .collect()
 }
 
-/// 拉提交历史，可带过滤。`path` 给 git 当 pathspec（`git log -- <path>`），
+/// 拉时间线，可带过滤。`path` 给 git 当 pathspec（`git log -- <path>`），
 /// `filter` 走 filter_commits 后置匹配。
 fn log_filtered(
     root: &Path,
@@ -1856,20 +1856,22 @@ fn stat_of(root: &Path, rev: &str) -> Result<CommitStat, String> {
     Ok(stat)
 }
 
-/// 生成提交信息要喂给大模型的原料。放在 git 模块里取，是因为 `GitStatus`
-/// 的字段是模块私有的，别的模块读不到；一次取全也省得跨模块拼几条零散命令。
-pub struct CommitContext {
-    /// `diff --cached` 的原文
+/// 「按主题分条提交」要喂给大模型的原料。和单条提交时的取料不同：单条只喂暂存区，
+/// 这个要把已暂存、未暂存、未跟踪一起算上——分条提交面对的是「整个工作区里还没提交的这一堆改动」。
+pub struct CommitPlanContext {
+    /// `git diff HEAD` 的原文（已暂存 + 未暂存一起，相对工作区根）；空仓库无 HEAD 时退回 `--cached`
     pub diff: String,
+    /// 全部改动条目的工作区相对路径（含未跟踪；未跟踪目录会折叠成 `dir/`）。给模型的合法路径白名单
+    pub files: Vec<String>,
     /// 当前分支；游离 HEAD 或空仓库时为 None
     pub branch: Option<String>,
     /// 最近几条提交的主题，给模型当措辞参考
     pub recent_subjects: Vec<String>,
 }
 
-/// 取暂存区 diff + 分支 + 近期提交主题。全走只读的 `run_git`，
+/// 取「相对 HEAD 的全部改动」的 diff + 文件清单 + 分支 + 近期提交主题。全走只读的 `run_git`，
 /// 非 0 退出（空仓库的 log、游离 HEAD 的 rev-parse）当"没有"处理，不算错误。
-pub(crate) fn commit_context(root: &Path) -> Result<CommitContext, String> {
+pub(crate) fn commit_plan_context(root: &Path) -> Result<CommitPlanContext, String> {
     // 游离 HEAD 时 `--abbrev-ref` 输出字面量 "HEAD"，等于没有分支名
     let branch = current_branch(root)?;
 
@@ -1883,18 +1885,36 @@ pub(crate) fn commit_context(root: &Path) -> Result<CommitContext, String> {
         })
         .unwrap_or_default();
 
-    // --no-color 保证没有 ANSI 序列；二进制文件默认只出 "Binary files ... differ"。
-    // 空仓库（还没有 HEAD）时 --cached 按空树比，照样能列出已暂存的新增。
-    // 同 `file_diff_text`：按检测到的编码解，GBK / Big5 的暂存内容才不会喂一坨乱码给模型。
-    let diff = run_git(root, &["diff", "--cached", "--no-color"])?
+    // 文件清单取自 status：已暂存、未暂存、未跟踪都在 files 里，未跟踪目录会折叠成 `dir/`。
+    // **不排除目录**——`git add -A -- dir/` 能整目录收进来，排掉反而会漏掉整个新目录，
+    // 分条执行后留下残余。
+    let files = status_of(root)?
+        .files
+        .iter()
+        .map(|file| file.relative.clone())
+        .collect();
+
+    // 有 HEAD 时 `diff HEAD` 一次拿到「工作区相对 HEAD」的全部改动（暂存的 + 没暂存的）；
+    // 空仓库（还没提交过）没有 HEAD，退回 `--cached`，按空树比照样列出已暂存的新增。
+    // `--relative` 让路径相对工作区根，和上面 status 的 relative 同一个口径
+    // （工作区可能只是仓库的子目录，不对齐的话模型看到的是两套路径）。
+    // 同 `file_diff_text`：按检测到的编码解，GBK / Big5 的内容才不会喂一坨乱码给模型。
+    let has_head = run_git(root, &["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some();
+    let args: Vec<&str> = if has_head {
+        vec!["diff", "HEAD", "--relative", "--no-color"]
+    } else {
+        vec!["diff", "--cached", "--relative", "--no-color"]
+    };
+    let diff = run_git(root, &args)?
         .map(|bytes| {
             fs_api::decode_text(&bytes)
                 .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned())
         })
         .unwrap_or_default();
 
-    Ok(CommitContext {
+    Ok(CommitPlanContext {
         diff,
+        files,
         branch,
         recent_subjects,
     })
@@ -2302,6 +2322,48 @@ pub fn git_commit(
     commit_staged(&state.checked_root(&root)?, &message)
 }
 
+/// 一组分条提交：一条提交信息 + 归属它的文件（工作区相对路径）。前端把 AI 给出的方案原样传回来执行。
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitGroup {
+    message: String,
+    files: Vec<String>,
+}
+
+/// 按方案分条提交：先清空暂存区，再逐组「暂存这几个文件 → 提交」，最后回一个状态。
+///
+/// 分条提交的前提就是重新编排暂存区——先全取消暂存，免得上一组、或用户此前的手工暂存混进这一组。
+/// 逐组走的还是 `stage_paths` + `commit_staged`，和界面上单条提交同一条链路。
+/// 某组跑挂了直接返回该组的 git 报错，已经提交的组留在历史里——不做回滚（回滚更危险，
+/// 而且会对已经写进历史的提交再动一次手）。
+fn commit_groups(root: &Path, groups: Vec<CommitGroup>) -> Result<GitStatus, String> {
+    // 空信息 / 空文件的组直接丢掉：让它们进循环只会白跑一遍 git 再报错
+    let groups: Vec<CommitGroup> = groups
+        .into_iter()
+        .filter(|group| !group.message.trim().is_empty() && !group.files.is_empty())
+        .collect();
+    if groups.is_empty() {
+        return Err("提交方案是空的".to_string());
+    }
+
+    // 先整个清空暂存区，再按组重排——分条提交本来就是在重新划分哪些改动进哪一条
+    unstage_paths(root, &None)?;
+    for group in groups {
+        stage_paths(root, &Some(group.files))?;
+        commit_staged(root, &group.message)?;
+    }
+    status_of(root)
+}
+
+#[tauri::command(async)]
+pub fn git_commit_groups(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    groups: Vec<CommitGroup>,
+) -> Result<GitStatus, String> {
+    commit_groups(&state.checked_root(&root)?, groups)
+}
+
 /// 修正最近一次提交：把当前暂存区的内容并进去，并可选地改提交信息。
 #[tauri::command(async)]
 pub fn git_amend(
@@ -2444,7 +2506,7 @@ pub fn git_file_diff(
     file_diff(&state.checked_root(&root)?, &path, &source)
 }
 
-/// 提交历史，最新的在最前。`limit` 不传就取一页。
+/// 时间线，最新的在最前。`limit` 不传就取一页。
 ///
 /// `filter` 按主题 / 作者 / 正文匹配，`path` 按改动过的路径过滤——两者互斥，
 /// 前端一次只传一个（路径必须交给 git 的 pathspec，正文 / 作者却没法用单条 git
@@ -2485,10 +2547,10 @@ pub fn git_commit_stat(
     stat_of(&state.checked_root(&root)?, &rev)
 }
 
-/// 提交历史里哪些提交还没推送到上游。
+/// 时间线里哪些提交还没推送到上游。
 ///
 /// 单独一个命令而不是塞进 `git_status`：status 每 2 秒轮询一次，这份结果只在
-/// 提交历史重拉时用得上（HEAD 变了 / 手动刷新 / 推完之后 ahead 归零），
+/// 时间线重拉时用得上（HEAD 变了 / 手动刷新 / 推完之后 ahead 归零），
 /// 没必要让每次轮询都多起一个 git 进程。
 #[tauri::command(async)]
 pub fn git_unpushed(state: tauri::State<'_, FsState>, root: String) -> Result<Vec<String>, String> {
@@ -3163,6 +3225,108 @@ mod tests {
     }
 
     #[test]
+    fn commit_groups_makes_one_commit_per_group() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        // 先来一条初始提交，后面 unstage 才走 restore 那条支路
+        fs::write(repo.join("base.txt"), "base\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "chore: 初始").unwrap();
+
+        // 三个新文件，打算拆成两条提交
+        fs::write(repo.join("a.ts"), "a\n").unwrap();
+        fs::write(repo.join("b.ts"), "b\n").unwrap();
+        fs::write(repo.join("c.ts"), "c\n").unwrap();
+        // 先把 b、c 手工暂存上：分条要先清空暂存区再重排，b 该落到第一条而不是跟着 c
+        stage_paths(
+            &repo,
+            &Some(vec![path_of_file(&repo, "b.ts"), path_of_file(&repo, "c.ts")]),
+        )
+        .unwrap();
+
+        let groups = vec![
+            CommitGroup {
+                message: "feat: 加 a".to_string(),
+                files: vec![path_of_file(&repo, "a.ts"), path_of_file(&repo, "b.ts")],
+            },
+            CommitGroup {
+                message: "fix: 修 c".to_string(),
+                files: vec![path_of_file(&repo, "c.ts")],
+            },
+        ];
+        let after = commit_groups(&repo, groups).unwrap();
+        // 提交完工作区干净：三个新文件都进了提交，base.txt 没动
+        assert!(after.files.is_empty(), "提交后不该还有改动: {:?}", after.files);
+
+        let subjects = run_git(&repo, &["log", "-2", "--format=%s"]).unwrap().unwrap();
+        let subjects = String::from_utf8_lossy(&subjects);
+        let lines: Vec<&str> = subjects.lines().collect();
+        assert_eq!(lines[0], "fix: 修 c");
+        assert_eq!(lines[1], "feat: 加 a");
+
+        // b.ts 该落在第一条（feat）里，不能被 c 那条带走
+        let files = run_git(&repo, &["show", "--name-only", "--format=", "HEAD~1"])
+            .unwrap()
+            .unwrap();
+        let files = String::from_utf8_lossy(&files);
+        assert!(files.contains("a.ts") && files.contains("b.ts"), "a.ts/b.ts 应在 feat 那条: {files}");
+        assert!(!files.contains("c.ts"), "c.ts 不该出现在 feat 那条: {files}");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn commit_groups_rejects_an_empty_plan() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        // 全是空组（空信息 / 空文件）→ 直接报错，不白跑一遍 git
+        let empty = vec![
+            CommitGroup {
+                message: "  ".to_string(),
+                files: vec!["x.ts".to_string()],
+            },
+            CommitGroup {
+                message: "feat: 有信息但没文件".to_string(),
+                files: Vec::new(),
+            },
+        ];
+        assert!(commit_groups(&repo, empty).is_err());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn commit_plan_context_covers_tracked_and_untracked_changes() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "chore: 初始").unwrap();
+
+        // 一个已跟踪文件的改动 + 一个未跟踪的新文件
+        fs::write(repo.join("tracked.txt"), "two\n").unwrap();
+        fs::write(repo.join("new.ts"), "n\n").unwrap();
+
+        let context = commit_plan_context(&repo).unwrap();
+        // 清单要含未跟踪的新文件（`git diff HEAD` 里看不到它，靠 status 补上）
+        assert!(context.files.iter().any(|file| file == "tracked.txt"));
+        assert!(context.files.iter().any(|file| file == "new.ts"));
+        // diff 是相对 HEAD 的，能解释已跟踪文件的改动
+        assert!(context.diff.contains("tracked.txt"));
+
+        cleanup(&top);
+    }
+
+    #[test]
     fn unstaging_after_a_commit_keeps_the_worktree_change() {
         if !git_available() {
             return;
@@ -3565,7 +3729,7 @@ mod tests {
         cleanup(&top);
     }
 
-    // ---- 提交历史与提交内的差异 ----
+    // ---- 时间线与提交内的差异 ----
 
     #[test]
     fn rejects_a_rev_that_is_not_a_hash() {

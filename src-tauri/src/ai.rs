@@ -21,29 +21,6 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// 出错时回传给界面的响应体片段上限，别把整段 HTML 错误页塞进面板。
 const MAX_ERROR_CHARS: usize = 500;
 
-/// 系统提示写死在这里：产物只有一条提交信息，让模型自由发挥没有好处。
-/// 模板是固定的 Conventional Commits 格式，`<body>` / `<footer>` 没内容时
-/// 连同前面的空行一起省略——留空的段落比没有更糟。
-const SYSTEM_PROMPT: &str = "\
-你是 Git 提交信息助手，根据用户提供的暂存区改动写一条提交信息。
-必须严格使用下面的模板，不要增删结构：
-
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
-
-规则：
-1. 只输出提交信息本身，不要任何解释、前言、代码块围栏或引号。
-2. <type> 从这些里选一个：feat（新功能）、fix（修 bug）、docs（文档）、style（格式）、refactor（重构）、perf（性能）、test（测试）、build（构建/依赖）、ci（CI）、chore（杂项）、revert（回滚）。
-3. <scope> 是受影响的模块或目录名；实在无法归类时连同括号一起省略，写成 `type: subject`。
-4. <subject> 一句话概括，不超过 50 个字符，用祈使句，结尾不加句号。
-5. <body> 务必精简，只写改了什么、为什么改，不写「本次提交」「我们」这类废话。改动涉及多个点时按改动点归类、每个点单独一行并以 `- ` 开头分条列出，一条一句话、不展开细节；只有一个改动点就写成一句话。不要按文件逐个罗列。每行不超过 72 个字符。改动很小时整段连同它前面的空行一起省略。
-6. <footer> 放 BREAKING CHANGE 等不兼容变更说明；没有就整段连同它前面的空行一起省略。
-7. 语言跟「最近提交」保持一致；没有历史提交时用中文。
-8. 不要编造改动里没有的内容。";
-
 /// 前端传来的接口配置。密钥不在这里——前端只知道「哪家提供商」，正文由后端按
 /// provider id 去系统钥匙串取（见 `secrets.rs`）。
 #[derive(Debug, Deserialize)]
@@ -177,35 +154,41 @@ async fn chat(
     Ok(content.to_string())
 }
 
-/// 让大模型根据当前仓库的暂存区改动生成一条提交信息。
+/// 「分条提交」方案里的一条：一条提交信息 + 归属它的文件（工作区相对路径）。
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitPlan {
+    pub message: String,
+    pub files: Vec<String>,
+}
+
+/// 让大模型根据当前仓库的**全部未提交改动**给一份「按主题分条提交」的方案。
+///
+/// 只围绕一个主题时返回一条——前端据此退回到「填一条提交信息」的老行为；
+/// 横跨多个主题才返回多条，前端弹预览、确认后逐条 stage+commit。
 #[tauri::command]
-pub async fn ai_generate_commit_message(
+pub async fn ai_generate_commit_plan(
     state: tauri::State<'_, FsState>,
     root: String,
     config: AiConfig,
-) -> Result<String, String> {
+) -> Result<Vec<CommitPlan>, String> {
     // 覆盖要赶在 resolve() 之前：面板留空、只写 .env 时也得能跑
     let mut config = config;
     config.apply(&dev::read_overrides());
-    // 先挡一道：配置不全时不必去读 diff。顺带把钥匙串那一次读也挪到
+    // 先挡一道：配置不全时不必去读 git。顺带把钥匙串那一次读也挪到
     // 第一个 await 之前——它是同步阻塞的
     config.resolve()?;
 
     // git 是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await 点
-    let context = git::commit_context(&state.checked_root(&root)?)?;
-    if context.diff.trim().is_empty() {
-        return Err("暂存区没有可生成的改动".to_string());
+    let context = git::commit_plan_context(&state.checked_root(&root)?)?;
+    if context.files.is_empty() {
+        return Err("没有可提交的改动".to_string());
     }
 
-    let (system, user) = build_prompt(&context);
+    let (system, user) = build_plan_prompt(&context);
     // 低温度：提交信息要稳、可复现，不需要发挥
     let raw = chat(&config, &system, &user, 0.3).await?;
-
-    let message = clean_message(&raw);
-    if message.is_empty() {
-        return Err("大模型返回了空的提交信息".to_string());
-    }
-    Ok(message)
+    parse_commit_plan(&raw, &context.files)
 }
 
 /// 让大模型解释一个文件。产物是 markdown 正文，直接交给界面渲染，所以
@@ -222,12 +205,12 @@ pub async fn ai_explain_change(
     path: String,
     source: Option<git::DiffSource>,
 ) -> Result<String, String> {
-    // 同 ai_generate_commit_message：覆盖必须早于 resolve()，钥匙串那次同步读也赶在 await 之前
+    // 同 ai_generate_commit_plan：覆盖必须早于 resolve()，钥匙串那次同步读也赶在 await 之前
     let mut config = config;
     config.apply(&dev::read_overrides());
     config.resolve()?;
 
-    // 同 ai_generate_commit_message：git / 读文件是同步阻塞的，先跑完再 await
+    // 同 ai_generate_commit_plan：git / 读文件是同步阻塞的，先跑完再 await
     let root = state.checked_root(&root)?;
     let (system, user) = match &source {
         Some(source) => {
@@ -545,8 +528,42 @@ pub async fn ai_generate_feedback_body(
     Ok(text)
 }
 
-/// 拼 system / user 两条消息。单独抽出来是为了能直接跑单测。
-fn build_prompt(context: &git::CommitContext) -> (String, String) {
+/// 分条提交的系统提示：产物是一个 JSON 数组，每条含提交信息 + 归属文件。
+/// message 的格式规则和单条时一样（固定的 Conventional Commits 模板），只是外面裹了一层
+/// 「哪些文件归到哪条」的分组信息。拆分的唯一依据是「改动主题」，不许为凑数硬拆。
+const PLAN_SYSTEM_PROMPT: &str = "\
+你是 Git 提交信息助手，负责把用户当前所有未提交的改动按「主题」拆成一条或多条提交，并输出一个 JSON 数组。
+
+数组里每个元素代表一条提交，格式：
+{ \"message\": \"<提交信息>\", \"files\": [\"<文件路径>\", ...] }
+
+拆分规则：
+1. 拆分的唯一依据是改动主题：属于同一次逻辑改动、同一个功能的文件放进同一条。
+2. 改动只围绕一个主题时，数组里就一条，不要为了凑数硬拆；确实横跨多个不相干主题才拆成多条。
+3. files 里的路径必须原样取自用户给的「改动文件清单」，不许新增、改写或猜测路径。
+4. 每个文件只能出现在一条提交里，且清单里的每个文件都要被覆盖到，不能漏。
+5. message 严格用下面的模板，不要增删结构：
+
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+
+- <type> 从这些里选一个：feat（新功能）、fix（修 bug）、docs（文档）、style（格式）、refactor（重构）、perf（性能）、test（测试）、build（构建/依赖）、ci（CI）、chore（杂项）、revert（回滚）。
+- <scope> 是受影响的模块或目录名；实在无法归类时连同括号一起省略，写成 `type: subject`。
+- <subject> 一句话概括，不超过 50 个字符，用祈使句，结尾不加句号。
+- <body> 务必精简，只写改了什么、为什么改，不写「本次提交」「我们」这类废话；改动涉及多个点时按改动点归类、每个点单独一行并以 `- ` 开头，每行不超过 72 个字符；改动很小时整段连同它前面的空行一起省略。
+- <footer> 放 BREAKING CHANGE 等不兼容变更说明；没有就整段连同它前面的空行一起省略。
+
+输出规则：
+1. 只输出 JSON 数组本身，不要任何解释、前言、代码块围栏或注释。
+2. message 里的换行用 JSON 的 \\n 转义。
+3. 语言跟「最近提交」保持一致；没有历史提交时用中文。
+4. 不要编造改动里没有的内容。";
+
+/// 拼分条方案用的 system / user 两条消息。单独抽出来是为了能直接跑单测。
+fn build_plan_prompt(context: &git::CommitPlanContext) -> (String, String) {
     let mut user = String::new();
     match &context.branch {
         Some(branch) => user.push_str(&format!("当前分支：{branch}\n")),
@@ -562,14 +579,110 @@ fn build_prompt(context: &git::CommitContext) -> (String, String) {
         }
     }
 
-    user.push_str("\n暂存区改动：\n");
+    // 明确把「合法路径白名单」列出来：模型只能从这里挑，编出来的路径后端一律丢
+    user.push_str("\n改动文件清单（files 只能用这些路径）：\n");
+    for file in &context.files {
+        user.push_str(&format!("- {file}\n"));
+    }
+
+    user.push_str("\n完整改动 diff：\n");
     user.push_str(&truncate(&context.diff, MAX_DIFF_CHARS));
     if context.diff.chars().count() > MAX_DIFF_CHARS {
         // 告诉模型改动被截过，免得它以为改动就这么多、漏掉后面的部分
         user.push_str("\n…（改动过大，此处已截断）");
     }
 
-    (SYSTEM_PROMPT.to_string(), user)
+    (PLAN_SYSTEM_PROMPT.to_string(), user)
+}
+
+/// 模型输出里的一条原始分组。字段都给了缺省值：模型少写一个键不该让整次解析失败
+/// （少了 message 或 files 的那条后面会被当作空组丢掉）。
+#[derive(Deserialize)]
+struct RawPlan {
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+/// 从模型输出里抠出 JSON 数组。抠不到（没按 JSON 回 / 是空数组 / 解析失败）返回 None，
+/// 交给 `parse_commit_plan` 走「整段当一条提交信息」的兜底。
+fn parse_plan_array(raw: &str) -> Option<Vec<RawPlan>> {
+    // 模型常加 ```json 围栏，剥掉后再定位数组；前后若夹了解释文字，取第一个 `[` 到最后一个 `]`
+    let text = strip_fence(raw);
+    let start = text.find('[')?;
+    let end = text.rfind(']')?;
+    if end <= start {
+        return None;
+    }
+    let entries: Vec<RawPlan> = serde_json::from_str(&text[start..=end]).ok()?;
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
+}
+
+/// 校验并规整分组：只留清单里真实存在的路径、跨条去重（先到先得）、丢掉空组；
+/// 最后把漏掉的文件补进最后一条，保证确认后不留残余。
+fn finalize_plan(entries: Vec<RawPlan>, known: &[String]) -> Result<Vec<CommitPlan>, String> {
+    let mut plans: Vec<CommitPlan> = Vec::new();
+    let mut used: Vec<String> = Vec::new();
+    for entry in entries {
+        let message = entry.message.trim().to_string();
+        if message.is_empty() {
+            continue;
+        }
+        // 只保留清单里真实存在的路径（`match_known` 那套「不许拿编出来的路径去干活」同一个道理），
+        // 并在跨条之间去重：同一个文件被两条都列了的话，第二条会把它提交成空提交
+        let files: Vec<String> = entry
+            .files
+            .into_iter()
+            .filter(|file| known.iter().any(|item| item == file))
+            .filter(|file| !used.iter().any(|item| item == file))
+            .collect();
+        if files.is_empty() {
+            continue;
+        }
+        used.extend(files.iter().cloned());
+        plans.push(CommitPlan { message, files });
+    }
+
+    let leftover: Vec<String> = known
+        .iter()
+        .filter(|file| !used.iter().any(|item| item.as_str() == file.as_str()))
+        .cloned()
+        .collect();
+    if !leftover.is_empty() {
+        // 补进最后一条；一条有效组都没有时说明模型给的全是编造的路径，直接报错
+        match plans.last_mut() {
+            Some(last) => last.files.extend(leftover),
+            None => return Err("大模型给出的提交方案里没有有效的改动".to_string()),
+        }
+    }
+
+    if plans.is_empty() {
+        return Err("大模型没有给出可用的提交方案".to_string());
+    }
+    Ok(plans)
+}
+
+/// 解析模型输出成提交方案。JSON 抽不出来时（模型直接写了一条提交信息）退化成单条，
+/// 等价于原来的单条行为——至少不丢能力。
+fn parse_commit_plan(raw: &str, known: &[String]) -> Result<Vec<CommitPlan>, String> {
+    match parse_plan_array(raw) {
+        Some(entries) => finalize_plan(entries, known),
+        None => {
+            let message = clean_message(raw);
+            if message.is_empty() {
+                return Err("大模型返回了空的提交信息".to_string());
+            }
+            Ok(vec![CommitPlan {
+                message,
+                files: known.to_vec(),
+            }])
+        }
+    }
 }
 
 /// 按字符截断。按字节切会把多字节字符劈成两半，`String` 直接构造失败。
@@ -580,19 +693,24 @@ fn truncate(text: &str, max_chars: usize) -> String {
     text.chars().take(max_chars).collect()
 }
 
+/// 剥掉模型可能加的代码块围栏，只认首尾成对的那一层，中间正文原样保留。
+/// `clean_message` 和 `parse_plan_array` 都要用它（一个剥完当提交信息，一个剥完找 JSON）。
+fn strip_fence(raw: &str) -> &str {
+    let text = raw.trim();
+    if let Some(rest) = text.strip_prefix("```") {
+        // 围栏后面紧跟的那一行是语言标识（```text / ```json），跳过
+        let body = rest.split_once('\n').map(|(_, body)| body).unwrap_or(rest);
+        if let Some(inner) = body.trim_end().strip_suffix("```") {
+            return inner.trim();
+        }
+    }
+    text
+}
+
 /// 清理模型输出。有些模型会用 ``` 围栏或引号把提交信息包起来，
 /// 直接写进提交框会带上这些多余字符。
 fn clean_message(raw: &str) -> String {
-    let mut text = raw.trim();
-
-    // 剥代码块围栏：只认首尾成对的，中间正文原样保留
-    if let Some(rest) = text.strip_prefix("```") {
-        // 围栏后面紧跟的那一行是语言标识（```text），跳过
-        let body = rest.split_once('\n').map(|(_, body)| body).unwrap_or(rest);
-        if let Some(inner) = body.trim_end().strip_suffix("```") {
-            text = inner.trim();
-        }
-    }
+    let mut text = strip_fence(raw);
 
     // 整体被引号包住时也剥掉。只认 ASCII 引号，且首尾都得是同一个，
     // 免得误伤正文里本来就有的引号
@@ -855,9 +973,10 @@ mod tests {
 
     use super::*;
 
-    fn context(diff: &str) -> git::CommitContext {
-        git::CommitContext {
+    fn plan_context(diff: &str, files: &[&str]) -> git::CommitPlanContext {
+        git::CommitPlanContext {
             diff: diff.to_string(),
+            files: files.iter().map(|item| item.to_string()).collect(),
             branch: Some("main".to_string()),
             recent_subjects: vec!["feat: 上一件事".to_string()],
         }
@@ -1005,39 +1124,95 @@ mod tests {
     }
 
     #[test]
-    fn prompt_carries_branch_subjects_and_diff() {
-        let (system, user) = build_prompt(&context("+ 一行改动"));
-        assert!(system.contains("提交信息"));
+    fn plan_prompt_carries_branch_files_and_diff() {
+        let (system, user) = build_plan_prompt(&plan_context("+ 一行改动", &["a.ts", "b.ts"]));
+        // system 要求 JSON 数组，并保留提交信息模板
+        assert!(system.contains("JSON"));
+        assert!(system.contains("\"message\""));
+        assert!(system.contains("\"files\""));
+        assert!(system.contains("<type>(<scope>): <subject>"));
+        // user 要带分支、主题、文件清单和 diff
         assert!(user.contains("当前分支：main"));
         assert!(user.contains("- feat: 上一件事"));
+        assert!(user.contains("- a.ts"));
+        assert!(user.contains("- b.ts"));
         assert!(user.contains("+ 一行改动"));
     }
 
     #[test]
-    fn prompt_asks_for_the_conventional_template() {
-        let (system, _) = build_prompt(&context("+ 一行改动"));
-        assert!(system.contains("<type>(<scope>): <subject>"));
-        assert!(system.contains("<body>"));
-        assert!(system.contains("<footer>"));
-        // type 的候选得列全，否则模型会自己编
-        for kind in ["feat", "fix", "docs", "refactor", "chore"] {
-            assert!(system.contains(kind), "缺少 type: {kind}");
-        }
-        // body 要精简、多个改动点分条列出，别退化成逐文件流水账
-        assert!(system.contains("精简"));
-        assert!(system.contains("分条"));
-    }
-
-    #[test]
-    fn prompt_handles_empty_history() {
-        let empty = git::CommitContext {
+    fn plan_prompt_handles_empty_history() {
+        let empty = git::CommitPlanContext {
             diff: "x".to_string(),
+            files: vec!["a.ts".to_string()],
             branch: None,
             recent_subjects: Vec::new(),
         };
-        let (_, user) = build_prompt(&empty);
+        let (_, user) = build_plan_prompt(&empty);
         assert!(user.contains("当前分支：未知"));
         assert!(user.contains("这是仓库的第一次提交"));
+    }
+
+    /// 解析用例共用的「已知改动文件清单」
+    fn known() -> Vec<String> {
+        ["a.ts", "b.ts", "c.ts"]
+            .iter()
+            .map(|item| item.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn parse_plan_reads_json_and_strips_fence() {
+        let raw = "```json\n[\n{\"message\":\"feat: 一\",\"files\":[\"a.ts\"]},\n{\"message\":\"fix: 二\",\"files\":[\"b.ts\",\"c.ts\"]}\n]\n```";
+        let plans = parse_commit_plan(raw, &known()).unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].message, "feat: 一");
+        assert_eq!(plans[0].files, vec!["a.ts"]);
+        assert_eq!(plans[1].files, vec!["b.ts", "c.ts"]);
+    }
+
+    #[test]
+    fn parse_plan_drops_unknown_and_dedupes_files() {
+        // b.ts 被两条都列了、还夹了个编出来的路径：编造的丢掉、重复的只进第一条
+        let raw = r#"[{"message":"feat: 一","files":["a.ts","b.ts","nope.ts"]},{"message":"fix: 二","files":["b.ts","c.ts"]}]"#;
+        let plans = parse_commit_plan(raw, &known()).unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].files, vec!["a.ts", "b.ts"]);
+        assert_eq!(plans[1].files, vec!["c.ts"]);
+    }
+
+    #[test]
+    fn parse_plan_appends_leftover_files() {
+        // 模型漏了 c.ts：要补到最后一条，保证确认后不留残余
+        let raw = r#"[{"message":"feat: 一","files":["a.ts"]},{"message":"fix: 二","files":["b.ts"]}]"#;
+        let plans = parse_commit_plan(raw, &known()).unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[1].files, vec!["b.ts", "c.ts"]);
+    }
+
+    #[test]
+    fn parse_plan_ignores_prose_around_json() {
+        let raw = "好的，这是方案：\n[{\"message\":\"chore: 收尾\",\"files\":[\"a.ts\",\"b.ts\",\"c.ts\"]}]\n以上。";
+        let plans = parse_commit_plan(raw, &known()).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].message, "chore: 收尾");
+    }
+
+    #[test]
+    fn parse_plan_falls_back_to_single_message() {
+        // 模型没按 JSON 回、直接给了一条提交信息：当成一条、覆盖全部文件
+        let plans = parse_commit_plan("feat: 加个东西\n\n- 细节", &known()).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].message, "feat: 加个东西\n\n- 细节");
+        assert_eq!(plans[0].files, known());
+    }
+
+    #[test]
+    fn parse_plan_errors_when_nothing_usable() {
+        // 全是编造的路径 → 报错，不静默成空方案
+        let raw = r#"[{"message":"feat: 一","files":["nope.ts"]}]"#;
+        assert!(parse_commit_plan(raw, &known()).is_err());
+        // 空的提交信息也一样
+        assert!(parse_commit_plan("   ", &known()).is_err());
     }
 
     // ---- 解读改动 ----
