@@ -22,7 +22,9 @@
   --c-fg-bright: #ffffff;
   --c-fg-muted: #a8b0bd;
   --c-fg-dim: #8b93a3;
-  --c-fg-faint: #5c6370;
+  /* 10–11px 提示文字用得多，深色底上要过 WCAG AA（≥4.5:1）；#787f8e 约 4.7:1，
+     仍比 --c-fg-dim（约 6.1:1）弱一档，保住「faint」的层级感 */
+  --c-fg-faint: #787f8e;
   --c-fg-icon: #6b7383;
   --c-accent: #6ea8fe;
   --c-accent-soft: #8fc0ff;
@@ -67,7 +69,8 @@
   --c-fg-bright: #000000;
   --c-fg-muted: #4a5261;
   --c-fg-dim: #667085;
-  --c-fg-faint: #8b93a3;
+  /* 白底上过 AA：#6d7582 约 4.6:1，比 --c-fg-dim（约 5.0:1）略浅、层级仍在 */
+  --c-fg-faint: #6d7582;
   --c-fg-icon: #7b8394;
   --c-accent: #2563eb;
   --c-accent-soft: #1d4ed8;
