@@ -67,6 +67,7 @@ pub fn run() {
             fs_api::workspace_activate,
             fs_api::workspace_register,
             fs_api::workspace_close,
+            fs_api::paths_exist,
             fs_api::fs_list_dir,
             fs_api::fs_search_files,
             fs_api::fs_search_content,

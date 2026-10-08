@@ -9,12 +9,15 @@ import {
   type WorkspaceHandles,
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
+import { Toast } from "./components/Toast";
 import { AgentSessionProvider, useDropAgentSession, useNewChatAt } from "./lib/agent-session";
 import { RemoteHostsProvider } from "./lib/remote-hosts";
 import { DbConnectionsProvider } from "./lib/db-connections";
 import {
   isPathInside,
   onFilesChanged,
+  pathKey,
+  pathsExist,
   workspaceActivate,
   workspaceClose,
   workspaceRegister,
@@ -59,6 +62,13 @@ function Shell() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [booting, setBooting] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * 目录已被删掉 / 换盘的工作区根（按 `pathKey` 存）。侧栏据此把这类工作区标出来——
+   * 它点开必然失败（`workspace_activate` 只认 `is_dir`），先给个视觉预警。
+   */
+  const [missingRoots, setMissingRoots] = useState<Set<string>>(new Set());
+  /** 右下角操作反馈条。目前只报「打开失效工作区失败」这类错误 */
+  const [toast, setToast] = useState<string | null>(null);
   /** 全屏区域。会连带隐藏侧边栏，属于窗口级布局，所以不放工作区实例里 */
   const [fullscreen, setFullscreen] = useState<Fullscreen>("none");
   /** 新建 / 编辑工作区的对话框 */
@@ -165,7 +175,9 @@ function Shell() {
       // 返回 canonical 之后的工作区：调用方（新建对话）要拿它落定的活动根当会话状态的 key
       return next;
     } catch (reason) {
-      setNotice(`这个目录打不开了：${reason}`);
+      // 用 Toast 而不是 notice：notice 只在「一个工作区都没开」的空态里显示，
+      // 而点开失效工作区多半发生在已经有工作区开着的时候，那种情况 notice 是看不见的
+      setToast(`这个目录打不开了：${reason}`);
       return null;
     }
   }, []);
@@ -358,6 +370,32 @@ function Shell() {
   useEffect(() => onWorkspacesChanged(setWorkspaces), []);
 
   /**
+   * 探一遍列表里所有工作目录还在不在，失效的交给侧栏标出来。
+   *
+   * 目录可能被外部删掉、或盘符换了，用户不点开就不会发现；这里提前探，点开前就能看到预警。
+   * 一次批量问后端（`paths_exist` 与 `workspace_activate` 同一判据），不逐个 invoke。
+   */
+  useEffect(() => {
+    const roots = workspaces.flatMap((workspace) => workspace.roots);
+    if (roots.length === 0) {
+      setMissingRoots(new Set());
+      return;
+    }
+    let cancelled = false;
+    void pathsExist(roots).then((flags) => {
+      if (cancelled) return;
+      const gone = new Set<string>();
+      roots.forEach((root, index) => {
+        if (!flags[index]) gone.add(pathKey(root));
+      });
+      setMissingRoots(gone);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaces]);
+
+  /**
    * 打开着的文件被外部改了（终端、git、别的编辑器、智能体写的）就重读回最新的。
    *
    * 只订阅一次、按路径分发：每个路径只喂给**它所属工作区**的编辑器，不然切走的工作区
@@ -413,6 +451,7 @@ function Shell() {
           currentId={activeId}
           activeRoot={activeRoot}
           opened={opened}
+          missingRoots={missingRoots}
           onSelect={(workspace) => void openWorkspace(workspace)}
           onNewChat={(workspace) => void newChat(workspace)}
           onCreate={() => setDialog({ mode: "create" })}
@@ -504,6 +543,9 @@ function Shell() {
           }}
         />
       )}
+
+      {/* 操作反馈条：不打断操作地飘在右下角，几秒后自己消失 */}
+      {toast && <Toast message={toast} onClose={() => setToast(null)} />}
     </div>
   );
 }

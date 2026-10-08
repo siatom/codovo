@@ -46,6 +46,14 @@ export function workspaceClose(roots: string[]): Promise<void> {
   return invoke("workspace_close", { roots });
 }
 
+/**
+ * 批量判断一批路径是不是存在且为目录，返回值与入参一一对应。
+ * 侧栏用它把「文件夹已被删除」的工作区标出来（判据同 `workspace_activate`）。
+ */
+export function pathsExist(paths: string[]): Promise<boolean[]> {
+  return invoke<boolean[]>("paths_exist", { paths });
+}
+
 /** 弹目录选择框（可多选），返回选中的路径数组；用户取消时返回空数组 */
 export async function pickFolder(): Promise<string[]> {
   const picked = await open({ directory: true, multiple: true, title: "选择工作目录" });

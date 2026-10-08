@@ -261,6 +261,17 @@ pub fn workspace_close(
     }
 }
 
+/// 批量判断一批路径是不是**存在且为目录**。前端用它把「文件夹已被删除」的工作区在
+/// 侧栏列表里标出来——判据和 `workspace_activate` 的「不是有效的目录」保持一致，
+/// 所以这里判为 true 的路径，`workspace_activate` 一定放行。
+///
+/// 走 `is_dir()` 而不是 `exists()`：路径还在、却被换成了文件（同名文件顶替目录）时也算失效。
+/// 返回值与入参一一对应，读不到一律按 false（不存在）算。
+#[tauri::command]
+pub fn paths_exist(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|raw| Path::new(raw).is_dir()).collect()
+}
+
 /// 列目录。抽出来是为了能在单元测试里直接验证过滤/排序规则。
 fn list_entries(dir: &Path) -> Result<Vec<Entry>, String> {
     let read = fs::read_dir(dir).map_err(|e| format!("读取目录失败 {}: {e}", display(dir)))?;

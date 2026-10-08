@@ -8,7 +8,7 @@ import {
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
-import { toDisplayPath } from "../lib/fs";
+import { pathKey, toDisplayPath } from "../lib/fs";
 import type { Workspace } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
@@ -19,6 +19,7 @@ import { FeedbackDialog } from "./FeedbackDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
   AgentLogo,
+  IconAlert,
   IconChevronDown,
   IconChevronRight,
   IconClose,
@@ -55,6 +56,8 @@ interface SidebarProps {
   activeRoot: string | null;
   /** 已经打开（挂着工作区实例、后台仍在跑）的工作区 id，用来在列表里点出「已打开」 */
   opened: string[];
+  /** 目录已失效（被删 / 换盘）的工作区根，按 `pathKey` 存。命中就在行上标一枚警告 */
+  missingRoots: ReadonlySet<string>;
   onSelect: (workspace: Workspace) => void;
   /** 工作区行的「+」：新建对话。工作区还没打开时由 App 先把它打开再新建 */
   onNewChat: (workspace: Workspace) => void;
@@ -156,6 +159,7 @@ export function Sidebar({
   currentId,
   activeRoot,
   opened,
+  missingRoots,
   onSelect,
   onNewChat,
   onCreate,
@@ -611,6 +615,8 @@ export function Sidebar({
           const isCurrent = workspace.id === currentId;
           // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
           const isOpen = opened.includes(workspace.id);
+          // 任一工作目录失效（被删 / 换盘）就在行上标一枚警告：点开必然失败，先给个预警
+          const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
           const dragging = dragOver?.id === workspace.id;
           // 落点线：插在第一项之前画在这行上面，插在最后一项之后画在最后一行下面
           const dropBefore = dragOver?.index === index;
@@ -650,6 +656,15 @@ export function Sidebar({
                     {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
                     {isOpen ? <IconFolderOpen /> : <IconFolder />}
                     <span className="truncate">{workspace.name}</span>
+                    {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
+                    {broken && (
+                      <span
+                        title="工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除"
+                        className="shrink-0 text-warn"
+                      >
+                        <IconAlert className="h-3.5 w-3.5" />
+                      </span>
+                    )}
                     {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
                     {workspace.roots.length > 1 && (
                       <span
