@@ -1608,10 +1608,11 @@ fn parse_decorations(raw: &str) -> Vec<CommitRef> {
             });
             continue;
         }
-        // 短名形态的标签带 `tag: ` 前缀
+        // 标签带 `tag: ` 前缀。`--decorate=full` 下它后面仍是全名（`tag: refs/tags/v1.0`），
+        // 得照样剥前缀——只去掉 `tag: ` 会显示成 `refs/tags/v1.0`。
         if let Some(name) = token.strip_prefix("tag: ") {
             refs.push(CommitRef {
-                name: name.to_string(),
+                name: short_ref_name(name),
                 kind: "tag".to_string(),
             });
             continue;
@@ -5405,6 +5406,23 @@ mod tests {
     fn decorations_fall_back_to_short_names() {
         // 万一某版 git 的 %D 给的是短名（不受 --decorate=full 影响）
         let refs = parse_decorations("HEAD -> main, origin/main, tag: v1.0");
+        let pairs: Vec<(&str, &str)> = refs
+            .iter()
+            .map(|r| (r.name.as_str(), r.kind.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("main", "head"), ("origin/main", "remote"), ("v1.0", "tag")]
+        );
+    }
+
+    #[test]
+    fn decorations_strip_refs_tags_prefix_in_full_form() {
+        // --decorate=full 下标签是全名（`tag: refs/tags/v1.0`），`tag: ` 后面还得再剥一层，
+        // 否则 chip 会显示成 refs/tags/v1.0
+        let refs = parse_decorations(
+            "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1.0",
+        );
         let pairs: Vec<(&str, &str)> = refs
             .iter()
             .map(|r| (r.name.as_str(), r.kind.as_str()))
