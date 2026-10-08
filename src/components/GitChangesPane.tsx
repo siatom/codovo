@@ -196,6 +196,9 @@ const HOVER_HIDE_MS = 180;
 /** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
 const MESSAGE_MAX_ROWS = 5;
 
+/** 提交框 ↑ / ↓ 回填的会话历史上限：只留最近这么多条，够用又不至于把数组撑大 */
+const MESSAGE_HISTORY_MAX = 50;
+
 /** 手动拖高时，下面至少要留出来的空间：按钮行 + 报错位 + 两三行改动列表 */
 const MESSAGE_RESERVED_BELOW = 160;
 
@@ -1560,6 +1563,17 @@ export function GitChangesPane({
   const messageRef = useRef<HTMLTextAreaElement>(null);
   /** 提交框拖动的起点，null 表示没在拖 */
   const messageDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  /**
+   * 本次会话真正提交过的信息（按提交先后排列，最老的在前），供提交框按 ↑ / ↓ 回填。
+   * 只活在内存里、不落盘：「这次开着应用时提交过什么」的临时便利，重启即散。
+   */
+  const messageHistoryRef = useRef<string[]>([]);
+  /** 回填游标：null = 没在翻历史（停在用户草稿上），否则是 `messageHistoryRef` 的下标 */
+  const historyIndexRef = useRef<number | null>(null);
+  /** 翻历史前框里的草稿，↓ 越过最新一条时回到它 */
+  const historyDraftRef = useRef("");
+  /** 回填后是否要把光标移到末尾（受控组件得等这一拍渲染完再设选区） */
+  const recallCursorRef = useRef(false);
 
   // 时间线
   const [logCollapsed, setLogCollapsed] = useState(() => readLogCollapsed(root));
@@ -1878,6 +1892,23 @@ export function GitChangesPane({
     void run("init", () => gitInit(root));
   }, [run, root]);
 
+  /**
+   * 把这次真正提交出去的信息记进会话历史（在清空提交框之前调）。
+   * 连续的重复项不再记（amend / 重提速同一句很常见）；只保留最近 MESSAGE_HISTORY_MAX 条。
+   * 顺带把回填游标复位——刚要清空，下次按 ↑ 从这时最新的一条重新开始。
+   */
+  const rememberCommitMessage = useCallback((value: string) => {
+    historyIndexRef.current = null;
+    const text = value.trim();
+    if (!text) return;
+    const history = messageHistoryRef.current;
+    if (history[history.length - 1] === text) return;
+    history.push(text);
+    if (history.length > MESSAGE_HISTORY_MAX) {
+      history.splice(0, history.length - MESSAGE_HISTORY_MAX);
+    }
+  }, []);
+
   const commit = useCallback(() => {
     // 和提交按钮的 canCommit 同一判据：没暂存内容、或已有写操作在跑（busy）时直接返回。
     // 快捷键入口不过按钮的 disabled，光判 message 会发出一条必然失败（没东西可提交）
@@ -1885,11 +1916,12 @@ export function GitChangesPane({
     if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commit", async () => {
       const payload = await gitCommit(root, message);
+      rememberCommitMessage(message); // 清空前记进历史
       setMessage(""); // 只有真提交成功才清空
       setLogRevision((revision) => revision + 1); // 刚多了一条提交
       return payload;
     });
-  }, [message, busy, staged, run]);
+  }, [message, busy, staged, run, rememberCommitMessage]);
 
   /**
    * 提交并推送：一次 run 里先提交再推。合成一个写操作是为了绕开忙碌互斥——
@@ -1900,11 +1932,12 @@ export function GitChangesPane({
     if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commitPush", async () => {
       await gitCommit(root, message);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1);
       return await gitPush(root);
     });
-  }, [message, busy, staged, run, root]);
+  }, [message, busy, staged, run, root, rememberCommitMessage]);
 
   /**
    * 提交并同步：提交之后先「拉取（只允许快进）」把远程的带下来，再推上去。
@@ -1914,13 +1947,14 @@ export function GitChangesPane({
     if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commitSync", async () => {
       await gitCommit(root, message);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1);
       await gitPull(root);
       setLogRevision((revision) => revision + 1);
       return await gitPush(root);
     });
-  }, [message, busy, staged, run, root]);
+  }, [message, busy, staged, run, root, rememberCommitMessage]);
 
   /**
    * 确认分条方案：后端一次性「清空暂存 → 逐组暂存 + 提交」，走和单条提交同一套链路。
@@ -1931,11 +1965,12 @@ export function GitChangesPane({
     void run("commit", async () => {
       const payload = await gitCommitGroups(root, plan);
       setPlan(null);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1); // 一次多了好几条提交
       return payload;
     });
-  }, [plan, busy, run, root]);
+  }, [plan, busy, run, root, message, rememberCommitMessage]);
 
   /**
    * 修正上一次提交。提交框里写了信息就用它当新的提交信息，没写就沿用原来的。
@@ -1948,11 +1983,12 @@ export function GitChangesPane({
     const next = message.trim() ? message : undefined;
     void run("amend", async () => {
       const payload = await gitAmend(root, next);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1);
       return payload;
     });
-  }, [message, run, root]);
+  }, [message, run, root, rememberCommitMessage]);
 
   /** 撤销上一次提交：改动回到暂存区，提交框里的信息也跟着填回去，方便改完重提 */
   const undoCommit = useCallback(() => {
@@ -1963,6 +1999,7 @@ export function GitChangesPane({
     void run("undo", async () => {
       const payload = await gitUndoCommit(root);
       if (head) setMessage(head);
+      historyIndexRef.current = null; // 回填的是撤销出来的主题，不是历史浏览，游标要复位
       setLogRevision((revision) => revision + 1);
       return payload;
     });
@@ -2878,7 +2915,68 @@ export function GitChangesPane({
     setLogLimit((limit) => limit + LOG_PAGE);
   };
 
+  /** 回填内容；光标落到末尾的动作交给下一帧的 effect（受控组件同帧设选区会被抹掉） */
+  const recallValue = (value: string) => {
+    setMessage(value);
+    recallCursorRef.current = true;
+  };
+
+  /**
+   * 提交框里按 ↑ / ↓ 在本会话提交过的历史信息之间回填。返回 true 表示这次按键已被接管。
+   *
+   * 只在「没有选区」且光标处于首行（↑）/ 末行（↓）时才动作：多行编辑时光标夹在中间，
+   * ↑ / ↓ 必须是正常的移动光标，不能被回填抢走（单行时天然满足首 / 末行）。
+   */
+  const recallMessage = (el: HTMLTextAreaElement, key: "ArrowUp" | "ArrowDown"): boolean => {
+    if (el.selectionStart !== el.selectionEnd) return false;
+    const history = messageHistoryRef.current;
+    if (key === "ArrowUp") {
+      if (history.length === 0) return false;
+      // 光标上方还有换行 → 交回浏览器正常上移光标
+      if (el.value.slice(0, el.selectionStart).includes("\n")) return false;
+      const index = historyIndexRef.current;
+      let next: number;
+      if (index === null) {
+        // 第一次按 ↑：先记下进入历史前的草稿，↓ 越过最新一条时回到它
+        historyDraftRef.current = el.value;
+        next = history.length - 1;
+      } else {
+        next = Math.max(index - 1, 0); // 已经在最老一条就停住
+      }
+      historyIndexRef.current = next;
+      recallValue(history[next]);
+      return true;
+    }
+    // ↓：只有正在浏览历史时才接管，否则保持默认（下移光标）
+    if (historyIndexRef.current === null) return false;
+    // 光标下方还有换行 → 交回浏览器正常下移光标
+    if (el.value.slice(el.selectionEnd).includes("\n")) return false;
+    const next = historyIndexRef.current + 1;
+    if (next >= history.length) {
+      historyIndexRef.current = null; // 越过最新一条 → 回到进入前的草稿
+      recallValue(historyDraftRef.current);
+    } else {
+      historyIndexRef.current = next;
+      recallValue(history[next]);
+    }
+    return true;
+  };
+
   const onMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // 提交框里的 ↑ / ↓ 回填历史提交信息；带修饰键时一律让路（Ctrl/Shift 方向键另有含义）
+    const arrow =
+      event.key === "ArrowUp" || event.key === "ArrowDown" ? event.key : null;
+    if (
+      arrow &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      recallMessage(event.currentTarget, arrow)
+    ) {
+      event.preventDefault();
+      return;
+    }
     // Enter 留给换行（提交信息常常是多行），提交走可配置的快捷键（默认 Ctrl/Cmd+Enter）
     if (!matchesShortcut(event, settings.shortcuts["git.commit"])) return;
     event.preventDefault();
@@ -2912,6 +3010,17 @@ export function GitChangesPane({
   }, [messageHeight]);
 
   useEffect(resizeMessage, [message, resizeMessage]);
+
+  // ↑ / ↓ 回填后把光标移到文本末尾。受控组件里改 value 的同一帧就设选区会被 React 的
+  // 受控更新抹掉，所以挂个标志位、等这次渲染落地后再设一次
+  useEffect(() => {
+    if (!recallCursorRef.current) return;
+    recallCursorRef.current = false;
+    const el = messageRef.current;
+    if (!el) return;
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
+  }, [message]);
 
   // 面板被拖宽/拖窄时折行位置会变，得重新量一次。监听面板而不是 textarea 自己：
   // 我们改的正是 textarea 的高度，监听它会自己触发自己
@@ -3447,6 +3556,7 @@ export function GitChangesPane({
             value={message}
             onChange={(event) => {
               setMessage(event.target.value);
+              historyIndexRef.current = null; // 手动改过内容就退出历史浏览
               if (error) setError(null);
             }}
             onKeyDown={onMessageKeyDown}
