@@ -19,6 +19,8 @@ import {
   gitCommitFiles,
   gitCommitStat,
   gitCreateBranch,
+  gitCreateTag,
+  gitDeleteTag,
   gitDiscard,
   gitFetch,
   gitFileHunks,
@@ -518,6 +520,7 @@ type Busy =
   | "amend"
   | "undo"
   | "branch"
+  | "tag"
   | "stash"
   | "generate"
   | "fetch"
@@ -600,6 +603,19 @@ const MENU_ITEM =
   "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 /** 分组之间的一条细线 */
 const MENU_DIVIDER = "my-1 h-px shrink-0 bg-line";
+
+/**
+ * 提交行的右键菜单（打标签 / 删标签）比改动行那份宽：项文案更长（「在此提交打标签…」
+ * 8 个中文字，删标签还要带上标签名）。菜单项自己 `whitespace-nowrap`，所以宽度得够，
+ * 标签名再长由行内 span 截断。
+ */
+const COMMIT_MENU_W = 176;
+
+/** 打标签对话框里的按钮，照 ConfirmDialog 那一套 */
+const DIALOG_CANCEL =
+  "rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+const DIALOG_CONFIRM =
+  "rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40";
 
 /** 写系统剪贴板。走插件而不是 navigator.clipboard：WebView2 会弹系统授权框 */
 async function copyText(text: string): Promise<boolean> {
@@ -1185,6 +1201,7 @@ function CommitRow({
   onHover,
   onUnhover,
   onStat,
+  onMenu,
 }: {
   commit: GitCommit;
   /** 泳道图那一格；null = 不画图（过滤后只剩一部分提交，泳道接不上，干脆让位给文字） */
@@ -1211,12 +1228,15 @@ function CommitRow({
   onUnhover: () => void;
   /** 鼠标进到这一行时喊一声，上层按需去拉改动规模 */
   onStat: () => void;
+  /** 右键这一行：开「打标签 / 删标签」菜单 */
+  onMenu: (event: ReactMouseEvent) => void;
 }) {
   return (
     <div
       className="flex"
       // 定位「回到 HEAD」用：按 hash 在滚动容器里找到这一行
       data-commit={commit.hash}
+      onContextMenu={onMenu}
       onMouseEnter={(event) => {
         onHover(event.currentTarget.getBoundingClientRect());
         onStat();
@@ -1303,6 +1323,102 @@ function CommitRow({
           anchor={anchor}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * 「在此提交打标签」的小对话框：标签名必填，勾了「附注标签」才带说明。
+ *
+ * 不用 `window.prompt`——WKWebView 不支持，调用会静默失效（同 ConfirmDialog 的理由）。
+ * 外壳照 ConfirmDialog 那一套（遮罩 + 圆角卡片），点遮罩或按 Esc 都取消。
+ */
+function TagDialog({
+  commit,
+  onConfirm,
+  onCancel,
+}: {
+  commit: GitCommit;
+  /** message 为 undefined 表示建轻量标签；给了（含空串）就是附注标签 */
+  onConfirm: (name: string, message?: string) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [annotated, setAnnotated] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    // 这里的 KeyboardEvent 是 DOM 的那个（文件顶部 import 的 React KeyboardEvent 会遮蔽全局名）
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    // 勾了附注就把说明原样带上（哪怕空串，git 也会建出空说明的附注标签）
+    onConfirm(trimmed, annotated ? message : undefined);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+      // 认「按下点就在遮罩上」而不是 click：从卡片内按下、拖到遮罩上松开会被误判成点外部
+      onMouseDown={(event) => {
+        if (event.button === 0 && event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="w-[380px] max-w-full rounded-xl border border-line-strong bg-raised p-4 shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="text-[12px] text-fg">
+          在提交 <span className="font-mono text-fg-muted">{commit.short}</span> 上新建标签
+        </p>
+        <div className="mt-3 flex flex-col gap-2">
+          <input
+            autoFocus
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+            }}
+            placeholder="标签名（如 v1.0.0）"
+            className={TEXT_INPUT}
+          />
+          <label className="flex cursor-pointer items-center gap-2 text-[12px] text-fg-muted">
+            <input
+              type="checkbox"
+              checked={annotated}
+              onChange={(event) => setAnnotated(event.target.checked)}
+              className="accent-accent"
+            />
+            附注标签
+          </label>
+          {annotated && (
+            <textarea
+              value={message}
+              onChange={(event) => setMessage(event.target.value)}
+              placeholder="说明（可留空）"
+              rows={3}
+              className={`${TEXT_INPUT} resize-none`}
+            />
+          )}
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} className={DIALOG_CANCEL}>
+            取消
+          </button>
+          <button type="button" onClick={submit} disabled={!name.trim()} className={DIALOG_CONFIRM}>
+            创建标签
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1461,6 +1577,22 @@ export function GitChangesPane({
     staged: boolean;
     x: number;
     y: number;
+  } | null>(null);
+  /**
+   * 右键的那条提交（打标签 / 删标签）。和改动行的 menu 分开存：两者菜单项完全不同，
+   * 合成一份状态反而要到处判「是行还是提交」。
+   */
+  const [commitMenu, setCommitMenu] = useState<{
+    commit: GitCommit;
+    x: number;
+    y: number;
+  } | null>(null);
+  /** 「在此提交打标签」对话框：null = 没开着 */
+  const [tagDialog, setTagDialog] = useState<GitCommit | null>(null);
+  /** 待确认删除的标签（提交 + 标签名）。删标签不可撤销，先过确认框 */
+  const [pendingTagDelete, setPendingTagDelete] = useState<{
+    commit: GitCommit;
+    name: string;
   } | null>(null);
   /** AI 解读弹窗；null = 没开着。text 为 null 表示还在等大模型 */
   const [explain, setExplain] = useState<{
@@ -1810,6 +1942,38 @@ export function GitChangesPane({
     event.preventDefault();
     setMenu({ change, staged, x: event.clientX, y: event.clientY });
   }, []);
+
+  /** 右键一条提交：开「打标签 / 删标签」菜单（菜单本身画在下面的 fixed 层里） */
+  const openCommitMenu = useCallback((commit: GitCommit, event: ReactMouseEvent) => {
+    event.preventDefault();
+    setCommitMenu({ commit, x: event.clientX, y: event.clientY });
+  }, []);
+
+  /**
+   * 在某个提交上建标签。标签变了要重拉提交历史——行内的标签 chip 是从
+   * `git log` 的装饰里来的，不重拉就看不到新标签。
+   */
+  const createTag = useCallback(
+    (commit: GitCommit, name: string, message?: string) => {
+      setTagDialog(null);
+      void run("tag", async () => {
+        await gitCreateTag(root, name, message, commit.hash);
+        setLogRevision((revision) => revision + 1);
+      });
+    },
+    [run, root],
+  );
+
+  /** 删标签，同样要重拉历史让 chip 消失 */
+  const confirmTagDelete = useCallback(() => {
+    const pending = pendingTagDelete;
+    setPendingTagDelete(null);
+    if (!pending) return;
+    void run("tag", async () => {
+      await gitDeleteTag(root, pending.name);
+      setLogRevision((revision) => revision + 1);
+    });
+  }, [pendingTagDelete, run, root]);
 
   /**
    * 让大模型解释这一行改了什么，结果摆在弹窗里。只读：不动仓库里的任何东西。
@@ -2521,6 +2685,15 @@ export function GitChangesPane({
         };
       })()
     : null;
+
+  /** 提交右键菜单里要删的标签（只挑标签类引用）；和菜单高度一起用来贴窗口边缘收一收 */
+  const commitMenuTags = commitMenu
+    ? commitMenu.commit.refs.filter((reference) => reference.kind === "tag")
+    : [];
+  const commitMenuH =
+    MENU_ITEM_H * (1 + commitMenuTags.length) +
+    (commitMenuTags.length > 0 ? MENU_DIVIDER_H : 0) +
+    MENU_PAD;
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
@@ -3305,6 +3478,7 @@ export function GitChangesPane({
                 }}
                 onUnhover={hideHover}
                 onStat={() => ensureStat(commit.hash)}
+                onMenu={(event) => openCommitMenu(commit, event)}
               />
             ))}
 
@@ -3370,6 +3544,15 @@ export function GitChangesPane({
           confirmLabel="丢掉"
           onConfirm={confirmStashDrop}
           onCancel={() => setPendingStashDrop(null)}
+        />
+      )}
+
+      {pendingTagDelete && (
+        <ConfirmDialog
+          message={`删除标签「${pendingTagDelete.name}」？只删掉这个标签，提交本身不受影响。`}
+          confirmLabel="删除标签"
+          onConfirm={confirmTagDelete}
+          onCancel={() => setPendingTagDelete(null)}
         />
       )}
       {/* 右键菜单。和文件树那边同一套画法：透明遮罩接住外部点击，fixed 定位
@@ -3442,6 +3625,72 @@ export function GitChangesPane({
             )}
           </div>
         </>
+      )}
+
+      {/* 提交行的右键菜单：打标签 / 删这条提交上已有的标签。和改动行那份同一套画法
+          （透明遮罩接住外部点击 + fixed 定位），只是项不同 */}
+      {commitMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setCommitMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setCommitMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex max-h-[60vh] flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: COMMIT_MENU_W,
+              // 贴到窗口右边/下边时往回收，别把菜单顶出可视区。标签很多时估算高度会
+              // 超过 60vh，再用 max 兜一下上边，别算出负数把菜单顶到屏幕外
+              left: Math.min(commitMenu.x, window.innerWidth - COMMIT_MENU_W - 4),
+              top: Math.max(4, Math.min(commitMenu.y, window.innerHeight - commitMenuH - 4)),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setTagDialog(commitMenu.commit);
+                setCommitMenu(null);
+              }}
+              className={MENU_ITEM}
+            >
+              <IconTarget className="h-3.5 w-3.5 shrink-0" />
+              在此提交打标签…
+            </button>
+            {/* 这个提交上已经带的标签，逐条给一个删除入口。整组连分隔线一起藏在条件里，
+                否则没有标签时会多出一条孤线 */}
+            {commitMenuTags.length > 0 && (
+              <>
+                <div className={MENU_DIVIDER} />
+                {commitMenuTags.map((reference) => (
+                  <button
+                    key={reference.name}
+                    type="button"
+                    onClick={() => {
+                      setPendingTagDelete({ commit: commitMenu.commit, name: reference.name });
+                      setCommitMenu(null);
+                    }}
+                    className={MENU_ITEM}
+                  >
+                    <IconTrash className="h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 truncate">删除标签 {reference.name}</span>
+                  </button>
+                ))}
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {tagDialog && (
+        <TagDialog
+          commit={tagDialog}
+          onConfirm={(name, message) => createTag(tagDialog, name, message)}
+          onCancel={() => setTagDialog(null)}
+        />
       )}
 
       {explain && (
