@@ -120,6 +120,7 @@ pub fn run() {
             git::git_merge,
             git::git_merge_abort,
             git::git_merge_continue,
+            git::git_resolve_conflict,
             git::git_ignored,
             git::git_add_to_ignore,
             git::git_clone,

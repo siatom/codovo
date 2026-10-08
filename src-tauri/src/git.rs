@@ -341,7 +341,16 @@ fn run_git_literal(dir: &Path, args: &[&str]) -> Result<Option<Vec<u8>>, String>
 /// 当成一个 pathspec。它关掉 pathspec 的通配符和 `:(...)` 魔法——文件名里
 /// 带 `*` `?` `[` 时才不会被当成模式匹配到别的文件。
 fn run_git_checked(dir: &Path, args: &[&str]) -> Result<(), String> {
-    let output = run_git_raw(dir, &["--literal-pathspecs"], args, WRITE_TIMEOUT, &[])?;
+    run_git_checked_env(dir, args, &[])
+}
+
+/// 同上，但给子进程额外设环境变量。
+///
+/// `--continue` 系列子命令在需要用户确认提交信息时会拉起编辑器；我们没有 TTY，
+/// 编辑器一开就永远等不到输入、把整个写操作超时耗光（表现为"卡住"）。调用方传
+/// `GIT_EDITOR=true` 让它直接接受默认信息。其余写操作不需要 env，走 `run_git_checked`。
+fn run_git_checked_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<(), String> {
+    let output = run_git_raw(dir, &["--literal-pathspecs"], args, WRITE_TIMEOUT, env)?;
     if output.status.success() {
         return Ok(());
     }
@@ -2106,30 +2115,190 @@ fn merge_upstream(root: &Path) -> Result<GitStatus, String> {
     status_of(root)
 }
 
-/// 中止合并：把工作区和 index 回到合并前，丢掉这次合并的所有尝试。
+/// 中止当前进行中的多步操作：把工作区和 index 回到操作开始之前。
 ///
-/// 不在合并状态时当 no-op 返回当前状态：按钮本就存在竞态，这时报一句
-/// "没有合并可中止"对用户没意义，反而像个 bug。
+/// 四种操作各用各的子命令（`merge --abort` / `rebase --abort` / `revert --abort` /
+/// `cherry-pick --abort`），不能复用。不在任何进行中状态时当 no-op 返回当前状态：
+/// 按钮本就存在竞态，这时报一句"没有可中止的操作"对用户没意义，反而像个 bug。
 fn merge_abort(root: &Path) -> Result<GitStatus, String> {
-    if !is_merging(root)? {
+    let Some(kind) = merge_state(root)? else {
         return status_of(root);
-    }
-    run_git_checked(root, &["merge", "--abort"])?;
+    };
+    let args: &[&str] = match kind {
+        "rebase" => &["rebase", "--abort"],
+        "revert" => &["revert", "--abort"],
+        "cherryPick" => &["cherry-pick", "--abort"],
+        _ => &["merge", "--abort"],
+    };
+    run_git_checked(root, args)?;
     status_of(root)
 }
 
-/// 完成合并：冲突都解决并暂存后，用 git 准备好的 MERGE_MSG 生成合并提交。
+/// 完成当前进行中的多步操作。
 ///
+/// merge 的收尾是生成合并提交，用 `commit --no-edit` 直接吃 git 准备好的 MERGE_MSG；
 /// 不复用 commit_staged：那要用户手写信息，而且会盖掉 MERGE_MSG 里那段
-/// "Merge branch ..." 的默认说明。`--no-edit` 直接用 MERGE_MSG。
+/// "Merge branch ..." 的默认说明。变基 / 拣选 / 还原各走自己的 `--continue`。
+///
 /// 还有没解决的冲突时 git 自己会拒绝并列出一条条 unmerged 路径，
 /// run_git_checked 把它的原文原样透传，前端错误区（whitespace-pre-wrap）放得下。
+///
+/// `--continue` 可能拉起编辑器让我们确认提交信息（我们没有 TTY，会卡到超时），
+/// 统一带上 `GIT_EDITOR` / `GIT_SEQUENCE_EDITOR=true` 直接接受默认信息；合并那条
+/// `commit --no-edit` 本就不开编辑器，一并设上也无害。
 fn merge_continue(root: &Path) -> Result<GitStatus, String> {
-    if !is_merging(root)? {
-        return Err("当前没有正在进行的合并".to_string());
-    }
-    run_git_checked(root, &["commit", "--no-edit"])?;
+    let Some(kind) = merge_state(root)? else {
+        return Err("当前没有正在进行的合并 / 变基 / 拣选 / 还原".to_string());
+    };
+    let args: &[&str] = match kind {
+        "rebase" => &["rebase", "--continue"],
+        "revert" => &["revert", "--continue"],
+        "cherryPick" => &["cherry-pick", "--continue"],
+        _ => &["commit", "--no-edit"],
+    };
+    run_git_checked_env(
+        root,
+        args,
+        &[("GIT_EDITOR", "true"), ("GIT_SEQUENCE_EDITOR", "true")],
+    )?;
     status_of(root)
+}
+
+/// 冲突文件怎么解决：留当前侧（ours）/ 传入侧（theirs）/ 两侧都要。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictChoice {
+    Ours,
+    Theirs,
+    Both,
+}
+
+/// 解决一个冲突文件，然后把它标记为已解决（`git add` 进 index、清掉冲突条目）。
+///
+/// `Ours` / `Theirs` 让 git 从对应 stage 里检出该文件的一侧（`checkout --ours` 取
+/// stage 2 = 当前分支侧，`--theirs` 取 stage 3 = 传入侧）；`Both` 读工作区里带冲突
+/// 标记的文件，把每个冲突块替换成"ours 段 + theirs 段"（去掉三行标记）再写回。
+///
+/// pathspec 的取法和 stage_paths 一致：命令以工作区为 cwd、pathspec 相对工作区，
+/// 靠 workspace_relative 剥出前缀（见 pathspecs）。
+fn resolve_conflict(
+    root: &Path,
+    path: &str,
+    choice: &ConflictChoice,
+) -> Result<GitStatus, String> {
+    let (target, spec) = workspace_relative(root, path)?;
+
+    match choice {
+        ConflictChoice::Ours => {
+            run_git_checked(root, &["checkout", "--ours", "--", &spec])?;
+        }
+        ConflictChoice::Theirs => {
+            run_git_checked(root, &["checkout", "--theirs", "--", &spec])?;
+        }
+        ConflictChoice::Both => {
+            let text =
+                fs::read_to_string(&target).map_err(|reason| format!("读取冲突文件失败：{reason}"))?;
+            let merged = combine_conflict_markers(&text)?;
+            fs::write(&target, merged).map_err(|reason| format!("写入解决结果失败：{reason}"))?;
+        }
+    }
+    // 两侧都标记为已解决：git add 把工作区内容写进 index、清掉冲突条目
+    run_git_checked(root, &["add", "--", &spec])?;
+    status_of(root)
+}
+
+/// 把工作区里带冲突标记的文本合成"保留两者"的结果。
+///
+/// 每个冲突块形如
+/// ```text
+/// <<<<<<< HEAD
+/// ours
+/// =======
+/// theirs
+/// >>>>>>>
+/// ```
+/// 输出把标记行去掉、留下「ours 段的行 + theirs 段的行」。diff3 风格还会多一段
+/// `|||||||` 基线，整段丢掉。一个文件里可能有多个冲突块，逐个处理。
+///
+/// 逐行按 `split_inclusive('\n')` 走、行尾原样保留：最后一个冲突块后面可能没有换行，
+/// 用 `lines()` 拆开再拼回去会丢信息。冲突标记在行首，判之前先剥掉行尾的 `\r`（CRLF 文件）。
+///
+/// 没有冲突块、或标记不配对（中途断掉）时返回 Err——不静默产出一个半成品文件。
+fn combine_conflict_markers(text: &str) -> Result<String, String> {
+    #[derive(PartialEq)]
+    enum Stage {
+        Outside,
+        Ours,
+        Base,
+        Theirs,
+    }
+    let mut stage = Stage::Outside;
+    let mut out = String::with_capacity(text.len());
+    // ours / theirs 两段先各自攒着，等读到 `>>>>>>>` 时按"先 ours 后 theirs"的顺序吐出来
+    // （标记行本身不输出）。theirs 不能边读边直接写 out——那样会排在 ours 前面。
+    let mut ours: Vec<&str> = Vec::new();
+    let mut theirs: Vec<&str> = Vec::new();
+    let mut blocks = 0usize;
+
+    for line in text.split_inclusive('\n') {
+        let bare = line.strip_suffix('\n').unwrap_or(line);
+        let bare = bare.strip_suffix('\r').unwrap_or(bare);
+        let marker = |prefix: &str| bare.starts_with(prefix);
+        match stage {
+            Stage::Outside => {
+                if marker("<<<<<<<") {
+                    stage = Stage::Ours;
+                    ours.clear();
+                    theirs.clear();
+                    blocks += 1;
+                } else {
+                    out.push_str(line);
+                }
+            }
+            Stage::Ours => {
+                if marker("|||||||") {
+                    stage = Stage::Base;
+                } else if marker("=======") {
+                    stage = Stage::Theirs;
+                } else if marker("<<<<<<<") || marker(">>>>>>>") {
+                    return Err("冲突标记不配对，无法保留两者".to_string());
+                } else {
+                    ours.push(line);
+                }
+            }
+            Stage::Base => {
+                // 基线段（diff3 风格）整段丢掉，保留两者不需要它
+                if marker("=======") {
+                    stage = Stage::Theirs;
+                } else if marker("<<<<<<<") || marker(">>>>>>>") {
+                    return Err("冲突标记不配对，无法保留两者".to_string());
+                }
+            }
+            Stage::Theirs => {
+                if marker(">>>>>>>") {
+                    for keep in ours.drain(..) {
+                        out.push_str(keep);
+                    }
+                    for keep in theirs.drain(..) {
+                        out.push_str(keep);
+                    }
+                    stage = Stage::Outside;
+                } else if marker("<<<<<<<") || marker("=======") {
+                    return Err("冲突标记不配对，无法保留两者".to_string());
+                } else {
+                    theirs.push(line);
+                }
+            }
+        }
+    }
+
+    if stage != Stage::Outside {
+        return Err("冲突标记不完整，无法保留两者".to_string());
+    }
+    if blocks == 0 {
+        return Err("这个文件里没有冲突标记，可能不是冲突文件".to_string());
+    }
+    Ok(out)
 }
 
 // ---- worktree ----
@@ -2678,6 +2847,17 @@ pub fn git_merge_continue(
     root: String,
 ) -> Result<GitStatus, String> {
     merge_continue(&state.checked_root(&root)?)
+}
+
+/// 解决一个冲突文件：接受当前侧 / 传入侧 / 保留两者，然后把它标记为已解决。
+#[tauri::command(async)]
+pub fn git_resolve_conflict(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    path: String,
+    choice: ConflictChoice,
+) -> Result<GitStatus, String> {
+    resolve_conflict(&state.checked_root(&root)?, &path, &choice)
 }
 
 /// 一批路径里，哪些被 .gitignore 之类的排除规则忽略了。文件树按这个把条目置灰。
@@ -5029,6 +5209,99 @@ mod tests {
         assert_eq!(read_text(&repo.join("app.ts")).trim(), "resolved");
 
         cleanup(&top);
+    }
+
+    // ---- 冲突解决：接受某一侧 / 保留两者 ----
+
+    #[test]
+    fn resolve_conflict_ours_keeps_the_local_side() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _head_before) = conflicted_repo();
+        let path = path_of_file(&repo, "app.ts");
+
+        let after = resolve_conflict(&repo, &path, &ConflictChoice::Ours).unwrap();
+        // ours = 本地（HEAD）那一侧；标记文件被换成纯内容并 add 进 index
+        assert_eq!(read_text(&repo.join("app.ts")).trim(), "local");
+        assert_eq!(after.conflicts, 0);
+        // 冲突解决 ≠ 收尾：仓库仍处在"进行中的合并"里，等 --continue
+        assert!(after.merging);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn resolve_conflict_theirs_keeps_the_incoming_side() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _head_before) = conflicted_repo();
+        let path = path_of_file(&repo, "app.ts");
+
+        let after = resolve_conflict(&repo, &path, &ConflictChoice::Theirs).unwrap();
+        assert_eq!(read_text(&repo.join("app.ts")).trim(), "remote");
+        assert_eq!(after.conflicts, 0);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn resolve_conflict_both_keeps_both_sides_without_markers() {
+        if !git_available() {
+            return;
+        }
+        let (repo, top, _head_before) = conflicted_repo();
+        let path = path_of_file(&repo, "app.ts");
+
+        let after = resolve_conflict(&repo, &path, &ConflictChoice::Both).unwrap();
+        let text = read_text(&repo.join("app.ts"));
+        assert!(!text.contains("<<<<<<<"));
+        assert!(!text.contains("======="));
+        assert!(!text.contains(">>>>>>>"));
+        assert!(text.contains("local"));
+        assert!(text.contains("remote"));
+        assert_eq!(after.conflicts, 0);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn resolve_conflict_refuses_a_file_without_conflict_markers() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("app.ts"), "plain\n").unwrap();
+        let path = path_of_file(&repo, "app.ts");
+
+        // 普通文件没有冲突块，"保留两者"要给清楚的报错而不是静默成功
+        let error = resolve_conflict(&repo, &path, &ConflictChoice::Both).unwrap_err();
+        assert!(error.contains("冲突标记"));
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn combine_conflict_markers_handles_multiple_blocks_and_no_final_newline() {
+        // 两个冲突块 + 中间一段公共内容
+        let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\nmid\n<<<<<<< HEAD\nc\n=======\nd\n>>>>>>> other";
+        // theirs 段的行带着它自己的换行，后面紧跟 `>>>>>>>`，所以结果以 `d\n` 收尾
+        assert_eq!(combine_conflict_markers(text).unwrap(), "a\nb\nmid\nc\nd\n");
+
+        // diff3 风格多一段 `|||||||` 基线，整段丢掉
+        let text = "<<<<<<< HEAD\na\n||||||| base\nbase\n=======\nb\n>>>>>>> other\n";
+        assert_eq!(combine_conflict_markers(text).unwrap(), "a\nb\n");
+
+        // 最后一个冲突块之后的公共内容没有尾换行，也要原样保住
+        let text = "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\ntail";
+        assert_eq!(combine_conflict_markers(text).unwrap(), "a\nb\ntail");
+
+        // 没有冲突标记：报错
+        assert!(combine_conflict_markers("plain\n").is_err());
+        // 标记不配对（缺 `>>>>>>>`）：报错
+        assert!(combine_conflict_markers("<<<<<<< HEAD\na\n=======\nb\n").is_err());
     }
 
     #[test]
