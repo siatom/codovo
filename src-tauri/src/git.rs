@@ -1161,6 +1161,113 @@ fn create_branch(root: &Path, name: &str) -> Result<GitStatus, String> {
     status_of(root)
 }
 
+// ---- 标签 ----
+
+/// 一个标签，提交历史的行内 chip 和「打标签 / 删标签」菜单都用它。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagInfo {
+    /// 短名，去掉 refs/tags/ 前缀
+    name: String,
+    /// 附注标签为 true，轻量标签为 false
+    annotated: bool,
+    /// 指向的提交短号
+    target: String,
+    /// 附注标签的说明；轻量标签为空串
+    message: String,
+}
+
+/// 解析 `for-each-ref refs/tags` 的输出。字段之间 `%1f`、记录结尾 `%00`（同 branches_of）。
+///
+/// 两处只有实测才知道的细节：
+/// - **附注标签**的 `%(objecttype)` 是 `tag`、`%(objectname)` 是 tag 对象本身，
+///   它指向的提交在 peeled 列（`%(*objectname:short)`）里；轻量标签没有 peeled 列
+///   （该列为空），`%(objectname:short)` 才是提交本身。
+/// - `%(contents:subject)` 对**轻量标签**会回落到**提交主题**（不是空的），所以只有
+///   附注标签才取它当说明，否则轻量标签的 message 会莫名其妙变成提交标题。
+fn parse_tags(raw: &[u8]) -> Vec<TagInfo> {
+    let mut tags = Vec::new();
+    for record in raw.split(|byte| *byte == 0) {
+        let text = String::from_utf8_lossy(record);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let mut fields = text.split('\u{1f}');
+        let name = fields.next().unwrap_or("").trim().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let objecttype = fields.next().unwrap_or("").trim();
+        let objectname = fields.next().unwrap_or("").trim();
+        let peeled = fields.next().unwrap_or("").trim();
+        let subject = fields.next().unwrap_or("").trim();
+        let annotated = objecttype == "tag";
+        // 附注标签取 peeled 才是它指向的提交；轻量标签的 peeled 为空，退回 objectname
+        let target = if annotated && !peeled.is_empty() {
+            peeled
+        } else {
+            objectname
+        };
+        tags.push(TagInfo {
+            name,
+            annotated,
+            target: target.to_string(),
+            message: if annotated {
+                subject.to_string()
+            } else {
+                String::new()
+            },
+        });
+    }
+    tags
+}
+
+/// 标签清单。空仓库 / 没标签时返回空数组。
+fn tags_of(root: &Path) -> Result<Vec<TagInfo>, String> {
+    // 分隔符用 `%1f` 而不是 `%x1f`：ref-filter 这套格式是 `%NN` 两位十六进制
+    // （和 branches_of 同一个坑，别混 `git log` 的 `%x1f` 写法）
+    const FORMAT: &str = "--format=%(refname:short)%1f%(objecttype)%1f%(objectname:short)%1f%(*objectname:short)%1f%(contents:subject)%00";
+    // 没有标签时 git 正常返回空输出、退出码 0；不是仓库时 run_git 给 None
+    let Some(raw) = run_git(root, &["for-each-ref", FORMAT, "refs/tags"])? else {
+        return Ok(Vec::new());
+    };
+    Ok(parse_tags(&raw))
+}
+
+/// 建标签。`message` 给了就是附注标签（`-a -m`），没给就是轻量标签。
+/// `target` 缺省打在当前 HEAD 上（不传那个位置参数）。
+///
+/// 用 `run_git_checked` 统一错误透传：名字非法（空、空格、`..`、`~` 等）时 git
+/// 自己会报错，比我们复刻一遍 `check-ref-format` 的规则更准。
+fn create_tag(
+    root: &Path,
+    name: &str,
+    message: Option<&str>,
+    target: Option<&str>,
+) -> Result<(), String> {
+    let mut args: Vec<&str> = vec!["tag"];
+    match message {
+        // 空串也是「有值」：勾了附注标签却没写说明，git 仍该建出附注标签
+        Some(message) => {
+            args.push("-a");
+            args.push(name);
+            args.push("-m");
+            args.push(message);
+        }
+        None => args.push(name),
+    }
+    if let Some(target) = target.map(str::trim).filter(|text| !text.is_empty()) {
+        args.push(target);
+    }
+    run_git_checked(root, &args)
+}
+
+/// 删标签。只动标签引用，不碰提交历史。
+fn delete_tag(root: &Path, name: &str) -> Result<(), String> {
+    run_git_checked(root, &["tag", "-d", name])
+}
+
 // ---- stash ----
 
 /// 一条 stash 记录。
@@ -1501,10 +1608,11 @@ fn parse_decorations(raw: &str) -> Vec<CommitRef> {
             });
             continue;
         }
-        // 短名形态的标签带 `tag: ` 前缀
+        // 标签带 `tag: ` 前缀。`--decorate=full` 下它后面仍是全名（`tag: refs/tags/v1.0`），
+        // 得照样剥前缀——只去掉 `tag: ` 会显示成 `refs/tags/v1.0`。
         if let Some(name) = token.strip_prefix("tag: ") {
             refs.push(CommitRef {
-                name: name.to_string(),
+                name: short_ref_name(name),
                 kind: "tag".to_string(),
             });
             continue;
@@ -2218,6 +2326,42 @@ pub fn git_create_branch(
     name: String,
 ) -> Result<GitStatus, String> {
     create_branch(&state.checked_root(&root)?, &name)
+}
+
+/// 标签清单。
+#[tauri::command(async)]
+pub fn git_tag_list(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<TagInfo>, String> {
+    tags_of(&state.checked_root(&root)?)
+}
+
+/// 建标签：给了 message 就是附注标签，否则轻量标签；target 缺省打在当前 HEAD 上。
+#[tauri::command(async)]
+pub fn git_create_tag(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    name: String,
+    message: Option<String>,
+    target: Option<String>,
+) -> Result<(), String> {
+    create_tag(
+        &state.checked_root(&root)?,
+        &name,
+        message.as_deref(),
+        target.as_deref(),
+    )
+}
+
+/// 删标签（只动标签引用）。
+#[tauri::command(async)]
+pub fn git_delete_tag(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    name: String,
+) -> Result<(), String> {
+    delete_tag(&state.checked_root(&root)?, &name)
 }
 
 /// 已存下的 stash 列表。
@@ -5031,6 +5175,50 @@ mod tests {
         cleanup(&top);
     }
 
+    // ---- 标签 ----
+
+    #[test]
+    fn tag_list_distinguishes_lightweight_and_annotated() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let head = commit_staged(&repo, "init").unwrap().head.unwrap();
+        let short = head[..7].to_string();
+
+        // 没有标签时是空数组，不是错误
+        assert!(tags_of(&repo).unwrap().is_empty());
+
+        create_tag(&repo, "light", None, None).unwrap();
+        create_tag(&repo, "annot", Some("附注说明"), None).unwrap();
+
+        let tags = tags_of(&repo).unwrap();
+        assert_eq!(tags.len(), 2);
+
+        let light = tags.iter().find(|tag| tag.name == "light").unwrap();
+        assert!(!light.annotated, "轻量标签不该被标成附注");
+        // 轻量标签的 objectname 就是它直接指向的提交
+        assert_eq!(light.target, short);
+        assert!(light.message.is_empty(), "轻量标签不该带说明");
+
+        let annot = tags.iter().find(|tag| tag.name == "annot").unwrap();
+        assert!(annot.annotated);
+        // 附注标签的 objectname 是 tag 对象本身，target 必须取 peeled 才指向提交
+        assert_eq!(annot.target, short);
+        assert_eq!(annot.message, "附注说明");
+
+        // 删掉之后列表里就没了
+        delete_tag(&repo, "light").unwrap();
+        let remaining = tags_of(&repo).unwrap();
+        let names: Vec<&str> = remaining.iter().map(|tag| tag.name.as_str()).collect();
+        assert_eq!(names, vec!["annot"]);
+
+        cleanup(&top);
+    }
+
     // ---- stash ----
 
     #[test]
@@ -5218,6 +5406,23 @@ mod tests {
     fn decorations_fall_back_to_short_names() {
         // 万一某版 git 的 %D 给的是短名（不受 --decorate=full 影响）
         let refs = parse_decorations("HEAD -> main, origin/main, tag: v1.0");
+        let pairs: Vec<(&str, &str)> = refs
+            .iter()
+            .map(|r| (r.name.as_str(), r.kind.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("main", "head"), ("origin/main", "remote"), ("v1.0", "tag")]
+        );
+    }
+
+    #[test]
+    fn decorations_strip_refs_tags_prefix_in_full_form() {
+        // --decorate=full 下标签是全名（`tag: refs/tags/v1.0`），`tag: ` 后面还得再剥一层，
+        // 否则 chip 会显示成 refs/tags/v1.0
+        let refs = parse_decorations(
+            "HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1.0",
+        );
         let pairs: Vec<(&str, &str)> = refs
             .iter()
             .map(|r| (r.name.as_str(), r.kind.as_str()))

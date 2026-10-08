@@ -20,6 +20,7 @@ import type {
   ReplaceResult,
   SearchOptions,
   SearchResult,
+  TagInfo,
   WorktreeInfo,
 } from "./types";
 
@@ -426,6 +427,34 @@ export function gitSwitchBranch(root: string, name: string): Promise<GitStatusPa
 /** 从当前 HEAD 建一条新分支并切过去 */
 export function gitCreateBranch(root: string, name: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_create_branch", { root, name });
+}
+
+/** 标签清单 */
+export function gitTagList(root: string): Promise<TagInfo[]> {
+  return invoke<TagInfo[]>("git_tag_list", { root });
+}
+
+/**
+ * 建标签。`message` 给了就是附注标签（空串也算，git 会建出空说明的附注标签），
+ * 没给就是轻量标签；`target` 缺省打在当前 HEAD 上。
+ */
+export function gitCreateTag(
+  root: string,
+  name: string,
+  message?: string,
+  target?: string,
+): Promise<void> {
+  return invoke("git_create_tag", {
+    root,
+    name,
+    message: message ?? null,
+    target: target ?? null,
+  });
+}
+
+/** 删标签（只动标签引用，不碰提交历史） */
+export function gitDeleteTag(root: string, name: string): Promise<void> {
+  return invoke("git_delete_tag", { root, name });
 }
 
 /** 已存下的 stash 列表，最新的在最前 */

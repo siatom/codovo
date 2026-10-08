@@ -72,6 +72,18 @@ export interface GitBranch {
   current: boolean;
 }
 
+/** 一个 git 标签 */
+export interface TagInfo {
+  /** 短名，已去掉 refs/tags/ 前缀 */
+  name: string;
+  /** 附注标签为 true，轻量标签为 false */
+  annotated: boolean;
+  /** 指向的提交短号 */
+  target: string;
+  /** 附注标签的说明；轻量标签为空串 */
+  message: string;
+}
+
 /**
  * 一个 git worktree。
  *
