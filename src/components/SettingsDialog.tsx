@@ -350,7 +350,17 @@ function Select<T extends string>({
   const current = options.find((item) => item.value === value);
 
   return (
-    <div className="relative w-full">
+    <div
+      className="relative w-full"
+      // 设置面板在 window 上也监听 Esc 关整个面板：下拉开着时拦一下，只关下拉
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }
+      }}
+    >
       <button
         type="button"
         onClick={() => setOpen((isOpen) => !isOpen)}
@@ -482,7 +492,17 @@ function TerminalThemeSelect({
   );
 
   return (
-    <div className="relative w-full">
+    <div
+      className="relative w-full"
+      // 设置面板在 window 上也监听 Esc 关整个面板：下拉开着时拦一下，只关下拉
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }
+      }}
+    >
       <button
         type="button"
         onClick={() => setOpen((isOpen) => !isOpen)}
