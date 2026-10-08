@@ -1520,14 +1520,17 @@ export function GitChangesPane({
   );
 
   const commit = useCallback(() => {
-    if (!message.trim()) return;
+    // 和提交按钮的 canCommit 同一判据：没暂存内容、或已有写操作在跑（busy）时直接返回。
+    // 快捷键入口不过按钮的 disabled，光判 message 会发出一条必然失败（没东西可提交）
+    // 或撞 index.lock 的 git commit。
+    if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commit", async () => {
       const payload = await gitCommit(root, message);
       setMessage(""); // 只有真提交成功才清空
       setLogRevision((revision) => revision + 1); // 刚多了一条提交
       return payload;
     });
-  }, [message, run]);
+  }, [message, busy, staged, run]);
 
   /**
    * 修正上一次提交。提交框里写了信息就用它当新的提交信息，没写就沿用原来的。
