@@ -5,6 +5,7 @@ import { DatabaseConnectionDialog } from "./DatabaseConnectionDialog";
 import { DatabaseQuery } from "./DatabaseQuery";
 import { FullscreenButton } from "./FullscreenButton";
 import { ResultGrid } from "./ResultGrid";
+import { TableStructure } from "./TableStructure";
 import { useDbConnections } from "../lib/db-connections";
 import {
   clearDbSecrets,
@@ -199,6 +200,8 @@ export function DatabasePane({
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loadingRows, setLoadingRows] = useState(false);
   const [queryError, setQueryError] = useState("");
+  /** 「表格」子视图内的数据 / 结构切换。默认落在数据，不改变原来的点表看数据行为 */
+  const [tableView, setTableView] = useState<"data" | "structure">("data");
 
   const [dialog, setDialog] = useState<{ connection: DbConnection | null } | null>(null);
   const [menu, setMenu] = useState<{ connection: DbConnection; x: number; y: number } | null>(
@@ -358,6 +361,8 @@ export function DatabasePane({
     (sessionKey: string, connectionId: string, table: TableInfo) => {
       setSelected({ sessionKey, connectionId, table });
       pickTab("tables");
+      // 点表仍旧先看数据（和改动前一致）；要看结构再切
+      setTableView("data");
       void loadRows(sessionKey, connectionId, table, 0);
     },
     [loadRows, pickTab],
@@ -672,15 +677,44 @@ export function DatabasePane({
 
         <div className="flex min-h-0 flex-1 flex-col">
           <div className={subTab === "tables" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-            <ResultGrid
-              result={result}
-              loading={loadingRows}
-              error={queryError}
-              onPage={(page) =>
-                selected && void loadRows(selected.sessionKey, selected.connectionId, selected.table, page)
-              }
-              hint="从左侧逐级展开：连接 → 数据库 → 表，点一张表看数据。"
-            />
+            {/* 「数据 / 结构」切换只在选中表后出现；没选中就维持原来的提示 */}
+            {selected && (
+              <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2">
+                <button
+                  type="button"
+                  onClick={() => setTableView("data")}
+                  className={`${SEGMENT} ${tableView === "data" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+                >
+                  数据
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTableView("structure")}
+                  className={`${SEGMENT} ${tableView === "structure" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+                >
+                  结构
+                </button>
+              </div>
+            )}
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              {tableView === "structure" ? (
+                <TableStructure
+                  sessionId={selected ? (sessions[selected.sessionKey]?.id ?? null) : null}
+                  table={selected?.table ?? null}
+                />
+              ) : (
+                <ResultGrid
+                  result={result}
+                  loading={loadingRows}
+                  error={queryError}
+                  onPage={(page) =>
+                    selected &&
+                    void loadRows(selected.sessionKey, selected.connectionId, selected.table, page)
+                  }
+                  hint="从左侧逐级展开：连接 → 数据库 → 表，点一张表看数据。"
+                />
+              )}
+            </div>
           </div>
 
           {activeConnection && activeSessionId !== undefined && (

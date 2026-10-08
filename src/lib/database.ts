@@ -189,6 +189,53 @@ export function dbTables(id: number, schema?: string): Promise<TableInfo[]> {
   return invoke<TableInfo[]>("db_tables", { id, schema: schema ?? null });
 }
 
+/** 表结构里的一个列 */
+export interface ColumnDetail {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+  /** 默认值表达式；没有默认值就是 null */
+  default: string | null;
+  primaryKey: boolean;
+  /** 注释；拿不到就是 null（SQLite 没有列注释） */
+  comment: string | null;
+}
+
+/** 表结构里的一个索引，`columns` 保持索引内的列序 */
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  primary: boolean;
+}
+
+/** 表结构里的一个外键，复合外键的 `columns` 与 `refColumns` 一一对应 */
+export interface ForeignKeyInfo {
+  name: string;
+  columns: string[];
+  refTable: string;
+  refColumns: string[];
+}
+
+/** 一张表（或视图）的完整结构 */
+export interface TableStructure {
+  columns: ColumnDetail[];
+  indexes: IndexInfo[];
+  foreignKeys: ForeignKeyInfo[];
+  ddl: string | null;
+  /** DDL 是不是「尽力拼」出来的（仅 PG 为 true） */
+  ddlApproximate: boolean;
+}
+
+/** 查看一张表（或视图）的结构：列 / 索引 / 外键 / 建表 DDL */
+export function dbTableStructure(
+  id: number,
+  schema: string | undefined,
+  table: string,
+): Promise<TableStructure> {
+  return invoke<TableStructure>("db_table_structure", { id, schema: schema ?? null, table });
+}
+
 export function dbQuery(
   id: number,
   sql: string,
