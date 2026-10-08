@@ -174,6 +174,7 @@ pub fn run() {
             database::db_schemas,
             database::db_tables,
             database::db_query,
+            database::db_export,
             db_agent::db_agent_set_target,
             tray::app_quit,
             tray::app_hide_to_tray,

@@ -41,6 +41,13 @@ const DEFAULT_PAGE_SIZE: u32 = 50;
 /// 单个单元格的字符上限。长文本（大 JSON / 长文本列）截断，否则整包结果会很大。
 const MAX_CELL_CHARS: usize = 4096;
 
+/// 导出单次最多写出的行数。导出按「不分页一次取全」执行，行数不设防会把内存和文件撑爆；
+/// 超过就按截断处理，结果里带 `truncated` 标记、前端明确告知，比直接报错让用户无从下手要好。
+const EXPORT_MAX_ROWS: u64 = 100_000;
+
+/// 导出的执行超时。比交互查询的 30s 宽得多——一次性取十万行本就慢，但也不能无限等。
+const EXPORT_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// 支持的数据库类型。前端传 "mysql" / "postgres" / "sqlite"。
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -429,7 +436,8 @@ macro_rules! text_cell {
         match $row.try_get::<String, _>($idx) {
             Ok(value) => value,
             Err(_) => match $row.try_get::<Vec<u8>, _>($idx) {
-                Ok(value) => $bytes(&value),
+                // 取表 / 库名这类元数据用不着全量，按截断版渲染（导出走的是另一条链路）
+                Ok(value) => $bytes(&value, true),
                 Err(_) => String::new(),
             },
         }
@@ -886,6 +894,214 @@ pub async fn db_query(
     Ok(result)
 }
 
+/// 导出格式。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DbFormat {
+    Csv,
+    Xlsx,
+}
+
+/// 导出范围。`Page` 按传入页码重跑（与界面所见一致），`All` 不分页一次取全。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DbScope {
+    Page,
+    All,
+}
+
+/// `db_export` 的入参。参数多，打包成一个对象传。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbExportRequest {
+    pub id: u32,
+    pub sql: String,
+    pub format: DbFormat,
+    /// 目标文件绝对路径（前端用系统保存对话框选定）
+    pub path: String,
+    pub scope: DbScope,
+    pub page: u32,
+    pub page_size: u32,
+    /// 标题（表名或 "query"）：清洗后作 Excel 工作表名
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbExportResult {
+    pub path: String,
+    pub rows: u64,
+    /// 是否因超过行数上限被截断（前端据此提示）
+    pub truncated: bool,
+}
+
+/// 导出用的取行 SQL。返回 `(要执行的 SQL, 是否可判定截断)`。
+///
+/// - 单页语句（SHOW / EXPLAIN…）或自带 LIMIT/OFFSET 的语句：原样取，行数由语句本身决定，
+///   不做超限判定——用户自己写了 LIMIT，外面再套一层要么语义冲突要么翻空。
+/// - 可翻页且无自带分页的：`All` 接 `LIMIT 上限+1`（多取一行好判超限），`Page` 按页码接
+///   `LIMIT page_size OFFSET page*page_size`。换行再加，末尾若是行注释不会被吃掉
+///   （与 `append_paging` 同一个理由）。
+fn build_export_sql(
+    sql: &str,
+    class: SqlClass,
+    scope: DbScope,
+    page: u32,
+    page_size: u32,
+) -> (String, bool) {
+    if class != SqlClass::RowsPaged || has_top_level_paging(sql) {
+        return (sql.to_string(), false);
+    }
+    match scope {
+        DbScope::All => (format!("{sql}\nLIMIT {}", EXPORT_MAX_ROWS + 1), true),
+        DbScope::Page => {
+            let size = page_size.max(1) as u64;
+            let offset = page as u64 * size;
+            (format!("{sql}\nLIMIT {size} OFFSET {offset}"), false)
+        }
+    }
+}
+
+/// 按范围取回要导出的列与行。单元格**不截断**（`clamp=false`，导出要全量——这是与交互查询
+/// 唯一的差别）。返回值第三项是「是否因超出行数上限被截断」。
+async fn collect_export_rows(
+    session: &DbSession,
+    sql: &str,
+    scope: DbScope,
+    page: u32,
+    page_size: u32,
+) -> Result<(Vec<String>, Vec<Vec<Option<String>>>, bool), String> {
+    let trimmed = strip_sql(sql);
+    if trimmed.is_empty() {
+        return Err("请输入 SQL".to_string());
+    }
+    let class = classify_sql(&trimmed);
+    if class == SqlClass::Write {
+        return Err("该语句不产生结果集，无法导出".to_string());
+    }
+    let (query, truncatable) = build_export_sql(&trimmed, class, scope, page, page_size);
+    // paged=false：不做「多取一行」那套翻页处理，把返回的行原样拿走
+    let mut result = fetch_rows(session, &query, 0, page_size.max(1), false, false).await?;
+    let truncated = truncatable && result.rows.len() as u64 > EXPORT_MAX_ROWS;
+    if truncated {
+        result.rows.truncate(EXPORT_MAX_ROWS as usize);
+    }
+    Ok((result.columns, result.rows, truncated))
+}
+
+/// 按 RFC4180 转义一个字段：含逗号 / 引号 / 换行时加双引号，内部引号双写。
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// 拼出完整 CSV 文本（含表头）。NULL 输出为空字段，换行统一 CRLF。
+/// 开头写 UTF-8 BOM：否则 Windows 版 Excel 打开会把中文按本地编码解、整列乱码。
+fn rows_to_csv(columns: &[String], rows: &[Vec<Option<String>>]) -> String {
+    let mut out = String::new();
+    out.push('\u{feff}');
+    let header: Vec<String> = columns.iter().map(|c| csv_escape(c)).collect();
+    out.push_str(&header.join(","));
+    out.push_str("\r\n");
+    for row in rows {
+        let line: Vec<String> = row
+            .iter()
+            .map(|cell| cell.as_deref().map(csv_escape).unwrap_or_default())
+            .collect();
+        out.push_str(&line.join(","));
+        out.push_str("\r\n");
+    }
+    out
+}
+
+fn write_csv_file(path: &str, columns: &[String], rows: &[Vec<Option<String>>]) -> Result<(), String> {
+    std::fs::write(path, rows_to_csv(columns, rows)).map_err(|e| format!("写入文件失败：{e}"))
+}
+
+/// Excel 工作表名：最长 31 字符，且不能含 `[ ] : * ? / \`。清洗后为空就退回一个默认名。
+fn sanitize_sheet_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if "[]:*?/\\".contains(c) || c.is_control() { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim();
+    let base = if trimmed.is_empty() { "结果" } else { trimmed };
+    base.chars().take(31).collect()
+}
+
+/// 写第一个工作表：首行表头 = 列名，其余为数据行。NULL 写空单元格（不调 write_*）。
+fn write_xlsx_file(
+    path: &str,
+    title: &str,
+    columns: &[String],
+    rows: &[Vec<Option<String>>],
+) -> Result<(), String> {
+    use rust_xlsxwriter::Workbook;
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet
+        .set_name(sanitize_sheet_name(title))
+        .map_err(|e| format!("工作表名非法：{e}"))?;
+    for (index, name) in columns.iter().enumerate() {
+        sheet
+            .write_string(0, index as u16, name)
+            .map_err(|e| format!("写入单元格失败：{e}"))?;
+    }
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            if let Some(text) = cell {
+                sheet
+                    .write_string((r + 1) as u32, c as u16, text)
+                    .map_err(|e| format!("写入单元格失败：{e}"))?;
+            }
+        }
+    }
+    workbook.save(path).map_err(|e| format!("写入文件失败：{e}"))?;
+    Ok(())
+}
+
+/// 查询结果导出。后端负责取数（绕过单元格截断）并写文件，前端只用系统对话框选个路径。
+///
+/// 之所以不让前端拼 Blob：Tauri 里没有浏览器那套「下载」语义，且把整包数据搬到 WebView 再
+/// 搬回来纯属浪费。写文件是同步阻塞，扔进 blocking 线程池，别占住 async 运行时。
+#[tauri::command]
+pub async fn db_export(
+    state: tauri::State<'_, DbState>,
+    request: DbExportRequest,
+) -> Result<DbExportResult, String> {
+    if request.path.trim().is_empty() {
+        return Err("请选择保存位置".to_string());
+    }
+    let session = session_of(&state, request.id)?;
+    let (columns, rows, truncated) = tokio::time::timeout(
+        EXPORT_TIMEOUT,
+        collect_export_rows(&session, &request.sql, request.scope, request.page, request.page_size),
+    )
+    .await
+    .map_err(|_| format!("导出超时（{} 秒），请缩小范围", EXPORT_TIMEOUT.as_secs()))??;
+
+    let row_count = rows.len() as u64;
+    let path = request.path.clone();
+    let title = request.title.clone();
+    let write = move || match request.format {
+        DbFormat::Csv => write_csv_file(&path, &columns, &rows),
+        DbFormat::Xlsx => write_xlsx_file(&path, &title, &columns, &rows),
+    };
+    tokio::task::spawn_blocking(write)
+        .await
+        .map_err(|e| format!("导出失败：{e}"))??;
+
+    Ok(DbExportResult {
+        path: request.path,
+        rows: row_count,
+        truncated,
+    })
+}
+
 pub(crate) async fn run_query(
     session: &DbSession,
     sql: &str,
@@ -897,22 +1113,24 @@ pub(crate) async fn run_query(
         SqlClass::RowsPaged => {
             // 自带 LIMIT/OFFSET 的语句没法安全翻页，按单页取回（不再外包派生表，免得翻空）
             if has_top_level_paging(sql) {
-                return fetch_rows(session, sql, 0, page_size, false).await;
+                return fetch_rows(session, sql, 0, page_size, false, true).await;
             }
             let paged = append_paging(sql, page, page_size);
-            fetch_rows(session, &paged, page, page_size, true).await
+            fetch_rows(session, &paged, page, page_size, true, true).await
         }
-        SqlClass::RowsSingle => fetch_rows(session, sql, 0, page_size, false).await,
+        SqlClass::RowsSingle => fetch_rows(session, sql, 0, page_size, false, true).await,
         SqlClass::Write => execute_write(session, sql).await,
     }
 }
 
+/// 取一批行。`clamp=false` 时单元格**不截断**（导出用），其余行为与交互查询一致。
 async fn fetch_rows(
     session: &DbSession,
     sql: &str,
     page: u32,
     page_size: u32,
     paged: bool,
+    clamp: bool,
 ) -> Result<QueryResult, String> {
     match &session.pool {
         DbPool::Mysql(pool) => {
@@ -934,7 +1152,13 @@ async fn fetch_rows(
                     columns = first.columns().iter().map(|c| c.name().to_string()).collect();
                 }
             }
-            Ok(assemble(columns, rows.iter().map(cells_mysql).collect(), page, page_size, paged))
+            Ok(assemble(
+                columns,
+                rows.iter().map(|row| cells_mysql(row, clamp)).collect(),
+                page,
+                page_size,
+                paged,
+            ))
         }
         DbPool::Postgres(pool) => {
             let mut columns: Vec<String> = match pool.prepare(sql).await {
@@ -954,7 +1178,13 @@ async fn fetch_rows(
                     columns = first.columns().iter().map(|c| c.name().to_string()).collect();
                 }
             }
-            Ok(assemble(columns, rows.iter().map(cells_pg).collect(), page, page_size, paged))
+            Ok(assemble(
+                columns,
+                rows.iter().map(|row| cells_pg(row, clamp)).collect(),
+                page,
+                page_size,
+                paged,
+            ))
         }
         DbPool::Sqlite(pool) => {
             let mut columns: Vec<String> = match pool.prepare(sql).await {
@@ -974,7 +1204,13 @@ async fn fetch_rows(
                     columns = first.columns().iter().map(|c| c.name().to_string()).collect();
                 }
             }
-            Ok(assemble(columns, rows.iter().map(cells_sqlite).collect(), page, page_size, paged))
+            Ok(assemble(
+                columns,
+                rows.iter().map(|row| cells_sqlite(row, clamp)).collect(),
+                page,
+                page_size,
+                paged,
+            ))
         }
     }
 }
@@ -1028,11 +1264,15 @@ fn assemble(
 ///
 /// 后面 `[$($extra),*]` 是「只在某些库上有实现」的类型（BigDecimal / Uuid / JSON 在 SQLite
 /// 上没有 Decode 实现，硬塞进去整个宏都编不过），按库传。要求都实现 `Display`。
-/// 末尾的 `$bytes` 是「拿到字节数组后怎么渲染」的函数，三库口径不同（见 `bytes_mysql`）。
+/// `$bytes` 是「拿到字节数组后怎么渲染」的函数，三库口径不同（见 `bytes_mysql`）。
+/// 末尾的 `$clamp` 决定超长文本是否截断：交互查询要截断（免得整包结果太大），导出必须全量。
+///
+/// 注意这个宏里多处 `return`，所以是**语句位置**用的，不能当表达式拼。
 macro_rules! decode_cell {
-    ($row:expr, $idx:expr, [$($extra:ty),* $(,)?], $bytes:path) => {{
+    ($row:expr, $idx:expr, [$($extra:ty),* $(,)?], $bytes:path, $clamp:expr) => {{
         let row = $row;
         let idx = $idx;
+        let clamp = $clamp;
         let raw = match row.try_get_raw(idx) {
             Ok(raw) => raw,
             Err(_) => return Some("<无法显示>".to_string()),
@@ -1041,7 +1281,7 @@ macro_rules! decode_cell {
             return None;
         }
         if let Ok(value) = row.try_get::<String, _>(idx) {
-            return Some(clamp_cell(value));
+            return Some(finish_cell(value, clamp));
         }
         if let Ok(value) = row.try_get::<i64, _>(idx) {
             return Some(value.to_string());
@@ -1066,33 +1306,33 @@ macro_rules! decode_cell {
         }
         $(
             if let Ok(value) = row.try_get::<$extra, _>(idx) {
-                return Some(clamp_cell(value.to_string()));
+                return Some(finish_cell(value.to_string(), clamp));
             }
         )*
         if let Ok(value) = row.try_get::<Vec<u8>, _>(idx) {
-            return Some($bytes(&value));
+            return Some($bytes(&value, clamp));
         }
         Some("<无法显示>".to_string())
     }};
 }
 
-fn cells_mysql(row: &MySqlRow) -> Vec<Option<String>> {
+fn cells_mysql(row: &MySqlRow, clamp: bool) -> Vec<Option<String>> {
     (0..row.columns().len())
-        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value], bytes_mysql))
+        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value], bytes_mysql, clamp))
         .collect()
 }
 
-fn cells_pg(row: &PgRow) -> Vec<Option<String>> {
+fn cells_pg(row: &PgRow, clamp: bool) -> Vec<Option<String>> {
     (0..row.columns().len())
-        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value], format_bytes))
+        .map(|idx| decode_cell!(row, idx, [BigDecimal, Uuid, serde_json::Value], format_bytes, clamp))
         .collect()
 }
 
 // SQLite 是动态类型，值大多落在文本 / 整数 / 浮点 / 二进制上，通用那几档就够；
 // BigDecimal / Uuid / JSON 在 sqlx-sqlite 里没有 Decode 实现，传了反而编不过。
-fn cells_sqlite(row: &SqliteRow) -> Vec<Option<String>> {
+fn cells_sqlite(row: &SqliteRow, clamp: bool) -> Vec<Option<String>> {
     (0..row.columns().len())
-        .map(|idx| decode_cell!(row, idx, [], format_bytes))
+        .map(|idx| decode_cell!(row, idx, [], format_bytes, clamp))
         .collect()
 }
 
@@ -1105,8 +1345,18 @@ fn clamp_cell(value: String) -> String {
     format!("{head}…")
 }
 
-/// 二进制列渲染成十六进制；太长就只报字节数。
-fn format_bytes(bytes: &[u8]) -> String {
+/// 按「是否截断」收尾一个文本单元格。抽出来是为了让解码链路（含 `bytes_mysql`）共用同一个开关。
+fn finish_cell(value: String, clamp: bool) -> String {
+    if clamp {
+        clamp_cell(value)
+    } else {
+        value
+    }
+}
+
+/// 二进制列渲染成十六进制；太长就只报字节数。`clamp` 只为与其它渲染函数同签名的占位——
+/// 十六进制串最多也就几十字符，不需要截断。
+fn format_bytes(bytes: &[u8], _clamp: bool) -> String {
     use std::fmt::Write as _;
     if bytes.len() > 32 {
         return format!("<二进制 {} 字节>", bytes.len());
@@ -1123,12 +1373,12 @@ fn format_bytes(bytes: &[u8]) -> String {
 /// sqlx 因此拒收 `String`、只肯按字节数组给（information_schema 和 SHOW 的结果列全是这种）。
 /// 直接当二进制渲染就是一串 `0x...`——表名、库名全成了乱码。这里补一道 UTF-8 解码，
 /// 只有真解不出来（或带控制字符，那就是真的二进制）才退回十六进制。
-fn bytes_mysql(bytes: &[u8]) -> String {
+fn bytes_mysql(bytes: &[u8], clamp: bool) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) if !text.chars().any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r') => {
-            clamp_cell(text.to_string())
+            finish_cell(text.to_string(), clamp)
         }
-        _ => format_bytes(bytes),
+        _ => format_bytes(bytes, clamp),
     }
 }
 
@@ -1237,14 +1487,14 @@ mod tests {
     #[test]
     fn mysql_bytes_prefers_text_but_keeps_binary_as_hex() {
         // information_schema / SHOW 的文本列（utf8mb3_bin）走这条
-        assert_eq!(bytes_mysql(b"air_db"), "air_db");
-        assert_eq!(bytes_mysql("中文库".as_bytes()), "中文库");
+        assert_eq!(bytes_mysql(b"air_db", true), "air_db");
+        assert_eq!(bytes_mysql("中文库".as_bytes(), true), "中文库");
         // 带控制字符 → 当成真二进制
-        assert_eq!(bytes_mysql(&[0x01, 0x02, 0x03, 0x04]), "0x01020304");
+        assert_eq!(bytes_mysql(&[0x01, 0x02, 0x03, 0x04], true), "0x01020304");
         // 非 UTF-8 → 十六进制
-        assert_eq!(bytes_mysql(&[0xff, 0xfe]), "0xfffe");
+        assert_eq!(bytes_mysql(&[0xff, 0xfe], true), "0xfffe");
         // 换行 / 制表符不算控制字符，文本里带着也得照样显示
-        assert_eq!(bytes_mysql(b"a\tb\nc"), "a\tb\nc");
+        assert_eq!(bytes_mysql(b"a\tb\nc", true), "a\tb\nc");
     }
 
     #[tokio::test]
@@ -1303,6 +1553,152 @@ mod tests {
             .unwrap();
         assert_eq!(empty.columns, vec!["id", "name"]);
         assert!(empty.rows.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn csv_escapes_rfc4180() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+        assert_eq!(csv_escape("a\rb"), "\"a\rb\"");
+    }
+
+    #[test]
+    fn csv_has_bom_crlf_and_empty_null() {
+        let columns = vec!["a".to_string(), "b".to_string()];
+        let rows = vec![
+            vec![Some("1".to_string()), None],
+            vec![Some("x,y".to_string()), Some("q\"q".to_string())],
+        ];
+        let csv = rows_to_csv(&columns, &rows);
+        // BOM + 表头 + CRLF + NULL 空字段 + 引号双写
+        assert_eq!(csv, "\u{feff}a,b\r\n1,\r\n\"x,y\",\"q\"\"q\"\r\n");
+    }
+
+    #[test]
+    fn writes_csv_file_with_utf8_bom() {
+        let path = std::env::temp_dir().join(format!("codedock-csv-test-{}.csv", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let columns = vec!["名称".to_string()];
+        let rows = vec![vec![Some("值".to_string())]];
+        write_csv_file(path.to_str().unwrap(), &columns, &rows).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        // 头三字节是 UTF-8 BOM，否则 Windows Excel 打开中文乱码
+        assert_eq!(&bytes[..3], &[0xef, 0xbb, 0xbf]);
+        assert_eq!(String::from_utf8_lossy(&bytes), "\u{feff}名称\r\n值\r\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn sanitizes_sheet_names() {
+        assert_eq!(sanitize_sheet_name("a/b:c*d?e[f]g\\h"), "a_b_c_d_e_f_g_h");
+        assert_eq!(sanitize_sheet_name("   "), "结果");
+        assert_eq!(sanitize_sheet_name(""), "结果");
+        // 超过 31 字符按字符截断
+        assert_eq!(sanitize_sheet_name(&"x".repeat(40)).chars().count(), 31);
+    }
+
+    #[test]
+    fn writes_xlsx_file() {
+        let path = std::env::temp_dir().join(format!("codedock-xlsx-test-{}.xlsx", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let columns = vec!["id".to_string(), "name".to_string()];
+        let rows = vec![
+            vec![Some("1".to_string()), Some("中文".to_string())],
+            vec![Some("2".to_string()), None],
+        ];
+        write_xlsx_file(path.to_str().unwrap(), "t/表", &columns, &rows).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        // xlsx 本质是个 zip，头四字节固定；能大于几百字节说明内容真的写进去了
+        assert_eq!(&bytes[..4], b"PK\x03\x04");
+        assert!(bytes.len() > 500);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn builds_export_sql_by_scope_and_class() {
+        // 可翻页 + 无自带分页：All 接「上限+1」判超限；Page 按页码取
+        let (all, truncatable) =
+            build_export_sql("SELECT * FROM t", SqlClass::RowsPaged, DbScope::All, 0, 50);
+        assert_eq!(all, format!("SELECT * FROM t\nLIMIT {}", EXPORT_MAX_ROWS + 1));
+        assert!(truncatable);
+
+        let (page, truncatable) =
+            build_export_sql("SELECT * FROM t", SqlClass::RowsPaged, DbScope::Page, 2, 50);
+        assert_eq!(page, "SELECT * FROM t\nLIMIT 50 OFFSET 100");
+        assert!(!truncatable);
+
+        // 自带 LIMIT / 单页语句原样取，不做截断判定
+        let (kept, truncatable) =
+            build_export_sql("SELECT * FROM t LIMIT 5", SqlClass::RowsPaged, DbScope::All, 0, 50);
+        assert_eq!(kept, "SELECT * FROM t LIMIT 5");
+        assert!(!truncatable);
+
+        let (single, _) = build_export_sql("SHOW TABLES", SqlClass::RowsSingle, DbScope::All, 0, 50);
+        assert_eq!(single, "SHOW TABLES");
+    }
+
+    #[tokio::test]
+    async fn export_bypasses_cell_clamp_and_honors_scope() {
+        let path = std::env::temp_dir().join(format!("codedock-export-test-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let long = "a".repeat(5000);
+        sqlx::query("INSERT INTO t (name) VALUES (?)")
+            .bind(&long)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO t (name) VALUES ('b'), ('c'), ('d')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let session = DbSession {
+            pool: DbPool::Sqlite(pool),
+        };
+
+        // 导出全量：单元格不截断
+        let (cols, rows, truncated) =
+            collect_export_rows(&session, "SELECT * FROM t ORDER BY id", DbScope::All, 0, 50)
+                .await
+                .unwrap();
+        assert_eq!(cols, vec!["id", "name"]);
+        assert_eq!(rows.len(), 4);
+        assert!(!truncated);
+        assert_eq!(rows[0][1].as_deref().unwrap().chars().count(), 5000);
+
+        // 对照：交互查询那条链路照旧截断到 4096 + 省略号
+        let interactive =
+            run_query(&session, "SELECT * FROM t ORDER BY id", SqlClass::RowsPaged, 0, 50)
+                .await
+                .unwrap();
+        assert_eq!(
+            interactive.rows[0][1].as_deref().unwrap().chars().count(),
+            MAX_CELL_CHARS + 1
+        );
+
+        // 当前页范围：第 2 页（0 基）两条，正好是 id 3 / 4
+        let (_, page_rows, _) =
+            collect_export_rows(&session, "SELECT * FROM t ORDER BY id", DbScope::Page, 1, 2)
+                .await
+                .unwrap();
+        assert_eq!(page_rows.len(), 2);
+        assert_eq!(page_rows[0][0].as_deref(), Some("3"));
+
+        // 写语句没有结果集，不给导出
+        assert!(collect_export_rows(&session, "UPDATE t SET name='x'", DbScope::All, 0, 50)
+            .await
+            .is_err());
 
         let _ = std::fs::remove_file(&path);
     }
