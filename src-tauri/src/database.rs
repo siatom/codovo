@@ -436,6 +436,23 @@ macro_rules! text_cell {
     };
 }
 
+/// 同 `text_cell!`，但保留 NULL 语义：列值为 NULL 时给 `None`。表结构里默认值 / 注释两列
+/// 要区分「没有」和「空串」，`text_cell!` 会把两者都并成空串。MySQL 同样要走字节兜底。
+macro_rules! text_cell_opt {
+    ($row:expr, $idx:expr, $bytes:path) => {{
+        let row = $row;
+        let idx = $idx;
+        if row.try_get_raw(idx).map(|raw| raw.is_null()).unwrap_or(true) {
+            None
+        } else {
+            match row.try_get::<String, _>(idx) {
+                Ok(value) => Some(value),
+                Err(_) => row.try_get::<Vec<u8>, _>(idx).ok().map(|value| $bytes(&value)),
+            }
+        }
+    }};
+}
+
 /// 可切换的「数据库」这一级：MySQL 是库，SQLite 只有 main，PostgreSQL 是实例里的库。
 ///
 /// MySQL / SQLite 是「库 → 表」两级；PG 是「库 → schema → 表」三级，而 PG 一个连接只能连
@@ -615,6 +632,539 @@ fn table_kind(table_type: &str) -> String {
     } else {
         "table".to_string()
     }
+}
+
+/// 表结构里的一个列。字段名走 camelCase，前端直接吃。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDetail {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    /// 默认值表达式；没有默认值就是 None
+    pub default: Option<String>,
+    pub primary_key: bool,
+    /// 注释；拿不到就是 None（SQLite 没有原生列注释，不伪造）
+    pub comment: Option<String>,
+}
+
+/// 表结构里的一个索引。`columns` 保持索引内的列序。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub unique: bool,
+    pub primary: bool,
+}
+
+/// 表结构里的一个外键。复合外键的 `columns` 与 `ref_columns` 一一对应、按序。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: String,
+    pub ref_columns: Vec<String>,
+}
+
+/// 一张表（或视图）的完整结构。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableStructure {
+    pub columns: Vec<ColumnDetail>,
+    pub indexes: Vec<IndexInfo>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+    /// 建表 DDL：MySQL 走 SHOW CREATE、SQLite 走 sqlite_master、PG 由元数据「尽力拼」
+    pub ddl: Option<String>,
+    /// DDL 是不是「尽力拼」出来的（目前只有 PG 为 true），UI 上要标注
+    pub ddl_approximate: bool,
+}
+
+/// 查看一张表（或视图）的结构：列 / 索引 / 外键 / 建表 DDL。
+/// `schema` 的口径与 `db_tables` 一致：MySQL 是库名、PG 是 schema 名、SQLite 忽略。
+#[tauri::command]
+pub async fn db_table_structure(
+    state: tauri::State<'_, DbState>,
+    id: u32,
+    schema: Option<String>,
+    table: String,
+) -> Result<TableStructure, String> {
+    let session = session_of(&state, id)?;
+    table_structure_of(&session, schema.as_deref(), &table).await
+}
+
+pub(crate) async fn table_structure_of(
+    session: &DbSession,
+    schema: Option<&str>,
+    table: &str,
+) -> Result<TableStructure, String> {
+    match &session.pool {
+        DbPool::Mysql(pool) => mysql_table_structure(pool, schema, table).await,
+        DbPool::Postgres(pool) => pg_table_structure(pool, schema, table).await,
+        DbPool::Sqlite(pool) => sqlite_table_structure(pool, table).await,
+    }
+}
+
+/// MySQL：列 / 索引 / 外键都来自 information_schema，DDL 走 SHOW CREATE。
+/// information_schema 的文本列带 `utf8mb3_bin` 排序规则（BINARY 标志），一律走 text_cell! / text_cell_opt!。
+async fn mysql_table_structure(
+    pool: &MySqlPool,
+    schema: Option<&str>,
+    table: &str,
+) -> Result<TableStructure, String> {
+    // 建连时没指定默认库的话 DATABASE() 是 NULL，用 COALESCE 兜住
+    let schema_arg = schema.unwrap_or("");
+
+    let col_rows = sqlx::query(
+        "SELECT column_name, column_type, is_nullable, column_default, column_key, column_comment \
+         FROM information_schema.columns \
+         WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE()) AND table_name = ? \
+         ORDER BY ordinal_position",
+    )
+    .bind(schema_arg)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let columns: Vec<ColumnDetail> = col_rows
+        .iter()
+        .map(|row| {
+            let null_flag: String = text_cell!(row, 2, bytes_mysql);
+            let key: String = text_cell!(row, 4, bytes_mysql);
+            ColumnDetail {
+                name: text_cell!(row, 0, bytes_mysql),
+                data_type: text_cell!(row, 1, bytes_mysql),
+                nullable: null_flag.eq_ignore_ascii_case("YES"),
+                default: text_cell_opt!(row, 3, bytes_mysql),
+                primary_key: key.eq_ignore_ascii_case("PRI"),
+                // column_comment 非 NULL，空串按「没有注释」处理，和 PG / SQLite 口径一致
+                comment: text_cell_opt!(row, 5, bytes_mysql).filter(|text| !text.is_empty()),
+            }
+        })
+        .collect();
+
+    // 索引：statistics 一行一列，按 index_name + seq_in_index 排好后分组
+    let idx_rows = sqlx::query(
+        "SELECT index_name, non_unique, column_name \
+         FROM information_schema.statistics \
+         WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE()) AND table_name = ? \
+         ORDER BY index_name, seq_in_index",
+    )
+    .bind(schema_arg)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for row in &idx_rows {
+        let name: String = text_cell!(row, 0, bytes_mysql);
+        let non_unique: i64 = row.try_get(1).unwrap_or(0);
+        let column: String = text_cell!(row, 2, bytes_mysql);
+        match indexes.last_mut() {
+            Some(last) if last.name == name => last.columns.push(column),
+            _ => indexes.push(IndexInfo {
+                primary: name == "PRIMARY",
+                name,
+                columns: vec![column],
+                unique: non_unique == 0,
+            }),
+        }
+    }
+
+    // 外键：key_column_usage 里 referenced_table_name 非空的就是外键列
+    let fk_rows = sqlx::query(
+        "SELECT constraint_name, column_name, referenced_table_name, referenced_column_name \
+         FROM information_schema.key_column_usage \
+         WHERE table_schema = COALESCE(NULLIF(?, ''), DATABASE()) AND table_name = ? \
+           AND referenced_table_name IS NOT NULL \
+         ORDER BY constraint_name, ordinal_position",
+    )
+    .bind(schema_arg)
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
+    for row in &fk_rows {
+        let name: String = text_cell!(row, 0, bytes_mysql);
+        let column: String = text_cell!(row, 1, bytes_mysql);
+        let ref_table: String = text_cell!(row, 2, bytes_mysql);
+        let ref_column: String = text_cell!(row, 3, bytes_mysql);
+        match foreign_keys.last_mut() {
+            Some(last) if last.name == name => {
+                last.columns.push(column);
+                last.ref_columns.push(ref_column);
+            }
+            _ => foreign_keys.push(ForeignKeyInfo {
+                name,
+                columns: vec![column],
+                ref_table,
+                ref_columns: vec![ref_column],
+            }),
+        }
+    }
+
+    let ddl = mysql_show_create(pool, schema, table).await;
+    Ok(TableStructure {
+        columns,
+        indexes,
+        foreign_keys,
+        ddl,
+        ddl_approximate: false,
+    })
+}
+
+/// SHOW CREATE TABLE / VIEW 的 DDL 取第 2 列。视图上 `SHOW CREATE TABLE` 未必认，
+/// 退一步试 `SHOW CREATE VIEW`；两次都失败就返回 None（不伪造）。
+async fn mysql_show_create(
+    pool: &MySqlPool,
+    schema: Option<&str>,
+    table: &str,
+) -> Option<String> {
+    // 符号名没法用 bind 传给 SHOW CREATE，得自己拼；反引号按 MySQL 规则转义
+    let quote = |name: &str| format!("`{}`", name.replace('`', "``"));
+    let qualified = match schema.filter(|name| !name.is_empty()) {
+        Some(db) => format!("{}.{}", quote(db), quote(table)),
+        None => quote(table),
+    };
+    for sql in [
+        format!("SHOW CREATE TABLE {qualified}"),
+        format!("SHOW CREATE VIEW {qualified}"),
+    ] {
+        if let Ok(rows) = sqlx::query(&sql).fetch_all(pool).await {
+            if let Some(row) = rows.first() {
+                if row.columns().len() > 1 {
+                    let ddl: String = text_cell!(row, 1, bytes_mysql);
+                    if !ddl.is_empty() {
+                        return Some(ddl);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// PostgreSQL：列 / 索引 / 外键都走 pg_catalog（information_schema 要反复联表）。
+async fn pg_table_structure(
+    pool: &PgPool,
+    schema: Option<&str>,
+    table: &str,
+) -> Result<TableStructure, String> {
+    let schema_arg = schema.unwrap_or("");
+
+    // 列：格式化类型 / 可空 / 默认值表达式 / 主键 / 注释，一次联出来
+    let col_rows = sqlx::query(
+        "SELECT a.attname, \
+                format_type(a.atttypid, a.atttypmod), \
+                NOT a.attnotnull, \
+                pg_get_expr(d.adbin, d.adrelid), \
+                COALESCE(i.indisprimary, false), \
+                col_description(a.attrelid, a.attnum) \
+         FROM pg_attribute a \
+         JOIN pg_class c ON c.oid = a.attrelid \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum \
+         LEFT JOIN pg_index i \
+           ON i.indrelid = c.oid AND a.attnum = ANY(i.indkey) AND i.indisprimary \
+         WHERE c.relname = $1 AND n.nspname = COALESCE(NULLIF($2, ''), 'public') \
+           AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY a.attnum",
+    )
+    .bind(table)
+    .bind(schema_arg)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let columns: Vec<ColumnDetail> = col_rows
+        .iter()
+        .map(|row| ColumnDetail {
+            name: text_cell!(row, 0, format_bytes),
+            data_type: text_cell!(row, 1, format_bytes),
+            nullable: row.try_get::<bool, _>(2).unwrap_or(true),
+            default: text_cell_opt!(row, 3, format_bytes),
+            primary_key: row.try_get::<bool, _>(4).unwrap_or(false),
+            comment: text_cell_opt!(row, 5, format_bytes).filter(|text| !text.is_empty()),
+        })
+        .collect();
+
+    // 索引：pg_get_indexdef 逐列取，inline=true 拿到的是列名/表达式、且保序
+    let idx_rows = sqlx::query(
+        "SELECT i.relname, ix.indisunique, ix.indisprimary, \
+                pg_get_indexdef(ix.indexrelid, k.ord::int, true) \
+         FROM pg_index ix \
+         JOIN pg_class t ON t.oid = ix.indrelid \
+         JOIN pg_class i ON i.oid = ix.indexrelid \
+         JOIN pg_namespace n ON n.oid = t.relnamespace \
+         CROSS JOIN LATERAL generate_series(1, ix.indnkeyatts) AS k(ord) \
+         WHERE t.relname = $1 AND n.nspname = COALESCE(NULLIF($2, ''), 'public') \
+         ORDER BY i.relname, k.ord",
+    )
+    .bind(table)
+    .bind(schema_arg)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for row in &idx_rows {
+        let name: String = text_cell!(row, 0, format_bytes);
+        let unique: bool = row.try_get(1).unwrap_or(false);
+        let primary: bool = row.try_get(2).unwrap_or(false);
+        let column: String = text_cell!(row, 3, format_bytes);
+        match indexes.last_mut() {
+            Some(last) if last.name == name => last.columns.push(column),
+            _ => indexes.push(IndexInfo {
+                name,
+                columns: vec![column],
+                unique,
+                primary,
+            }),
+        }
+    }
+
+    // 外键：pg_constraint contype='f'，conkey 与 confkey 按下标一一对应
+    let fk_rows = sqlx::query(
+        "SELECT con.conname, att.attname, cl2.relname, att2.attname \
+         FROM pg_constraint con \
+         JOIN pg_class cl ON cl.oid = con.conrelid \
+         JOIN pg_namespace n ON n.oid = cl.relnamespace \
+         JOIN pg_class cl2 ON cl2.oid = con.confrelid \
+         CROSS JOIN LATERAL generate_subscripts(con.conkey, 1) AS ord(n) \
+         JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = con.conkey[ord.n] \
+         JOIN pg_attribute att2 \
+           ON att2.attrelid = con.confrelid AND att2.attnum = con.confkey[ord.n] \
+         WHERE con.contype = 'f' AND cl.relname = $1 \
+           AND n.nspname = COALESCE(NULLIF($2, ''), 'public') \
+         ORDER BY con.conname, ord.n",
+    )
+    .bind(table)
+    .bind(schema_arg)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
+    for row in &fk_rows {
+        let name: String = text_cell!(row, 0, format_bytes);
+        let column: String = text_cell!(row, 1, format_bytes);
+        let ref_table: String = text_cell!(row, 2, format_bytes);
+        let ref_column: String = text_cell!(row, 3, format_bytes);
+        match foreign_keys.last_mut() {
+            Some(last) if last.name == name => {
+                last.columns.push(column);
+                last.ref_columns.push(ref_column);
+            }
+            _ => foreign_keys.push(ForeignKeyInfo {
+                name,
+                columns: vec![column],
+                ref_table,
+                ref_columns: vec![ref_column],
+            }),
+        }
+    }
+
+    let ddl = pg_build_ddl(pool, schema, table, &columns, &foreign_keys).await;
+    Ok(TableStructure {
+        columns,
+        indexes,
+        foreign_keys,
+        ddl,
+        ddl_approximate: true,
+    })
+}
+
+/// PG 的标识符引号（双引号，内部双写）。
+fn pg_quote(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// PG 没有单条等价的「建表 DDL」语句，只能按已取的元数据拼一个；视图则用 pg_get_viewdef。
+/// 拼出来的东西不保证与原定义逐字一致，所以 `ddl_approximate` 记为 true，UI 上要标注。
+async fn pg_build_ddl(
+    pool: &PgPool,
+    schema: Option<&str>,
+    table: &str,
+    columns: &[ColumnDetail],
+    foreign_keys: &[ForeignKeyInfo],
+) -> Option<String> {
+    let schema_name = schema.filter(|name| !name.is_empty()).unwrap_or("public");
+
+    // 先认关系类型：视图（v / 物化视图 m）没法拼 CREATE TABLE，改贴视图定义
+    let relkind: Option<String> = sqlx::query(
+        "SELECT c.relkind::text FROM pg_class c \
+         JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = $1 AND n.nspname = $2",
+    )
+    .bind(table)
+    .bind(schema_name)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .map(|row| text_cell!(row, 0, format_bytes));
+
+    if matches!(relkind.as_deref(), Some("v" | "m")) {
+        let body: String = sqlx::query("SELECT pg_get_viewdef(format('%I.%I', $1, $2)::regclass, true)")
+            .bind(schema_name)
+            .bind(table)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten()
+            .map(|row| text_cell!(row, 0, format_bytes))?;
+        return Some(format!(
+            "-- 由 pg_get_viewdef 得到，头部为尽力拼出\nCREATE VIEW {}.{} AS\n{}",
+            pg_quote(schema_name),
+            pg_quote(table),
+            body
+        ));
+    }
+
+    let mut lines: Vec<String> = columns
+        .iter()
+        .map(|column| {
+            let mut line = format!("  {} {}", pg_quote(&column.name), column.data_type);
+            if !column.nullable {
+                line.push_str(" NOT NULL");
+            }
+            if let Some(default) = &column.default {
+                line.push_str(&format!(" DEFAULT {default}"));
+            }
+            line
+        })
+        .collect();
+
+    let primary: Vec<String> = columns
+        .iter()
+        .filter(|column| column.primary_key)
+        .map(|column| pg_quote(&column.name))
+        .collect();
+    if !primary.is_empty() {
+        lines.push(format!("  PRIMARY KEY ({})", primary.join(", ")));
+    }
+    for fk in foreign_keys {
+        let local = fk.columns.iter().map(|name| pg_quote(name)).collect::<Vec<_>>().join(", ");
+        let remote = fk
+            .ref_columns
+            .iter()
+            .map(|name| pg_quote(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(format!(
+            "  CONSTRAINT {} FOREIGN KEY ({local}) REFERENCES {} ({remote})",
+            pg_quote(&fk.name),
+            pg_quote(&fk.ref_table),
+        ));
+    }
+
+    Some(format!(
+        "-- 由已取元数据尽力拼出，非数据库原始定义\nCREATE TABLE {}.{} (\n{}\n);",
+        pg_quote(schema_name),
+        pg_quote(table),
+        lines.join(",\n")
+    ))
+}
+
+/// SQLite：列 / 索引 / 外键走 pragma，DDL 直接取 sqlite_master 里存的原始语句。
+async fn sqlite_table_structure(
+    pool: &SqlitePool,
+    table: &str,
+) -> Result<TableStructure, String> {
+    // 列：pragma_table_info 是表值函数，可以绑表名。SQLite 没有列注释，comment 一律 None
+    let col_rows = sqlx::query("SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?)")
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let columns: Vec<ColumnDetail> = col_rows
+        .iter()
+        .map(|row| ColumnDetail {
+            name: text_cell!(row, 0, format_bytes),
+            data_type: text_cell!(row, 1, format_bytes),
+            nullable: row.try_get::<i64, _>(2).unwrap_or(0) == 0,
+            default: text_cell_opt!(row, 3, format_bytes),
+            primary_key: row.try_get::<i64, _>(4).unwrap_or(0) != 0,
+            comment: None,
+        })
+        .collect();
+
+    // 索引：pragma_index_list 给名字 / 是否唯一 / 来源（pk 就是主键索引），
+    // 再用 pragma_index_info 逐列取（按 seqno 保序；表达式索引的 name 为 NULL，跳过）
+    let idx_rows = sqlx::query("SELECT name, \"unique\", origin FROM pragma_index_list(?)")
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for row in &idx_rows {
+        let name: String = text_cell!(row, 0, format_bytes);
+        let unique: i64 = row.try_get(1).unwrap_or(0);
+        let origin: String = text_cell!(row, 2, format_bytes);
+        let col_rows = sqlx::query(
+            "SELECT name FROM pragma_index_info(?) WHERE name IS NOT NULL ORDER BY seqno",
+        )
+        .bind(&name)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let cols: Vec<String> = col_rows.iter().map(|r| text_cell!(r, 0, format_bytes)).collect();
+        indexes.push(IndexInfo {
+            name,
+            columns: cols,
+            unique: unique != 0,
+            primary: origin == "pk",
+        });
+    }
+
+    // 外键：pragma_foreign_key_list 里同一个 id 属于同一约束，seq 保列序。
+    // SQLite 的 PRAGMA 不提供约束名，name 只能留空（不伪造）
+    let fk_rows = sqlx::query(
+        "SELECT id, seq, \"table\", \"from\", \"to\" \
+         FROM pragma_foreign_key_list(?) ORDER BY id, seq",
+    )
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
+    let mut last_id: Option<i64> = None;
+    for row in &fk_rows {
+        let id: i64 = row.try_get(0).unwrap_or(0);
+        let column: String = text_cell!(row, 3, format_bytes);
+        let ref_table: String = text_cell!(row, 2, format_bytes);
+        let ref_column: String = text_cell_opt!(row, 4, format_bytes).unwrap_or_default();
+        if last_id == Some(id) {
+            if let Some(last) = foreign_keys.last_mut() {
+                last.columns.push(column);
+                last.ref_columns.push(ref_column);
+            }
+        } else {
+            foreign_keys.push(ForeignKeyInfo {
+                name: String::new(),
+                columns: vec![column],
+                ref_table,
+                ref_columns: vec![ref_column],
+            });
+            last_id = Some(id);
+        }
+    }
+
+    let ddl_rows = sqlx::query(
+        "SELECT sql FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+    )
+    .bind(table)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let ddl = ddl_rows.first().and_then(|row| text_cell_opt!(row, 0, format_bytes));
+
+    Ok(TableStructure {
+        columns,
+        indexes,
+        foreign_keys,
+        ddl,
+        ddl_approximate: false,
+    })
 }
 
 /// 语句分三类，决定怎么执行。
@@ -1303,6 +1853,77 @@ mod tests {
             .unwrap();
         assert_eq!(empty.columns, vec!["id", "name"]);
         assert!(empty.rows.is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 结构查询走真库：造一张带复合主键 / 唯一索引 / 复合外键 / 默认值的表，逐块断言。
+    #[tokio::test]
+    async fn sqlite_table_structure_reports_columns_indexes_and_fk() {
+        let path =
+            std::env::temp_dir().join(format!("codedock-db-struct-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let pool = SqlitePool::connect_with(options).await.unwrap();
+        sqlx::query("CREATE TABLE parent (id INTEGER PRIMARY KEY, code TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE child (\
+                 a INTEGER NOT NULL, \
+                 b TEXT DEFAULT 'x', \
+                 c INTEGER, \
+                 PRIMARY KEY (a, c), \
+                 FOREIGN KEY (a, c) REFERENCES parent (id, id)\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("CREATE UNIQUE INDEX idx_child_b ON child (b)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let session = DbSession {
+            pool: DbPool::Sqlite(pool),
+        };
+        let structure = table_structure_of(&session, Some("main"), "child").await.unwrap();
+
+        // 列：保序、可空、默认值、主键
+        let names: Vec<&str> = structure.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+        assert!(!structure.columns[0].nullable);
+        assert!(structure.columns[1].nullable);
+        assert_eq!(structure.columns[1].default.as_deref(), Some("'x'"));
+        assert!(structure.columns[0].primary_key);
+        assert!(structure.columns[2].primary_key);
+        assert!(!structure.columns[1].primary_key);
+        // SQLite 没有列注释，一律 None（不伪造）
+        assert!(structure.columns.iter().all(|c| c.comment.is_none()));
+
+        // 索引：唯一索引 + 主键索引，列序保留
+        assert!(structure.indexes.iter().any(|i| i.name == "idx_child_b"
+            && i.unique
+            && !i.primary
+            && i.columns == vec!["b"]));
+        assert!(structure.indexes.iter().any(|i| i.primary && i.columns == vec!["a", "c"]));
+
+        // 外键：复合外键成组、列序一致
+        assert_eq!(structure.foreign_keys.len(), 1);
+        let fk = &structure.foreign_keys[0];
+        assert_eq!(fk.columns, vec!["a", "c"]);
+        assert_eq!(fk.ref_table, "parent");
+        assert_eq!(fk.ref_columns, vec!["id", "id"]);
+
+        // DDL 来自 sqlite_master，是原始语句、不是拼的
+        assert!(!structure.ddl_approximate);
+        let ddl = structure.ddl.unwrap();
+        assert!(ddl.contains("CREATE TABLE child"));
 
         let _ = std::fs::remove_file(&path);
     }
