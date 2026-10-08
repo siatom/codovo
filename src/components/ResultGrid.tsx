@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { QueryResult } from "../lib/database";
 
 interface ResultGridProps {
@@ -17,6 +19,14 @@ const TH =
   "sticky top-0 z-10 border-b border-line-strong bg-panel px-2 py-1 text-left font-medium text-fg-dim whitespace-nowrap";
 const TD = "border-b border-line px-2 py-1 align-top";
 
+/** 右键菜单：宽度按最长一项量，高度按项数算，用来贴着窗口边缘收一收 */
+const MENU_W = 132;
+/** 一项 24px 上下内边距 + 文字，再加上容器自己的 py-1 */
+const MENU_ITEM_H = 24;
+const MENU_PAD = 8;
+const MENU_H = MENU_ITEM_H * 2 + MENU_PAD;
+const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+
 function Centered({ children }: { children: string }) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-6">
@@ -32,6 +42,29 @@ function Centered({ children }: { children: string }) {
  * 表页（点表看数据）和查询页共用，所以结果与翻页都从外面传进来。
  */
 export function ResultGrid({ result, loading, error, onPage, hint }: ResultGridProps) {
+  /** 右键菜单：位置 + 被点单元格的值与整行文本（NULL 统一按空串处理） */
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    cell: string;
+    row: string;
+  } | null>(null);
+
+  // 菜单开着时，任何滚动都把它收起来：列表是 overflow-auto，滚动后菜单会浮在原地
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("scroll", close, true);
+    return () => window.removeEventListener("scroll", close, true);
+  }, [menu]);
+
+  /** 写系统剪贴板。走插件而不是 navigator.clipboard：WebView2 会弹系统授权框 */
+  const copy = async (text: string) => {
+    setMenu(null);
+    // 表格没有报错位，复制失败就静默忽略
+    await writeText(text).catch(() => {});
+  };
+
   if (error) {
     return (
       <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -83,7 +116,21 @@ export function ResultGrid({ result, loading, error, onPage, hint }: ResultGridP
                     {result.page * result.pageSize + rowIndex + 1}
                   </td>
                   {row.map((cell, cellIndex) => (
-                    <td key={cellIndex} className={TD}>
+                    <td
+                      key={cellIndex}
+                      className={TD}
+                      onContextMenu={(event) => {
+                        // 应用全局屏蔽了原生右键菜单，这里自己声明一个（见 main.tsx）
+                        event.preventDefault();
+                        setMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          cell: cell ?? "",
+                          // 整行按 Tab 分隔：粘进表格软件正好一列一格
+                          row: row.map((value) => value ?? "").join("\t"),
+                        });
+                      }}
+                    >
                       {cell === null ? (
                         <span className="text-fg-faint italic">NULL</span>
                       ) : (
@@ -135,6 +182,35 @@ export function ResultGrid({ result, loading, error, onPage, hint }: ResultGridP
           下一页
         </button>
       </footer>
+
+      {/* 单元格右键菜单。fixed 定位：表格在 overflow-auto 里，绝对定位会被裁掉 */}
+      {menu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: MENU_W,
+              left: Math.min(menu.x, window.innerWidth - MENU_W - 4),
+              top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
+            }}
+          >
+            <button type="button" onClick={() => void copy(menu.cell)} className={MENU_ITEM}>
+              复制单元格
+            </button>
+            <button type="button" onClick={() => void copy(menu.row)} className={MENU_ITEM}>
+              复制整行
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
