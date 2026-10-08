@@ -47,6 +47,12 @@ interface ToolPaneProps {
   roots: string[];
   /** 这个工作区是不是当前显示的。隐藏时不做任何后端交互 */
   visible: boolean;
+  /**
+   * 「变更」模块是不是真的露在用户眼前（右栏展开、且当前看的正是它）。
+   * 收起右栏 / 停在别的模块时，下面的变更块只是被 `hidden` 藏着、组件还活着，
+   * 得靠它把变更面板里那几个轮询 effect 短路掉，否则不可见时仍在白跑 git。
+   */
+  changesVisible: boolean;
   /** 当前打开的文件，文件树里要高亮 */
   selected: string | null;
   /** 每根各一套 git 控制器：变更面板每个根挂一个完整的 */
@@ -104,6 +110,7 @@ export function ToolPane({
   tool,
   roots,
   visible,
+  changesVisible,
   selected,
   gitByRoot,
   gitTargets,
@@ -244,6 +251,7 @@ export function ToolPane({
                   key={target}
                   root={target}
                   visible={visible}
+                  moduleVisible={changesVisible}
                   git={gitByRoot[target]}
                   onOpen={onOpenDiff}
                   onOpenFile={onSelectFile}
