@@ -16,6 +16,11 @@ interface DbExportMenuProps {
 
 /** 菜单宽度写死，用来贴窗口边缘收一收位置 */
 const MENU_W = 168;
+/**
+ * 菜单高度估算（段选一行 + 两个格式项 + 间隙与内边距），用来判断下方放不放得下。
+ * 取值略大于实测，宁高勿低——高了顶多提前翻转，低了就会探出视口。
+ */
+const MENU_H = 104;
 
 const ITEM =
   "flex w-full items-center rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -50,9 +55,11 @@ export function DbExportMenu({
     const rect = buttonRef.current?.getBoundingClientRect();
     if (rect) {
       const wanted = align === "right" ? rect.right - MENU_W : rect.left;
+      // 结果区的导出按钮贴在窗口底部，向下展开会整个探出视口外——下方放不下就翻到按钮上方
+      const below = rect.bottom + 4;
       setPos({
         left: Math.max(4, Math.min(wanted, window.innerWidth - MENU_W - 4)),
-        top: rect.bottom + 4,
+        top: below + MENU_H > window.innerHeight - 4 ? Math.max(4, rect.top - MENU_H - 4) : below,
       });
     }
     setOpen((value) => !value);
