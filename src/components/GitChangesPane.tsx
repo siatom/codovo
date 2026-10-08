@@ -209,6 +209,9 @@ const DEFAULT_LOG_HEIGHT = 224;
 /** 上面至少要留出来的高度：工具条 + 提交框 + 两三行改动列表 */
 const RESERVED_ABOVE = 200;
 
+/** 拖动条上按方向键每次调整的像素步长（提交框 / 提交历史两条共用） */
+const KEY_RESIZE_STEP = 16;
+
 function readLogCollapsed(root: string): boolean {
   try {
     return window.sessionStorage.getItem(LOG_COLLAPSED_KEY + root) === "1";
@@ -2123,6 +2126,27 @@ export function GitChangesPane({
   };
 
   /**
+   * 方向键调提交历史高度：上下限和拖动那条路径完全一致（MIN/MAX 再受面板高度约束），
+   * 只是把指针位移换成固定步长。这条在上，分隔条上移就是历史变高，所以 ArrowUp 加、ArrowDown 减。
+   */
+  const onHandleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const delta =
+      event.key === "ArrowUp" ? KEY_RESIZE_STEP : event.key === "ArrowDown" ? -KEY_RESIZE_STEP : 0;
+    if (delta === 0) return;
+    event.preventDefault();
+    const room = (panelRef.current?.clientHeight ?? 0) - RESERVED_ABOVE;
+    const limit = Math.max(MIN_LOG_HEIGHT, Math.min(MAX_LOG_HEIGHT, room));
+    const next = Math.min(limit, Math.max(MIN_LOG_HEIGHT, logHeight + delta));
+    setLogHeight(next);
+    try {
+      // 和 pointerup 一样落盘：键盘调完也得记住（这里直接用算出来的 next，setState 是异步的）
+      window.sessionStorage.setItem(LOG_HEIGHT_KEY + root, String(next));
+    } catch {
+      // 记不住就下次还是默认高度
+    }
+  };
+
+  /**
    * 拖动提交框的下边缘改高度，和上面拖历史那条是同一套写法。
    *
    * 从当前实际高度起拖：没拖过时框是随内容长高的，高度不是 state，
@@ -2157,6 +2181,25 @@ export function GitChangesPane({
     messageDragRef.current = null;
     setDraggingMessage(false);
     document.body.classList.remove("codedock-dragging-row");
+  };
+
+  /**
+   * 方向键调提交框高度：这条在下，分隔条上移就是提交框变矮，所以 ArrowUp 减、ArrowDown 加。
+   * 上下限与拖动那条路径一致；没拖过时高度是内容撑的、不在 state 里，得先现量一个起点。
+   * 提交框高度不落盘（拖动路径也没存），键盘调节同样不存。
+   */
+  const onMessageHandleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const delta =
+      event.key === "ArrowUp" ? -KEY_RESIZE_STEP : event.key === "ArrowDown" ? KEY_RESIZE_STEP : 0;
+    if (delta === 0) return;
+    const el = messageRef.current;
+    if (!el) return;
+    event.preventDefault();
+    const base = messageHeight ?? el.getBoundingClientRect().height;
+    const { oneRow } = messageMetrics(el);
+    const room = (panelRef.current?.clientHeight ?? 0) - MESSAGE_RESERVED_BELOW;
+    const limit = Math.max(oneRow, room);
+    setMessageHeight(Math.min(limit, Math.max(oneRow, base + delta)));
   };
 
   /** 输入框里静一下之后才真去查，避免每敲一个字拉一次 git */
@@ -2408,6 +2451,23 @@ export function GitChangesPane({
   const wtList = worktrees && worktrees.length > 1 ? worktrees : null;
   // 当前面板所在的那个工作树（`git worktree list` 里唯一 current 的那条）
   const currentWt = wtList?.find((item) => item.current) ?? null;
+
+  /**
+   * 提交框拖动条的无障碍数值（像素）。提交框没拖过时高度是内容撑的、不在 state 里，
+   * 只能现量一次；面板还没挂载时量不到，就先不报（React 会把 undefined 的属性省掉）。
+   */
+  const messageHandle = messageRef.current
+    ? (() => {
+        const el = messageRef.current;
+        const { oneRow } = messageMetrics(el);
+        const room = (panelRef.current?.clientHeight ?? 0) - MESSAGE_RESERVED_BELOW;
+        return {
+          now: Math.round(messageHeight ?? el.getBoundingClientRect().height),
+          min: Math.round(oneRow),
+          max: Math.round(Math.max(oneRow, room)),
+        };
+      })()
+    : null;
 
   return (
     <div ref={panelRef} className="flex h-full min-h-0 flex-col">
@@ -2690,12 +2750,17 @@ export function GitChangesPane({
         <div
           role="separator"
           aria-orientation="horizontal"
+          tabIndex={0}
+          aria-valuenow={messageHandle?.now}
+          aria-valuemin={messageHandle?.min}
+          aria-valuemax={messageHandle?.max}
           onPointerDown={onMessageHandleDown}
           onPointerMove={onMessageHandleMove}
           onPointerUp={onMessageHandleUp}
           onPointerCancel={onMessageHandleUp}
+          onKeyDown={onMessageHandleKeyDown}
           title="拖动调整提交框的高度"
-          className={`-my-1.5 h-1.5 shrink-0 cursor-row-resize rounded-full transition-colors ${
+          className={`-my-1.5 h-1.5 shrink-0 cursor-row-resize rounded-full transition-colors focus-visible:bg-accent-strong focus-visible:outline-none ${
             draggingMessage ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
         />
@@ -3044,12 +3109,17 @@ export function GitChangesPane({
         <div
           role="separator"
           aria-orientation="horizontal"
+          tabIndex={0}
+          aria-valuenow={logHeight}
+          aria-valuemin={MIN_LOG_HEIGHT}
+          aria-valuemax={MAX_LOG_HEIGHT}
           onPointerDown={onHandleDown}
           onPointerMove={onHandleMove}
           onPointerUp={onHandleUp}
           onPointerCancel={onHandleUp}
+          onKeyDown={onHandleKeyDown}
           title="拖动调整提交历史的高度"
-          className={`relative h-px shrink-0 cursor-row-resize bg-line-strong transition-colors ${
+          className={`relative h-px shrink-0 cursor-row-resize bg-line-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-strong ${
             draggingLog ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
         >
