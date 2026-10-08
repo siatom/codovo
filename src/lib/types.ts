@@ -116,8 +116,13 @@ export interface GitStatusPayload {
   head: string | null;
   ahead: number;
   behind: number;
-  /** 仓库正卡在一次没结束的合并里（有冲突待解决，或已解决待提交） */
+  /** 仓库正卡在一次没结束的多步操作里（合并 / 变基 / 拣选 / 还原） */
   merging: boolean;
+  /**
+   * 进行中的具体操作类型；没有任何进行中的操作时是 null。
+   * 只有 merge 能用「完成合并 / 中止合并」收尾，其余三种得回终端处理。
+   */
+  mergeKind: "merge" | "rebase" | "cherryPick" | "revert" | null;
   /** 未合并（冲突）条目数，含 AA/DD 这种 XY 里没有 U 的 */
   conflicts: number;
   /** 改动条目总数；条目过多时可能大于 files.length */

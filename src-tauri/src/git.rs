@@ -54,8 +54,13 @@ pub struct GitStatus {
     head: Option<String>,
     ahead: u32,
     behind: u32,
-    /// 仓库正卡在一次没结束的合并里（有冲突待解决，或已解决待提交）
+    /// 仓库正卡在一次没结束的多步操作里（合并 / 变基 / 拣选 / 还原，有冲突待解决
+    /// 或已解决待收尾）。为真时前端切到"进行中"界面并挡住 push / 切分支等操作。
     merging: bool,
+    /// 进行中的具体操作类型：merge / rebase / cherryPick / revert；没有进行中的
+    /// 操作时是 None。只有 merge 能用 `merge --continue` / `--abort` 收尾，
+    /// 其余三种得回终端用各自的子命令，前端据此决定给不给那对按钮。
+    merge_kind: Option<String>,
     /// 未合并（冲突）条目数。porcelain 的 u 记录，含 AA/DD 这种 XY 里没有 U 的
     conflicts: u32,
     /// 改动条目总数，可能大于 files.len()（见 MAX_ENTRIES）
@@ -72,6 +77,7 @@ impl GitStatus {
             ahead: 0,
             behind: 0,
             merging: false,
+            merge_kind: None,
             conflicts: 0,
             changed: 0,
             files: Vec::new(),
@@ -625,8 +631,12 @@ fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, St
         }
     }
 
-    // 合并状态得另查：porcelain v2 不暴露 MERGE_HEAD
-    status.merging = is_merging(root)?;
+    // 进行中的多步操作得另查：porcelain v2 不暴露 MERGE_HEAD / REBASE_HEAD 之类。
+    // merging 仍表示"有任何多步操作没结束"（继续挡住 push / 切分支等），merge_kind
+    // 再细分是哪一种，前端据此决定给不给"完成合并 / 中止合并"那对按钮。
+    let state = merge_state(root)?;
+    status.merging = state.is_some();
+    status.merge_kind = state.map(str::to_string);
     Ok(status)
 }
 
@@ -1265,6 +1275,35 @@ fn stash_drop(root: &Path, index: u32) -> Result<GitStatus, String> {
 /// 比手拼 `.git/MERGE_HEAD` 路径稳。`-q` 压掉"不存在"的报错，非 0 退出即 false。
 fn is_merging(root: &Path) -> Result<bool, String> {
     Ok(run_git(root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"])?.is_some())
+}
+
+/// 当前卡在哪种多步操作里（有冲突待解决，或已解决但还没收尾）。
+///
+/// 除了 merge，rebase / cherry-pick / revert 也会把仓库留在"进行中"状态，但它们
+/// 收尾用的子命令各不相同（`rebase --continue` / `cherry-pick --continue` …），
+/// 不能复用 `merge --continue`，所以光知道"有没有进行中的操作"不够，还得知道是哪种，
+/// 前端才能给出对应的引导。
+///
+/// 用 `rev-parse --verify` 探测而不是手拼 `.git/REBASE_HEAD`：rev-parse 自己会解析
+/// 真实 gitdir（worktree、子目录都在内），比拼路径稳；`-q` 压掉"不存在"的报错，
+/// 非 0 退出即视为没有。
+///
+/// 顺序按"专有标记优先"排，把最通用的 CHERRY_PICK_HEAD 放最后：rebase / revert
+/// 在内部都借用了拣选的机制，历史上（或某些版本里）会一并留下 CHERRY_PICK_HEAD，
+/// 先查它就会把变基 / 还原误判成拣选。实测 git 2.55 下四种状态各自只留一个标记，
+/// 但按这个顺序排更保险。
+fn merge_state(root: &Path) -> Result<Option<&'static str>, String> {
+    for (head, kind) in [
+        ("MERGE_HEAD", "merge"),
+        ("REBASE_HEAD", "rebase"),
+        ("REVERT_HEAD", "revert"),
+        ("CHERRY_PICK_HEAD", "cherryPick"),
+    ] {
+        if run_git(root, &["rev-parse", "-q", "--verify", head])?.is_some() {
+            return Ok(Some(kind));
+        }
+    }
+    Ok(None)
 }
 
 /// 两侧内容统一按 LF 比较。
