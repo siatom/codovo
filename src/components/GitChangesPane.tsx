@@ -860,6 +860,8 @@ function ChangeRow({
   onToggle,
   onDiscard,
   onMenu,
+  selected,
+  onSelect,
 }: {
   change: GitChange;
   /** true = 在"暂存的改动"组里，行内按钮是取消暂存 */
@@ -874,6 +876,8 @@ function ChangeRow({
   onToggle: (path: string) => void;
   onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+  selected: (change: GitChange) => boolean;
+  onSelect: (change: GitChange, event: ReactMouseEvent) => void;
 }) {
   const slash = change.relative.lastIndexOf("/");
   const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
@@ -896,19 +900,29 @@ function ChangeRow({
     hunkable && hunks !== undefined && hunks.open === change.path && hunks.staged === staged;
   // 展开区缩进到和文件名对齐：树视图里层级已经占了前导空白
   const hunkIndent = depth === null ? 4 : depth * INDENT + 4;
+  // 选中行用整行底色：和文件树选中同一套语义色，深浅主题下都对照得上
+  const isSelected = selected(change);
 
   return (
     <>
     <div
-      className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
+      // 选中行不挂 hover 底色，否则鼠标划过去会把选中色盖掉、看不出还选着哪些
+      className={`group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] ${
+        isSelected ? "bg-selected" : "hover:bg-hover"
+      }`}
       style={depth === null ? undefined : { paddingLeft: depth * INDENT + 4 }}
       onContextMenu={(event) => onMenu(change, staged, event)}
     >
       <button
         type="button"
-        // 目录项点开差异会去读目录、必报错，所以不响应点击（它只是折叠出来的一行占位）
-        onClick={() => {
+        // 目录项点开差异会去读目录、必报错，所以不响应点击（它只是折叠出来的一行占位）。
+        // 带 Ctrl/⌘ 或 Shift 的点击是「选中」而不是「打开」——这两种修饰键只改选中集。
+        onClick={(event) => {
           if (isDir) return;
+          if (event.ctrlKey || event.metaKey || event.shiftKey) {
+            onSelect(change, event);
+            return;
+          }
           onOpen(change.path, staged ? { mode: "staged" } : { mode: "unstaged" });
         }}
         title={isDir ? `${toDisplayPath(change.path)}（目录）` : toDisplayPath(change.path)}
@@ -1078,6 +1092,10 @@ interface ChangeRowActions {
   onToggle: (path: string) => void;
   onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+  /** 这一行是不是批量操作的目标（选中态）。按组闭包好，签名里不用再带 staged */
+  selected: (change: GitChange) => boolean;
+  /** 按住 Ctrl/⌘ 或 Shift 点行时的选中逻辑；普通点击仍走 onOpen */
+  onSelect: (change: GitChange, event: ReactMouseEvent) => void;
 }
 
 interface ChangeTreeActions extends ChangeRowActions {
@@ -1097,6 +1115,36 @@ type ChangeGroup = "staged" | "unstaged";
 
 /** 每组一份的折叠状态。空集合 = 全展开，正好是默认要的样子 */
 type CollapsedDirs = Record<ChangeGroup, ReadonlySet<string>>;
+
+/**
+ * 选中集的 key：连分组一起算。同一个路径可能同时在两组里（`MM`），只按路径存的话
+ * 在暂存组点亮一行、未暂存组那一行也会跟着亮，批量操作还会把两组都算进去。
+ */
+function selectKey(staged: boolean, path: string): string {
+  return `${staged ? "s" : "u"}:${pathKey(path)}`;
+}
+
+/**
+ * 树视图里按渲染顺序摊平出一串文件行（目录行不参与选择）。
+ * 收起来的目录整棵跳过——那些行没画在屏幕上，Shift 连选不该把它们也算进来。
+ */
+function flattenTreePaths(
+  nodes: readonly ChangeTreeNode[],
+  collapsedDirs: ReadonlySet<string>,
+): string[] {
+  const paths: string[] = [];
+  const walk = (list: readonly ChangeTreeNode[]) => {
+    for (const node of list) {
+      if (node.children) {
+        if (!collapsedDirs.has(node.path)) walk(node.children);
+      } else if (node.change) {
+        paths.push(node.change.path);
+      }
+    }
+  };
+  walk(nodes);
+  return paths;
+}
 
 /** 递归渲染一棵改动树：目录行 + 缩进的子层，文件行复用 ChangeRow */
 function ChangeTree({
@@ -1580,6 +1628,13 @@ export function GitChangesPane({
     unstaged: new Set<string>(),
   }));
   /**
+   * 改动列表里选中的行（批量操作的目标）。key 见 selectKey，连分组一起算；
+   * 和逐块操作的 lineSelection 各管各的——那是同一个文件内部的行选择。
+   */
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
+  /** Shift 连选的锚点：上一次点的那一行（key 同 selection）；null = 还没有锚点 */
+  const lastClickedRef = useRef<string | null>(null);
+  /**
    * 改动列表的路径筛选。不落盘：属于「这次看的时候顺手找一下」的临时状态，
    * 下次进应用还得重新收一遍反而碍事（同 collapsedDirs）。
    */
@@ -1684,6 +1739,87 @@ export function GitChangesPane({
     () => unstaged.filter((change) => canDiscard(change, false)),
     [unstaged],
   );
+
+  /**
+   * 当前选中的行，按组各算（key 见 selectKey）。批量按钮和分组标题的「已选 N」都用它。
+   * 用筛过的那份（Shown）：选中本来就是从屏幕上勾出来的，被筛选藏掉的行不该被算进去。
+   */
+  const stagedSelected = useMemo(
+    () => stagedShown.filter((change) => selection.has(selectKey(true, change.path))),
+    [stagedShown, selection],
+  );
+  const unstagedSelected = useMemo(
+    () => unstagedShown.filter((change) => selection.has(selectKey(false, change.path))),
+    [unstagedShown, selection],
+  );
+  /**
+   * 本组「当前渲染顺序」下的选中 key，Shift 连选靠它算区间。
+   * 不能直接用改动列表的原始顺序：树视图里目录会改行序，收起来的目录里的行也不该算进来。
+   */
+  const stagedOrder = useMemo(
+    () =>
+      (view === "list"
+        ? stagedShown.map((change) => change.path)
+        : flattenTreePaths(stagedTree, collapsedDirs.staged)
+      ).map((path) => selectKey(true, path)),
+    [view, stagedShown, stagedTree, collapsedDirs.staged],
+  );
+  const unstagedOrder = useMemo(
+    () =>
+      (view === "list"
+        ? unstagedShown.map((change) => change.path)
+        : flattenTreePaths(unstagedTree, collapsedDirs.unstaged)
+      ).map((path) => selectKey(false, path)),
+    [view, unstagedShown, unstagedTree, collapsedDirs.unstaged],
+  );
+
+  /**
+   * 带修饰键点改动行的选中逻辑。
+   * Ctrl/⌘：切换这一行的选中，并把锚点挪到它；Shift：从锚点连选到这一行（锚点不动）。
+   */
+  const selectChange = useCallback(
+    (staged: boolean, order: readonly string[], change: GitChange, event: ReactMouseEvent) => {
+      const key = selectKey(staged, change.path);
+      const anchor = lastClickedRef.current;
+      setSelection((current) => {
+        const next = new Set(current);
+        // 锚点必须还在本组当前顺序里，否则区间无从算起，退回单点切换
+        if (event.shiftKey && anchor !== null && order.includes(anchor) && order.includes(key)) {
+          const from = order.indexOf(anchor);
+          const to = order.indexOf(key);
+          const lo = Math.min(from, to);
+          const hi = Math.max(from, to);
+          for (let index = lo; index <= hi; index += 1) next.add(order[index]);
+          return next;
+        }
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+      // 连选沿用原锚点；单点（Ctrl/⌘）才把锚点挪到这一行
+      if (!event.shiftKey) lastClickedRef.current = key;
+    },
+    [],
+  );
+
+  /** 按组把选中逻辑闭包好，透给对应那组 ChangeRow（行本身不用再区分是哪一组） */
+  const onSelectStaged = useCallback(
+    (change: GitChange, event: ReactMouseEvent) => selectChange(true, stagedOrder, change, event),
+    [selectChange, stagedOrder],
+  );
+  const onSelectUnstaged = useCallback(
+    (change: GitChange, event: ReactMouseEvent) =>
+      selectChange(false, unstagedOrder, change, event),
+    [selectChange, unstagedOrder],
+  );
+  const isStagedSelected = useCallback(
+    (change: GitChange) => selection.has(selectKey(true, change.path)),
+    [selection],
+  );
+  const isUnstagedSelected = useCallback(
+    (change: GitChange) => selection.has(selectKey(false, change.path)),
+    [selection],
+  );
   /** 筛完之后两边都没东西了（但改动本身还在），值得单独说一句 */
   const filteredOut =
     needle.length > 0 &&
@@ -1718,6 +1854,10 @@ export function GitChangesPane({
         // 生成只填提交框、不动 git，返回空值时就跳过状态更新
         const payload = await task();
         if (payload) applyStatus(payload);
+        // 写操作会让改动列表重排 / 行消失（暂存后行换组、放弃后行没了），
+        // 之前的选中可能指向对不上的行，成功后一并清掉，免得残留
+        setSelection(new Set());
+        lastClickedRef.current = null;
       } catch (reason) {
         setError(String(reason));
       } finally {
@@ -2377,6 +2517,37 @@ export function GitChangesPane({
     );
   }, [discard, unstagedDiscardable]);
 
+  /** 暂存选中的那些行：paths 只给选中集合，绝不波及没勾的行 */
+  const stageSelectedRows = useCallback(() => {
+    const paths = unstagedSelected.map((change) => change.path);
+    if (paths.length === 0) return;
+    void run("stage", () => gitStage(root, paths));
+  }, [run, root, unstagedSelected]);
+
+  /** 取消暂存选中的那些行 */
+  const unstageSelectedRows = useCallback(() => {
+    const paths = stagedSelected.map((change) => change.path);
+    if (paths.length === 0) return;
+    void run("unstage", () => gitUnstage(root, paths));
+  }, [run, root, stagedSelected]);
+
+  /**
+   * 放弃选中的行。只收拾能放弃的（新文件 / 重命名排除，见 canDiscard），
+   * 免得多勾一个新文件就整批失败——和「放弃整组」一个口径；
+   * 同样先过 discard() 的确认框再落手。
+   */
+  const discardSelectedRows = useCallback(
+    (staged: boolean) => {
+      const list = staged ? stagedSelected : unstagedSelected;
+      const paths = list
+        .filter((change) => canDiscard(change, staged))
+        .map((change) => change.path);
+      if (paths.length === 0) return;
+      discard(paths, { mode: staged ? "staged" : "unstaged" }, `${paths.length} 个文件`);
+    },
+    [discard, stagedSelected, unstagedSelected],
+  );
+
   const setLogCollapsedPersisted = (next: boolean) => {
     setLogCollapsed(next);
     try {
@@ -2388,6 +2559,9 @@ export function GitChangesPane({
 
   const setViewPersisted = (next: ChangeView) => {
     setView(next);
+    // 列表↔树的行序完全不同，留着旧选中会指向对不上的行，直接清空
+    setSelection(new Set());
+    lastClickedRef.current = null;
     try {
       window.sessionStorage.setItem(VIEW_KEY + root, next);
     } catch {
@@ -3579,26 +3753,57 @@ export function GitChangesPane({
                   暂存的更改 ({stagedShown.length}
                   {stagedShown.length === staged.length ? "" : `/${staged.length}`})
                 </span>
-                {stagedDiscardable.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={discardAllStaged}
-                    disabled={busy !== null}
-                    title="放弃这个分组里所有文件的更改"
-                    className={GROUP_ICON_DANGER}
-                  >
-                    <IconUndo className="h-3 w-3" />
-                  </button>
+                {/* 有选中项时，整组操作换成针对选中项的那几个（语义从"整组"收窄到"这一批"） */}
+                {stagedSelected.length > 0 ? (
+                  <>
+                    <span className="shrink-0 text-[11px] text-accent">
+                      已选 {stagedSelected.length}
+                    </span>
+                    {stagedSelected.some((change) => canDiscard(change, true)) && (
+                      <button
+                        type="button"
+                        onClick={() => discardSelectedRows(true)}
+                        disabled={busy !== null}
+                        title={`放弃选中的 ${stagedSelected.length} 个文件`}
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={unstageSelectedRows}
+                      disabled={busy !== null}
+                      title={`取消暂存选中的 ${stagedSelected.length} 个文件`}
+                      className={GROUP_ICON}
+                    >
+                      <IconMinus className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {stagedDiscardable.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={discardAllStaged}
+                        disabled={busy !== null}
+                        title="放弃这个分组里所有文件的更改"
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void run("unstage", () => gitUnstage(root))}
+                      disabled={busy !== null}
+                      title="全部取消暂存"
+                      className={GROUP_ICON}
+                    >
+                      <IconMinus className="h-3 w-3" />
+                    </button>
+                  </>
                 )}
-                <button
-                  type="button"
-                  onClick={() => void run("unstage", () => gitUnstage(root))}
-                  disabled={busy !== null}
-                  title="全部取消暂存"
-                  className={GROUP_ICON}
-                >
-                  <IconMinus className="h-3 w-3" />
-                </button>
               </div>
               <ChangeList
                 group="staged"
@@ -3617,6 +3822,8 @@ export function GitChangesPane({
                   discard([change.path], { mode: "staged" }, change.relative)
                 }
                 onMenu={openMenu}
+                selected={isStagedSelected}
+                onSelect={onSelectStaged}
               />
             </>
           )}
@@ -3628,26 +3835,57 @@ export function GitChangesPane({
                   更改 ({unstagedShown.length}
                   {unstagedShown.length === unstaged.length ? "" : `/${unstaged.length}`})
                 </span>
-                {unstagedDiscardable.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={discardAllUnstaged}
-                    disabled={busy !== null}
-                    title="放弃这个分组里所有文件的更改"
-                    className={GROUP_ICON_DANGER}
-                  >
-                    <IconUndo className="h-3 w-3" />
-                  </button>
+                {/* 同暂存组：有选中项就换成针对选中项的操作 */}
+                {unstagedSelected.length > 0 ? (
+                  <>
+                    <span className="shrink-0 text-[11px] text-accent">
+                      已选 {unstagedSelected.length}
+                    </span>
+                    {unstagedSelected.some((change) => canDiscard(change, false)) && (
+                      <button
+                        type="button"
+                        onClick={() => discardSelectedRows(false)}
+                        disabled={busy !== null}
+                        title={`放弃选中的 ${unstagedSelected.length} 个文件`}
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={stageSelectedRows}
+                      disabled={busy !== null}
+                      title={`暂存选中的 ${unstagedSelected.length} 个文件`}
+                      className={GROUP_ICON}
+                    >
+                      <IconPlus className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {unstagedDiscardable.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={discardAllUnstaged}
+                        disabled={busy !== null}
+                        title="放弃这个分组里所有文件的更改"
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void run("stage", () => gitStage(root))}
+                      disabled={busy !== null}
+                      title="全部暂存"
+                      className={GROUP_ICON}
+                    >
+                      <IconPlus className="h-3 w-3" />
+                    </button>
+                  </>
                 )}
-                <button
-                  type="button"
-                  onClick={() => void run("stage", () => gitStage(root))}
-                  disabled={busy !== null}
-                  title="全部暂存"
-                  className={GROUP_ICON}
-                >
-                  <IconPlus className="h-3 w-3" />
-                </button>
               </div>
               <ChangeList
                 group="unstaged"
@@ -3666,6 +3904,8 @@ export function GitChangesPane({
                   discard([change.path], { mode: "unstaged" }, change.relative)
                 }
                 onMenu={openMenu}
+                selected={isUnstagedSelected}
+                onSelect={onSelectUnstaged}
               />
             </>
           )}
