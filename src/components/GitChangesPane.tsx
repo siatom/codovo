@@ -1551,12 +1551,17 @@ export function GitChangesPane({
 
   /** 撤销上一次提交：改动回到暂存区，提交框里的信息也跟着填回去，方便改完重提 */
   const undoCommit = useCallback(() => {
+    // 撤销前的 HEAD 主题得在 setLogRevision 触发重拉之前取到——重拉会把 commits 换掉。
+    // 按 hash 匹配而不是取第一条：过滤生效时 HEAD 不一定排在列表最前。
+    // 列表还没加载（null）或没匹配到就跳过回填，不影响撤销本身。
+    const head = commits?.find((item) => item.hash === snapshot.head)?.subject;
     void run("undo", async () => {
       const payload = await gitUndoCommit(root);
+      if (head) setMessage(head);
       setLogRevision((revision) => revision + 1);
       return payload;
     });
-  }, [run, root]);
+  }, [run, root, commits, snapshot.head]);
 
   /**
    * 打开分支下拉时现拉一次列表。
