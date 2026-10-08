@@ -263,7 +263,7 @@ export function WorkspacePane({
     [openTab],
   );
 
-  /** 从「变更」列表或提交历史点进来的：开的是差异视图，不是文件内容 */
+  /** 从「变更」列表或时间线点进来的：开的是差异视图，不是文件内容 */
   const openDiff = useCallback(
     (path: string, source: DiffSource) => {
       openTab({ kind: "diff", path, source });

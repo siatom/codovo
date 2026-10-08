@@ -51,7 +51,7 @@ git push --follow-tags            # 连 tag 一起推
   工作区时的 `remove_dir_all` 会删掉别工作区的目录。关工作区走 `workspace_close`，一次收掉它的 shell、opencode
   与目录监听。目录监听**只跟当前工作区**，切工作区时整体换掉。
 - 持久化的分层：**窗口级偏好存 sessionStorage**（侧栏折叠、CLI 选择）；**工作区级的按 root 作 key**
-  （右栏模块、浏览器地址、提交历史视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
+  （右栏模块、浏览器地址、时间线视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
   （设置、主题、工作区列表、别名、远程主机）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
   列表类一律「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别处刚写进去的。
 - 侧栏工作区的顺序**就是那份列表的存储顺序**（`pinned` 只是标记，渲染时把置顶组排最前），拖拽重排走
@@ -88,14 +88,14 @@ git push --follow-tags            # 连 tag 一起推
   `Unstage`）正好相反。两种方向处理的是相反的那种行，因为补丁在「基线侧」和「目标侧」两头都要
   对得上。起始行号保留、计数交给 `git apply --recount`。`Unstage` 是第三种 action（`--cached
   --reverse`），落在暂存侧（`git diff --cached`）上。
-- 提交历史过滤：主题 / 作者 / 正文走**后端 Rust 后置匹配**（git 的 `--grep` 与 `--author` 是
+- 时间线过滤：主题 / 作者 / 正文走**后端 Rust 后置匹配**（git 的 `--grep` 与 `--author` 是
   AND，表达不了「任一命中」），路径交给 git 的 pathspec；过滤时一次拉满上限，且**不画泳道**
   （只剩一部分提交，连线必然断开）。「回到 HEAD」按 `data-commit` 找行、用相对矩形的偏移改
   `scrollTop`（`scrollIntoView` 会连带滚外层容器）。
 - git 状态走 `status --porcelain=v2 --branch -z`；工作区可能只是仓库子目录，先 `rev-parse --show-prefix`；
   轮询命令带 `--no-optional-locks`（写操作不带）、Windows 上加 `CREATE_NO_WINDOW`；暂存带
   `--literal-pathspecs`、「全部暂存」给 `.`。
-- 提交历史是**图形化的泳道图**（`lib/gitGraph.ts` 排泳道 + `components/GitGraph.tsx` 画线）：后端
+- 时间线是**图形化的泳道图**（`lib/gitGraph.ts` 排泳道 + `components/GitGraph.tsx` 画线）：后端
   `git log` 带 `--topo-order`（父必须排在子之后，否则泳道接不上）与 `--decorate=full`（`%D` 给
   `refs/heads|remotes|tags/…` 全名，好把分支 / 远程 / 标签分开），`%P` 出父 hash 供连线。泳道按
   「第一父留在原泳道、其余父各占新泳道」记账；颜色是**独立于语义色**的固定调色板（`--c-graph-1…8`，
@@ -112,7 +112,7 @@ git push --follow-tags            # 连 tag 一起推
   不额外请求）；改动规模走 `git_commit_stat` 按 hash 懒加载并缓存——悬停很频繁，不缓存就是一片
   git 进程。浮框挂在本行 DOM 里、`fixed` 定位（列表是 `overflow-auto`，绝对定位会被裁），
   和行之间留了 GAP，所以藏要延迟、移进浮框再取消。滚动时收起，免得浮框留在原地。
-- 提交历史**会自动重拉**：只盯 HEAD 的话，终端里 `fetch` / `tag` 这类不改 HEAD 的操作会漏掉
+- 时间线**会自动重拉**：只盯 HEAD 的话，终端里 `fetch` / `tag` 这类不改 HEAD 的操作会漏掉
   （远程分支、标签这些行内装饰会变），所以挂了个比 status 慢的轮询（`LOG_POLL_MS`，收起时不起）。
 - AI / 智能体：HTTP 与 SSE 全走 Rust 代理，前端不直连 opencode；规则 / 记忆 / 技能 / Agents
   存 localStorage、启动时才物化；兼容两代接口、按接口探测（判据是响应里有 `version` 字段）。

@@ -366,6 +366,17 @@ export function gitCommit(root: string, message: string): Promise<GitStatusPaylo
 }
 
 /**
+ * 按方案分条提交：后端先清空暂存区，再逐组「暂存这几个文件 → 提交」。
+ * `groups` 每条是 `{ message, files }`，`files` 是工作区相对路径。返回最终状态。
+ */
+export function gitCommitGroups(
+  root: string,
+  groups: { message: string; files: string[] }[],
+): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_commit_groups", { root, groups });
+}
+
+/**
  * 一个改动文件的两侧内容。`source` 决定跟谁比：
  * 未暂存比 index、暂存比 HEAD、看某个提交比它的父提交。
  */
@@ -378,7 +389,7 @@ export function gitFileDiff(
 }
 
 /**
- * 提交历史，最新的在最前；不传 limit 就取一页。
+ * 时间线，最新的在最前；不传 limit 就取一页。
  *
  * `filter` 按主题 / 作者 / 正文匹配、`path` 按改动过的路径过滤，两者互斥，
  * 一次只传一个（后端也只在带过滤时把拉取条数顶到上限）。
@@ -407,7 +418,7 @@ export function gitCommitStat(root: string, rev: string): Promise<CommitStat> {
   return invoke<CommitStat>("git_commit_stat", { root, rev });
 }
 
-/** 提交历史里哪些提交还没推送到上游（完整提交号）。没有上游时是空数组 */
+/** 时间线里哪些提交还没推送到上游（完整提交号）。没有上游时是空数组 */
 export function gitUnpushed(root: string): Promise<string[]> {
   return invoke<string[]>("git_unpushed", { root });
 }
@@ -460,7 +471,7 @@ export function gitCreateTag(
   });
 }
 
-/** 删标签（只动标签引用，不碰提交历史） */
+/** 删标签（只动标签引用，不碰时间线） */
 export function gitDeleteTag(root: string, name: string): Promise<void> {
   return invoke("git_delete_tag", { root, name });
 }

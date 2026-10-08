@@ -70,7 +70,7 @@ interface ToolPaneProps {
   onSelectFile: (path: string) => void;
   /** 文件树里右键网页文件：在右栏的内置浏览器里打开它 */
   onOpenInBrowser: (path: string) => void;
-  /** 改动列表 / 提交历史里点一个文件：打开差异视图 */
+  /** 改动列表 / 时间线里点一个文件：打开差异视图 */
   onOpenDiff: (path: string, source: DiffSource) => void;
   /**
    * 变更面板里切了分支：工作区整个换了，打开着的文件和差异视图的基线都得作废。
@@ -137,7 +137,7 @@ export function ToolPane({
     tool === "changes" || tool === "search" || tool === "remote" || tool === "database";
   /**
    * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
-   * 初始只展开第一个根、其余收起：多根时几份改动加提交历史全铺开，一屏根本看不完。
+   * 初始只展开第一个根、其余收起：多根时几份改动加时间线全铺开，一屏根本看不完。
    */
   const [collapsedRoots, setCollapsedRoots] = useState<ReadonlySet<string>>(
     () => new Set(roots.slice(1).map(pathKey)),
@@ -195,7 +195,7 @@ export function ToolPane({
         />
       </div>
       {/* 变更：每个工作目录一块，各挂一个完整的变更面板。多根时每块能整块收起、只留
-          根名那一行——两个仓库的改动加提交历史全铺开，一屏根本看不完。
+          根名那一行——两个仓库的改动加时间线全铺开，一屏根本看不完。
           面板本身是 h-full 的整高布局（内部自己滚），所以展开的块按份数分高度、
           开了折叠就只占一行，块多了整体滚 */}
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
@@ -216,9 +216,9 @@ export function ToolPane({
             <div
               key={item}
               // 展开的块各占满可视高度、块之间靠外层滚动切换。不用 flex-1 均分——
-              // 几个根各分一小条，改动列表和提交历史全挤在一屏里没法看。
+              // 几个根各分一小条，改动列表和时间线全挤在一屏里没法看。
               // overflow-hidden 不只是裁内容：它把 flex item 的 min-height:auto 变成 0，
-              // 否则 GitChangesPane 里长长的提交历史会把这一块撑开，把后面的根挤出可视区
+              // 否则 GitChangesPane 里长长的时间线会把这一块撑开，把后面的根挤出可视区
               className={
                 collapsed
                   ? "flex shrink-0 flex-col"
