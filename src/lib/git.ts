@@ -176,6 +176,10 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
  * 只有当前显示的那个需要轮询，其余的一直在跑就是白烧 CPU。切回来时状态还是离开
  * 时的样子，再等一个 tick 就又准了。
  *
+ * `withCounts` 为 false 时后端不跑 numstat（行数全是 null）：轮询每 2 秒一次，而行数
+ * 只有「变更」面板会显示，面板没开时那两个 git 进程纯属浪费。它进了 effect 依赖，
+ * 面板显隐一变就立刻按新口径重拉一次。
+ *
  * 只读轮询：git 那侧没有任何写操作，命令带 --no-optional-locks，不会和用户
  * 在终端里敲的 git 抢 index 锁。写操作走 `applyStatus` 直接落地，不经过这里。
  */
@@ -194,7 +198,11 @@ export interface GitStatusStore {
   applyStatus: (root: string, payload: GitStatusPayload) => void;
 }
 
-export function useGitStatus(roots: string[], enabled = true): GitStatusStore {
+export function useGitStatus(
+  roots: string[],
+  enabled = true,
+  withCounts = true,
+): GitStatusStore {
   const [byRoot, setByRoot] = useState<Record<string, GitSnapshot>>({});
   // 手动刷新要能调到当前这一轮 effect 里的 load，所以用 ref 转一手
   const loadRef = useRef<(root?: string, force?: boolean) => void>(() => {});
@@ -226,7 +234,7 @@ export function useGitStatus(roots: string[], enabled = true): GitStatusStore {
       }
       inFlight.add(root);
       try {
-        const payload = await gitStatus(root);
+        const payload = await gitStatus(root, withCounts);
         if (!disposed) setByRoot((current) => ({ ...current, [root]: toSnapshot(payload) }));
       } catch (reason) {
         if (disposed) return;
@@ -258,7 +266,7 @@ export function useGitStatus(roots: string[], enabled = true): GitStatusStore {
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [rootsKey, enabled]);
+  }, [rootsKey, enabled, withCounts]);
 
   // 换过根之后把不在列表里的旧快照摘掉：不然改工作区留下的根会一直挂在状态里
   useEffect(() => {

@@ -263,9 +263,13 @@ export function onCloneProgress(handler: (progress: CloneProgress) => void): Pro
   return listen<CloneProgress>("git-clone-progress", (event) => handler(event.payload));
 }
 
-/** 某个工作区的 git 状态；目录不是仓库时 isRepo 为 false */
-export function gitStatus(root: string): Promise<GitStatusPayload> {
-  return invoke<GitStatusPayload>("git_status", { root });
+/**
+ * 某个工作区的 git 状态；目录不是仓库时 isRepo 为 false。
+ * `withCounts=false` 时后端跳过 numstat，`stagedAdded` 之类的行数全是 null——
+ * 轮询而「变更」面板没开时用它省两个 git 进程。
+ */
+export function gitStatus(root: string, withCounts = true): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_status", { root, withCounts });
 }
 
 /**

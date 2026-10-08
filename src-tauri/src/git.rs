@@ -569,9 +569,19 @@ fn counts_by_path(raw: &[u8], prefix: &str) -> HashMap<String, (Option<u32>, Opt
     map
 }
 
-/// 只读查询当前工作区的 git 状态。抽出来给写命令复用：写完之后直接回传新状态，
-/// 前端一次 IPC 就能把界面刷到位，不用干等下一个轮询周期。
+/// 只读查询当前工作区的 git 状态（带增删行数）。抽出来给写命令复用：写完之后直接
+/// 回传新状态，前端一次 IPC 就能把界面刷到位，不用干等下一个轮询周期。
 fn status_of(root: &Path) -> Result<GitStatus, String> {
+    status_of_with_counts(root, true)
+}
+
+/// 同 `status_of`，但可跳过增删行数那两次 numstat。
+///
+/// `with_counts=false` 时 `staged_*` / `unstaged_*` 全是 None。`git_status` 被前端每
+/// 2 秒轮询一次，而行数只有「变更」面板会显示——面板收着、在看别的模块时，这两次
+/// numstat 就是白起两个 git 进程。写命令一律走 `status_of`（要行数），它们不轮询、
+/// 不受影响。
+fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, String> {
     // --show-prefix 一次调用回答两件事：目录是不是仓库（不是则非 0 退出），
     // 以及工作区相对仓库根的位置（仓库根就是工作区时输出空行）
     let prefix = match run_git(root, &["rev-parse", "--show-prefix"])? {
@@ -597,8 +607,8 @@ fn status_of(root: &Path) -> Result<GitStatus, String> {
     let mut status = parse_status(&raw, &prefix, root);
 
     // 增删行数 porcelain 里没有，得另跑两次 numstat。没有改动时直接跳过，
-    // 别为一次空结果白起两个进程
-    if !status.files.is_empty() {
+    // 别为一次空结果白起两个进程；调用方不要行数时（轮询且面板没开）也跳过
+    if with_counts && !status.files.is_empty() {
         let unstaged = run_git(root, &["diff", "--numstat", "-z"])?.unwrap_or_default();
         let staged = run_git(root, &["diff", "--cached", "--numstat", "-z"])?.unwrap_or_default();
         let unstaged_counts = counts_by_path(&unstaged, &prefix);
@@ -975,7 +985,15 @@ fn commit_staged(root: &Path, message: &str) -> Result<GitStatus, String> {
 fn amend_commit(root: &Path, message: Option<&str>) -> Result<GitStatus, String> {
     match message.map(str::trim).filter(|text| !text.is_empty()) {
         Some(text) => run_git_checked(root, &["commit", "--amend", "-m", text])?,
-        None => run_git_checked(root, &["commit", "--amend", "--no-edit"])?,
+        None => {
+            // 暂存区为空时 `git commit --amend --no-edit` 什么都不改，却照样 0 退出，
+            // 界面会误报「成功」。`git diff --cached --quiet` 无暂存改动时 0 退出
+            // （run_git 于是返回 Some），据此挡掉。给了 -m 时不拦——那是纯改提交信息，有意义
+            if run_git(root, &["diff", "--cached", "--quiet"])?.is_some() {
+                return Err("没有要修正的内容".to_string());
+            }
+            run_git_checked(root, &["commit", "--amend", "--no-edit"])?
+        }
     };
     status_of(root)
 }
@@ -2029,8 +2047,13 @@ pub fn git_worktree_list(
 }
 
 #[tauri::command(async)]
-pub fn git_status(state: tauri::State<'_, FsState>, root: String) -> Result<GitStatus, String> {
-    status_of(&state.checked_root(&root)?)
+pub fn git_status(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    with_counts: Option<bool>,
+) -> Result<GitStatus, String> {
+    // 缺省当 true：老前端不传这个参数时行为不变
+    status_of_with_counts(&state.checked_root(&root)?, with_counts.unwrap_or(true))
 }
 
 /// 暂存。`paths` 为空表示全部暂存。
@@ -4622,6 +4645,36 @@ mod tests {
     }
 
     #[test]
+    fn numstat_counts_match_non_utf8_paths() {
+        // 路径含非法 UTF-8 字节（0xff）时，status 与 numstat 两侧都走
+        // `String::from_utf8_lossy`，同一串字节换出同一个替换串，因此计数能对上。
+        // 钉住这个结论：将来谁把某一侧改成按原始字节做键，这里会先炸
+        let mut status_raw = Vec::new();
+        status_raw.extend_from_slice(b"1 M. N... 100644 100644 100644 aaaa bbbb bad");
+        status_raw.push(0xff);
+        status_raw.extend_from_slice(b".txt");
+        status_raw.push(0);
+
+        let mut numstat_raw = Vec::new();
+        numstat_raw.extend_from_slice(b"3\t1\tbad");
+        numstat_raw.push(0xff);
+        numstat_raw.extend_from_slice(b".txt");
+        numstat_raw.push(0);
+
+        let status = parse_status(&status_raw, "", &workspace());
+        assert_eq!(status.files.len(), 1);
+        let file = &status.files[0];
+
+        let counts = counts_by_path(&numstat_raw, "");
+        assert_eq!(
+            counts.get(&file.relative),
+            Some(&(Some(3), Some(1))),
+            "非 UTF-8 路径的行数应当能落到文件上（relative = {:?}）",
+            file.relative
+        );
+    }
+
+    #[test]
     fn status_reports_added_and_removed_lines() {
         if !git_available() {
             return;
@@ -4669,6 +4722,35 @@ mod tests {
         cleanup(&top);
     }
 
+    #[test]
+    fn status_without_counts_skips_line_counts() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("app.ts"), "a\nb\nc\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        fs::write(repo.join("app.ts"), "a\nB\nc\nd\ne\n").unwrap();
+
+        // with_counts=false（轮询时「变更」面板没开）：条目还在，但不跑 numstat，行数全 None
+        let lean = status_of_with_counts(&repo, false).unwrap();
+        assert_eq!(lean.files.len(), 1);
+        let file = &lean.files[0];
+        assert_eq!(
+            (file.unstaged_added, file.unstaged_removed),
+            (None, None)
+        );
+
+        // 同一个工作区，要行数时照常拿到
+        let full = status_of_with_counts(&repo, true).unwrap();
+        let file = &full.files[0];
+        assert_eq!((file.unstaged_added, file.unstaged_removed), (Some(3), Some(1)));
+
+        cleanup(&top);
+    }
+
     // ---- 修正 / 撤销提交 ----
 
     #[test]
@@ -4701,6 +4783,39 @@ mod tests {
         amend_commit(&repo, None).unwrap();
         let subject = run_git(&repo, &["log", "-1", "--format=%s"]).unwrap().unwrap();
         assert_eq!(String::from_utf8_lossy(&subject).trim(), "first (fixed)");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn amend_without_message_rejects_empty_index() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "first").unwrap();
+
+        // 暂存区空 + 不给信息：`--amend --no-edit` 是 no-op，git 照样 0 退出，
+        // 得由我们报错，别让界面误报「成功」
+        let err = amend_commit(&repo, None).unwrap_err();
+        assert!(err.contains("没有要修正的内容"), "实际: {err}");
+
+        // 只改提交信息：暂存区空但给了 -m，允许（不是 no-op）
+        let amended = amend_commit(&repo, Some("first (renamed)")).unwrap();
+        assert!(amended.files.is_empty());
+        let subject = run_git(&repo, &["log", "-1", "--format=%s"]).unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&subject).trim(), "first (renamed)");
+
+        // 有暂存改动 + 不给信息：正常 amend（沿用原信息）
+        fs::write(repo.join("a.txt"), "1\n2\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let amended = amend_commit(&repo, None).unwrap();
+        assert!(amended.files.is_empty());
+        let subject = run_git(&repo, &["log", "-1", "--format=%s"]).unwrap().unwrap();
+        assert_eq!(String::from_utf8_lossy(&subject).trim(), "first (renamed)");
 
         cleanup(&top);
     }
