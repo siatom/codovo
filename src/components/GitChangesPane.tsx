@@ -924,6 +924,12 @@ function ChangeRow({
   );
 }
 
+/**
+ * 目录名里的分隔符按平台显示：Windows 用反斜杠，其余平台保持正斜杠。
+ * 和 lib/keys.ts 判主修饰键同一套办法（只看 UA）——判错顶多是观感差异，不涉及系统能力。
+ */
+const DIR_SEP = /windows/i.test(navigator.userAgent) ? "\\" : "/";
+
 /** 树视图里的目录行：点一下收起或展开它下面的东西 */
 function ChangeDirRow({
   node,
@@ -957,8 +963,8 @@ function ChangeDirRow({
       <span className="flex shrink-0 items-center text-fg-icon">
         <IconFolder className="h-3.5 w-3.5" />
       </span>
-      {/* 单链已经合并过，这里可能是 `a\b\c` 这样一整段路径；用反斜杠贴合 Windows 观感 */}
-      <span className="min-w-0 flex-1 truncate">{node.name.split("/").join("\\")}</span>
+      {/* 单链已经合并过，这里可能是 `a/b/c` 这样一整段路径；分隔符按平台显示（见 DIR_SEP） */}
+      <span className="min-w-0 flex-1 truncate">{node.name.split("/").join(DIR_SEP)}</span>
       {mark && <GitMarkDot mark={mark} className="h-1.5 w-1.5" />}
     </button>
   );
