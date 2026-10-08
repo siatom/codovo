@@ -68,6 +68,8 @@ interface ToolPaneProps {
   gitReady: boolean;
   /** 文件树里点一个文件：打开文件内容 */
   onSelectFile: (path: string) => void;
+  /** 文件树里右键网页文件：在右栏的内置浏览器里打开它 */
+  onOpenInBrowser: (path: string) => void;
   /** 改动列表 / 提交历史里点一个文件：打开差异视图 */
   onOpenDiff: (path: string, source: DiffSource) => void;
   /**
@@ -117,6 +119,7 @@ export function ToolPane({
   gitMarks,
   gitReady,
   onSelectFile,
+  onOpenInBrowser,
   onOpenDiff,
   onOpenMatch,
   onBranchChanged,
@@ -185,6 +188,7 @@ export function ToolPane({
           gitMarks={gitMarks}
           isRepo={gitReady}
           onSelect={onSelectFile}
+          onOpenInBrowser={onOpenInBrowser}
           onBeforeRename={onBeforeRename}
           onRenamed={onEntryRenamed}
           onDeleted={onEntryDeleted}

@@ -197,6 +197,17 @@ pub struct ImageContent {
     too_large: bool,
 }
 
+/// 把工作区根加进 asset 协议的白名单：内置浏览器要用它加载工作区里的网页文件。
+///
+/// 只加不减——`Scope` 的 forbid 是永久的（没有取消接口），关工作区时 forbid 掉的话，
+/// 再打开同一个目录会被永久拒绝。多留几条白名单仍然只限于用户真正开过的目录。
+fn allow_asset_preview(app: &tauri::AppHandle, root: &Path) {
+    if let Err(error) = tauri::Manager::asset_protocol_scope(app).allow_directory(root, true) {
+        // 预览不了不算致命，别让「打开工作区」跟着失败
+        eprintln!("asset 协议放行失败（{}）: {error}", root.display());
+    }
+}
+
 /// 打开 / 切换工作区：登记这个工作区的**全部工作目录**，并把目录监听整体换成这一组。
 ///
 /// 一次收一组而不是逐个调，是因为监听是「整组替换」的：逐个来的话后一个根会把前一个
@@ -217,7 +228,9 @@ pub fn workspace_activate(
         if !target.is_dir() {
             return Err(format!("不是有效的目录: {raw}"));
         }
-        resolved.push(state.register(target)?);
+        let root = state.register(target)?;
+        allow_asset_preview(&app, &root);
+        resolved.push(root);
     }
     watch.watch_roots(app, &resolved);
     Ok(resolved.iter().map(|root| display(root)).collect())
@@ -229,6 +242,7 @@ pub fn workspace_activate(
 /// 工作目录时不能顺手 activate——那会把监听抢到它身上，当前工作区的文件树就不刷了。
 #[tauri::command]
 pub fn workspace_register(
+    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
     roots: Vec<String>,
 ) -> Result<Vec<String>, String> {
@@ -238,7 +252,9 @@ pub fn workspace_register(
         if !target.is_dir() {
             return Err(format!("不是有效的目录: {raw}"));
         }
-        resolved.push(state.register(target)?);
+        let root = state.register(target)?;
+        allow_asset_preview(&app, &root);
+        resolved.push(root);
     }
     Ok(resolved.iter().map(|root| display(root)).collect())
 }

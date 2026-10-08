@@ -17,10 +17,11 @@ import { RemotePane } from "./RemotePane";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
-import { isPathInside, pathKey, type MovePair } from "../lib/fs";
+import { isPathInside, ownerRoot, pathKey, toDisplayPath, type MovePair } from "../lib/fs";
 import { sameTab, type DiffSource, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
 import type { Workspace } from "../lib/workspaces";
+import type { BrowserFileRequest } from "./BrowserPane";
 
 /** 交给 App 的两个 handle，供侧栏 AI CLI、编辑器浮窗路由到**当前工作区**的实例 */
 export interface WorkspaceHandles {
@@ -74,6 +75,8 @@ export function WorkspacePane({
   const [tool, setTool] = useState<ToolId>(() => readTool(root));
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(false);
+  /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
+  const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
 
   // 工作区内换了活动根（比如把另一个工作目录设为主要），右栏模块跟着换成那个根上次看的。
   // 实例不重建，所以初始值那一次不会重跑，得显式同步
@@ -273,6 +276,32 @@ export function WorkspacePane({
   /** 点同一条结果也要能重新定位一次，靠它每次造一个新对象 */
   const revealNonceRef = useRef(0);
 
+  /** 连点同一个网页文件也要重新加载一次，靠它每次造一个新对象 */
+  const browserNonceRef = useRef(0);
+
+  /**
+   * 文件树右键网页文件 → 丢给右栏的「浏览器」模块预览。
+   *
+   * 加载走 asset 协议（地址在 `BrowserPane` 里拼）：WebView2 不让 http 源的 iframe 读
+   * `file://`，而把内容塞进 srcdoc 又会让相对路径的 css / js / 图片全部失效。asset 协议
+   * 由后端按工作区根放行（见 `fs_api::allow_asset_preview`），相对路径天然能解析。
+   */
+  const openInBrowser = useCallback(
+    (path: string) => {
+      // 地址栏里显示工作区内的相对路径，比一长串绝对路径好认
+      const owner = ownerRoot(workspace.roots, path);
+      const full = toDisplayPath(path);
+      const base = owner ? toDisplayPath(owner).replace(/\/+$/, "") : "";
+      const label = base && full.startsWith(`${base}/`) ? full.slice(base.length + 1) : full;
+      setBrowserFile({ path, label, nonce: (browserNonceRef.current += 1) });
+      // 切到浏览器模块并展开。不能走 pickTool——它在本模块已经选中时是「收起面板」
+      setTool("browser");
+      saveTool(root, "browser");
+      setRightOpen(true);
+    },
+    [root, workspace.roots],
+  );
+
   /** 搜索结果里点一条：打开文件并把光标送到那一处 */
   const openMatch = useCallback(
     (path: string, line: number, column: number, length: number) => {
@@ -461,6 +490,7 @@ export function WorkspacePane({
                       gitMarks={git.marks}
                       gitReady={gitReady}
                       onSelectFile={openFile}
+                      onOpenInBrowser={openInBrowser}
                       onOpenDiff={openDiff}
                       onOpenMatch={openMatch}
                       onPickWorktree={pickWorktree}
@@ -504,6 +534,7 @@ export function WorkspacePane({
               >
                 <BrowserPane
                   root={root}
+                  request={browserFile}
                   fullscreen={rightFullscreen}
                   onToggleFullscreen={onToggleRightFullscreen}
                 />

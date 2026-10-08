@@ -1,9 +1,37 @@
-import { useCallback, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { FullscreenButton } from "./FullscreenButton";
 import { IconExternalLink, IconRefresh } from "./icons";
 
 const URL_KEY = "codedock.browserUrl.";
+
+/**
+ * 文件树里点了「在内置浏览器中打开」时送进来的请求。
+ * `path` 是磁盘上的真实路径，`label` 是地址栏里显示的相对路径（比一长串绝对路径好认）。
+ * nonce 每来一次加一，保证连点同一个文件也会重新加载。
+ */
+export interface BrowserFileRequest {
+  path: string;
+  label: string;
+  nonce: number;
+}
+
+/**
+ * asset 协议的地址。**不能直接用 `convertFileSrc`**：它把整条路径当成一个段来百分号编码，
+ * 连分隔符一起编码掉（`D%3A%5CUsers%5C…`），于是 iframe 里相对路径的 css / js / 图片
+ * 全按「最后一个段」来解析，落到根上变成 404。这里保留 `/` 当分隔符、只逐段编码，
+ * 相对路径才接得上（asset 协议那边只认解码后的整条路径，两种写法都收）。
+ *
+ * 基址借 `convertFileSrc` 探出来（Windows 是 `http://asset.localhost/`，
+ * macOS / Linux 是 `asset://localhost/`），免得自己按平台拼。
+ */
+function assetUrl(path: string): string {
+  const probe = convertFileSrc("x");
+  const base = probe.slice(0, -1);
+  const segments = path.split(/[\\/]+/).filter(Boolean).map(encodeURIComponent);
+  return base + segments.join("/");
+}
 
 /**
  * 记住上次的地址：右栏会记住停在哪个模块，回来时地址栏空着很别扭。
@@ -35,17 +63,21 @@ function toUrl(raw: string): string {
 }
 
 /**
- * 右栏的「浏览器」模块：用 iframe 内嵌页面，主要用来预览跑在终端里的本地服务。
+ * 右栏的「浏览器」模块：用 iframe 内嵌页面，主要用来预览跑在终端里的本地服务，
+ * 也可以从文件树右键把工作区里的网页文件（html / htm / svg）丢进来预览。
  * 跨域站点拿不到 iframe 内部的地址，所以地址栏只认用户输入，不跟着页面内部跳转走；
  * 「刷新」是重挂 iframe，页面自己跳转到哪了会被拉回地址栏里那个地址。
  */
 export function BrowserPane({
   root,
+  request,
   fullscreen,
   onToggleFullscreen,
 }: {
   /** 地址按工作区各记一份：切工作区时看到的是各自上次预览的那个地址 */
   root: string;
+  /** 文件树送来的「打开这个文件」，null = 没有 */
+  request: BrowserFileRequest | null;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
@@ -53,12 +85,29 @@ export function BrowserPane({
   const [draft, setDraft] = useState(url);
   /** 变一次就重挂 iframe，等于刷新 */
   const [nonce, setNonce] = useState(0);
+  /**
+   * 当前预览的是工作区里的哪个文件。非空时地址栏里是文件相对路径而不是 URL，
+   * 「用系统浏览器打开」也得换成拿真实路径去开——asset 地址只在这个 webview 里认。
+   */
+  const [filePath, setFilePath] = useState<string | null>(null);
+
+  // 文件树点了「在内置浏览器中打开」。request 每次都是新对象（带新 nonce），
+  // 所以连点同一个文件也会重新加载一次
+  useEffect(() => {
+    if (!request) return;
+    setUrl(assetUrl(request.path));
+    setDraft(request.label);
+    setFilePath(request.path);
+    setNonce((count) => count + 1);
+  }, [request]);
 
   const commit = useCallback((raw: string) => {
     const next = toUrl(raw);
     if (!next) return;
     setUrl(next);
     setDraft(next);
+    // 地址栏里敲了新地址就是回到「预览本地服务」，不再当某个文件在预览
+    setFilePath(null);
     setNonce((count) => count + 1);
     try {
       window.sessionStorage.setItem(URL_KEY + root, next);
@@ -69,13 +118,20 @@ export function BrowserPane({
 
   // 拒绝被嵌入的站点在 iframe 里就是一片空白，给它留个出口
   const openExternal = useCallback(() => {
-    void openUrl(url).catch(() => {
-      // 系统浏览器没打开就算了，面板里的 iframe 还在
+    // 文件走系统默认程序：asset 地址只在这个 webview 里有效，丢给系统浏览器打不开
+    const target = filePath;
+    void (target ? openPath(target) : openUrl(url)).catch(() => {
+      // 没打开就算了，面板里的 iframe 还在
     });
-  }, [url]);
+  }, [filePath, url]);
 
   const HEAD_BUTTON =
     "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
+
+  // 预览文件时给地址挂一个随 nonce 变的查询串：改完文件点「重新加载」要拿到新内容，
+  // 不能让 WebView 的缓存把旧的一版顶回来（asset 协议自己不发 Cache-Control）。
+  // 查询串不影响相对路径的解析，asset 协议也只认路径、不看查询。
+  const src = filePath ? `${url}?t=${nonce}` : url;
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
@@ -116,14 +172,15 @@ export function BrowserPane({
           // 页面多半是按白底设计的，深色主题下不给个白底会透出面板色
           <iframe
             key={nonce}
-            src={url}
+            src={src}
             title="浏览器"
             className="absolute inset-0 h-full w-full border-0 bg-white"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6">
             <p className="max-w-[280px] text-center text-[12px] leading-relaxed text-fg-faint">
-              在上面填地址回车即可预览。拒绝被嵌入的站点（X-Frame-Options）会显示空白。
+              在上面填地址回车即可预览本地服务，也可以从文件树右键网页文件在这里打开。
+              拒绝被嵌入的站点（X-Frame-Options）会显示空白。
             </p>
           </div>
         )}

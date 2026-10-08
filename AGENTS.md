@@ -70,6 +70,16 @@ git push --follow-tags            # 连 tag 一起推
   model：换 model 的 effect 在渲染之后才跑，从别的文件切到 md 的那一帧读到的还是上一个文件的
   model，而 `isPreview` 由 false 变 true 只发生这一帧，之后依赖不变、memo 不重算，错误内容就一直
   留在预览层上（切回编辑再进预览才会纠正）。
+- 内置浏览器预览工作区里的网页文件（`BrowserPane` 的 `request`）走 Tauri 的 **asset 协议**：
+  WebView2 不让 http 源的 iframe 读 `file://`，塞 `srcdoc` 又会让相对路径的 css / js / 图片全废
+  （同 markdown 预览那个坑）。**地址是自己拼的、不用 `convertFileSrc`**——后者把整条路径
+  （含分隔符）编码成一个段，相对路径会解析到根上、全部 404；`assetUrl` 保留 `/` 只逐段编码，
+  基址再从 `convertFileSrc` 探出来。scope **不放 `**/*`**（官方称「极度宽松」），而是开
+  `protocol-asset` 特性后在 `fs_api::allow_asset_preview` 里**按工作区根运行时放行**，和 `FsState`
+  白名单同一个口径；`workspace_close` **刻意不 forbid**——`Scope` 的 forbid 没有取消接口，关掉再
+  打开同一个目录会被永久拒绝。预览文件时 iframe 地址挂一个随 nonce 变的查询串（asset 协议不发
+  `Cache-Control`，改完文件点「重新加载」要拿到新内容）；这时地址栏里显示的是相对路径、
+  「用系统浏览器打开」也换成拿真实路径走 `openPath`（asset 地址只在本 webview 里认）。
 - 差异基线照 VS Code（暂存 `HEAD↔index`、未暂存 `index↔工作区`），两侧统一按 LF 比较；差异编辑器
   懒创建、只读、不参与脏标记，三种差异靠 model URI 的 scheme 段区分。
 - **行级**暂存 / 取消暂存 / 放弃复用整块的补丁链路：后端 `patch_for_lines` 把「选中若干行」转成

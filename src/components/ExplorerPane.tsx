@@ -54,6 +54,7 @@ import {
   IconFile,
   IconFolderOpen,
   IconFolderPlus,
+  IconGlobe,
   IconPencil,
   IconPlus,
   IconRefresh,
@@ -78,6 +79,8 @@ interface ExplorerPaneProps {
   /** 工作区是不是 git 仓库。不是的话「加入 .gitignore」没有意义，不给这个菜单项 */
   isRepo: boolean;
   onSelect: (path: string) => void;
+  /** 右键网页文件（html / htm / svg）→ 在右栏的内置浏览器里打开它 */
+  onOpenInBrowser: (path: string) => void;
   /** 改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
   onBeforeRename: () => Promise<boolean>;
   /** 改名 / 移动成功：编辑器里落在旧路径下的标签要跟着换到新路径 */
@@ -101,10 +104,10 @@ const ICON_BUTTON =
  * 左右内边距），贴着窗口边缘时用它往回收。窄了这一行就会折成两行。
  */
 const MENU_W = 168;
-// 菜单最多 11 项（含两处按条件出现的项）+ 最多 5 条分组分隔线；按每项 ~24px、
+// 菜单最多 12 项（含几处按条件出现的项）+ 最多 5 条分组分隔线；按每项 ~24px、
 // 每条分隔线 ~9px 估。宁可估大，估小了贴底的菜单会被窗口下沿裁掉
 // （这个值只用于把菜单顶回可视区）。
-const MENU_H = 340;
+const MENU_H = 380;
 /** 菜单项统一「图标 + 文字」两段；nowrap 免得长文案折行 */
 const MENU_ITEM =
   "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -126,6 +129,18 @@ function folderName(path: string): string {
 /** 路径末级名字（文件或目录都行）。合成只用于展示的条目时用。 */
 function baseName(path: string): string {
   return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
+/**
+ * 能不能丢进内置浏览器预览：网页文档和浏览器能直接渲染的矢量图。
+ * 和编辑器那边的图片预览是两回事（`svg` 在编辑器里是当文本打开的）。
+ */
+function isWebFile(path: string): boolean {
+  const name = baseName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return false;
+  const ext = name.slice(dot + 1);
+  return ext === "html" || ext === "htm" || ext === "svg";
 }
 
 /** 去掉被同一批里另一个路径包含的项：移动 / 删除父项已经连带处理了子项 */
@@ -228,6 +243,7 @@ export function ExplorerPane({
   gitMarks,
   isRepo,
   onSelect,
+  onOpenInBrowser,
   onBeforeRename,
   onRenamed,
   onDeleted,
@@ -574,6 +590,19 @@ export function ExplorerPane({
       setActionError(`无法打开：${String(reason)}`);
     }
   }, []);
+
+  /**
+   * 把这一行丢给右栏的内置浏览器预览。切到哪个模块、面板怎么展开由外层决定，
+   * 这里只管发起——文件树不该知道右栏的事。
+   */
+  const openInBrowser = useCallback(
+    (entry: FileEntry) => {
+      setMenu(null);
+      setActionError(null);
+      onOpenInBrowser(entry.path);
+    },
+    [onOpenInBrowser],
+  );
 
   /** 把这一行加进它所属根的 .gitignore，然后重列那个根让置灰立刻生效 */
   const addToIgnore = useCallback(
@@ -1904,7 +1933,19 @@ export function ExplorerPane({
               复制相对路径
             </button>
             <div className={MENU_DIVIDER} />
-            {/* 四、交给系统：定位到文件管理器 / 用关联程序打开 */}
+            {/* 四、打开方式：内置浏览器 / 文件管理器 / 关联程序。
+                浏览器那一项只对网页文件出现，且右栏「浏览器」模块被设置关掉时不出现
+                （模块没开，点了也没地方显示） */}
+            {!menu.entry.isDir && isWebFile(menu.entry.path) && settings.rightBrowserVisible && (
+              <button
+                type="button"
+                onClick={() => openInBrowser(menu.entry)}
+                className={MENU_ITEM}
+              >
+                <IconGlobe className="h-3.5 w-3.5" />
+                在内置浏览器中打开
+              </button>
+            )}
             <button
               type="button"
               onClick={() => void revealInSystem(menu.entry)}
