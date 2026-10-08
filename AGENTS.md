@@ -176,6 +176,14 @@ git push --follow-tags            # 连 tag 一起推
   不分页一次取全（自带 LIMIT 的语句按原样取，不外包分页）；导出超时单独放宽到 300s，且**行数上限 10 万**
   ——超了**截断**并回 `truncated` 标记由前端提示（不报错，免得用户无从下手）。两个入口（结果区底部、
   表节点右键=整表导出）共用 `DbExportMenu`，invoke 只在调用方，组件不直接调后端。
+- **表结构查看器**（`database.rs` 的 `db_table_structure` + `TableStructure.tsx`）：选中表后「表格」子视图内
+  多一个「数据 / 结构」切换（默认仍是「数据」，不改旧行为），「结构」展示列 / 索引 / 外键 / 建表 DDL 四块。
+  **MySQL 的 information_schema 文本列带 `utf8mb3_bin` 排序规则**（协议里是 `BINARY` 标志，sqlx 的
+  `String` 解码器拒收），列名 / 类型 / 默认值 / 注释一律走 `text_cell!` / 新增的 `text_cell_opt!`——后者
+  保留 NULL 语义，好把默认值与注释的「没有」和「空串」分开。DDL 三库口径不同：MySQL 走 `SHOW CREATE
+  TABLE`（视图退 `SHOW CREATE VIEW`）；SQLite 直接取 `sqlite_master.sql`；**PG 没有单条等价语句，由已取
+  元数据尽力拼 `CREATE TABLE`**（视图则贴 `pg_get_viewdef`），所以 `ddl_approximate=true`，UI 上标注
+  「由元数据尽力拼出」。拿不到的不伪造：SQLite 没有列注释、`PRAGMA` 也不给外键约束名，一律留空。
 - **数据库 Agent**（`db_agent.rs` + `agent.rs` 的 `database` 模式）：对话式生成并执行**只读** SQL。
   走**独立的 opencode 进程**（前端用哨兵 root `__db_agent__`，cwd 落在应用配置目录下，不占工作区），
   工具由 CodeDock 自己当 **local MCP server** 提供：opencode 按 opencode.json 的 `mcp.db` 拉起
