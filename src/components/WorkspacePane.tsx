@@ -122,8 +122,12 @@ export function WorkspacePane({
     return out;
   }, [workspace.roots, gitRoots]);
 
-  // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU
-  const git = useGitStatus(pollRoots, visible);
+  // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU。
+  // 行数（numstat）只在「变更」面板可见时才要：轮询每 2 秒一次，面板收着或看别的
+  // 模块时那两次 numstat 纯属浪费。这里用原始 state `tool` 判断而不是派生的
+  // `activeTool`——后者依赖下面 hook 的 `isRepo`（不是仓库会回落到别的模块），
+  // 没法反过来喂给 hook。tool 指向非仓库时后端会在 numstat 之前就短路，等价于不跑
+  const git = useGitStatus(pollRoots, visible, rightOpen && tool === "changes");
   const { settings } = useSettings();
 
   // 变更面板按根分组，每根挂一个完整的面板，各自拿自己的控制器
