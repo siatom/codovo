@@ -173,6 +173,7 @@ pub fn run() {
             database::db_databases,
             database::db_schemas,
             database::db_tables,
+            database::db_table_structure,
             database::db_query,
             database::db_export,
             db_agent::db_agent_set_target,
