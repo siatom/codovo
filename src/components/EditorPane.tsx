@@ -35,11 +35,15 @@ import { FullscreenButton } from "./FullscreenButton";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
+  IconArrowDown,
+  IconArrowUp,
   IconBot,
   IconCheck,
   IconChevronDown,
   IconClose,
   IconEye,
+  IconLayoutColumns,
+  IconLayoutSingle,
   IconMore,
   IconPencil,
   IconTerminal,
@@ -66,6 +70,25 @@ const STATUS_MENU_W = 200;
 /** 状态栏上的小按钮，和右侧编码入口同一套写法 */
 const STATUS_BUTTON =
   "flex shrink-0 items-center rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-hover hover:text-fg";
+
+/** 状态栏上的图标按钮（差异视图的排布切换 / 上一处下一处），禁用态不给 hover 反馈 */
+const STATUS_ICON_BUTTON =
+  "flex shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
+
+/**
+ * 差异视图的排布（内联 / 并排）是窗口级偏好，存 sessionStorage：多窗口下各记各的。
+ * 默认内联——窄面板里左右并排会把两侧压得很窄，内联更好读。
+ */
+const DIFF_SIDE_BY_SIDE_KEY = "codedock.diffSideBySide";
+
+function readDiffSideBySide(): boolean {
+  try {
+    return window.sessionStorage.getItem(DIFF_SIDE_BY_SIDE_KEY) === "1";
+  } catch {
+    // 读不到就用默认的内联
+    return false;
+  }
+}
 
 /**
  * 状态栏要显示的「当前文件视图信息」。从 editor / model 现取后落到 state（不像编码那样
@@ -342,6 +365,11 @@ export function EditorPane({
   const diffModelsRef = useRef(new Map<string, CachedDiff>());
   /** 「滚到第一处改动」还欠着：model 挂上时差异往往还没算完，等 onDidUpdateDiff 再滚 */
   const diffRevealPendingRef = useRef(false);
+  /**
+   * 差异编辑器当前算出的改动块列表（`getLineChanges()` 的结果）。上一处 / 下一处与
+   * 「第 x / N 处」都读它，免得每次跳转重算；差异重算 / 换标签由 syncDiffChanges 刷新。
+   */
+  const diffChangesRef = useRef<monaco.editor.ILineChange[]>([]);
 
   const activeRef = useRef<Tab | null>(active);
   /**
@@ -351,6 +379,11 @@ export function EditorPane({
   const closeTabRef = useRef<(tab: Tab) => void>(() => {});
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [diffStatus, setDiffStatus] = useState<Status>({ kind: "idle" });
+  /** 差异视图的排布偏好（内联 / 并排），窗口级；初值从 sessionStorage 读 */
+  const [diffSideBySide, setDiffSideBySide] = useState(readDiffSideBySide);
+  /** 当前差异的改动块数量与所处块序号（0 基），驱动状态栏的「第 x / N 处」与按钮禁用态 */
+  const [diffChangeCount, setDiffChangeCount] = useState(0);
+  const [diffChangeIndex, setDiffChangeIndex] = useState(0);
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
   /**
    * 待确认的关闭动作（单个脏标签 / 关闭全部 / 关闭其他）。走自研确认框，
@@ -419,6 +452,10 @@ export function EditorPane({
   fontFamilyRef.current = settings.editorFontFamily;
   const fontBoldRef = useRef(settings.editorFontBold);
   fontBoldRef.current = settings.editorFontBold;
+  // 差异编辑器只在第一次要看差异时建，建实例那一刻闭包里拿不到最新 state，
+  // 所以排布偏好也走 ref（和 fontSizeRef 同一套路）
+  const diffSideBySideRef = useRef(diffSideBySide);
+  diffSideBySideRef.current = diffSideBySide;
 
   // 只重算当前文件的脏标记：别的标签的 model 没在编辑器里，比较不了版本号。
   // 差异标签是只读的，永远没有脏标记
@@ -858,6 +895,14 @@ export function EditorPane({
     [disposeModels, forgetKeys],
   );
 
+  /** 读一遍当前差异的改动块缓存进 ref 并同步数量；差异重算 / 换标签 / 打开时都走它 */
+  const syncDiffChanges = useCallback(() => {
+    const changes = diffRef.current?.getLineChanges() ?? [];
+    diffChangesRef.current = changes;
+    setDiffChangeCount(changes.length);
+    return changes;
+  }, []);
+
   /**
    * 把差异视图滚到第一处改动（在「变更」里点开一个文件时用）。
    * 差异是 Monaco 异步算出来的：model 刚挂上时 getLineChanges() 还是 null，得等
@@ -867,12 +912,41 @@ export function EditorPane({
   const revealFirstDiffChange = useCallback(() => {
     const diff = diffRef.current;
     if (!diff) return;
-    const changes = diff.getLineChanges();
-    if (!changes || changes.length === 0) return;
+    const changes = syncDiffChanges();
+    if (changes.length === 0) return;
     diffRevealPendingRef.current = false;
+    setDiffChangeIndex(0);
     // 纯删除的改动块里 modifiedStartLineNumber 可能落到区块前一行的位置，兜到 1
     const line = Math.max(1, changes[0].modifiedStartLineNumber);
     requestAnimationFrame(() => diffRef.current?.getModifiedEditor().revealLineInCenter(line));
+  }, [syncDiffChanges]);
+
+  /**
+   * 跳到第 index 处改动（0 基，越界收进 [0, count-1]）。状态栏的上一处 / 下一处按钮与
+   * F7 / Shift+F7 共用它；纯删除块的行号落到块前时兜到 1（同 revealFirstDiffChange）。
+   */
+  const gotoDiff = useCallback((index: number) => {
+    const changes = diffChangesRef.current;
+    if (changes.length === 0) return;
+    const next = Math.min(Math.max(index, 0), changes.length - 1);
+    setDiffChangeIndex(next);
+    const line = Math.max(1, changes[next].modifiedStartLineNumber);
+    diffRef.current?.getModifiedEditor().revealLineInCenter(line);
+  }, []);
+
+  /** 内联 / 并排切换：改实例选项、写回 sessionStorage，下次打开沿用 */
+  const toggleDiffSideBySide = useCallback(() => {
+    const next = !diffSideBySideRef.current;
+    diffSideBySideRef.current = next;
+    setDiffSideBySide(next);
+    diffRef.current?.updateOptions({ renderSideBySide: next });
+    try {
+      window.sessionStorage.setItem(DIFF_SIDE_BY_SIDE_KEY, next ? "1" : "0");
+    } catch {
+      // 存不进去也无所谓，只是下次不记得选择
+    }
+    // 两侧宽度重排后补一次 layout，让行号栏宽度与滚动位置按新布局重算
+    requestAnimationFrame(() => diffRef.current?.layout());
   }, []);
 
   // 差异编辑器只在第一次真的要看差异时才建：省一份初始化，
@@ -882,8 +956,8 @@ export function EditorPane({
     const container = diffContainerRef.current;
     if (!container) return;
     diffRef.current = monaco.editor.createDiffEditor(container, {
-      // 内联：新增/删除行上下相邻，窄面板下也比左右并排好读
-      renderSideBySide: false,
+      // 排布读会话里的偏好（默认内联：新增/删除行上下相邻，窄面板下也比左右并排好读）
+      renderSideBySide: diffSideBySideRef.current,
       readOnly: true,
       originalEditable: false,
       automaticLayout: true,
@@ -897,11 +971,12 @@ export function EditorPane({
       renderOverviewRuler: false,
       padding: { top: 8 },
     });
-    // 差异算完的那一刻才知道第一处改动在哪
+    // 差异算完的那一刻才知道第一处改动在哪；顺带把块数量同步给状态栏
     diffRef.current.onDidUpdateDiff(() => {
       if (diffRevealPendingRef.current) revealFirstDiffChange();
+      else syncDiffChanges();
     });
-  }, [revealFirstDiffChange]);
+  }, [revealFirstDiffChange, syncDiffChanges]);
 
   const showDiff = useCallback(
     async (tab: Extract<Tab, { kind: "diff" }>) => {
@@ -1341,8 +1416,24 @@ export function EditorPane({
    * （见 ToolPane），所以这里只管编辑器区内。
    */
   const onPaneKeyDown = (event: KeyboardEvent<HTMLElement>) => {
-    if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
     const current = activeRef.current;
+    // 差异视图的改动跳转：F7 下一处、Shift+F7 上一处。裸功能键进不了 shortcuts 表
+    // （那张表要求带 Mod/Ctrl 前缀），所以在差异标签上就地处理。挂在捕获阶段还能抢在
+    // Monaco 自带的 diffReview 键位（默认也用 F7）之前，吃掉它、免得两头各跳一次。
+    if (
+      current?.kind === "diff" &&
+      diffStatus.kind === "ready" &&
+      event.key === "F7" &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      gotoDiff(diffChangeIndex + (event.shiftKey ? -1 : 1));
+      return;
+    }
+    if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
     if (!current) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1415,6 +1506,12 @@ export function EditorPane({
     status.kind !== "binary" &&
     status.kind !== "tooLarge" &&
     (activeEncoding !== null || status.kind === "error");
+
+  /**
+   * 差异标签就绪时也要状态栏：放「内联/并排切换 + 上一处/下一处 + 第 x / N 处」。
+   * 差异没有 viewInfo，光靠原来那两个条件状态栏整块都不显示。
+   */
+  const showDiffBar = isDiffTab && diffStatus.kind === "ready";
 
   const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
@@ -1778,12 +1875,53 @@ export function EditorPane({
         )}
       </div>
 
-      {/* 状态栏。左侧是光标位置与视图选项（语言 / 缩进 / 换行符 / 自动换行），
-          右侧仍只放文件编码入口（行为不变）。差异 / 图片 / 加载中没有 viewInfo，左侧整块收起 */}
-      {(showEncodingBar || viewInfo !== null) && (
+      {/* 状态栏。普通文件左侧是光标位置与视图选项（语言 / 缩进 / 换行符 / 自动换行），
+          差异标签左侧换成排布切换与改动跳转；右侧仍只放文件编码入口（行为不变）。
+          图片 / 加载中没有 viewInfo，左侧整块收起 */}
+      {(showEncodingBar || viewInfo !== null || showDiffBar) && (
         <div className="flex h-6 shrink-0 items-center justify-between gap-2 border-t border-line px-1.5">
           <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
-            {viewInfo && (
+            {showDiffBar && (
+              <>
+                <button
+                  type="button"
+                  onClick={toggleDiffSideBySide}
+                  title={diffSideBySide ? "切换到内联视图" : "切换到并排视图"}
+                  className={STATUS_ICON_BUTTON}
+                >
+                  {diffSideBySide ? (
+                    <IconLayoutSingle className="h-3.5 w-3.5" />
+                  ) : (
+                    <IconLayoutColumns className="h-3.5 w-3.5" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => gotoDiff(diffChangeIndex - 1)}
+                  disabled={diffChangeCount <= 1}
+                  title="上一处改动（Shift+F7）"
+                  className={STATUS_ICON_BUTTON}
+                >
+                  <IconArrowUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => gotoDiff(diffChangeIndex + 1)}
+                  disabled={diffChangeCount <= 1}
+                  title="下一处改动（F7）"
+                  className={STATUS_ICON_BUTTON}
+                >
+                  <IconArrowDown className="h-3.5 w-3.5" />
+                </button>
+                <span
+                  title="当前位置"
+                  className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
+                >
+                  {diffChangeCount === 0 ? "无改动" : `第 ${diffChangeIndex + 1} / ${diffChangeCount} 处`}
+                </span>
+              </>
+            )}
+            {!showDiffBar && viewInfo && (
               <>
                 <span
                   title="光标位置"
