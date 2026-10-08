@@ -413,6 +413,11 @@ export function gitCommitFiles(root: string, rev: string): Promise<GitCommitFile
   return invoke<GitCommitFile[]>("git_commit_files", { root, rev });
 }
 
+/** 两个 ref 之间改动过的文件列表（比较视图用） */
+export function gitCompareFiles(root: string, from: string, to: string): Promise<GitCommitFile[]> {
+  return invoke<GitCommitFile[]>("git_compare_files", { root, from, to });
+}
+
 /** 某个提交的改动规模（文件数 / 增行 / 删行）。悬停浮框按需拉 */
 export function gitCommitStat(root: string, rev: string): Promise<CommitStat> {
   return invoke<CommitStat>("git_commit_stat", { root, rev });
@@ -535,6 +540,15 @@ export function gitMergeAbort(root: string): Promise<GitStatusPayload> {
 /** 冲突都解决并暂存后，用 MERGE_MSG 提交完成合并 */
 export function gitMergeContinue(root: string): Promise<GitStatusPayload> {
   return invoke<GitStatusPayload>("git_merge_continue", { root });
+}
+
+/** 解决一个冲突文件：接受当前侧 / 传入侧 / 保留两者，然后标记为已解决 */
+export function gitResolveConflict(
+  root: string,
+  path: string,
+  choice: "ours" | "theirs" | "both",
+): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_resolve_conflict", { root, path, choice });
 }
 
 /**

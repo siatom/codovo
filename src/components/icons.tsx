@@ -800,6 +800,14 @@ export const IconArrowUp = icon(
   </>,
 );
 
+/** 下一处的下箭头，和 IconArrowUp 镜像，用在差异视图的「下一处改动」上 */
+export const IconArrowDown = icon(
+  <>
+    <path d="M12 5v14" />
+    <path d="m5 12 7 7 7-7" />
+  </>,
+);
+
 /** 放弃修改：回退箭头。和 IconRefresh 的双向回转箭头区分开，免得被当成"刷新" */
 export const IconUndo = icon(
   <>

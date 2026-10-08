@@ -19,6 +19,7 @@ import {
   gitCommitFiles,
   gitCommitGroups,
   gitCommitStat,
+  gitCompareFiles,
   gitCreateBranch,
   gitCreateTag,
   gitDeleteTag,
@@ -32,6 +33,7 @@ import {
   gitMergeContinue,
   gitPull,
   gitPush,
+  gitResolveConflict,
   gitStage,
   gitStashApply,
   gitStashDrop,
@@ -47,6 +49,7 @@ import {
   toDisplayPath,
 } from "../lib/fs";
 import {
+  isConflict,
   isStaged,
   isStashable,
   isUnstaged,
@@ -88,7 +91,10 @@ import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import {
   FileTypeIcon,
   IconArrowDownToLine,
+  IconArrowLeftToLine,
+  IconArrowRightToLine,
   IconArrowUpFromLine,
+  IconArrowsLeftRight,
   IconBranch,
   IconCheck,
   IconChevronDown,
@@ -195,6 +201,9 @@ const HOVER_HIDE_MS = 180;
 
 /** 提交框最多长到几行，再高就改成滚动。默认只有一行，内容折行后自己长 */
 const MESSAGE_MAX_ROWS = 5;
+
+/** 提交框 ↑ / ↓ 回填的会话历史上限：只留最近这么多条，够用又不至于把数组撑大 */
+const MESSAGE_HISTORY_MAX = 50;
 
 /** 手动拖高时，下面至少要留出来的空间：按钮行 + 报错位 + 两三行改动列表 */
 const MESSAGE_RESERVED_BELOW = 160;
@@ -448,39 +457,29 @@ const MERGE_ABORT_BUTTON =
   "shrink-0 rounded-md border border-danger-line px-3 py-1.5 text-[12px] text-danger hover:bg-danger-bg disabled:opacity-40";
 
 /**
- * 主按钮位在"非 merge 的进行中操作"下显示的短标签。
+ * 进行中的四种多步操作：中文名 + "继续"时用的动词。
  *
- * 变基 / 拣选 / 还原的收尾命令和 merge 不同，面板里没有能用的按钮（给了点了就报错），
- * 所以这里只放一句只读说明，具体引导看下面的提示条。用 `Record<string, string>` 而不是
- * 精确联合：调用处拿到的是可能为 null 的 mergeKind，宽松一点省掉一处无谓的窄化。
+ * merge 收尾是生成合并提交，说"完成合并"；变基 / 拣选 / 还原都是 `--continue`，
+ * 说"继续××"。四种现在都能在面板里收尾，文案按类型分开，不再指回终端。
  */
-const ONGOING_LABEL: Record<string, string> = {
-  rebase: "变基进行中",
-  cherryPick: "拣选提交中",
-  revert: "还原提交中",
+const ONGOING: Record<string, { name: string; verb: string }> = {
+  merge: { name: "合并", verb: "完成" },
+  rebase: { name: "变基", verb: "继续" },
+  cherryPick: { name: "拣选", verb: "继续" },
+  revert: { name: "还原", verb: "继续" },
 };
 
-/**
- * "进行中"提示条的整句文案。merge 有自己的收尾按钮，其余三种只能在终端里
- * `--continue` / `--abort`，所以文案直接指回终端。
- */
+/** 认不出的类型（理论上不会发生）也给个能读的兜底，别把 undefined 拼进文案里 */
+function ongoingLabels(kind: GitStatusPayload["mergeKind"]): { name: string; verb: string } {
+  return (kind && ONGOING[kind]) || { name: "操作", verb: "继续" };
+}
+
+/** "进行中"提示条的整句文案：还剩几个冲突 + 点哪个按钮收尾 */
 function ongoingText(kind: GitStatusPayload["mergeKind"], conflicts: number): string {
-  switch (kind) {
-    case "rebase":
-      return conflicts > 0
-        ? `正在进行变基：还有 ${conflicts} 个冲突未解决，请在终端解决后 git rebase --continue`
-        : "正在进行变基：请在终端 git rebase --continue 完成，或用 git rebase --abort 中止";
-    case "cherryPick":
-      return conflicts > 0
-        ? `正在拣选提交：还有 ${conflicts} 个冲突未解决，请在终端解决后 git cherry-pick --continue`
-        : "正在拣选提交：请在终端 git cherry-pick --continue 完成，或用 git cherry-pick --abort 中止";
-    case "revert":
-      return conflicts > 0
-        ? `正在还原提交：还有 ${conflicts} 个冲突未解决，请在终端解决后 git revert --continue`
-        : "正在还原提交：请在终端 git revert --continue 完成，或用 git revert --abort 中止";
-    default:
-      return "";
-  }
+  const { name, verb } = ongoingLabels(kind);
+  return conflicts > 0
+    ? `正在进行${name}：还有 ${conflicts} 个冲突未解决，解决后点「${verb}${name}」`
+    : `正在进行${name}：点「${verb}${name}」完成，或「中止${name}」放弃`;
 }
 
 /** AI 生成：塞进提交框内部的纯图标按钮，居中对齐、平时淡、悬停才亮 */
@@ -549,7 +548,8 @@ type Busy =
   | "push"
   | "merge"
   | "mergeAbort"
-  | "mergeContinue";
+  | "mergeContinue"
+  | "resolve";
 
 /**
  * 能不能「放弃修改」。
@@ -607,8 +607,8 @@ const SYNC_NOTICE = {
   commitPush: "正在提交并推送…",
   commitSync: "正在提交并同步…",
   merge: "正在合并…",
-  mergeAbort: "正在中止合并…",
-  mergeContinue: "正在完成合并…",
+  mergeAbort: "正在中止当前操作…",
+  mergeContinue: "正在完成当前操作…",
 } as const;
 
 /** 右键菜单：宽度按最长的一项量，高度按项数算出来，用来贴着窗口边缘收一收 */
@@ -621,6 +621,12 @@ const MENU_MAX_ITEMS = 4;
 const MENU_DIVIDER_H = 9;
 const MENU_MAX_DIVIDERS = 3;
 const MENU_H = MENU_ITEM_H * MENU_MAX_ITEMS + MENU_DIVIDER_H * MENU_MAX_DIVIDERS + MENU_PAD;
+/**
+ * 冲突行的解决菜单项更多（四条解决方式 + AI + 两条路径），文案也更长
+ * （「接受当前更改」+ `checkout --ours`），148px 装不下，单独宽一档、高度也重算。
+ */
+const CONFLICT_MENU_W = 220;
+const CONFLICT_MENU_H = MENU_ITEM_H * 8 + MENU_DIVIDER_H * 3 + MENU_PAD;
 /** 菜单项统一「图标 + 文字」两段；nowrap 免得长文案折行 */
 const MENU_ITEM =
   "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -860,6 +866,8 @@ function ChangeRow({
   onToggle,
   onDiscard,
   onMenu,
+  selected,
+  onSelect,
 }: {
   change: GitChange;
   /** true = 在"暂存的改动"组里，行内按钮是取消暂存 */
@@ -874,6 +882,8 @@ function ChangeRow({
   onToggle: (path: string) => void;
   onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+  selected: (change: GitChange) => boolean;
+  onSelect: (change: GitChange, event: ReactMouseEvent) => void;
 }) {
   const slash = change.relative.lastIndexOf("/");
   const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
@@ -896,19 +906,29 @@ function ChangeRow({
     hunkable && hunks !== undefined && hunks.open === change.path && hunks.staged === staged;
   // 展开区缩进到和文件名对齐：树视图里层级已经占了前导空白
   const hunkIndent = depth === null ? 4 : depth * INDENT + 4;
+  // 选中行用整行底色：和文件树选中同一套语义色，深浅主题下都对照得上
+  const isSelected = selected(change);
 
   return (
     <>
     <div
-      className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
+      // 选中行不挂 hover 底色，否则鼠标划过去会把选中色盖掉、看不出还选着哪些
+      className={`group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] ${
+        isSelected ? "bg-selected" : "hover:bg-hover"
+      }`}
       style={depth === null ? undefined : { paddingLeft: depth * INDENT + 4 }}
       onContextMenu={(event) => onMenu(change, staged, event)}
     >
       <button
         type="button"
-        // 目录项点开差异会去读目录、必报错，所以不响应点击（它只是折叠出来的一行占位）
-        onClick={() => {
+        // 目录项点开差异会去读目录、必报错，所以不响应点击（它只是折叠出来的一行占位）。
+        // 带 Ctrl/⌘ 或 Shift 的点击是「选中」而不是「打开」——这两种修饰键只改选中集。
+        onClick={(event) => {
           if (isDir) return;
+          if (event.ctrlKey || event.metaKey || event.shiftKey) {
+            onSelect(change, event);
+            return;
+          }
           onOpen(change.path, staged ? { mode: "staged" } : { mode: "unstaged" });
         }}
         title={isDir ? `${toDisplayPath(change.path)}（目录）` : toDisplayPath(change.path)}
@@ -1078,6 +1098,10 @@ interface ChangeRowActions {
   onToggle: (path: string) => void;
   onDiscard: (change: GitChange) => void;
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+  /** 这一行是不是批量操作的目标（选中态）。按组闭包好，签名里不用再带 staged */
+  selected: (change: GitChange) => boolean;
+  /** 按住 Ctrl/⌘ 或 Shift 点行时的选中逻辑；普通点击仍走 onOpen */
+  onSelect: (change: GitChange, event: ReactMouseEvent) => void;
 }
 
 interface ChangeTreeActions extends ChangeRowActions {
@@ -1097,6 +1121,36 @@ type ChangeGroup = "staged" | "unstaged";
 
 /** 每组一份的折叠状态。空集合 = 全展开，正好是默认要的样子 */
 type CollapsedDirs = Record<ChangeGroup, ReadonlySet<string>>;
+
+/**
+ * 选中集的 key：连分组一起算。同一个路径可能同时在两组里（`MM`），只按路径存的话
+ * 在暂存组点亮一行、未暂存组那一行也会跟着亮，批量操作还会把两组都算进去。
+ */
+function selectKey(staged: boolean, path: string): string {
+  return `${staged ? "s" : "u"}:${pathKey(path)}`;
+}
+
+/**
+ * 树视图里按渲染顺序摊平出一串文件行（目录行不参与选择）。
+ * 收起来的目录整棵跳过——那些行没画在屏幕上，Shift 连选不该把它们也算进来。
+ */
+function flattenTreePaths(
+  nodes: readonly ChangeTreeNode[],
+  collapsedDirs: ReadonlySet<string>,
+): string[] {
+  const paths: string[] = [];
+  const walk = (list: readonly ChangeTreeNode[]) => {
+    for (const node of list) {
+      if (node.children) {
+        if (!collapsedDirs.has(node.path)) walk(node.children);
+      } else if (node.change) {
+        paths.push(node.change.path);
+      }
+    }
+  };
+  walk(nodes);
+  return paths;
+}
 
 /** 递归渲染一棵改动树：目录行 + 缩进的子层，文件行复用 ChangeRow */
 function ChangeTree({
@@ -1181,6 +1235,65 @@ function ChangeList({
   );
 }
 
+/**
+ * 「合并冲突」组里的一行：文件名 + 状态徽标 + 一个常驻的「解决」按钮。
+ *
+ * 冲突行不给暂存 / 放弃那套——它们对未合并文件没有正确的语义。点行打开文件
+ * （让用户看冲突标记、必要时手改），点解决按钮（或右键）开解决菜单。
+ *
+ * 解决按钮**常驻可见**：冲突组本来就短，藏进悬停反而看不出这一行能干什么。
+ */
+function ConflictRow({
+  change,
+  busy,
+  onOpenFile,
+  onMenu,
+}: {
+  change: GitChange;
+  busy: boolean;
+  onOpenFile: (path: string) => void;
+  /** 开「解决冲突」菜单（固定定位，画在面板底部那一层） */
+  onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
+}) {
+  const slash = change.relative.lastIndexOf("/");
+  const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
+  const dir = slash === -1 ? "" : change.relative.slice(0, slash);
+  return (
+    <div
+      className="group flex items-center gap-1.5 rounded px-1 py-[3px] text-[12px] hover:bg-hover"
+      onContextMenu={(event) => onMenu(change, false, event)}
+    >
+      <button
+        type="button"
+        onClick={() => onOpenFile(change.path)}
+        title={`${toDisplayPath(change.path)}（冲突）`}
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+      >
+        <span className="flex shrink-0 items-center text-fg-icon">
+          <FileTypeIcon name={name} className="h-3.5 w-3.5" />
+        </span>
+        <span className="min-w-0 truncate text-fg-muted">{name}</span>
+        {dir && (
+          <span className="min-w-0 shrink-[999] truncate text-[11px] text-fg-faint">{dir}</span>
+        )}
+      </button>
+      <div className="flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          onClick={(event) => onMenu(change, false, event)}
+          disabled={busy}
+          title="解决冲突（接受当前 / 接受传入 / 保留两者）"
+          className={ROW_HUNK_TOGGLE}
+        >
+          <IconMerge className="h-3 w-3" />
+        </button>
+        {/* 冲突统一显示 C，和文件树 / 标签页那份 markOfXY 的徽标一致 */}
+        <GitMarkBadge mark={{ label: "C", kind: "conflict" }} className="text-[10px]" />
+      </div>
+    </div>
+  );
+}
+
 /** 引用 chip 的 kind -> 中文说明，只用在 title 上 */
 const REF_KIND_LABEL: Record<CommitRef["kind"], string> = {
   head: "当前分支",
@@ -1222,7 +1335,9 @@ function CommitRow({
   stat,
   unpushed,
   anchor,
+  selected,
   onToggle,
+  onSelect,
   onOpen,
   onHover,
   onUnhover,
@@ -1246,7 +1361,11 @@ function CommitRow({
    * 状态由整份列表统一持有（见 GitChangesPane 里的 hoverCommit），行本身不存。
    */
   anchor: DOMRect | null;
+  /** 这一行是不是「比较」集合里选中的提交，选中行铺底色 */
+  selected: boolean;
   onToggle: () => void;
+  /** Ctrl/⌘ 或 Shift 点：切换这一行的「比较」选中态，不展开 */
+  onSelect: () => void;
   onOpen: (path: string, source: DiffSource) => void;
   /** 鼠标进到这一行：报上本行矩形，让列表把浮框换过来 */
   onHover: (rect: DOMRect) => void;
@@ -1279,8 +1398,14 @@ function CommitRow({
       >
         <button
           type="button"
-          onClick={onToggle}
-          className="@container flex h-[22px] w-full items-center gap-1.5 rounded px-1 text-left text-[11px] hover:bg-hover"
+          onClick={(event) => {
+            // Ctrl/⌘ 或 Shift 点是「选进比较」而不是展开/收起——和改动列表那边多选一致
+            if (event.ctrlKey || event.metaKey || event.shiftKey) onSelect();
+            else onToggle();
+          }}
+          className={`@container flex h-[22px] w-full items-center gap-1.5 rounded px-1 text-left text-[11px] ${
+            selected ? "bg-selected" : "hover:bg-hover"
+          }`}
         >
           {/* 引用标签按行宽显隐：窄了整组收起来，把宽度让给提交主题，别把主题挤成 0 宽 */}
           {commit.refs.length > 0 && (
@@ -1512,6 +1637,17 @@ export function GitChangesPane({
   const messageRef = useRef<HTMLTextAreaElement>(null);
   /** 提交框拖动的起点，null 表示没在拖 */
   const messageDragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  /**
+   * 本次会话真正提交过的信息（按提交先后排列，最老的在前），供提交框按 ↑ / ↓ 回填。
+   * 只活在内存里、不落盘：「这次开着应用时提交过什么」的临时便利，重启即散。
+   */
+  const messageHistoryRef = useRef<string[]>([]);
+  /** 回填游标：null = 没在翻历史（停在用户草稿上），否则是 `messageHistoryRef` 的下标 */
+  const historyIndexRef = useRef<number | null>(null);
+  /** 翻历史前框里的草稿，↓ 越过最新一条时回到它 */
+  const historyDraftRef = useRef("");
+  /** 回填后是否要把光标移到末尾（受控组件得等这一拍渲染完再设选区） */
+  const recallCursorRef = useRef(false);
 
   // 时间线
   const [logCollapsed, setLogCollapsed] = useState(() => readLogCollapsed(root));
@@ -1553,6 +1689,32 @@ export function GitChangesPane({
   const logScrollRef = useRef<HTMLDivElement>(null);
 
   /**
+   * 时间线里为「比较两个提交」选中的提交号（最多 2 个，按点选先后）。
+   * Ctrl/⌘ 或 Shift 点提交行切换；满 2 个后再选第三个时丢掉最早选的那个。
+   */
+  const [compareSel, setCompareSel] = useState<string[]>([]);
+  /** 正在看的两个 ref 之间的比较；null = 没在比较视图里 */
+  const [compare, setCompare] = useState<{ from: string; to: string; label: string } | null>(null);
+  /** 比较视图的文件列表；null = 还没拉到 */
+  const [compareFiles, setCompareFiles] = useState<GitCommitFile[] | null>(null);
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  /**
+   * 右键「与分支比较…」要跟哪条提交比、分支菜单贴在哪儿；null = 菜单没开着。
+   * 和 commitMenu 分开：那条菜单关掉之后这个还得留着画分支列表。
+   */
+  const [compareBranchMenu, setCompareBranchMenu] = useState<{
+    commit: GitCommit;
+    x: number;
+    y: number;
+  } | null>(null);
+  /**
+   * 比较请求的序号：退出 / 换成另一组对比后，先发出去的那次回来时已经不算数了，
+   * 不丢掉会把旧结果盖到新视图上（同 explainSeq 的理由）。
+   */
+  const compareSeq = useRef(0);
+
+  /**
    * 悬停浮框挂在哪个提交上、贴着哪个矩形；null = 没开着。
    *
    * **整份列表共用一个**：之前是每行各存各的 anchor，从一行划到相邻行时，上一行
@@ -1579,6 +1741,13 @@ export function GitChangesPane({
     staged: new Set<string>(),
     unstaged: new Set<string>(),
   }));
+  /**
+   * 改动列表里选中的行（批量操作的目标）。key 见 selectKey，连分组一起算；
+   * 和逐块操作的 lineSelection 各管各的——那是同一个文件内部的行选择。
+   */
+  const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
+  /** Shift 连选的锚点：上一次点的那一行（key 同 selection）；null = 还没有锚点 */
+  const lastClickedRef = useRef<string | null>(null);
   /**
    * 改动列表的路径筛选。不落盘：属于「这次看的时候顺手找一下」的临时状态，
    * 下次进应用还得重新收一遍反而碍事（同 collapsedDirs）。
@@ -1651,8 +1820,17 @@ export function GitChangesPane({
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
   const { changes } = snapshot;
 
-  const staged = useMemo(() => changes.filter(isStaged), [changes]);
-  const unstaged = useMemo(() => changes.filter(isUnstaged), [changes]);
+  // 冲突（U / AA / DD）单独成组，并从暂存 / 未暂存两组里排除——否则一个 `UU`
+  // 会同时落进两组，行内那些整文件操作（暂存 / 放弃）对冲突文件也不适用
+  const conflicts = useMemo(() => changes.filter(isConflict), [changes]);
+  const staged = useMemo(
+    () => changes.filter((change) => isStaged(change) && !isConflict(change)),
+    [changes],
+  );
+  const unstaged = useMemo(
+    () => changes.filter((change) => isUnstaged(change) && !isConflict(change)),
+    [changes],
+  );
 
   /** 筛选词归一化一次，供两条列表和「有没有筛掉东西」的判断共用 */
   const needle = filter.trim().toLowerCase();
@@ -1670,6 +1848,11 @@ export function GitChangesPane({
       needle ? unstaged.filter((item) => item.relative.toLowerCase().includes(needle)) : unstaged,
     [unstaged, needle],
   );
+  const conflictsShown = useMemo(
+    () =>
+      needle ? conflicts.filter((item) => item.relative.toLowerCase().includes(needle)) : conflicts,
+    [conflicts, needle],
+  );
 
   // 两棵树只在树视图里用得上，但提前算好——改动列表通常就几十条，不值当再懒一层。
   // 用筛过的那份建树：树视图里同样只留命中的行
@@ -1684,12 +1867,94 @@ export function GitChangesPane({
     () => unstaged.filter((change) => canDiscard(change, false)),
     [unstaged],
   );
-  /** 筛完之后两边都没东西了（但改动本身还在），值得单独说一句 */
+
+  /**
+   * 当前选中的行，按组各算（key 见 selectKey）。批量按钮和分组标题的「已选 N」都用它。
+   * 用筛过的那份（Shown）：选中本来就是从屏幕上勾出来的，被筛选藏掉的行不该被算进去。
+   */
+  const stagedSelected = useMemo(
+    () => stagedShown.filter((change) => selection.has(selectKey(true, change.path))),
+    [stagedShown, selection],
+  );
+  const unstagedSelected = useMemo(
+    () => unstagedShown.filter((change) => selection.has(selectKey(false, change.path))),
+    [unstagedShown, selection],
+  );
+  /**
+   * 本组「当前渲染顺序」下的选中 key，Shift 连选靠它算区间。
+   * 不能直接用改动列表的原始顺序：树视图里目录会改行序，收起来的目录里的行也不该算进来。
+   */
+  const stagedOrder = useMemo(
+    () =>
+      (view === "list"
+        ? stagedShown.map((change) => change.path)
+        : flattenTreePaths(stagedTree, collapsedDirs.staged)
+      ).map((path) => selectKey(true, path)),
+    [view, stagedShown, stagedTree, collapsedDirs.staged],
+  );
+  const unstagedOrder = useMemo(
+    () =>
+      (view === "list"
+        ? unstagedShown.map((change) => change.path)
+        : flattenTreePaths(unstagedTree, collapsedDirs.unstaged)
+      ).map((path) => selectKey(false, path)),
+    [view, unstagedShown, unstagedTree, collapsedDirs.unstaged],
+  );
+
+  /**
+   * 带修饰键点改动行的选中逻辑。
+   * Ctrl/⌘：切换这一行的选中，并把锚点挪到它；Shift：从锚点连选到这一行（锚点不动）。
+   */
+  const selectChange = useCallback(
+    (staged: boolean, order: readonly string[], change: GitChange, event: ReactMouseEvent) => {
+      const key = selectKey(staged, change.path);
+      const anchor = lastClickedRef.current;
+      setSelection((current) => {
+        const next = new Set(current);
+        // 锚点必须还在本组当前顺序里，否则区间无从算起，退回单点切换
+        if (event.shiftKey && anchor !== null && order.includes(anchor) && order.includes(key)) {
+          const from = order.indexOf(anchor);
+          const to = order.indexOf(key);
+          const lo = Math.min(from, to);
+          const hi = Math.max(from, to);
+          for (let index = lo; index <= hi; index += 1) next.add(order[index]);
+          return next;
+        }
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+      // 连选沿用原锚点；单点（Ctrl/⌘）才把锚点挪到这一行
+      if (!event.shiftKey) lastClickedRef.current = key;
+    },
+    [],
+  );
+
+  /** 按组把选中逻辑闭包好，透给对应那组 ChangeRow（行本身不用再区分是哪一组） */
+  const onSelectStaged = useCallback(
+    (change: GitChange, event: ReactMouseEvent) => selectChange(true, stagedOrder, change, event),
+    [selectChange, stagedOrder],
+  );
+  const onSelectUnstaged = useCallback(
+    (change: GitChange, event: ReactMouseEvent) =>
+      selectChange(false, unstagedOrder, change, event),
+    [selectChange, unstagedOrder],
+  );
+  const isStagedSelected = useCallback(
+    (change: GitChange) => selection.has(selectKey(true, change.path)),
+    [selection],
+  );
+  const isUnstagedSelected = useCallback(
+    (change: GitChange) => selection.has(selectKey(false, change.path)),
+    [selection],
+  );
+  /** 筛完之后三组都没东西了（但改动本身还在），值得单独说一句 */
   const filteredOut =
     needle.length > 0 &&
-    (staged.length > 0 || unstaged.length > 0) &&
+    (staged.length > 0 || unstaged.length > 0 || conflicts.length > 0) &&
     stagedShown.length === 0 &&
-    unstagedShown.length === 0;
+    unstagedShown.length === 0 &&
+    conflictsShown.length === 0;
   /**
    * 真正能被 `git stash push` 收走的那些改动。
    *
@@ -1718,6 +1983,10 @@ export function GitChangesPane({
         // 生成只填提交框、不动 git，返回空值时就跳过状态更新
         const payload = await task();
         if (payload) applyStatus(payload);
+        // 写操作会让改动列表重排 / 行消失（暂存后行换组、放弃后行没了），
+        // 之前的选中可能指向对不上的行，成功后一并清掉，免得残留
+        setSelection(new Set());
+        lastClickedRef.current = null;
       } catch (reason) {
         setError(String(reason));
       } finally {
@@ -1738,6 +2007,23 @@ export function GitChangesPane({
     void run("init", () => gitInit(root));
   }, [run, root]);
 
+  /**
+   * 把这次真正提交出去的信息记进会话历史（在清空提交框之前调）。
+   * 连续的重复项不再记（amend / 重提速同一句很常见）；只保留最近 MESSAGE_HISTORY_MAX 条。
+   * 顺带把回填游标复位——刚要清空，下次按 ↑ 从这时最新的一条重新开始。
+   */
+  const rememberCommitMessage = useCallback((value: string) => {
+    historyIndexRef.current = null;
+    const text = value.trim();
+    if (!text) return;
+    const history = messageHistoryRef.current;
+    if (history[history.length - 1] === text) return;
+    history.push(text);
+    if (history.length > MESSAGE_HISTORY_MAX) {
+      history.splice(0, history.length - MESSAGE_HISTORY_MAX);
+    }
+  }, []);
+
   const commit = useCallback(() => {
     // 和提交按钮的 canCommit 同一判据：没暂存内容、或已有写操作在跑（busy）时直接返回。
     // 快捷键入口不过按钮的 disabled，光判 message 会发出一条必然失败（没东西可提交）
@@ -1745,11 +2031,12 @@ export function GitChangesPane({
     if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commit", async () => {
       const payload = await gitCommit(root, message);
+      rememberCommitMessage(message); // 清空前记进历史
       setMessage(""); // 只有真提交成功才清空
       setLogRevision((revision) => revision + 1); // 刚多了一条提交
       return payload;
     });
-  }, [message, busy, staged, run]);
+  }, [message, busy, staged, run, rememberCommitMessage]);
 
   /**
    * 提交并推送：一次 run 里先提交再推。合成一个写操作是为了绕开忙碌互斥——
@@ -1760,11 +2047,12 @@ export function GitChangesPane({
     if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commitPush", async () => {
       await gitCommit(root, message);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1);
       return await gitPush(root);
     });
-  }, [message, busy, staged, run, root]);
+  }, [message, busy, staged, run, root, rememberCommitMessage]);
 
   /**
    * 提交并同步：提交之后先「拉取（只允许快进）」把远程的带下来，再推上去。
@@ -1774,13 +2062,14 @@ export function GitChangesPane({
     if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commitSync", async () => {
       await gitCommit(root, message);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1);
       await gitPull(root);
       setLogRevision((revision) => revision + 1);
       return await gitPush(root);
     });
-  }, [message, busy, staged, run, root]);
+  }, [message, busy, staged, run, root, rememberCommitMessage]);
 
   /**
    * 确认分条方案：后端一次性「清空暂存 → 逐组暂存 + 提交」，走和单条提交同一套链路。
@@ -1791,11 +2080,12 @@ export function GitChangesPane({
     void run("commit", async () => {
       const payload = await gitCommitGroups(root, plan);
       setPlan(null);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1); // 一次多了好几条提交
       return payload;
     });
-  }, [plan, busy, run, root]);
+  }, [plan, busy, run, root, message, rememberCommitMessage]);
 
   /**
    * 修正上一次提交。提交框里写了信息就用它当新的提交信息，没写就沿用原来的。
@@ -1808,11 +2098,12 @@ export function GitChangesPane({
     const next = message.trim() ? message : undefined;
     void run("amend", async () => {
       const payload = await gitAmend(root, next);
+      rememberCommitMessage(message);
       setMessage("");
       setLogRevision((revision) => revision + 1);
       return payload;
     });
-  }, [message, run, root]);
+  }, [message, run, root, rememberCommitMessage]);
 
   /** 撤销上一次提交：改动回到暂存区，提交框里的信息也跟着填回去，方便改完重提 */
   const undoCommit = useCallback(() => {
@@ -1823,6 +2114,7 @@ export function GitChangesPane({
     void run("undo", async () => {
       const payload = await gitUndoCommit(root);
       if (head) setMessage(head);
+      historyIndexRef.current = null; // 回填的是撤销出来的主题，不是历史浏览，游标要复位
       setLogRevision((revision) => revision + 1);
       return payload;
     });
@@ -2192,6 +2484,24 @@ export function GitChangesPane({
     void run("mergeAbort", () => gitMergeAbort(root));
   }, [run, root]);
 
+  /** 冲突行：接受某一侧 / 保留两者，后端把结果写回工作区并标记为已解决 */
+  const resolveConflict = useCallback(
+    (path: string, choice: "ours" | "theirs" | "both") => {
+      setMenu(null);
+      void run("resolve", () => gitResolveConflict(root, path, choice));
+    },
+    [run, root],
+  );
+
+  /** 冲突行：不选边，直接把工作区当前内容标记为已解决（等价于 `git add`） */
+  const markResolved = useCallback(
+    (path: string) => {
+      setMenu(null);
+      void run("resolve", () => gitStage(root, [path]));
+    },
+    [run, root],
+  );
+
   /**
    * 放弃修改不可撤销，落手前先记下来弹确认框，用户点了才真跑。
    * `what` 是"哪个文件"或者"N 个文件"。
@@ -2377,6 +2687,37 @@ export function GitChangesPane({
     );
   }, [discard, unstagedDiscardable]);
 
+  /** 暂存选中的那些行：paths 只给选中集合，绝不波及没勾的行 */
+  const stageSelectedRows = useCallback(() => {
+    const paths = unstagedSelected.map((change) => change.path);
+    if (paths.length === 0) return;
+    void run("stage", () => gitStage(root, paths));
+  }, [run, root, unstagedSelected]);
+
+  /** 取消暂存选中的那些行 */
+  const unstageSelectedRows = useCallback(() => {
+    const paths = stagedSelected.map((change) => change.path);
+    if (paths.length === 0) return;
+    void run("unstage", () => gitUnstage(root, paths));
+  }, [run, root, stagedSelected]);
+
+  /**
+   * 放弃选中的行。只收拾能放弃的（新文件 / 重命名排除，见 canDiscard），
+   * 免得多勾一个新文件就整批失败——和「放弃整组」一个口径；
+   * 同样先过 discard() 的确认框再落手。
+   */
+  const discardSelectedRows = useCallback(
+    (staged: boolean) => {
+      const list = staged ? stagedSelected : unstagedSelected;
+      const paths = list
+        .filter((change) => canDiscard(change, staged))
+        .map((change) => change.path);
+      if (paths.length === 0) return;
+      discard(paths, { mode: staged ? "staged" : "unstaged" }, `${paths.length} 个文件`);
+    },
+    [discard, stagedSelected, unstagedSelected],
+  );
+
   const setLogCollapsedPersisted = (next: boolean) => {
     setLogCollapsed(next);
     try {
@@ -2388,6 +2729,9 @@ export function GitChangesPane({
 
   const setViewPersisted = (next: ChangeView) => {
     setView(next);
+    // 列表↔树的行序完全不同，留着旧选中会指向对不上的行，直接清空
+    setSelection(new Set());
+    lastClickedRef.current = null;
     try {
       window.sessionStorage.setItem(VIEW_KEY + root, next);
     } catch {
@@ -2656,6 +3000,80 @@ export function GitChangesPane({
     });
   }, []);
 
+  // ---- 比较任意两个提交 / 与分支比较 ----
+
+  /** Ctrl/⌘ 或 Shift 点提交行：切换它是否入选「比较」集合（最多两个） */
+  const toggleCompareSel = useCallback((hash: string) => {
+    setCompareSel((current) => {
+      if (current.includes(hash)) return current.filter((item) => item !== hash);
+      const next = [...current, hash];
+      // 只留最近选的两个：再点第三个时把最早选的那个挤掉
+      return next.length > 2 ? next.slice(next.length - 2) : next;
+    });
+  }, []);
+
+  /**
+   * 进入比较视图：拉两个 ref 之间改动过的文件列表。
+   *
+   * from 与 to 字面相同（选了同一个 ref）时后端其实会返回空列表，这里先拦一道，
+   * 省得白跑一次 git，也让提示更贴切。
+   */
+  const startCompare = useCallback(
+    (from: string, to: string, label: string) => {
+      const seq = ++compareSeq.current;
+      setCompare({ from, to, label });
+      setCompareFiles(null);
+      setCompareError(null);
+      setCompareSel([]);
+      setCompareBranchMenu(null);
+      if (from.trim() === to.trim()) {
+        setCompareFiles([]);
+        setCompareBusy(false);
+        return;
+      }
+      setCompareBusy(true);
+      void gitCompareFiles(root, from, to)
+        .then((files) => {
+          if (compareSeq.current !== seq) return;
+          setCompareFiles(files);
+          setCompareBusy(false);
+        })
+        .catch((reason) => {
+          if (compareSeq.current !== seq) return;
+          setCompareError(String(reason));
+          setCompareBusy(false);
+        });
+    },
+    [root],
+  );
+
+  /** 退出比较视图，顺带把在飞的那次结果作废、清掉时间线里的选中 */
+  const exitCompare = useCallback(() => {
+    compareSeq.current += 1;
+    setCompare(null);
+    setCompareFiles(null);
+    setCompareError(null);
+    setCompareBusy(false);
+    setCompareSel([]);
+  }, []);
+
+  /**
+   * 选中两个提交时，算出「从哪个到哪个」。时间线上更靠下（更旧）的那个当 from，
+   * 这样比较出来是一个正向补丁；下标找不到（提交被过滤掉了）就退回点选顺序。
+   */
+  const comparePair = useMemo(() => {
+    if (compareSel.length !== 2 || !commits) return null;
+    const first = commits.findIndex((item) => item.hash === compareSel[0]);
+    const second = commits.findIndex((item) => item.hash === compareSel[1]);
+    const [from, to] =
+      first >= 0 && second >= 0 && first < second
+        ? [compareSel[1], compareSel[0]]
+        : [compareSel[0], compareSel[1]];
+    const shortOf = (hash: string) =>
+      commits.find((item) => item.hash === hash)?.short ?? hash.slice(0, 7);
+    return { from, to, label: `${shortOf(from)} ↔ ${shortOf(to)}` };
+  }, [compareSel, commits]);
+
   /**
    * 泳道布局。列表一变就整段重排——每翻一页也是从头算，图不会跳变。
    * `rows[i]` 和 `commits[i]` 一一对应，取行直接用下标即可。
@@ -2704,7 +3122,68 @@ export function GitChangesPane({
     setLogLimit((limit) => limit + LOG_PAGE);
   };
 
+  /** 回填内容；光标落到末尾的动作交给下一帧的 effect（受控组件同帧设选区会被抹掉） */
+  const recallValue = (value: string) => {
+    setMessage(value);
+    recallCursorRef.current = true;
+  };
+
+  /**
+   * 提交框里按 ↑ / ↓ 在本会话提交过的历史信息之间回填。返回 true 表示这次按键已被接管。
+   *
+   * 只在「没有选区」且光标处于首行（↑）/ 末行（↓）时才动作：多行编辑时光标夹在中间，
+   * ↑ / ↓ 必须是正常的移动光标，不能被回填抢走（单行时天然满足首 / 末行）。
+   */
+  const recallMessage = (el: HTMLTextAreaElement, key: "ArrowUp" | "ArrowDown"): boolean => {
+    if (el.selectionStart !== el.selectionEnd) return false;
+    const history = messageHistoryRef.current;
+    if (key === "ArrowUp") {
+      if (history.length === 0) return false;
+      // 光标上方还有换行 → 交回浏览器正常上移光标
+      if (el.value.slice(0, el.selectionStart).includes("\n")) return false;
+      const index = historyIndexRef.current;
+      let next: number;
+      if (index === null) {
+        // 第一次按 ↑：先记下进入历史前的草稿，↓ 越过最新一条时回到它
+        historyDraftRef.current = el.value;
+        next = history.length - 1;
+      } else {
+        next = Math.max(index - 1, 0); // 已经在最老一条就停住
+      }
+      historyIndexRef.current = next;
+      recallValue(history[next]);
+      return true;
+    }
+    // ↓：只有正在浏览历史时才接管，否则保持默认（下移光标）
+    if (historyIndexRef.current === null) return false;
+    // 光标下方还有换行 → 交回浏览器正常下移光标
+    if (el.value.slice(el.selectionEnd).includes("\n")) return false;
+    const next = historyIndexRef.current + 1;
+    if (next >= history.length) {
+      historyIndexRef.current = null; // 越过最新一条 → 回到进入前的草稿
+      recallValue(historyDraftRef.current);
+    } else {
+      historyIndexRef.current = next;
+      recallValue(history[next]);
+    }
+    return true;
+  };
+
   const onMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // 提交框里的 ↑ / ↓ 回填历史提交信息；带修饰键时一律让路（Ctrl/Shift 方向键另有含义）
+    const arrow =
+      event.key === "ArrowUp" || event.key === "ArrowDown" ? event.key : null;
+    if (
+      arrow &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      recallMessage(event.currentTarget, arrow)
+    ) {
+      event.preventDefault();
+      return;
+    }
     // Enter 留给换行（提交信息常常是多行），提交走可配置的快捷键（默认 Ctrl/Cmd+Enter）
     if (!matchesShortcut(event, settings.shortcuts["git.commit"])) return;
     event.preventDefault();
@@ -2738,6 +3217,17 @@ export function GitChangesPane({
   }, [messageHeight]);
 
   useEffect(resizeMessage, [message, resizeMessage]);
+
+  // ↑ / ↓ 回填后把光标移到文本末尾。受控组件里改 value 的同一帧就设选区会被 React 的
+  // 受控更新抹掉，所以挂个标志位、等这次渲染落地后再设一次
+  useEffect(() => {
+    if (!recallCursorRef.current) return;
+    recallCursorRef.current = false;
+    const el = messageRef.current;
+    if (!el) return;
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
+  }, [message]);
 
   // 面板被拖宽/拖窄时折行位置会变，得重新量一次。监听面板而不是 textarea 自己：
   // 我们改的正是 textarea 的高度，监听它会自己触发自己
@@ -2831,9 +3321,11 @@ export function GitChangesPane({
   const commitMenuTags = commitMenu
     ? commitMenu.commit.refs.filter((reference) => reference.kind === "tag")
     : [];
+  // 菜单项：打标签 1 项 + 「与 HEAD / 与分支比较」2 项 + 若干删标签项。
+  // 分隔线：比较组前一条，删标签组前一条（没有标签就省掉）
   const commitMenuH =
-    MENU_ITEM_H * (1 + commitMenuTags.length) +
-    (commitMenuTags.length > 0 ? MENU_DIVIDER_H : 0) +
+    MENU_ITEM_H * (3 + commitMenuTags.length) +
+    MENU_DIVIDER_H * (1 + (commitMenuTags.length > 0 ? 1 : 0)) +
     MENU_PAD;
 
   return (
@@ -3273,6 +3765,7 @@ export function GitChangesPane({
             value={message}
             onChange={(event) => {
               setMessage(event.target.value);
+              historyIndexRef.current = null; // 手动改过内容就退出历史浏览
               if (error) setError(null);
             }}
             onKeyDown={onMessageKeyDown}
@@ -3316,38 +3809,36 @@ export function GitChangesPane({
 
         <div className={`flex shrink-0 items-center gap-1.5 ${plan ? "hidden" : ""}`}>
           {snapshot.merging ? (
-            snapshot.mergeKind === "merge" ? (
-              // 合并中：主操作只有"收尾"两件事。冲突没清完时「完成合并」禁用，
-              // 按钮上直接写着还剩几个，省得用户去列表里数
-              <>
-                <button
-                  type="button"
-                  onClick={mergeContinue}
-                  disabled={busy !== null || snapshot.conflicts > 0}
-                  className={PRIMARY_BUTTON}
-                >
-                  {busy === "mergeContinue"
-                    ? "完成合并中…"
-                    : snapshot.conflicts > 0
-                      ? `还有 ${snapshot.conflicts} 个冲突`
-                      : "完成合并"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingMergeAbort(true)}
-                  disabled={busy !== null}
-                  className={MERGE_ABORT_BUTTON}
-                >
-                  {busy === "mergeAbort" ? "中止中…" : "中止合并"}
-                </button>
-              </>
-            ) : (
-              // 变基 / 拣选 / 还原进行中：它们的收尾命令和 merge 不同，这里没有能用的
-              // 按钮（给了点了就报错），只放一句只读说明，具体引导看下面的提示条
-              <span className="px-1 text-[11px] text-danger">
-                {ONGOING_LABEL[snapshot.mergeKind ?? ""] ?? "操作进行中"}
-              </span>
-            )
+            // 四种进行中操作（合并 / 变基 / 拣选 / 还原）都能在面板里收尾：
+            // 主操作是"继续"，冲突没清完时禁用（按钮上直接写着还剩几个，省得去列表里数），
+            // 旁边是"中止"。文案按类型区分（完成合并 / 继续变基 / …）
+            (() => {
+              const { name, verb } = ongoingLabels(snapshot.mergeKind);
+              return (
+                <>
+                  <button
+                    type="button"
+                    onClick={mergeContinue}
+                    disabled={busy !== null || snapshot.conflicts > 0}
+                    className={PRIMARY_BUTTON}
+                  >
+                    {busy === "mergeContinue"
+                      ? "处理中…"
+                      : snapshot.conflicts > 0
+                        ? `还有 ${snapshot.conflicts} 个冲突`
+                        : `${verb}${name}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingMergeAbort(true)}
+                    disabled={busy !== null}
+                    className={MERGE_ABORT_BUTTON}
+                  >
+                    {busy === "mergeAbort" ? "中止中…" : `中止${name}`}
+                  </button>
+                </>
+              );
+            })()
           ) : staged.length > 0 ? (
             // 分裂按钮：左边提交，右边箭头拉出其它提交方式（照 VS Code）
             <div className="relative flex min-w-0 flex-1 items-stretch">
@@ -3501,13 +3992,7 @@ export function GitChangesPane({
 
         {snapshot.merging && (
           <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
-            {snapshot.mergeKind === "merge"
-              ? `正在合并：${
-                  snapshot.conflicts > 0
-                    ? `还有 ${snapshot.conflicts} 个冲突未解决，改完文件后暂存，再点「完成合并」`
-                    : "冲突已解决，点「完成合并」生成合并提交"
-                }`
-              : ongoingText(snapshot.mergeKind, snapshot.conflicts)}
+            {ongoingText(snapshot.mergeKind, snapshot.conflicts)}
           </p>
         )}
 
@@ -3561,7 +4046,68 @@ export function GitChangesPane({
         )}
 
         <div className="min-h-0 flex-1 overflow-auto">
-          {staged.length === 0 && unstaged.length === 0 && (
+          {compare ? (
+            /* 比较视图：把改动列表整块换成「两个 ref 之间的差异文件」。顶部一行标题 +
+               退出按钮，下面按提交展开那套行渲染文件；点文件开 range 差异 */
+            <>
+              <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
+                <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
+                  对比 {compare.label}
+                </span>
+                <button type="button" onClick={exitCompare} className={GROUP_ACTION}>
+                  退出对比
+                </button>
+              </div>
+              {compareBusy && (
+                <p className="px-1 py-1 text-[11px] text-fg-faint">加载中…</p>
+              )}
+              {compareError && (
+                <p className="px-1 py-1 text-[11px] whitespace-pre-wrap text-danger">
+                  {compareError}
+                </p>
+              )}
+              {!compareBusy && !compareError && compareFiles?.length === 0 && (
+                <p className="px-1 py-1 text-[11px] text-fg-faint">
+                  {compare.from.trim() === compare.to.trim()
+                    ? "同一个提交，无需比较"
+                    : "两者之间没有差异"}
+                </p>
+              )}
+              {!compareBusy && compareFiles && compareFiles.length > 0 && (
+                <ul>
+                  {compareFiles.map((file) => (
+                    <li key={file.path}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpen(file.path, {
+                            mode: "range",
+                            from: compare.from,
+                            to: compare.to,
+                          })
+                        }
+                        title={file.relative}
+                        className="flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[11px] hover:bg-hover"
+                      >
+                        <span className="min-w-0 truncate text-fg-muted">
+                          {baseName(file.relative)}
+                        </span>
+                        {dirOf(file.relative) && (
+                          <span className="min-w-0 truncate text-[10px] text-fg-faint">
+                            {dirOf(file.relative)}
+                          </span>
+                        )}
+                        <GitMarkBadge mark={statusMark(file.status)} className="text-[10px]" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <>
+          {staged.length === 0 && unstaged.length === 0 && conflicts.length === 0 && (
             <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的更改</p>
           )}
 
@@ -3569,6 +4115,27 @@ export function GitChangesPane({
             <p className="px-1 py-1 text-[11px] text-fg-faint">
               没有匹配「{filter.trim()}」的更改
             </p>
+          )}
+
+          {/* 「合并冲突」组排在最上面：它就是最该先处理的东西。筛空了整个不画 */}
+          {conflictsShown.length > 0 && (
+            <>
+              <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
+                <span className="min-w-0 flex-1 truncate text-[11px] text-danger">
+                  合并冲突 ({conflictsShown.length}
+                  {conflictsShown.length === conflicts.length ? "" : `/${conflicts.length}`})
+                </span>
+              </div>
+              {conflictsShown.map((change) => (
+                <ConflictRow
+                  key={pathKey(change.path)}
+                  change={change}
+                  busy={busy !== null}
+                  onOpenFile={onOpenFile}
+                  onMenu={openMenu}
+                />
+              ))}
+            </>
           )}
 
           {/* 筛掉的分组整个不画：只留一个空标题行反而让人以为里面没东西 */}
@@ -3579,26 +4146,57 @@ export function GitChangesPane({
                   暂存的更改 ({stagedShown.length}
                   {stagedShown.length === staged.length ? "" : `/${staged.length}`})
                 </span>
-                {stagedDiscardable.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={discardAllStaged}
-                    disabled={busy !== null}
-                    title="放弃这个分组里所有文件的更改"
-                    className={GROUP_ICON_DANGER}
-                  >
-                    <IconUndo className="h-3 w-3" />
-                  </button>
+                {/* 有选中项时，整组操作换成针对选中项的那几个（语义从"整组"收窄到"这一批"） */}
+                {stagedSelected.length > 0 ? (
+                  <>
+                    <span className="shrink-0 text-[11px] text-accent">
+                      已选 {stagedSelected.length}
+                    </span>
+                    {stagedSelected.some((change) => canDiscard(change, true)) && (
+                      <button
+                        type="button"
+                        onClick={() => discardSelectedRows(true)}
+                        disabled={busy !== null}
+                        title={`放弃选中的 ${stagedSelected.length} 个文件`}
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={unstageSelectedRows}
+                      disabled={busy !== null}
+                      title={`取消暂存选中的 ${stagedSelected.length} 个文件`}
+                      className={GROUP_ICON}
+                    >
+                      <IconMinus className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {stagedDiscardable.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={discardAllStaged}
+                        disabled={busy !== null}
+                        title="放弃这个分组里所有文件的更改"
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void run("unstage", () => gitUnstage(root))}
+                      disabled={busy !== null}
+                      title="全部取消暂存"
+                      className={GROUP_ICON}
+                    >
+                      <IconMinus className="h-3 w-3" />
+                    </button>
+                  </>
                 )}
-                <button
-                  type="button"
-                  onClick={() => void run("unstage", () => gitUnstage(root))}
-                  disabled={busy !== null}
-                  title="全部取消暂存"
-                  className={GROUP_ICON}
-                >
-                  <IconMinus className="h-3 w-3" />
-                </button>
               </div>
               <ChangeList
                 group="staged"
@@ -3617,6 +4215,8 @@ export function GitChangesPane({
                   discard([change.path], { mode: "staged" }, change.relative)
                 }
                 onMenu={openMenu}
+                selected={isStagedSelected}
+                onSelect={onSelectStaged}
               />
             </>
           )}
@@ -3628,26 +4228,57 @@ export function GitChangesPane({
                   更改 ({unstagedShown.length}
                   {unstagedShown.length === unstaged.length ? "" : `/${unstaged.length}`})
                 </span>
-                {unstagedDiscardable.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={discardAllUnstaged}
-                    disabled={busy !== null}
-                    title="放弃这个分组里所有文件的更改"
-                    className={GROUP_ICON_DANGER}
-                  >
-                    <IconUndo className="h-3 w-3" />
-                  </button>
+                {/* 同暂存组：有选中项就换成针对选中项的操作 */}
+                {unstagedSelected.length > 0 ? (
+                  <>
+                    <span className="shrink-0 text-[11px] text-accent">
+                      已选 {unstagedSelected.length}
+                    </span>
+                    {unstagedSelected.some((change) => canDiscard(change, false)) && (
+                      <button
+                        type="button"
+                        onClick={() => discardSelectedRows(false)}
+                        disabled={busy !== null}
+                        title={`放弃选中的 ${unstagedSelected.length} 个文件`}
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={stageSelectedRows}
+                      disabled={busy !== null}
+                      title={`暂存选中的 ${unstagedSelected.length} 个文件`}
+                      className={GROUP_ICON}
+                    >
+                      <IconPlus className="h-3 w-3" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {unstagedDiscardable.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={discardAllUnstaged}
+                        disabled={busy !== null}
+                        title="放弃这个分组里所有文件的更改"
+                        className={GROUP_ICON_DANGER}
+                      >
+                        <IconUndo className="h-3 w-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void run("stage", () => gitStage(root))}
+                      disabled={busy !== null}
+                      title="全部暂存"
+                      className={GROUP_ICON}
+                    >
+                      <IconPlus className="h-3 w-3" />
+                    </button>
+                  </>
                 )}
-                <button
-                  type="button"
-                  onClick={() => void run("stage", () => gitStage(root))}
-                  disabled={busy !== null}
-                  title="全部暂存"
-                  className={GROUP_ICON}
-                >
-                  <IconPlus className="h-3 w-3" />
-                </button>
               </div>
               <ChangeList
                 group="unstaged"
@@ -3666,11 +4297,34 @@ export function GitChangesPane({
                   discard([change.path], { mode: "unstaged" }, change.relative)
                 }
                 onMenu={openMenu}
+                selected={isUnstagedSelected}
+                onSelect={onSelectUnstaged}
               />
+            </>
+          )}
             </>
           )}
         </div>
       </div>
+
+      {/* 选中两个提交后冒出来的小条：点「比较」进入两提交之间的差异视图。
+          放在时间线上方——它服务的是下面那段时间线 */}
+      {compareSel.length === 2 && comparePair && (
+        <div className="flex shrink-0 items-center gap-1.5 border-t border-line px-2 py-1">
+          <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 truncate text-[11px] text-fg">已选 2 个提交</span>
+          <button
+            type="button"
+            onClick={() => startCompare(comparePair.from, comparePair.to, comparePair.label)}
+            className={GROUP_ACTION}
+          >
+            比较
+          </button>
+          <button type="button" onClick={() => setCompareSel([])} className={GROUP_ACTION}>
+            清除
+          </button>
+        </div>
+      )}
 
       {/* 拖动条把时间线的上边缘变成可拖的：往下拖历史变高。
           收起时不画——没有东西可调 */}
@@ -3830,7 +4484,9 @@ export function GitChangesPane({
                 stat={commitStats.get(commit.hash)}
                 unpushed={unpushed.has(commit.hash)}
                 anchor={hoverCommit?.hash === commit.hash ? hoverCommit.rect : null}
+                selected={compareSel.includes(commit.hash)}
                 onToggle={() => toggleCommit(commit.hash)}
+                onSelect={() => toggleCompareSel(commit.hash)}
                 onOpen={onOpen}
                 onHover={(rect) => {
                   cancelHoverHide();
@@ -3930,12 +4586,65 @@ export function GitChangesPane({
           <div
             className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
-              width: MENU_W,
+              // 冲突行的菜单多一组"解决冲突"，并带 git 命令提示，宽度和估算高度都要大一号
+              width: isConflict(menu.change) ? CONFLICT_MENU_W : MENU_W,
               // 贴到窗口右边/下边时往回收，别把菜单顶出可视区
-              left: Math.min(menu.x, window.innerWidth - MENU_W - 4),
-              top: Math.min(menu.y, window.innerHeight - MENU_H - 4),
+              left: Math.min(
+                menu.x,
+                window.innerWidth - (isConflict(menu.change) ? CONFLICT_MENU_W : MENU_W) - 4,
+              ),
+              top: Math.min(
+                menu.y,
+                window.innerHeight - (isConflict(menu.change) ? CONFLICT_MENU_H : MENU_H) - 4,
+              ),
             }}
           >
+            {/* 零、冲突：未合并的文件优先给解决入口，置顶于其它项 */}
+            {isConflict(menu.change) && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => resolveConflict(menu.change.path, "ours")}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconArrowLeftToLine className="h-3.5 w-3.5 shrink-0" />
+                  接受当前更改
+                  <span className={MENU_CMD}>checkout --ours</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resolveConflict(menu.change.path, "theirs")}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconArrowRightToLine className="h-3.5 w-3.5 shrink-0" />
+                  接受传入更改
+                  <span className={MENU_CMD}>checkout --theirs</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => resolveConflict(menu.change.path, "both")}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconMerge className="h-3.5 w-3.5 shrink-0" />
+                  保留两者
+                  <span className={MENU_CMD}>both</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => markResolved(menu.change.path)}
+                  className={MENU_ITEM}
+                  disabled={busy !== null}
+                >
+                  <IconCheck className="h-3.5 w-3.5 shrink-0" />
+                  标记为已解决
+                  <span className={MENU_CMD}>add</span>
+                </button>
+                <div className={MENU_DIVIDER} />
+              </>
+            )}
             {/* 一、AI：目录不是文件，解读会去读目录而报错，这一项不给（和文件树里的口径一致） */}
             {!menu.change.isDir && (
               <>
@@ -4021,6 +4730,34 @@ export function GitChangesPane({
               在此提交打标签…
               <span className={MENU_CMD}>tag</span>
             </button>
+            {/* 比较组：与 HEAD 直接进比较视图；与分支比较先弹一个分支列表 */}
+            <div className={MENU_DIVIDER} />
+            <button
+              type="button"
+              onClick={() => {
+                const commit = commitMenu.commit;
+                setCommitMenu(null);
+                startCompare(commit.hash, "HEAD", `${commit.short} ↔ HEAD`);
+              }}
+              className={MENU_ITEM}
+            >
+              <IconArrowsLeftRight className="h-3.5 w-3.5 shrink-0" />
+              与 HEAD 比较
+              <span className={MENU_CMD}>diff</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const { commit, x, y } = commitMenu;
+                setCommitMenu(null);
+                loadBranches();
+                setCompareBranchMenu({ commit, x, y });
+              }}
+              className={MENU_ITEM}
+            >
+              <IconBranch className="h-3.5 w-3.5 shrink-0" />
+              与分支比较…
+            </button>
             {/* 这个提交上已经带的标签，逐条给一个删除入口。整组连分隔线一起藏在条件里，
                 否则没有标签时会多出一条孤线 */}
             {commitMenuTags.length > 0 && (
@@ -4043,6 +4780,56 @@ export function GitChangesPane({
                 ))}
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {/* 「与分支比较…」的分支列表：复用分支下拉那份 branches / loadBranches，
+          点一条就把「该提交 ↔ 这条分支」送进比较视图 */}
+      {compareBranchMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setCompareBranchMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setCompareBranchMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex max-h-72 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: COMMIT_MENU_W,
+              left: Math.min(compareBranchMenu.x, window.innerWidth - COMMIT_MENU_W - 4),
+              top: Math.max(4, Math.min(compareBranchMenu.y, window.innerHeight - 300)),
+            }}
+          >
+            <p className="px-3 py-1 text-[10px] text-fg-faint">与分支比较</p>
+            {branchError && (
+              <p className="px-3 py-1 text-[11px] whitespace-pre-wrap text-danger">
+                {branchError}
+              </p>
+            )}
+            {branches.length === 0 && !branchError && (
+              <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
+            )}
+            {branches.map((item) => (
+              <button
+                key={item.name}
+                type="button"
+                onClick={() =>
+                  startCompare(
+                    compareBranchMenu.commit.hash,
+                    item.name,
+                    `${compareBranchMenu.commit.short} ↔ ${item.name}`,
+                  )
+                }
+                className={MENU_ITEM}
+              >
+                <IconBranch className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 truncate">{item.name}</span>
+              </button>
+            ))}
           </div>
         </>
       )}

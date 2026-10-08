@@ -278,6 +278,11 @@ fn build_explain_prompt(
         DiffSource::Staged => "已暂存的改动（HEAD → 暂存区）".to_string(),
         // rev 已经过 checked_rev 校验，全是十六进制，按字节切安全
         DiffSource::Commit { rev } => format!("提交 {} 中的改动", &rev[..rev.len().min(7)]),
+        // range 的两侧是任意 ref（分支名可能含多字节字符），按字符截断而不是字节切
+        DiffSource::Range { from, to } => {
+            let cut = |value: &str| -> String { value.chars().take(7).collect() };
+            format!("{} 与 {} 之间的改动", cut(from), cut(to))
+        }
     };
 
     let mut user = format!("文件：{display}\n改动来源：{origin}\n\n改动 diff：\n");
