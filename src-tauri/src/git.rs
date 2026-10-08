@@ -112,6 +112,9 @@ pub enum DiffSource {
     Staged,
     /// `<rev>^` ↔ `<rev>`
     Commit { rev: String },
+    /// `<from>` ↔ `<to>`，两侧都是任意 ref（分支 / 标签 / HEAD / 提交号）。
+    /// 比较任意两个提交、或者拿某个提交跟一个分支比，走的就是这一支
+    Range { from: String, to: String },
 }
 
 /// 放弃修改要还原到哪一侧。同样用标签枚举而不是一个 `staged: bool`：
@@ -1510,6 +1513,16 @@ fn file_diff(root: &Path, path: &str, source: &DiffSource) -> Result<FileDiff, S
                 blob_side(root, &format!("{rev}:{repo_path}"))?,
             )
         }
+        DiffSource::Range { from, to } => {
+            // 两侧都是任意 ref，先各自解析成完整 hash：`from` 侧缺失=新增、
+            // `to` 侧缺失=删除，blob_side 的 Missing 正好表达这两种
+            let from = resolve_commit(root, from)?;
+            let to = resolve_commit(root, to)?;
+            (
+                blob_side(root, &format!("{from}:{repo_path}"))?,
+                blob_side(root, &format!("{to}:{repo_path}"))?,
+            )
+        }
     };
 
     Ok(to_diff(original, modified))
@@ -1528,14 +1541,23 @@ pub(crate) fn file_diff_text(
     source: &DiffSource,
 ) -> Result<String, String> {
     let (target, spec) = workspace_relative(root, path)?;
-    // 提交号要活得比 args 久（args 里存的是借用），先在 match 外面拿到手
+    // 提交号 / ref 字符串要活得比 args 久（args 里存的是借用），先在 match 外面拿到手
     let rev = match source {
         DiffSource::Commit { rev } => Some(checked_rev(rev)?),
+        _ => None,
+    };
+    // 范围比较的两侧也各自解析成完整 hash，`{from}..{to}` 这个参数同样要活过 args
+    let range = match source {
+        DiffSource::Range { from, to } => {
+            Some(format!("{}..{}", resolve_commit(root, from)?, resolve_commit(root, to)?))
+        }
         _ => None,
     };
     let args: Vec<&str> = if let Some(rev) = rev.as_deref() {
         // 只看这个文件本身，`--format=` 把提交头也去掉，剩下的全是 diff
         vec!["show", "--no-color", "--format=", rev, "--", &spec]
+    } else if let Some(range) = range.as_deref() {
+        vec!["diff", "--no-color", range, "--", &spec]
     } else if matches!(source, DiffSource::Staged) {
         vec!["diff", "--cached", "--no-color", "--", &spec]
     } else {
@@ -1582,6 +1604,37 @@ fn checked_rev(raw: &str) -> Result<String, String> {
         return Err(format!("不是合法的提交号: {raw}"));
     }
     Ok(text.to_string())
+}
+
+/// 把一个任意 ref（提交号 / 分支 / 标签 / HEAD 等）解析成完整提交 hash。
+///
+/// 和 `checked_rev` 那条严格十六进制路径分开：历史列表给的本来就是完整 hash，
+/// 但「比较任意两个提交 / 与分支比较」要接受分支名、`HEAD`、短 hash 这些写法。
+/// 用 `rev-parse --verify --end-of-options`：`--end-of-options` 挡住以 `-` 开头的
+/// 字符串被当成 git 选项（比如把 `--foo` 当开关），`--verify` 保证它确实解析得到
+/// 一个提交（`^{commit}` 顺带把 tag 解到它指向的提交）；解不出就报错，不放它
+/// 带着 revspec 语法（`..`、`^`、`@{...}`）继续往下走。
+fn resolve_commit(root: &Path, raw: &str) -> Result<String, String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err("提交或引用不能为空".to_string());
+    }
+    let spec = format!("{text}^{{commit}}");
+    match run_git(root, &["rev-parse", "--verify", "--end-of-options", &spec])? {
+        Some(bytes) => {
+            let hash = String::from_utf8_lossy(&bytes)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if hash.is_empty() {
+                return Err(format!("不是合法的提交或引用: {raw}"));
+            }
+            Ok(hash)
+        }
+        None => Err(format!("不是合法的提交或引用: {raw}")),
+    }
 }
 
 // ---- 时间线 ----
@@ -1825,6 +1878,22 @@ fn files_of(root: &Path, rev: &str) -> Result<Vec<CommitFile>, String> {
     let rev = checked_rev(rev)?;
     let raw = run_git(root, &["show", "--name-status", "-z", "--format=", &rev])?
         .ok_or("git show 执行失败")?;
+    Ok(parse_name_status(&raw, &prefix, root))
+}
+
+/// 两个 ref 之间改动过的文件列表（比较视图用）。
+///
+/// 和 `files_of` 的区别：后者是「某个提交相对它父提交」，这里是「任意两点之间」，
+/// 两侧都能是分支 / 标签 / HEAD。`git diff <from>..<to>` 直接比两棵树，rename / 新增 /
+/// 删除都照 `--name-status` 给出来，解析交给同一个 `parse_name_status`（R/C 已处理）。
+/// `from` 与 `to` 解析成同一个提交时 diff 为空、返回空列表，不是错误——界面上提示
+/// 「没有差异」即可。
+fn compare_files(root: &Path, from: &str, to: &str) -> Result<Vec<CommitFile>, String> {
+    let prefix = repo_prefix(root)?.ok_or("这个目录不是 git 仓库")?;
+    let from = resolve_commit(root, from)?;
+    let to = resolve_commit(root, to)?;
+    let raw = run_git(root, &["diff", "--name-status", "-z", &format!("{from}..{to}")])?
+        .ok_or("git diff 执行失败")?;
     Ok(parse_name_status(&raw, &prefix, root))
 }
 
@@ -2535,6 +2604,17 @@ pub fn git_commit_files(
     rev: String,
 ) -> Result<Vec<CommitFile>, String> {
     files_of(&state.checked_root(&root)?, &rev)
+}
+
+/// 两个 ref（提交 / 分支 / 标签 / HEAD）之间改动过的文件列表，给比较视图用。
+#[tauri::command(async)]
+pub fn git_compare_files(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    from: String,
+    to: String,
+) -> Result<Vec<CommitFile>, String> {
+    compare_files(&state.checked_root(&root)?, &from, &to)
 }
 
 /// 某个提交改了多少文件、增删多少行。悬停浮框用：按需拉，前端按 hash 缓存。
@@ -5735,6 +5815,79 @@ mod tests {
 
         assert!(init_git_repo(&repo).unwrap().is_repo);
         assert_eq!(status_of(&repo).unwrap().head, head);
+
+        cleanup(&top);
+    }
+
+    // ---- 比较任意两个提交 / 与分支比较 ----
+
+    #[test]
+    fn compare_files_lists_changes_between_two_commits() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        // 第一个提交：base + a
+        fs::write(repo.join("base.txt"), "base\n").unwrap();
+        fs::write(repo.join("a.txt"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "one").unwrap();
+        let first = run_git(&repo, &["rev-parse", "HEAD"]).unwrap().unwrap();
+        let first = String::from_utf8_lossy(&first).trim().to_string();
+
+        // 第二个提交：改 a、新增 b
+        fs::write(repo.join("a.txt"), "a2\n").unwrap();
+        fs::write(repo.join("b.txt"), "b\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "two").unwrap();
+        let second = run_git(&repo, &["rev-parse", "HEAD"]).unwrap().unwrap();
+        let second = String::from_utf8_lossy(&second).trim().to_string();
+
+        let files = compare_files(&repo, &first, &second).unwrap();
+        let listed: Vec<&str> = files.iter().map(|file| file.relative.as_str()).collect();
+        assert!(listed.contains(&"a.txt"), "a.txt 应出现: {listed:?}");
+        assert!(listed.contains(&"b.txt"), "b.txt 应出现: {listed:?}");
+        // base.txt 两次提交之间没动，不该混进来
+        assert!(!listed.contains(&"base.txt"), "未改动的文件不该出现: {listed:?}");
+
+        // 反向比较：从后往前看，b.txt 是删除、a.txt 仍是修改
+        let files = compare_files(&repo, &second, &first).unwrap();
+        assert_eq!(
+            files.iter().find(|file| file.relative == "b.txt").map(|file| file.status),
+            Some('D')
+        );
+
+        // from 与 to 相同时没有差异，返回空列表而不是报错
+        assert!(compare_files(&repo, &first, &first).unwrap().is_empty());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn resolve_commit_accepts_refs_and_rejects_junk() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::write(repo.join("a.txt"), "a\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "one").unwrap();
+        let head = run_git(&repo, &["rev-parse", "HEAD"]).unwrap().unwrap();
+        let head = String::from_utf8_lossy(&head).trim().to_string();
+
+        // 当前分支名、HEAD、短 hash 都该解析到同一个提交（分支名不写死，
+        // 免得依赖本机 init.defaultBranch 是 main 还是 master）
+        let branch = run_git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap().unwrap();
+        let branch = String::from_utf8_lossy(&branch).trim().to_string();
+        assert_eq!(resolve_commit(&repo, &branch).unwrap(), head);
+        assert_eq!(resolve_commit(&repo, "HEAD").unwrap(), head);
+        assert_eq!(resolve_commit(&repo, &head[..7]).unwrap(), head);
+
+        // 乱串 / 空串一律报错，不能悄悄解成别的提交
+        assert!(resolve_commit(&repo, "no-such-ref").is_err());
+        assert!(resolve_commit(&repo, "   ").is_err());
 
         cleanup(&top);
     }
