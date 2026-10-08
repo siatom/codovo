@@ -122,12 +122,18 @@ export function WorkspacePane({
     return out;
   }, [workspace.roots, gitRoots]);
 
+  // 「变更」模块是不是真的露在用户眼前：右栏展开、且当前看的正是它。收起右栏 / 停在
+  // 别的模块时外层只是把它 `hidden` 藏着、组件还活着，所以变更面板里那几个轮询 effect
+  // 得靠它短路，否则不可见时仍在白跑 git。用原始 state `tool` 而不是派生的 `activeTool`，
+  // 和下面 numstat 的判据保持一致。
+  const changesVisible = rightOpen && tool === "changes";
+
   // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU。
   // 行数（numstat）只在「变更」面板可见时才要：轮询每 2 秒一次，面板收着或看别的
   // 模块时那两次 numstat 纯属浪费。这里用原始 state `tool` 判断而不是派生的
   // `activeTool`——后者依赖下面 hook 的 `isRepo`（不是仓库会回落到别的模块），
   // 没法反过来喂给 hook。tool 指向非仓库时后端会在 numstat 之前就短路，等价于不跑
-  const git = useGitStatus(pollRoots, visible, rightOpen && tool === "changes");
+  const git = useGitStatus(pollRoots, visible, changesVisible);
   const { settings } = useSettings();
 
   // 变更面板按根分组，每根挂一个完整的面板，各自拿自己的控制器
@@ -448,6 +454,7 @@ export function WorkspacePane({
                       tool={activeTool}
                       roots={workspace.roots}
                       visible={visible}
+                      changesVisible={changesVisible}
                       selected={activeTab?.kind === "file" ? activeTab.path : null}
                       gitByRoot={gitByRoot}
                       gitTargets={wtMap}

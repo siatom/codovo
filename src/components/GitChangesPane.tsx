@@ -111,6 +111,12 @@ interface GitChangesPaneProps {
    * 所以面板还活着——轮询这类后台动作要靠它停掉，否则每个隐藏的工作区都在白跑 git。
    */
   visible: boolean;
+  /**
+   * 这个面板所在的模块是不是真的露在用户眼前：右栏展开、且当前看的正是「变更」。
+   * 收起右栏 / 停在「文件 / 搜索」等别的模块时，外层只是把它 `hidden` 藏着、组件还活着，
+   * 所以轮询这类后台动作除了看 `visible` 也得看它，否则模块不可见时仍在白跑 git。
+   */
+  moduleVisible: boolean;
   git: GitController;
   /** 点改动项 / 提交里的文件：打开差异视图，source 决定跟谁比 */
   onOpen: (path: string, source: DiffSource) => void;
@@ -1273,6 +1279,7 @@ function CommitRow({
 export function GitChangesPane({
   root,
   visible,
+  moduleVisible,
   git,
   onOpen,
   onOpenFile,
@@ -1513,14 +1520,17 @@ export function GitChangesPane({
   );
 
   const commit = useCallback(() => {
-    if (!message.trim()) return;
+    // 和提交按钮的 canCommit 同一判据：没暂存内容、或已有写操作在跑（busy）时直接返回。
+    // 快捷键入口不过按钮的 disabled，光判 message 会发出一条必然失败（没东西可提交）
+    // 或撞 index.lock 的 git commit。
+    if (!message.trim() || busy !== null || staged.length === 0) return;
     void run("commit", async () => {
       const payload = await gitCommit(root, message);
       setMessage(""); // 只有真提交成功才清空
       setLogRevision((revision) => revision + 1); // 刚多了一条提交
       return payload;
     });
-  }, [message, run]);
+  }, [message, busy, staged, run]);
 
   /**
    * 修正上一次提交。提交框里写了信息就用它当新的提交信息，没写就沿用原来的。
@@ -1541,12 +1551,17 @@ export function GitChangesPane({
 
   /** 撤销上一次提交：改动回到暂存区，提交框里的信息也跟着填回去，方便改完重提 */
   const undoCommit = useCallback(() => {
+    // 撤销前的 HEAD 主题得在 setLogRevision 触发重拉之前取到——重拉会把 commits 换掉。
+    // 按 hash 匹配而不是取第一条：过滤生效时 HEAD 不一定排在列表最前。
+    // 列表还没加载（null）或没匹配到就跳过回填，不影响撤销本身。
+    const head = commits?.find((item) => item.hash === snapshot.head)?.subject;
     void run("undo", async () => {
       const payload = await gitUndoCommit(root);
+      if (head) setMessage(head);
       setLogRevision((revision) => revision + 1);
       return payload;
     });
-  }, [run, root]);
+  }, [run, root, commits, snapshot.head]);
 
   /**
    * 打开分支下拉时现拉一次列表。
@@ -1611,12 +1626,12 @@ export function GitChangesPane({
   /**
    * 拉这个仓库的 worktree 列表。
    *
-   * 只在当前显示、且目录是仓库时拉（换 worktree 会换 `root`，跟着重拉）。列表够稳定，
-   * 不轮询。失败当空列表——拿不到就把入口藏起来，不值得弹全局错误。
-   * 后端顺带把存在的工作树登记进白名单，所以返回的 path 之后能直接当 root 用。
+   * 只在面板可见（当前工作区 + 模块露在眼前）、且目录是仓库时拉（换 worktree 会换
+   * `root`，跟着重拉）。列表够稳定，不轮询。失败当空列表——拿不到就把入口藏起来，
+   * 不值得弹全局错误。后端顺带把存在的工作树登记进白名单，所以返回的 path 之后能直接当 root 用。
    */
   useEffect(() => {
-    if (!visible || !snapshot.isRepo) return;
+    if (!visible || !moduleVisible || !snapshot.isRepo) return;
     let cancelled = false;
     void gitWorktreeList(root)
       .then((list) => {
@@ -1628,7 +1643,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [root, visible, snapshot.isRepo]);
+  }, [root, visible, moduleVisible, snapshot.isRepo]);
 
   /** 切到某个工作树。只在真有多个工作树时才给入口，选自己那条等于恢复默认 */
   const pickWorktree = useCallback(
@@ -2214,9 +2229,10 @@ export function GitChangesPane({
   // 拉提交历史。收起时完全不请求——这个面板收起是常态，别白跑 git。
   // 还要盯住 HEAD：在终端里 commit / amend / reset 之后，改动列表靠 2 秒轮询
   // 能自己变好，历史不会，只有 HEAD 动了才说明提交列表该重拉。
-  // 非当前工作区（visible=false）同理不请求：面板只是被 hidden 藏着，还活着。
+  // 非当前工作区（visible=false）、或右栏收起 / 停在别的模块（moduleVisible=false）同理
+  // 不请求：面板只是被 hidden 藏着，还活着。
   useEffect(() => {
-    if (logCollapsed || !visible || !snapshot.isRepo) return;
+    if (logCollapsed || !visible || !moduleVisible || !snapshot.isRepo) return;
     let cancelled = false;
     // 过滤时顶到上限并把条件交给后端：主题 / 作者走后端后置匹配，路径交给 git 的 pathspec
     const filter = filteringLog && !logFilterPath ? logNeedle : undefined;
@@ -2238,6 +2254,7 @@ export function GitChangesPane({
   }, [
     logCollapsed,
     visible,
+    moduleVisible,
     logLimit,
     logRevision,
     snapshot.isRepo,
@@ -2249,10 +2266,10 @@ export function GitChangesPane({
 
   // 后台自动重拉：见 LOG_POLL_MS 的说明。收起时不起定时器，和上面那个 effect 一致
   useEffect(() => {
-    if (logCollapsed || !visible || !snapshot.isRepo) return;
+    if (logCollapsed || !visible || !moduleVisible || !snapshot.isRepo) return;
     const timer = window.setInterval(() => setLogRevision((revision) => revision + 1), LOG_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [logCollapsed, visible, snapshot.isRepo]);
+  }, [logCollapsed, visible, moduleVisible, snapshot.isRepo]);
 
   /**
    * 未推送清单单独拉一份，不和 gitLog 挤在同一个 effect 里：它只跟 ahead 有关，
@@ -2263,7 +2280,7 @@ export function GitChangesPane({
    * 不该让提交历史跟着变成错误态。
    */
   useEffect(() => {
-    if (logCollapsed || !visible || !snapshot.isRepo) return;
+    if (logCollapsed || !visible || !moduleVisible || !snapshot.isRepo) return;
     let cancelled = false;
     void gitUnpushed(root)
       .then((list) => {
@@ -2275,7 +2292,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [logCollapsed, visible, logRevision, snapshot.isRepo, snapshot.head, snapshot.ahead]);
+  }, [logCollapsed, visible, moduleVisible, logRevision, snapshot.isRepo, snapshot.head, snapshot.ahead]);
 
   // 展开某条提交时才去拉它的文件列表，拉过就留着。
   // 展开是多选，所以一次可能有好几条要拉——已经拉到的不再请求，只补缺的那些
