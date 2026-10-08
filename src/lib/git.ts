@@ -40,8 +40,10 @@ export interface GitSnapshot {
   head: string | null;
   ahead: number;
   behind: number;
-  /** 仓库正卡在一次没结束的合并里；为真时面板切成"合并中"界面 */
+  /** 仓库正卡在一次没结束的多步操作里；为真时面板切成"进行中"界面 */
   merging: boolean;
+  /** 进行中的具体操作类型；null = 没有进行中的操作 */
+  mergeKind: "merge" | "rebase" | "cherryPick" | "revert" | null;
   /** 未合并（冲突）条目数，后端按 porcelain 的 u 记录数出来的 */
   conflicts: number;
   /** 改动条目总数；条目过多时可能大于 marks.size */
@@ -67,6 +69,7 @@ const EMPTY: GitSnapshot = {
   ahead: 0,
   behind: 0,
   merging: false,
+  mergeKind: null,
   conflicts: 0,
   changed: 0,
   marks: new Map(),
@@ -159,6 +162,7 @@ function toSnapshot(payload: GitStatusPayload): GitSnapshot {
     ahead: payload.ahead,
     behind: payload.behind,
     merging: payload.merging,
+    mergeKind: payload.mergeKind,
     conflicts: payload.conflicts,
     changed: payload.changed,
     marks,

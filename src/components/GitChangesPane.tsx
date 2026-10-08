@@ -427,6 +427,42 @@ const PRIMARY_BUTTON =
 const MERGE_ABORT_BUTTON =
   "shrink-0 rounded-md border border-danger-line px-3 py-1.5 text-[12px] text-danger hover:bg-danger-bg disabled:opacity-40";
 
+/**
+ * 主按钮位在"非 merge 的进行中操作"下显示的短标签。
+ *
+ * 变基 / 拣选 / 还原的收尾命令和 merge 不同，面板里没有能用的按钮（给了点了就报错），
+ * 所以这里只放一句只读说明，具体引导看下面的提示条。用 `Record<string, string>` 而不是
+ * 精确联合：调用处拿到的是可能为 null 的 mergeKind，宽松一点省掉一处无谓的窄化。
+ */
+const ONGOING_LABEL: Record<string, string> = {
+  rebase: "变基进行中",
+  cherryPick: "拣选提交中",
+  revert: "还原提交中",
+};
+
+/**
+ * "进行中"提示条的整句文案。merge 有自己的收尾按钮，其余三种只能在终端里
+ * `--continue` / `--abort`，所以文案直接指回终端。
+ */
+function ongoingText(kind: GitStatusPayload["mergeKind"], conflicts: number): string {
+  switch (kind) {
+    case "rebase":
+      return conflicts > 0
+        ? `正在进行变基：还有 ${conflicts} 个冲突未解决，请在终端解决后 git rebase --continue`
+        : "正在进行变基：请在终端 git rebase --continue 完成，或用 git rebase --abort 中止";
+    case "cherryPick":
+      return conflicts > 0
+        ? `正在拣选提交：还有 ${conflicts} 个冲突未解决，请在终端解决后 git cherry-pick --continue`
+        : "正在拣选提交：请在终端 git cherry-pick --continue 完成，或用 git cherry-pick --abort 中止";
+    case "revert":
+      return conflicts > 0
+        ? `正在还原提交：还有 ${conflicts} 个冲突未解决，请在终端解决后 git revert --continue`
+        : "正在还原提交：请在终端 git revert --continue 完成，或用 git revert --abort 中止";
+    default:
+      return "";
+  }
+}
+
 /** AI 生成：塞进提交框内部的纯图标按钮，居中对齐、平时淡、悬停才亮 */
 const GENERATE_ICON =
   "absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
@@ -2784,30 +2820,38 @@ export function GitChangesPane({
 
         <div className="flex shrink-0 items-center gap-1.5">
           {snapshot.merging ? (
-            // 合并中：主操作只有"收尾"两件事。冲突没清完时「完成合并」禁用，
-            // 按钮上直接写着还剩几个，省得用户去列表里数
-            <>
-              <button
-                type="button"
-                onClick={mergeContinue}
-                disabled={busy !== null || snapshot.conflicts > 0}
-                className={PRIMARY_BUTTON}
-              >
-                {busy === "mergeContinue"
-                  ? "完成合并中…"
-                  : snapshot.conflicts > 0
-                    ? `还有 ${snapshot.conflicts} 个冲突`
-                    : "完成合并"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setPendingMergeAbort(true)}
-                disabled={busy !== null}
-                className={MERGE_ABORT_BUTTON}
-              >
-                {busy === "mergeAbort" ? "中止中…" : "中止合并"}
-              </button>
-            </>
+            snapshot.mergeKind === "merge" ? (
+              // 合并中：主操作只有"收尾"两件事。冲突没清完时「完成合并」禁用，
+              // 按钮上直接写着还剩几个，省得用户去列表里数
+              <>
+                <button
+                  type="button"
+                  onClick={mergeContinue}
+                  disabled={busy !== null || snapshot.conflicts > 0}
+                  className={PRIMARY_BUTTON}
+                >
+                  {busy === "mergeContinue"
+                    ? "完成合并中…"
+                    : snapshot.conflicts > 0
+                      ? `还有 ${snapshot.conflicts} 个冲突`
+                      : "完成合并"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingMergeAbort(true)}
+                  disabled={busy !== null}
+                  className={MERGE_ABORT_BUTTON}
+                >
+                  {busy === "mergeAbort" ? "中止中…" : "中止合并"}
+                </button>
+              </>
+            ) : (
+              // 变基 / 拣选 / 还原进行中：它们的收尾命令和 merge 不同，这里没有能用的
+              // 按钮（给了点了就报错），只放一句只读说明，具体引导看下面的提示条
+              <span className="px-1 text-[11px] text-danger">
+                {ONGOING_LABEL[snapshot.mergeKind ?? ""] ?? "操作进行中"}
+              </span>
+            )
           ) : staged.length > 0 ? (
             <button type="button" onClick={commit} disabled={!canCommit} className={PRIMARY_BUTTON}>
               {busy === "commit" ? "提交中…" : "提交"}
@@ -2861,10 +2905,13 @@ export function GitChangesPane({
 
         {snapshot.merging && (
           <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
-            正在合并：
-            {snapshot.conflicts > 0
-              ? `还有 ${snapshot.conflicts} 个冲突未解决，改完文件后暂存，再点「完成合并」`
-              : "冲突已解决，点「完成合并」生成合并提交"}
+            {snapshot.mergeKind === "merge"
+              ? `正在合并：${
+                  snapshot.conflicts > 0
+                    ? `还有 ${snapshot.conflicts} 个冲突未解决，改完文件后暂存，再点「完成合并」`
+                    : "冲突已解决，点「完成合并」生成合并提交"
+                }`
+              : ongoingText(snapshot.mergeKind, snapshot.conflicts)}
           </p>
         )}
 
