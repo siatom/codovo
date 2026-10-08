@@ -604,6 +604,58 @@ body.codedock-dragging-list * {
   border-radius: 4px;
 }
 
+/* markdown 文件头部的 YAML frontmatter。挂 .markdown-body 命名空间下，
+   只影响预览 / 气泡 / 弹窗，不碰其它界面。key-value 两栏、左侧竖线跟引用块呼应。 */
+.markdown-body .md-frontmatter {
+  margin: 0 0 1.4em;
+  padding: 10px 12px;
+  border: 1px solid var(--c-line);
+  border-left: 3px solid var(--c-line-strong);
+  border-radius: 6px;
+  background: var(--c-raised);
+  color: var(--c-fg-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.markdown-body .md-fm-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.markdown-body .md-fm-row + .md-fm-row {
+  margin-top: 4px;
+}
+
+/* key 弱化，跟 value 拉开层次；不换行，值那侧负责占满剩余宽度 */
+.markdown-body .md-fm-key {
+  flex: 0 0 auto;
+  color: var(--c-fg-dim);
+  font-weight: 500;
+}
+
+/* pre-wrap：多行标量里保留的换行要能看见，否则折叠块又会挤成一行 */
+.markdown-body .md-fm-value,
+.markdown-body .md-fm-nested {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--c-fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 覆盖 .markdown-body ul 那套正文列表间距，frontmatter 里要更紧凑 */
+.markdown-body .md-frontmatter .md-fm-list {
+  margin: 0;
+  padding-left: 1.1em;
+  list-style: disc;
+}
+
+.markdown-body .md-frontmatter .md-fm-list li + li {
+  margin-top: 2px;
+}
+
 /* 搜索结果里高亮命中的那一段，色系跟编辑器里的选中态保持一致 */
 .codedock-find-hit {
   border-radius: 2px;
