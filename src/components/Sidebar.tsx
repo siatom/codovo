@@ -247,6 +247,15 @@ export function Sidebar({
     setCliChoice(readCliChoice(activeRoot));
   }, [activeRoot]);
 
+  // 工作区只剩 1 个时过滤入口（图标 / 输入框）会因长度不足被卸载，残留的过滤词会把
+  // 列表卡在「没有匹配的工作区」且没有任何清除入口。数量不够就直接复位过滤态。
+  useEffect(() => {
+    if (workspaces.length <= 1) {
+      setWsQuery("");
+      setWsSearchOpen(false);
+    }
+  }, [workspaces.length]);
+
   /** 选 CLI：改状态并按活动根落盘。工作区行的 + 和底部选择器共用它 */
   const pickCli = (command: string) => {
     setCliChoice(command);
