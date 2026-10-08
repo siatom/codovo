@@ -327,8 +327,13 @@ function relativeToRoot(path: string, root: string): string {
  */
 function diffUri(tab: Extract<Tab, { kind: "diff" }>, side: "original" | "modified"): monaco.Uri {
   const { source } = tab;
+  // range 要带上两侧 ref 才能区分「同一个文件的两次不同比较」，否则它们会撞同一个 model
   const key =
-    source.mode === "commit" ? `commit-${source.rev.slice(0, 12)}` : source.mode;
+    source.mode === "commit"
+      ? `commit-${source.rev.slice(0, 12)}`
+      : source.mode === "range"
+        ? `range-${source.from.slice(0, 12)}-${source.to.slice(0, 12)}`
+        : source.mode;
   return monaco.Uri.parse(
     `codedock-diff:/${key}/${encodeURIComponent(pathKey(tab.path))}/${side}`,
   );

@@ -413,6 +413,11 @@ export function gitCommitFiles(root: string, rev: string): Promise<GitCommitFile
   return invoke<GitCommitFile[]>("git_commit_files", { root, rev });
 }
 
+/** 两个 ref 之间改动过的文件列表（比较视图用） */
+export function gitCompareFiles(root: string, from: string, to: string): Promise<GitCommitFile[]> {
+  return invoke<GitCommitFile[]>("git_compare_files", { root, from, to });
+}
+
 /** 某个提交的改动规模（文件数 / 增行 / 删行）。悬停浮框按需拉 */
 export function gitCommitStat(root: string, rev: string): Promise<CommitStat> {
   return invoke<CommitStat>("git_commit_stat", { root, rev });

@@ -5,11 +5,13 @@ import { pathKey } from "./fs";
  * - unstaged：index ↔ 工作区
  * - staged：HEAD ↔ index
  * - commit：`<rev>^` ↔ `<rev>`
+ * - range：`<from>` ↔ `<to>`，两侧都是任意 ref（提交 / 分支 / 标签）
  */
 export type DiffSource =
   | { mode: "unstaged" }
   | { mode: "staged" }
-  | { mode: "commit"; rev: string };
+  | { mode: "commit"; rev: string }
+  | { mode: "range"; from: string; to: string };
 
 /**
  * 编辑器里一个标签。
@@ -33,6 +35,8 @@ function sourceKey(source: DiffSource): string {
       return "u";
     case "commit":
       return `c${SEP}${source.rev.slice(0, 12)}`;
+    case "range":
+      return `r${SEP}${source.from.slice(0, 12)}${SEP}${source.to.slice(0, 12)}`;
   }
 }
 
@@ -60,6 +64,8 @@ export function tabSuffix(tab: Tab): string {
       return "↔ index";
     case "commit":
       return `↔ ${tab.source.rev.slice(0, 7)}^`;
+    case "range":
+      return `${tab.source.from.slice(0, 7)} ↔ ${tab.source.to.slice(0, 7)}`;
   }
 }
 
@@ -74,5 +80,7 @@ export function tabTitle(tab: Tab): string {
       return `${path}（差异：与 index 比较）`;
     case "commit":
       return `${path}（差异：提交 ${tab.source.rev.slice(0, 7)} 与它的父提交比较）`;
+    case "range":
+      return `${path}（差异：${tab.source.from.slice(0, 7)} ↔ ${tab.source.to.slice(0, 7)}）`;
   }
 }

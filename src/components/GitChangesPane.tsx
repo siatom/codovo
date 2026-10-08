@@ -19,6 +19,7 @@ import {
   gitCommitFiles,
   gitCommitGroups,
   gitCommitStat,
+  gitCompareFiles,
   gitCreateBranch,
   gitCreateTag,
   gitDeleteTag,
@@ -89,6 +90,7 @@ import {
   FileTypeIcon,
   IconArrowDownToLine,
   IconArrowUpFromLine,
+  IconArrowsLeftRight,
   IconBranch,
   IconCheck,
   IconChevronDown,
@@ -1273,7 +1275,9 @@ function CommitRow({
   stat,
   unpushed,
   anchor,
+  selected,
   onToggle,
+  onSelect,
   onOpen,
   onHover,
   onUnhover,
@@ -1297,7 +1301,11 @@ function CommitRow({
    * 状态由整份列表统一持有（见 GitChangesPane 里的 hoverCommit），行本身不存。
    */
   anchor: DOMRect | null;
+  /** 这一行是不是「比较」集合里选中的提交，选中行铺底色 */
+  selected: boolean;
   onToggle: () => void;
+  /** Ctrl/⌘ 或 Shift 点：切换这一行的「比较」选中态，不展开 */
+  onSelect: () => void;
   onOpen: (path: string, source: DiffSource) => void;
   /** 鼠标进到这一行：报上本行矩形，让列表把浮框换过来 */
   onHover: (rect: DOMRect) => void;
@@ -1330,8 +1338,14 @@ function CommitRow({
       >
         <button
           type="button"
-          onClick={onToggle}
-          className="@container flex h-[22px] w-full items-center gap-1.5 rounded px-1 text-left text-[11px] hover:bg-hover"
+          onClick={(event) => {
+            // Ctrl/⌘ 或 Shift 点是「选进比较」而不是展开/收起——和改动列表那边多选一致
+            if (event.ctrlKey || event.metaKey || event.shiftKey) onSelect();
+            else onToggle();
+          }}
+          className={`@container flex h-[22px] w-full items-center gap-1.5 rounded px-1 text-left text-[11px] ${
+            selected ? "bg-selected" : "hover:bg-hover"
+          }`}
         >
           {/* 引用标签按行宽显隐：窄了整组收起来，把宽度让给提交主题，别把主题挤成 0 宽 */}
           {commit.refs.length > 0 && (
@@ -1613,6 +1627,32 @@ export function GitChangesPane({
   const [logNeedle, setLogNeedle] = useState("");
   /** 历史滚动容器，「回到 HEAD」要让它滚过去 */
   const logScrollRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 时间线里为「比较两个提交」选中的提交号（最多 2 个，按点选先后）。
+   * Ctrl/⌘ 或 Shift 点提交行切换；满 2 个后再选第三个时丢掉最早选的那个。
+   */
+  const [compareSel, setCompareSel] = useState<string[]>([]);
+  /** 正在看的两个 ref 之间的比较；null = 没在比较视图里 */
+  const [compare, setCompare] = useState<{ from: string; to: string; label: string } | null>(null);
+  /** 比较视图的文件列表；null = 还没拉到 */
+  const [compareFiles, setCompareFiles] = useState<GitCommitFile[] | null>(null);
+  const [compareBusy, setCompareBusy] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  /**
+   * 右键「与分支比较…」要跟哪条提交比、分支菜单贴在哪儿；null = 菜单没开着。
+   * 和 commitMenu 分开：那条菜单关掉之后这个还得留着画分支列表。
+   */
+  const [compareBranchMenu, setCompareBranchMenu] = useState<{
+    commit: GitCommit;
+    x: number;
+    y: number;
+  } | null>(null);
+  /**
+   * 比较请求的序号：退出 / 换成另一组对比后，先发出去的那次回来时已经不算数了，
+   * 不丢掉会把旧结果盖到新视图上（同 explainSeq 的理由）。
+   */
+  const compareSeq = useRef(0);
 
   /**
    * 悬停浮框挂在哪个提交上、贴着哪个矩形；null = 没开着。
@@ -2867,6 +2907,80 @@ export function GitChangesPane({
     });
   }, []);
 
+  // ---- 比较任意两个提交 / 与分支比较 ----
+
+  /** Ctrl/⌘ 或 Shift 点提交行：切换它是否入选「比较」集合（最多两个） */
+  const toggleCompareSel = useCallback((hash: string) => {
+    setCompareSel((current) => {
+      if (current.includes(hash)) return current.filter((item) => item !== hash);
+      const next = [...current, hash];
+      // 只留最近选的两个：再点第三个时把最早选的那个挤掉
+      return next.length > 2 ? next.slice(next.length - 2) : next;
+    });
+  }, []);
+
+  /**
+   * 进入比较视图：拉两个 ref 之间改动过的文件列表。
+   *
+   * from 与 to 字面相同（选了同一个 ref）时后端其实会返回空列表，这里先拦一道，
+   * 省得白跑一次 git，也让提示更贴切。
+   */
+  const startCompare = useCallback(
+    (from: string, to: string, label: string) => {
+      const seq = ++compareSeq.current;
+      setCompare({ from, to, label });
+      setCompareFiles(null);
+      setCompareError(null);
+      setCompareSel([]);
+      setCompareBranchMenu(null);
+      if (from.trim() === to.trim()) {
+        setCompareFiles([]);
+        setCompareBusy(false);
+        return;
+      }
+      setCompareBusy(true);
+      void gitCompareFiles(root, from, to)
+        .then((files) => {
+          if (compareSeq.current !== seq) return;
+          setCompareFiles(files);
+          setCompareBusy(false);
+        })
+        .catch((reason) => {
+          if (compareSeq.current !== seq) return;
+          setCompareError(String(reason));
+          setCompareBusy(false);
+        });
+    },
+    [root],
+  );
+
+  /** 退出比较视图，顺带把在飞的那次结果作废、清掉时间线里的选中 */
+  const exitCompare = useCallback(() => {
+    compareSeq.current += 1;
+    setCompare(null);
+    setCompareFiles(null);
+    setCompareError(null);
+    setCompareBusy(false);
+    setCompareSel([]);
+  }, []);
+
+  /**
+   * 选中两个提交时，算出「从哪个到哪个」。时间线上更靠下（更旧）的那个当 from，
+   * 这样比较出来是一个正向补丁；下标找不到（提交被过滤掉了）就退回点选顺序。
+   */
+  const comparePair = useMemo(() => {
+    if (compareSel.length !== 2 || !commits) return null;
+    const first = commits.findIndex((item) => item.hash === compareSel[0]);
+    const second = commits.findIndex((item) => item.hash === compareSel[1]);
+    const [from, to] =
+      first >= 0 && second >= 0 && first < second
+        ? [compareSel[1], compareSel[0]]
+        : [compareSel[0], compareSel[1]];
+    const shortOf = (hash: string) =>
+      commits.find((item) => item.hash === hash)?.short ?? hash.slice(0, 7);
+    return { from, to, label: `${shortOf(from)} ↔ ${shortOf(to)}` };
+  }, [compareSel, commits]);
+
   /**
    * 泳道布局。列表一变就整段重排——每翻一页也是从头算，图不会跳变。
    * `rows[i]` 和 `commits[i]` 一一对应，取行直接用下标即可。
@@ -3114,9 +3228,11 @@ export function GitChangesPane({
   const commitMenuTags = commitMenu
     ? commitMenu.commit.refs.filter((reference) => reference.kind === "tag")
     : [];
+  // 菜单项：打标签 1 项 + 「与 HEAD / 与分支比较」2 项 + 若干删标签项。
+  // 分隔线：比较组前一条，删标签组前一条（没有标签就省掉）
   const commitMenuH =
-    MENU_ITEM_H * (1 + commitMenuTags.length) +
-    (commitMenuTags.length > 0 ? MENU_DIVIDER_H : 0) +
+    MENU_ITEM_H * (3 + commitMenuTags.length) +
+    MENU_DIVIDER_H * (1 + (commitMenuTags.length > 0 ? 1 : 0)) +
     MENU_PAD;
 
   return (
@@ -3845,6 +3961,67 @@ export function GitChangesPane({
         )}
 
         <div className="min-h-0 flex-1 overflow-auto">
+          {compare ? (
+            /* 比较视图：把改动列表整块换成「两个 ref 之间的差异文件」。顶部一行标题 +
+               退出按钮，下面按提交展开那套行渲染文件；点文件开 range 差异 */
+            <>
+              <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
+                <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
+                <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
+                  对比 {compare.label}
+                </span>
+                <button type="button" onClick={exitCompare} className={GROUP_ACTION}>
+                  退出对比
+                </button>
+              </div>
+              {compareBusy && (
+                <p className="px-1 py-1 text-[11px] text-fg-faint">加载中…</p>
+              )}
+              {compareError && (
+                <p className="px-1 py-1 text-[11px] whitespace-pre-wrap text-danger">
+                  {compareError}
+                </p>
+              )}
+              {!compareBusy && !compareError && compareFiles?.length === 0 && (
+                <p className="px-1 py-1 text-[11px] text-fg-faint">
+                  {compare.from.trim() === compare.to.trim()
+                    ? "同一个提交，无需比较"
+                    : "两者之间没有差异"}
+                </p>
+              )}
+              {!compareBusy && compareFiles && compareFiles.length > 0 && (
+                <ul>
+                  {compareFiles.map((file) => (
+                    <li key={file.path}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onOpen(file.path, {
+                            mode: "range",
+                            from: compare.from,
+                            to: compare.to,
+                          })
+                        }
+                        title={file.relative}
+                        className="flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[11px] hover:bg-hover"
+                      >
+                        <span className="min-w-0 truncate text-fg-muted">
+                          {baseName(file.relative)}
+                        </span>
+                        {dirOf(file.relative) && (
+                          <span className="min-w-0 truncate text-[10px] text-fg-faint">
+                            {dirOf(file.relative)}
+                          </span>
+                        )}
+                        <GitMarkBadge mark={statusMark(file.status)} className="text-[10px]" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <>
           {staged.length === 0 && unstaged.length === 0 && (
             <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的更改</p>
           )}
@@ -4019,8 +4196,29 @@ export function GitChangesPane({
               />
             </>
           )}
+            </>
+          )}
         </div>
       </div>
+
+      {/* 选中两个提交后冒出来的小条：点「比较」进入两提交之间的差异视图。
+          放在时间线上方——它服务的是下面那段时间线 */}
+      {compareSel.length === 2 && comparePair && (
+        <div className="flex shrink-0 items-center gap-1.5 border-t border-line px-2 py-1">
+          <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
+          <span className="min-w-0 flex-1 truncate text-[11px] text-fg">已选 2 个提交</span>
+          <button
+            type="button"
+            onClick={() => startCompare(comparePair.from, comparePair.to, comparePair.label)}
+            className={GROUP_ACTION}
+          >
+            比较
+          </button>
+          <button type="button" onClick={() => setCompareSel([])} className={GROUP_ACTION}>
+            清除
+          </button>
+        </div>
+      )}
 
       {/* 拖动条把时间线的上边缘变成可拖的：往下拖历史变高。
           收起时不画——没有东西可调 */}
@@ -4180,7 +4378,9 @@ export function GitChangesPane({
                 stat={commitStats.get(commit.hash)}
                 unpushed={unpushed.has(commit.hash)}
                 anchor={hoverCommit?.hash === commit.hash ? hoverCommit.rect : null}
+                selected={compareSel.includes(commit.hash)}
                 onToggle={() => toggleCommit(commit.hash)}
+                onSelect={() => toggleCompareSel(commit.hash)}
                 onOpen={onOpen}
                 onHover={(rect) => {
                   cancelHoverHide();
@@ -4371,6 +4571,34 @@ export function GitChangesPane({
               在此提交打标签…
               <span className={MENU_CMD}>tag</span>
             </button>
+            {/* 比较组：与 HEAD 直接进比较视图；与分支比较先弹一个分支列表 */}
+            <div className={MENU_DIVIDER} />
+            <button
+              type="button"
+              onClick={() => {
+                const commit = commitMenu.commit;
+                setCommitMenu(null);
+                startCompare(commit.hash, "HEAD", `${commit.short} ↔ HEAD`);
+              }}
+              className={MENU_ITEM}
+            >
+              <IconArrowsLeftRight className="h-3.5 w-3.5 shrink-0" />
+              与 HEAD 比较
+              <span className={MENU_CMD}>diff</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const { commit, x, y } = commitMenu;
+                setCommitMenu(null);
+                loadBranches();
+                setCompareBranchMenu({ commit, x, y });
+              }}
+              className={MENU_ITEM}
+            >
+              <IconBranch className="h-3.5 w-3.5 shrink-0" />
+              与分支比较…
+            </button>
             {/* 这个提交上已经带的标签，逐条给一个删除入口。整组连分隔线一起藏在条件里，
                 否则没有标签时会多出一条孤线 */}
             {commitMenuTags.length > 0 && (
@@ -4393,6 +4621,56 @@ export function GitChangesPane({
                 ))}
               </>
             )}
+          </div>
+        </>
+      )}
+
+      {/* 「与分支比较…」的分支列表：复用分支下拉那份 branches / loadBranches，
+          点一条就把「该提交 ↔ 这条分支」送进比较视图 */}
+      {compareBranchMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setCompareBranchMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setCompareBranchMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex max-h-72 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: COMMIT_MENU_W,
+              left: Math.min(compareBranchMenu.x, window.innerWidth - COMMIT_MENU_W - 4),
+              top: Math.max(4, Math.min(compareBranchMenu.y, window.innerHeight - 300)),
+            }}
+          >
+            <p className="px-3 py-1 text-[10px] text-fg-faint">与分支比较</p>
+            {branchError && (
+              <p className="px-3 py-1 text-[11px] whitespace-pre-wrap text-danger">
+                {branchError}
+              </p>
+            )}
+            {branches.length === 0 && !branchError && (
+              <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
+            )}
+            {branches.map((item) => (
+              <button
+                key={item.name}
+                type="button"
+                onClick={() =>
+                  startCompare(
+                    compareBranchMenu.commit.hash,
+                    item.name,
+                    `${compareBranchMenu.commit.short} ↔ ${item.name}`,
+                  )
+                }
+                className={MENU_ITEM}
+              >
+                <IconBranch className="h-3.5 w-3.5 shrink-0" />
+                <span className="min-w-0 truncate">{item.name}</span>
+              </button>
+            ))}
           </div>
         </>
       )}
