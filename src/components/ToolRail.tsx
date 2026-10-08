@@ -20,8 +20,6 @@ const BUTTON =
 
 const BUTTON_ON = "bg-selected text-fg";
 
-const BUTTON_OFF = "cursor-not-allowed text-fg-faint";
-
 /**
  * 右边栏的模块注册表：顺序就是图标条上从上到下的顺序。
  * 设置里「右栏」那一页的显隐开关也照这份表来，加模块时两处不会走散。
@@ -37,8 +35,6 @@ export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[]
 
 interface ToolRailProps {
   active: ToolId;
-  /** 目录不是仓库时「变更」没有内容可看 */
-  gitReady: boolean;
   /** 改动条目数；「变更」图标上的角标就取它 */
   changed: number;
   /** 设置里关掉的模块不上图标条 */
@@ -60,7 +56,6 @@ const BADGE_MAX = 99;
  */
 export function ToolRail({
   active,
-  gitReady,
   changed,
   visible,
   onPick,
@@ -71,11 +66,9 @@ export function ToolRail({
   return (
     <div className={RAIL} onClick={onBlankClick}>
       {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
-        // 不是仓库时「变更」点了也没内容可看，置灰而不是藏起来，免得用户以为模块没了
-        const blocked = id === "changes" && !gitReady;
         // 有改动时才挂角标，0 就不显示——空白角标反而像加载失败
         const badge =
-          id === "changes" && !blocked && changed > 0
+          id === "changes" && changed > 0
             ? changed > BADGE_MAX
               ? `${BADGE_MAX}+`
               : String(changed)
@@ -85,9 +78,8 @@ export function ToolRail({
             key={id}
             type="button"
             onClick={() => onPick(id)}
-            disabled={blocked}
-            title={blocked ? "当前目录不是 git 仓库" : label}
-            className={`${BUTTON} ${active === id ? BUTTON_ON : blocked ? BUTTON_OFF : ""}`}
+            title={label}
+            className={`${BUTTON} ${active === id ? BUTTON_ON : ""}`}
           >
             <Icon />
             {badge && (

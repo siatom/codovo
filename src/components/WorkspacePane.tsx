@@ -134,8 +134,8 @@ export function WorkspacePane({
   // 只有当前显示的工作区需要轮询 git，其余的一直在跑就是白烧 CPU。
   // 行数（numstat）只在「变更」面板可见时才要：轮询每 2 秒一次，面板收着或看别的
   // 模块时那两次 numstat 纯属浪费。这里用原始 state `tool` 判断而不是派生的
-  // `activeTool`——后者依赖下面 hook 的 `isRepo`（不是仓库会回落到别的模块），
-  // 没法反过来喂给 hook。tool 指向非仓库时后端会在 numstat 之前就短路，等价于不跑
+  // `activeTool`——后者还会被「模块被关掉」的兜底改掉，拿它当依赖等于让 hook 跟着
+  // 别处的设置一起变。tool 指向非仓库时后端在 numstat 之前就短路，等价于不跑
   const git = useGitStatus(pollRoots, visible, changesVisible);
   const { settings } = useSettings();
 
@@ -162,14 +162,12 @@ export function WorkspacePane({
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
   };
-  // 当前模块被关掉、或者不是仓库看不了「变更」时，落到第一个还开着的模块。
-  // 派生值兜底而不是改 state：用户选的模块不会被抹掉，重新打开设置里的开关就回到原样
+  // 当前模块被关掉时落到第一个还开着的模块。派生值兜底而不是改 state：
+  // 用户选的模块不会被抹掉，重新打开设置里的开关就回到原样。
+  // 「变更」不再因为目录不是仓库而回退——点进去是空状态 + 初始化按钮
   const firstVisible: ToolId =
-    RIGHT_TOOLS.map((item) => item.id).find(
-      (id) => toolVisible[id] && (id !== "changes" || gitReady),
-    ) ?? "files";
-  const activeTool: ToolId =
-    toolVisible[tool] && (tool !== "changes" || gitReady) ? tool : firstVisible;
+    RIGHT_TOOLS.map((item) => item.id).find((id) => toolVisible[id]) ?? "files";
+  const activeTool: ToolId = toolVisible[tool] ? tool : firstVisible;
   const rightCollapsed = !rightOpen;
   // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
   const rightFullscreen = fullscreen === "right";
@@ -452,7 +450,6 @@ export function WorkspacePane({
             <div className="flex min-h-0 min-w-0 flex-1">
               <ToolRail
                 active={activeTool}
-                gitReady={gitReady}
                 changed={changedCount}
                 visible={toolVisible}
                 onPick={pickTool}

@@ -24,6 +24,7 @@ import {
   gitDiscard,
   gitFetch,
   gitFileHunks,
+  gitInit,
   gitLog,
   gitMerge,
   gitMergeAbort,
@@ -513,6 +514,7 @@ const HUNK_DANGER =
  */
 type Busy =
   | null
+  | "init"
   | "stage"
   | "unstage"
   | "discard"
@@ -1425,8 +1427,8 @@ function TagDialog({
 
 /**
  * 改动列表 + 提交框 + 提交历史，右栏「变更」模块的整屏内容。
- * 目录不是仓库（或系统里没有 git）时整个不渲染——工具列表那边已经把这行置灰了，
- * 这里的早退只是兜底。
+ * 目录不是仓库时渲染空状态 + 「初始化 Git 仓库」按钮（见下面 `!snapshot.isRepo` 那段），
+ * 不再整个不渲染——工具列表那边也不把这行置灰了。
  */
 export function GitChangesPane({
   root,
@@ -1686,6 +1688,16 @@ export function GitChangesPane({
     },
     [applyStatus],
   );
+
+  /**
+   * 目录还不是仓库时把它初始化成一个（默认分支 main）。
+   *
+   * `git init` 对已有仓库是幂等的，所以不用先探一次；返回的新状态直接落地，
+   * 下一次渲染就走正常内容了（历史那几个轮询 effect 也会因为 isRepo 变 true 自己起来）。
+   */
+  const initRepo = useCallback(() => {
+    void run("init", () => gitInit(root));
+  }, [run, root]);
 
   const commit = useCallback(() => {
     // 和提交按钮的 canCommit 同一判据：没暂存内容、或已有写操作在跑（busy）时直接返回。
@@ -2632,7 +2644,27 @@ export function GitChangesPane({
     return () => observer.disconnect();
   }, [resizeMessage]);
 
-  if (!snapshot.isRepo) return null;
+  // 目录还不是仓库：给一句说明 + 一键初始化，点进来看到的就是这里。
+  // 放在所有 hooks 之后，条件返回不影响 hooks 顺序
+  if (!snapshot.isRepo) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+        <IconBranch className="h-6 w-6 text-fg-faint" />
+        <p className="text-[12px] text-fg-dim">当前目录还不是 Git 仓库</p>
+        <button
+          type="button"
+          onClick={initRepo}
+          disabled={busy !== null}
+          className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
+        >
+          {busy === "init" ? "正在初始化…" : "初始化 Git 仓库"}
+        </button>
+        {error && (
+          <p className="text-[11px] break-words whitespace-pre-wrap text-danger">{error}</p>
+        )}
+      </div>
+    );
+  }
 
   const canCommit = staged.length > 0 && message.trim().length > 0 && busy === null;
   // 有暂存就按暂存生成；只有未暂存的改动也能生成（点下去会先全部暂存）

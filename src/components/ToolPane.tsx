@@ -64,7 +64,7 @@ interface ToolPaneProps {
   gitTargets: Record<string, string>;
   /** 各根合并后的标记，供文件树查 */
   gitMarks: ReadonlyMap<string, GitMark>;
-  /** 任意一根是 git 仓库。都不是时「变更」模块没有意义 */
+  /** 任意一根是 git 仓库。文件树据此决定给不给 git 相关的右键菜单 */
   gitReady: boolean;
   /** 文件树里点一个文件：打开文件内容 */
   onSelectFile: (path: string) => void;

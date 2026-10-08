@@ -274,6 +274,14 @@ export function gitStatus(root: string, withCounts = true): Promise<GitStatusPay
 }
 
 /**
+ * 把工作区根初始化成 git 仓库（默认分支 main）。已经是仓库时幂等，不动已有历史。
+ * 返回 init 之后的新状态，调用方直接落地即可。
+ */
+export function gitInit(root: string): Promise<GitStatusPayload> {
+  return invoke<GitStatusPayload>("git_init", { root });
+}
+
+/**
  * root 所属仓库的全部 worktree。目录不是仓库 / 没有 worktree 时返回空数组，不是错误。
  * 返回的 `path` 已登记过白名单，可以直接当别的 git 命令的 root。
  */
