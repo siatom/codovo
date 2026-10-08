@@ -117,6 +117,8 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
   const [pendingDelete, setPendingDelete] = useState<FeedbackRecord | null>(null);
   /** 生成中：按钮转成「生成中…」，别让用户连点 */
   const [generating, setGenerating] = useState(false);
+  /** 提交中：慢网络下双击会建出两条 issue，挡住重入并禁用按钮 */
+  const [submitting, setSubmitting] = useState(false);
   /** 生成好了、但「详细描述」里已经有内容，等用户确认是否覆盖 */
   const [pendingGenerate, setPendingGenerate] = useState<string | null>(null);
 
@@ -232,8 +234,11 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
   };
 
   const submit = async () => {
+    // 已经在提交就忽略这次点击，否则会重复建 issue
+    if (submitting) return;
     const body = buildBody();
     if (body === null) return;
+    setSubmitting(true);
     setStatus({ kind: "busy", text: "正在提交…" });
     try {
       const record = await submitFeedback(title.trim(), body, category);
@@ -246,6 +251,8 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       });
     } catch (reason) {
       setStatus({ kind: "error", text: String(reason) });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -473,7 +480,12 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
 
         <div className="mt-3 flex items-center gap-2">
           {ready ? (
-            <button type="button" onClick={() => void submit()} className={PRIMARY_BUTTON}>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={submitting}
+              className={PRIMARY_BUTTON}
+            >
               <IconSend className="h-3.5 w-3.5" />
               提交反馈
             </button>
