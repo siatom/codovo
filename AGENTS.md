@@ -1,228 +1,32 @@
 # AGENTS.md
 
-给在这个仓库里写代码的 AI 助手；功能见 [README.md](./README.md)。栈：Rust + Tauri 2 外壳、
-React 19 + TS + Tailwind 4、Monaco 编辑器、xterm.js 终端。**动手前先扫一遍「关键实现决定」。**
+CodeDock 仓库协作约定。项目功能与运行方式见 [README.md](./README.md)。技术栈：Rust、Tauri 2、React、TypeScript、Tailwind、Monaco、xterm.js。
 
-## 命令
+## 常用命令
 
 ```bash
-pnpm tauri dev                    # 开发
-pnpm build                        # 前端类型检查 + 构建
-cd src-tauri && cargo test --lib  # 后端单测
+pnpm tauri dev
+pnpm build
+cd src-tauri && cargo test --lib
 cd src-tauri && cargo clippy
-
-pnpm version patch                # 发版：升版本号并打 tag（minor / major 同理）
-git push --follow-tags            # 连 tag 一起推
 ```
 
-## 约定
+前端改动至少运行 `pnpm build`。界面行为改动可按 `.codebuddy/skills/cdp-verify/` 使用 `scripts/cdp-check.cjs` 验证。
 
-- 跨平台：涉及系统 API / 路径 / 进程 / 快捷键 / 界面行为时，先考虑 Windows、macOS、Linux 差异。
-- 注释一律中文、写「为什么」；反直觉的写法、绕开的坑留一句。
-- 颜色只用语义类（`bg-surface`…），新增要同时改 `styles.css` 的 `:root` / `:root[data-theme="light"]` /
-  `@theme`；组件具名导出（`App.tsx` 例外）、状态用 Context、图标走 `icons.tsx`。
-- 只改被要求改的地方：不重排 import、不改命名、不清理"看起来没用"的代码；宁可重复三行。
-- 设置项要动三处（`settings.tsx` 的类型与默认值 → `SettingsDialog.tsx` 的表单 → 消费方）；后端命令 `*.rs` 写
-  `#[tauri::command]` → `lib.rs` 注册 → 前端 `lib/*.ts` 包一层，组件不直接 invoke。
-- 版本号**只有一个来源**：`package.json` 的 `version`——`tauri.conf.json` 的 `version` 指向
-  `../package.json`（安装包文件名、exe 版本资源都从那儿取），前端由 vite 的 `define` 注入
-  `__APP_VERSION__`。**改版本一律走 `pnpm version patch|minor|major`，别手改 JSON**：
-  以前是三处硬编码（`package.json` / `tauri.conf.json` / `Cargo.toml`），必然漂移。
-  界面上显示的其实是 `<version>+<git 短 hash>[.dirty]`：**版本号是发布里程碑、平时不动，
-  后面那串才是「这一次构建」的身份**，用来核对装的是哪一次（`.dirty` = 这个包含未提交的改动）。
-  那串标识**不进**版本号本身——Windows 的 exe 版本资源只接受纯 `x.y.z`；dev 构建另带两处标记：
-  窗口标题与版本号后的 `(dev)`、侧栏头部的 `dev` 上标——和安装版并存时一眼区分。
-- 没有用户明确允许，不要 `git push` / 开 PR / 推分支；提交留在本地等确认。
+## 开发约定
+
+- 先读相关实现再修改；只做请求范围内的改动，不顺手重命名、重排或清理代码。
+- 考虑 Windows、macOS、Linux 差异。注释用中文，说明原因或容易误解之处。
+- 使用项目现有的语义颜色、组件导出、Context 和图标约定；新增颜色时同步维护 `styles.css` 的主题变量。
+- 设置项需同步类型/默认值、设置表单和消费方。Tauri 命令需在 Rust 定义、`lib.rs` 注册，并由前端 `lib/*.ts` 封装；组件不直接 `invoke`。
+- 版本号以 `package.json` 为准，只用 `pnpm version patch|minor|major` 修改。未获明确授权，不推送、不建 PR、不推分支。
 
 ## 关键实现决定
 
-> 都是踩过坑才定下来的，改之前先弄清为什么。
+- 多工作区状态按 root 隔离；切换时保留会话与界面状态。
+- 所有文件访问必须校验工作区边界；凭据存系统凭据库。
+- 修改前阅读相关代码和注释，遵循现有行为与安全约束。
+## 发布
 
-- 终端输出传**原始字节**、后端不解码（`read()` 会截断多字节 UTF-8）；非当前会话 `display:none` 藏而不卸载
-  （卸载会杀 shell）；换工作区靠重开 shell、前后端根目录一起换；容器不设 padding 且 `overflow-clip`。
-- **单窗口多工作区**：一个窗口里同时开着多个工作区，侧栏点哪个、右侧（终端 / 智能体 / 右边栏）就切到哪个。
-  切走的工作区**在后台继续跑**（shell 不杀、opencode 不停），切回来时终端会话、编辑器标签、文件树展开态
-  原样还原。做法是**每个工作区挂一个 `WorkspacePane` 实例**，非当前的 `display:none` 藏着不卸载——
-  和 TerminalSession 的会话切换同一套路，状态天然保留，所以**别用 `key={root}` 之类重置它**。
-- 后端状态**一律按工作区 root 分片**（`FsState` / `WatchState` / `AgentState` / `PtyState`），命令显式收
-  `root: String`；`FsState` 只认「登记过的根」当白名单，否则前端能拿任意路径去读写。事件走全局 `emit`，
-  agent 的 payload 是 `{root, event}`，前端按 root 路由。agent 的 `config_dir` 用
-  `workspace_dir_name(root)`（非法字符替换 + 稳定 hash）：共用一份会让两个 opencode 争用，而且收掉某个
-  工作区时的 `remove_dir_all` 会删掉别工作区的目录。关工作区走 `workspace_close`，一次收掉它的 shell、opencode
-  与目录监听。目录监听**只跟当前工作区**，切工作区时整体换掉。
-- 持久化的分层：**窗口级偏好存 sessionStorage**（侧栏折叠、CLI 选择）；**工作区级的按 root 作 key**
-  （右栏模块、浏览器地址、时间线视图 / 高度、agent 当前会话）；**跨窗口共享的留 localStorage**
-  （设置、主题、工作区列表、别名、远程主机）并靠 `storage` 事件同步（只在别的 document 触发，不会自回流）；
-  列表类一律「写前读最新 → 合并去重 → 写」，直接覆盖会抹掉别处刚写进去的。
-- 侧栏工作区的顺序**就是那份列表的存储顺序**（`pinned` 只是标记，渲染时把置顶组排最前），拖拽重排走
-  `reorderWorkspaces` 按新顺序整份写回、并同步被拖项的 `pinned`。**行容器刻意不 `setPointerCapture`**：
-  捕获会把 `click` 重定向到行容器，行内「⋯」「+」这些按钮就全点不动了——所以按下只记起点，
-  `pointermove` / `pointerup` 挂 `window`（指针移出行外也收得到），纵向越过 4px 才算拖动，拖完靠
-  `onClickCapture` 吞掉浏览器补的那次 click。落点按各行中线算，插进置顶组（`insertAt < 置顶项数`）
-  就自动置顶、拖出自动取消。
-- 多工作区下的前端约定：git 状态**只轮询当前工作区**（`useGitStatus(root, visible)`，隐藏的工作区停轮询但
-  保留状态）；Monaco 从隐藏切回可见要补一次 `layout()`（隐藏期间容器尺寸是 0）；侧栏命令、编辑器浮窗
-  这类「打到当前工作区实例」的动作，走 App 里的 `root -> handle` 表路由。
-- 文件路径一律词法归一化 + 前缀校验，已存在的再 `canonicalize` 挡软链接逃逸；文件树改名 / 删除
-  要带着编辑器标签一起换或关，改名前先落盘；工作区根禁改禁删。
-- 目录监听只推「哪个父目录变了」，编辑器重读另走 `fs-file-changed`；防抖 300ms 并跳过 `SKIP_DIRS`。
-- markdown 预览层的内容在渲染期算，**按 `activeKey` 从 model 缓存取**，绝不能读编辑器当前挂着的
-  model：换 model 的 effect 在渲染之后才跑，从别的文件切到 md 的那一帧读到的还是上一个文件的
-  model，而 `isMarkdownPreview` 由 false 变 true 只发生这一帧，之后依赖不变、memo 不重算，错误内容就一直
-  留在预览层上（切回编辑再进预览才会纠正）。
-- 内置浏览器预览工作区里的网页文件（`BrowserPane` 的 `request`）走 Tauri 的 **asset 协议**：
-  WebView2 不让 http 源的 iframe 读 `file://`，塞 `srcdoc` 又会让相对路径的 css / js / 图片全废
-  （同 markdown 预览那个坑）。**地址是自己拼的、不用 `convertFileSrc`**——后者把整条路径
-  （含分隔符）编码成一个段，相对路径会解析到根上、全部 404；`assetUrl` 保留 `/` 只逐段编码，
-  基址再从 `convertFileSrc` 探出来。scope **不放 `**/*`**（官方称「极度宽松」），而是开
-  `protocol-asset` 特性后在 `fs_api::allow_asset_preview` 里**按工作区根运行时放行**，和 `FsState`
-  白名单同一个口径；`workspace_close` **刻意不 forbid**——`Scope` 的 forbid 没有取消接口，关掉再
-  打开同一个目录会被永久拒绝。预览文件时 iframe 地址挂一个随 nonce 变的查询串（asset 协议不发
-  `Cache-Control`，改完文件点「重新加载」要拿到新内容）；这时地址栏里显示的是相对路径、
-  「用系统浏览器打开」也换成拿真实路径走 `openPath`（asset 地址只在本 webview 里认）。
-- 编辑器内的 html / htm / svg 预览（`HtmlPreview`）与内置浏览器**同一套 asset 协议**，`assetUrl` 抽到
-  `lib/asset-url.ts` 两处共用。与 markdown 预览的区别：markdown 从 model 现渲染、实时反映未保存的改动；
-  html / svg 的 iframe 读的是**磁盘**，所以 `EditorPane` 的 `togglePreview` 进入预览前先 `persist` 落盘
-  （保存失败就不进预览），再 bump `previewNonce` 让 iframe 重新加载。预览态按标签记在 `previewPaths`，
-  切走再切回仍是预览。`svg` 只在预览时当图，编辑时仍按 xml 高亮（`languages.ts`）。
-- 差异基线照 VS Code（暂存 `HEAD↔index`、未暂存 `index↔工作区`），两侧统一按 LF 比较；差异编辑器
-  懒创建、只读、不参与脏标记，三种差异靠 model URI 的 scheme 段区分。
-- **行级**暂存 / 取消暂存 / 放弃复用整块的补丁链路：后端 `patch_for_lines` 把「选中若干行」转成
-  只含这些改动的补丁，再走同一个 `apply_patch`。未选中的改动**就地还原成基线**——正向 apply
-  （`Stage`）时没选中的删除行退回上下文、没选中的新增行整条去掉；反向 apply（`Discard` /
-  `Unstage`）正好相反。两种方向处理的是相反的那种行，因为补丁在「基线侧」和「目标侧」两头都要
-  对得上。起始行号保留、计数交给 `git apply --recount`。`Unstage` 是第三种 action（`--cached
-  --reverse`），落在暂存侧（`git diff --cached`）上。
-- 时间线过滤：主题 / 作者 / 正文走**后端 Rust 后置匹配**（git 的 `--grep` 与 `--author` 是
-  AND，表达不了「任一命中」），路径交给 git 的 pathspec；过滤时一次拉满上限，且**不画泳道**
-  （只剩一部分提交，连线必然断开）。「回到 HEAD」按 `data-commit` 找行、用相对矩形的偏移改
-  `scrollTop`（`scrollIntoView` 会连带滚外层容器）。
-- git 状态走 `status --porcelain=v2 --branch -z`；工作区可能只是仓库子目录，先 `rev-parse --show-prefix`；
-  轮询命令带 `--no-optional-locks`（写操作不带）、Windows 上加 `CREATE_NO_WINDOW`；暂存带
-  `--literal-pathspecs`、「全部暂存」给 `.`。
-- 时间线是**图形化的泳道图**（`lib/gitGraph.ts` 排泳道 + `components/GitGraph.tsx` 画线）：后端
-  `git log` 带 `--topo-order`（父必须排在子之后，否则泳道接不上）与 `--decorate=full`（`%D` 给
-  `refs/heads|remotes|tags/…` 全名，好把分支 / 远程 / 标签分开），`%P` 出父 hash 供连线。泳道按
-  「第一父留在原泳道、其余父各占新泳道」记账；颜色是**独立于语义色**的固定调色板（`--c-graph-1…8`，
-  深/浅各一套，见 `styles.css`），只求相邻泳道分得开、不跟主题走。图列里 `through` 的泳道用**满高
-  竖线**（`self-stretch`）而不是只画提交行那么高——提交展开出文件列表时行会变高，只画行高的话下面
-  就缺一截、行与行之间会断线。但**本行才起始的泳道**（分支尖端、合并的第二父）不能算 `through`：
-  它上方还没有线，按满高画会在提交点上方多出一截无主出头线；这类归 `tail`，只从提交行底（22px）
-  往下延伸。分页每次都拿完整列表从头重排，图不跳变。
-- 提交行排版有两处刻意的例外：**标题不左对齐**，用 `graphTextInset` 让它贴住本行的圆圈（右侧还有
-  泳道线时才让到线外，`tail` 不算——它的线在提交行下方，压不到标题）；**引用标签按行宽显隐**，
-  行上用容器查询（`@container` + `@min-[18rem]:flex`），窄了整组收起、把宽度让给主题。右栏默认只有
-  185px，标签和主题同时摆会有一个被挤成 0 宽。
-- 提交悬停浮框（`components/CommitTooltip.tsx`）：正文来自 `git log` 的 `%b`（和主题一起拉，
-  不额外请求）；改动规模走 `git_commit_stat` 按 hash 懒加载并缓存——悬停很频繁，不缓存就是一片
-  git 进程。浮框挂在本行 DOM 里、`fixed` 定位（列表是 `overflow-auto`，绝对定位会被裁），
-  和行之间留了 GAP，所以藏要延迟、移进浮框再取消。滚动时收起，免得浮框留在原地。
-- 时间线**会自动重拉**：只盯 HEAD 的话，终端里 `fetch` / `tag` 这类不改 HEAD 的操作会漏掉
-  （远程分支、标签这些行内装饰会变），所以挂了个比 status 慢的轮询（`LOG_POLL_MS`，收起时不起）。
-- AI / 智能体：HTTP 与 SSE 全走 Rust 代理，前端不直连 opencode；规则 / 记忆 / 技能 / Agents
-  存 localStorage、启动时才物化；兼容两代接口、按接口探测（判据是响应里有 `version` 字段）。
-- 对话消息有两处 v2 的坑（`lib/agent.ts` 里都标了）：**用户自己那句话不发在 `message.*` 上**，
-  得认 `session.inbox.enqueued`（`data.inboxID` 就是消息 id、原文在 `data.item.payload.text`），
-  不然整屏只有助手自言自语；**`/session/:id/message` 返回的是倒序**（最新在前），灌历史必须按
-  `time.created` 升序重排，否则整段对话翻过来。两处都是「单轮时看不出来、一显示用户消息就露馅」。
-- 终端区智能体与数据库智能体的对话面板共用历史下拉 `components/AgentHistoryMenu.tsx`（两边的
-  会话分属不同 opencode 实例，只是界面一样，读写交给调用方）。终端区那份**和侧边栏工作区行下
-  的会话列表并存**，共享 `lib/agent-session.tsx` 的状态——面板里的改名 / 删除也汇进那套请求
-  （`requestRename` / `requestDelete`），别让两个入口各写一套。
-- API 密钥进**操作系统凭据库**（`secrets.rs` + keyring），localStorage 只留 `apiKeySet` 布尔位，
-  前端全程拿不到明文；opencode 配置里只有 `{env:CODEDOCK_AI_KEY_<ID>}` 占位符。旧版明文在启动时
-  自动搬迁，搬不动就原样留着重试（绝不丢用户的密钥）。读钥匙串是同步阻塞调用，必须放在第一个
-  `await` 之前；Linux 无 Secret Service 时报明原因，不静默降级成「没密钥」。
-- 破坏性确认框自研（WKWebView 不支持 `window.confirm`）；右边栏内容面板 `hidden` 藏着不卸载；
-  调试用 AI 参数覆盖只在 debug 构建（`dev.rs`），别用 `dotenvy`（`set_var` 会泄密钥进 PTY）。
-- 远程连接（`remote.rs`）：SSH 走纯 Rust 的 `russh` + `russh-sftp`。交互式 shell 由**一个** tokio 任务
-  独占通道（`wait()` 要 `&mut`，而 `data`/`window_change` 只要 `&self`——拆成两个任务就够不到改尺寸），
-  前端指令走 mpsc 汇进同一个 `select!`。密码 / 私钥口令存系统钥匙串（前端只有布尔位），主机密钥按
-  TOFU 记指纹、对不上就拒绝。**每台主机各自一组终端标签**，每个标签是一条独立 SSH 会话
-  （`remote_connect` 自己建连 + 认证，不复用别的标签的连接），切走的主机与标签都 `display:none`
-  藏着不卸载；会话 / 状态 / 重连计数都按标签 id 索引（不是按主机）。**关掉某台主机的最后一个标签
-  就等于断开这台主机**（`connected` 不再单独存，由「有没有标签」派生）。新建 / 关闭终端标签是
-  **同一套键位**（默认 `Ctrl+Shift+T` / `Ctrl+W`）：各终端只在自己的容器上挂 keydown，谁拿到焦点谁响应。
-  **终端里跑到备用屏（全屏 TUI：CodeBuddy CLI、vim、less…）时这两条键一律让行**——判据是 xterm 的
-  `term.buffer.active.type`，这些程序自己占用 Ctrl+字母（CodeBuddy 的 Ctrl+T 展开 tasks），宿主抢了就没法用；
-  裸 shell 提示符（normal）下才当应用快捷键。`newTab` 默认也刻意避开 `Ctrl+T`，那正是冲突源。
-- 远程连接的「文件」视图是**左右双面板**（`RemoteBrowser`）：本地（`local_fs.rs`）和远程（SFTP）各一个
-  `FilePanel` 实例，选中文件传到对侧当前目录（只传文件，目录不递归）。**本地面板走 `local_fs` 的命令，
-  刻意不查 `FsState` 工作区白名单**——它要像 WinSCP 那样自由浏览整个文件系统（主目录起、可一直退到
-  「此电脑」列盘符）。这是本地桌面应用、前端即应用本体，且 `sftp_download` 本就写任意本地路径，风险
-  可接受；这些命令只做文件管理、不做内容编辑。主机列表宽度与「本地/远程」左右顺序都是窗口级偏好，
-  存 sessionStorage。两面板共用的界面在 `FilePanel.tsx`（纯展示），数据容器是 `RemoteFiles` / `LocalFiles`。
-- 数据库（`database.rs`）：MySQL / PostgreSQL / SQLite 走 `sqlx`，**三库各持一个池**（`enum DbPool`）而不是
-  用 `Any` 驱动——`Any` 的类型映射和 URL 解析都有限制，`*ConnectOptions` 的 builder 反而更干净（不拼 URL、
-  不管转义）。TLS 特性必须是 `tls-rustls-aws-lc-rs`：reqwest / russh 已经在用 aws-lc，引 ring 会同时装
-  两个 CryptoProvider，rustls 0.23 没显式装默认时直接 panic。**分页在服务端**：SELECT 类包一层
-  `SELECT * FROM (<sql>) AS __codedock_pg LIMIT n+1 OFFSET m`，多取一行判断有没有下一页；写语句走
-  `execute()` 报影响行数，SHOW/EXPLAIN 之类只取一页。单元格按「String → i64 → f64 → bool → 时间 → …」
-  依次 `try_get` 渲染成字符串（sqlx 类型严格，`String` 解不了 INT）；BigDecimal / Uuid / JSON 只在
-  MySQL / PG 上试——sqlx-sqlite 没有这些 `Decode` 实现，硬塞进同一个宏整个编不过。密码存系统钥匙串
-  （前端只有布尔位），连接配置跨窗口共享。查询页的 SQL 编辑器是 Monaco（`language: "sql"` 走 Monaco
-  自带的 basic-languages，不需要额外注册），美化走 `sql-formatter`（零依赖），方言按连接类型映射
-  （mysql / postgres→postgresql / sqlite）——见 `lib/sql-format.ts`；语句没写完时它会抛错，只提示不阻断编辑，
-  且失败不能顶掉结果区的查询错误（两者是分开的 state）。**左栏是一棵「连接 → 数据库 →（PG 才有
-  schema）→ 表 / 视图分组 → 条目」的树**，逐级展开、缩进展示，右侧只放数据 / 查询 / Agent：MySQL /
-  SQLite 是两级、PG 是三级，**表与视图在同一层下分成两个可折叠的分组文件夹**（分组节点 key 借用容器
-  节点 key 的后半段只换前缀 `t:` / `v:`，`belongsTo` 靠前缀认连接）。PG 一个连接只能连一个库、不能跨库查询，所以**每展开一个 PG 库就单独开一条会话**
-  （建会话时按库名覆盖 `database`，会话 key 形如 `connId\0db`），断开连接时按这个前缀整片收掉；
-  MySQL / SQLite 一条会话够用，库只是取表时的 `schema` 参数。三库的「库」列表各是：MySQL 的
-  information_schema.schemata（剔系统库）、PG 的 `pg_database`（`datistemplate` / `datallowconn`
-  过滤）、SQLite 固定 `main`。取表的命名空间参数统一叫 `schema`：MySQL 是库名、PG 是 schema 名、
-  SQLite 忽略。
-- 数据库结果导出（`database.rs` 的 `db_export` + `DbExportMenu.tsx`）：**后端取数 + 写文件**，前端只用
-  `plugin-dialog` 的 `save` 选路径（Tauri 没有浏览器那套下载语义，前端拼 Blob 没处放）。CSV 必须带
-  **UTF-8 BOM**（否则 Windows 版 Excel 打开中文乱码）、按 RFC4180 转义、NULL 空字段、统一 CRLF；xlsx 用
-  纯 Rust 的 `rust_xlsxwriter`（默认无 C 依赖），首行表头、NULL 空单元格。**导出必须绕过单元格截断**：
-  解码链路（`decode_cell!` / `fetch_rows`）加了 `clamp` 开关，交互查询传 true（4096 字符上限）、导出传
-  false 取全量——二进制列仍按 `format_bytes` 渲染。范围：`page` 按传入页码重跑（与界面所见一致）、`all`
-  不分页一次取全（自带 LIMIT 的语句按原样取，不外包分页）；导出超时单独放宽到 300s，且**行数上限 10 万**
-  ——超了**截断**并回 `truncated` 标记由前端提示（不报错，免得用户无从下手）。两个入口（结果区底部、
-  表节点右键=整表导出）共用 `DbExportMenu`，invoke 只在调用方，组件不直接调后端。
-- **表结构查看器**（`database.rs` 的 `db_table_structure` + `TableStructure.tsx`）：选中表后「表格」子视图内
-  多一个「数据 / 结构」切换（默认仍是「数据」，不改旧行为），「结构」展示列 / 索引 / 外键 / 建表 DDL 四块。
-  **MySQL 的 information_schema 文本列带 `utf8mb3_bin` 排序规则**（协议里是 `BINARY` 标志，sqlx 的
-  `String` 解码器拒收），列名 / 类型 / 默认值 / 注释一律走 `text_cell!` / 新增的 `text_cell_opt!`——后者
-  保留 NULL 语义，好把默认值与注释的「没有」和「空串」分开。DDL 三库口径不同：MySQL 走 `SHOW CREATE
-  TABLE`（视图退 `SHOW CREATE VIEW`）；SQLite 直接取 `sqlite_master.sql`；**PG 没有单条等价语句，由已取
-  元数据尽力拼 `CREATE TABLE`**（视图则贴 `pg_get_viewdef`），所以 `ddl_approximate=true`，UI 上标注
-  「由元数据尽力拼出」。拿不到的不伪造：SQLite 没有列注释、`PRAGMA` 也不给外键约束名，一律留空。
-- **数据库 Agent**（`db_agent.rs` + `agent.rs` 的 `database` 模式）：对话式生成并执行**只读** SQL。
-  走**独立的 opencode 进程**（前端用哨兵 root `__db_agent__`，cwd 落在应用配置目录下，不占工作区），
-  工具由 CodeDock 自己当 **local MCP server** 提供：opencode 按 opencode.json 的 `mcp.db` 拉起
-  `codedock.exe --mcp-db`（`main` 在 Tauri 初始化**之前**分流，不然会多开窗口），stdio 上跑换行分隔的
-  JSON-RPC（`initialize` / `tools/list` / `tools/call`），`list_tables` / `describe_table` / `run_query`
-  复用 `database.rs` 的建池与解码。**只读三层**：技能与 agent prompt 引导 → `is_read_only` 白名单
-  （剥掉注释与字符串字面量后按首关键字放行，`WITH` 还要扫写动词、内嵌分号一律拒）→ 建池时
-  `after_connect` 给每条连接设只读（SQLite `PRAGMA query_only` / PG / MySQL）。MCP 子进程拿不到主进程的
-  连接池，「当前连接」靠前端写的 `target.json` 同步（**不含密码**，密码仍按 connId 从钥匙串取），
-  所以它放在 opencode 配置目录**之外**——那个目录停服务时会被整个删掉。MCP 形状以 schema 为准：
-  `mcp.<name>`（opencode 内部会规范化成 `mcp.servers.<name>`），`timeout` 必须调大（默认 5s 会掐断
-  慢查询）；工具名带 server 前缀（`db_list_tables`）。`tools` 里关掉 bash / edit / write / patch。
-  历史会话**所有连接共用一份**（对话不绑定库，执行时才用当前目标连接），前端复用 `agent_*` 那组会话
-  命令；但 opencode 的会话是**全局存**的、列表里混着各目录的记录，得按目录过滤，而数据库 Agent 的 cwd
-  （`app_config_dir/db-agent/cwd`）前端算不出来——所以 `AgentInfo` 带出了 `cwd` 供
-  `parseSessions(raw, cwd)` 用。会话标题不设初值，留给 opencode 按首句自动总结。
-- **单实例**：`tauri-plugin-single-instance` 在 builder 里**第一个**注册，回调把已被收进托盘的
-  主窗口唤回来（`tray::show_main`）。它的锁名取自 app identifier，所以 dev 和安装版不能共用
-  `tauri.conf.json` 里那个 `com.codedock`——否则本机开着安装版时 dev 一启动就被顶掉。build.rs 在
-  debug profile 下用 `TAURI_CONFIG` 把 identifier patch 成 `com.codedock.dev`（CLI 可能也设了这个
-  环境变量，得先读出来叠加、别整个覆盖），release 保持原值。改动的是**编译期配置**，所以直接
-  `cargo build`/`cargo test` 也是 `.dev`。
-- **dev / 安装版图标配色区分**：同一处 debug 分支还 patch 了 `bundle.icon`，指向 `icons/dev/` 那套
-  （琥珀橙尖括号，源文件 `icons/icon-dev.svg`），安装版用 `icons/` 下的蓝色。exe 资源图标与窗口图标
-  都取自 `bundle.icon`，所以任务栏 / 托盘一眼能分清哪个是开发构建。改了 `icon-dev.svg` 要
-  `npx tauri icon icons/icon-dev.svg -o icons/dev` 重新生成，并 `touch build.rs`（tauri-build 的
-  rerun-if-changed 不覆盖 icons 目录）。
+发版时使用 `pnpm version patch|minor|major`。推送 tag 需要用户明确授权。
 
-## 验证
-
-前端改完至少跑 `pnpm build`（Vite dev 不做类型检查）；界面改动走 `scripts/cdp-check.cjs`（WebView2 的
-CDP 端口做截图 / 求值 / 输入）——**用法见 `.codebuddy/skills/cdp-verify/` 技能（前提、选项表、配方、排障）**；
-要指定窗口可以传 `"target":"<标题片段>"`，脚本会跳过 WebView2 那个
-内部的 about:blank target，**别拿 `pages[0]` 当目标窗口**，否则命令全打在空白页上。注意：`localStorage`
-是用户真实状态、验证后要还原；拖动必须走 `drag`
-而非合成 PointerEvent（应用用 `setPointerCapture`）；应用起没起来看 9222 端口。dev 下改工作区内任意
-文件会触发 HMR 重载（终端重置、编辑器清空），是 dev server 产物，用 CodeDock 开发 CodeDock 时换工作区。
