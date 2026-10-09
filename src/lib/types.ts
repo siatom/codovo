@@ -46,8 +46,9 @@ export interface GitFileStatus {
   index: string;
   worktree: string;
   /**
-   * 这条是不是一个目录。只有未跟踪目录会整条折叠成一项（`? dir/`），
-   * 前端据此不把它当文件读——点开差异 / 解读都会变成读目录而报错。
+   * 这条是不是一个目录。正常为 false——后端用 `--untracked-files=all` 逐个列出未跟踪
+   * 文件、不折叠目录；只有 `normal` 折叠形态（`? dir/`）才会是目录。前端据此不把它
+   * 当文件读——点开差异 / 解读都会变成读目录而报错。
    */
   isDir: boolean;
   /**
@@ -137,7 +138,7 @@ export interface GitStatusPayload {
   mergeKind: "merge" | "rebase" | "cherryPick" | "revert" | null;
   /** 未合并（冲突）条目数，含 AA/DD 这种 XY 里没有 U 的 */
   conflicts: number;
-  /** 改动条目总数；条目过多时可能大于 files.length */
+  /** 改动**文件**总数（未跟踪目录已展开成文件，不按目录计）；条目过多时可能大于 files.length */
   changed: number;
   files: GitFileStatus[];
 }
