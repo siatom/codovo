@@ -23,7 +23,10 @@ export interface GitChange {
   index: string;
   /** porcelain v2 的 Y 列：工作区状态 */
   worktree: string;
-  /** 这条是不是一个目录（只有未跟踪目录会整条折叠成一项）；目录不参与差异 / 解读 */
+  /**
+   * 这条是不是一个目录。正常为 false——后端用 `--untracked-files=all` 逐个列出未跟踪
+   * 文件、不折叠目录；只有 `normal` 折叠形态才会是目录。目录不参与差异 / 解读。
+   */
   isDir: boolean;
   /** 暂存那一侧增删了几行；null = 没统计出来（二进制 / 未跟踪） */
   stagedAdded: number | null;
@@ -46,7 +49,7 @@ export interface GitSnapshot {
   mergeKind: "merge" | "rebase" | "cherryPick" | "revert" | null;
   /** 未合并（冲突）条目数，后端按 porcelain 的 u 记录数出来的 */
   conflicts: number;
-  /** 改动条目总数；条目过多时可能大于 marks.size */
+  /** 改动**文件**总数（未跟踪目录已展开成文件）；条目过多时可能大于 marks.size */
   changed: number;
   /** 文件绝对路径的归一化 key -> 标记，供文件树和标签页查 */
   marks: ReadonlyMap<string, GitMark>;
@@ -201,7 +204,7 @@ export interface GitStatusStore {
   byRoot: Record<string, GitSnapshot>;
   /** 各根的 marks 合并（路径天然不重叠），文件树和标签页查它 */
   marks: ReadonlyMap<string, GitMark>;
-  /** 各根改动条目之和，图标条上的徽标 */
+  /** 各根改动**文件**数之和，图标条上的徽标 */
   changed: number;
   /** 任意一根是仓库 */
   isRepo: boolean;

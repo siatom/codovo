@@ -32,8 +32,9 @@ pub struct FileStatus {
     /// porcelain v2 的 XY 两列：X 是暂存区状态，Y 是工作区状态
     index: char,
     worktree: char,
-    /// 这条是不是一个目录。只有未跟踪目录会整条折叠成 `dir/`（见 parse_status），
-    /// 前端据此不把它当成文件去读——读目录会报 "Is a directory"。
+    /// 这条是不是一个目录。正常为 false——status 用 `--untracked-files=all` 逐个列出
+    /// 未跟踪文件、不折叠目录；只有 `normal` 那种折叠形态才会带尾斜杠（见 parse_status 的
+    /// 防御分支）。前端据此不把它当成文件去读——读目录会报 "Is a directory"。
     is_dir: bool,
     /// 这一侧增删了几行。`None` = 该侧没有改动，或者统计不出来（二进制、未跟踪）。
     /// 两侧各存一份：同一个文件在两个分组里显示的是各自那一侧的改动量。
@@ -63,7 +64,8 @@ pub struct GitStatus {
     merge_kind: Option<String>,
     /// 未合并（冲突）条目数。porcelain 的 u 记录，含 AA/DD 这种 XY 里没有 U 的
     conflicts: u32,
-    /// 改动条目总数，可能大于 files.len()（见 MAX_ENTRIES）
+    /// 改动**文件**总数：未跟踪目录已展开成文件、不按目录计（见 status_of_with_counts）。
+    /// 可能大于 files.len()（见 MAX_ENTRIES）
     changed: u32,
     files: Vec<FileStatus>,
 }
@@ -498,8 +500,9 @@ fn parse_status(raw: &[u8], prefix: &str, root: &Path) -> GitStatus {
         let Some(relative) = path.strip_prefix(prefix) else {
             continue;
         };
-        // 未跟踪目录整条折叠成 "dir/"，尾巴上的斜杠要去掉才能和文件树里的路径对上。
-        // 先用尾斜杠记下"这是个目录"，去掉之后就看不出来了
+        // 防御：`--untracked-files=normal` 会把未跟踪目录整条折叠成 "dir/"，尾巴上带斜杠。
+        // 现在用的是 all（逐个文件列出），正常不会出现尾斜杠，但保留这段——真拿到了也能
+        // 去掉斜杠对上文件树路径、并标成目录。先用尾斜杠记下"这是目录"，去掉就看不出
         let is_dir = relative.ends_with('/');
         let relative = relative.trim_end_matches('/');
         if relative.is_empty() {
@@ -608,8 +611,9 @@ fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, St
     };
 
     // -z：路径不做引号转义，空格和中文原样拿到，省掉一整套反解析
-    // --untracked-files=normal：未跟踪的目录整条折叠成一项，避免刚 clone
-    // 下来的仓库把条目数撑爆（.gitignore 挡住的目录本来就不会出现）
+    // --untracked-files=all：未跟踪的**文件**逐个列出，不把整个目录折叠成一项——
+    // 这样改动数按文件计、改动列表也到文件级（normal 会把含 N 个文件的目录算成 1 个）。
+    // .gitignore 挡住的目录两种模式都不会出现；条目上限由 MAX_ENTRIES 兜底
     let raw = run_git(
         root,
         &[
@@ -617,7 +621,7 @@ fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, St
             "--porcelain=v2",
             "--branch",
             "-z",
-            "--untracked-files=normal",
+            "--untracked-files=all",
         ],
     )?
     .ok_or("git status 执行失败")?;
@@ -3681,12 +3685,17 @@ mod tests {
         fs::write(repo.join("brandnew").join("a.txt"), "a\n").unwrap();
         fs::write(repo.join("brandnew").join("nested").join("b.txt"), "b\n").unwrap();
 
-        // --untracked-files=normal 会把未跟踪目录折叠成一条
+        // --untracked-files=all 把未跟踪目录展开成文件：改动数按文件计、列表也到文件级
+        // （normal 会把整个目录折叠成一条 "brandnew"，数量按目录算 1）
         let status = status_of(&repo).unwrap();
-        assert_eq!(status.files.len(), 1);
-        assert_eq!(status.files[0].relative, "brandnew");
+        let mut relatives: Vec<&str> = status.files.iter().map(|file| file.relative.as_str()).collect();
+        relatives.sort_unstable();
+        assert_eq!(relatives, vec!["brandnew/a.txt", "brandnew/nested/b.txt"]);
+        assert_eq!(status.changed, 2, "数量要按文件算，不是按目录");
+        assert!(status.files.iter().all(|file| !file.is_dir), "all 模式下不该有目录条目");
 
-        let after = stage_paths(&repo, &Some(vec![status.files[0].path.clone()])).unwrap();
+        // 传目录路径仍能整目录暂存（pathspecs 会给目录补尾斜杠）
+        let after = stage_paths(&repo, &Some(vec![path_of_file(&repo, "brandnew")])).unwrap();
         let mut staged: Vec<&str> = after
             .files
             .iter()
