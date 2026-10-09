@@ -75,6 +75,8 @@ interface Store {
   drop: (root: string) => void;
   /** 把某个工作区切成 GUI 并挂上「新建对话」请求（侧栏给还没切过去的工作区点 + 时用） */
   newChatAt: (root: string) => void;
+  /** 把某个工作区切成 GUI 并挂上「打开这条会话」请求（侧栏给还没切过去的工作区点标记时用） */
+  openSessionAt: (root: string, id: string) => void;
 }
 
 const AgentSessionContext = createContext<Store | null>(null);
@@ -123,9 +125,15 @@ export function AgentSessionProvider({ children }: { children: ReactNode }) {
     [patch],
   );
 
+  // 打开会话同理：切到 GUI 才看得见，由该工作区的 AgentPane 消费 requestedId
+  const openSessionAt = useCallback(
+    (root: string, id: string) => patch(root, { mode: "agent", requestedId: id }),
+    [patch],
+  );
+
   const store = useMemo(
-    () => ({ byRoot, patch, refOf, drop, newChatAt }),
-    [byRoot, patch, refOf, drop, newChatAt],
+    () => ({ byRoot, patch, refOf, drop, newChatAt, openSessionAt }),
+    [byRoot, patch, refOf, drop, newChatAt, openSessionAt],
   );
 
   return (
@@ -192,4 +200,14 @@ export function useNewChatAt(): (root: string) => void {
   const store = useContext(AgentSessionContext);
   if (!store) throw new Error("useNewChatAt 必须在 AgentSessionProvider 内使用");
   return store.newChatAt;
+}
+
+/**
+ * 只拿「把某个工作区切成 GUI 并打开某条会话」这一个入口。
+ * 侧栏给还没切过去的工作区点「在等用户」的标记时用——此刻活动根还不是它。
+ */
+export function useOpenSessionAt(): (root: string, id: string) => void {
+  const store = useContext(AgentSessionContext);
+  if (!store) throw new Error("useOpenSessionAt 必须在 AgentSessionProvider 内使用");
+  return store.openSessionAt;
 }

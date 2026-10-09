@@ -7,6 +7,7 @@ import {
 } from "react";
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
+import { agentTarget, useAttentionAll, type AttentionMap } from "../lib/attention";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import type { Workspace } from "../lib/workspaces";
@@ -77,6 +78,18 @@ interface SidebarProps {
   onRunAiCommand: (command: string, title: string) => void;
   /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume"，title 作新标签的标题 */
   onResumeSession: (command: string, title: string) => void;
+  /** 点「在等用户」的提示：由 App 切到该工作区并选中对应的标签 / 会话 */
+  onFocusAttention: (workspace: Workspace, target: string) => void;
+}
+
+/** 一个工作区里第一个「在等用户」的目标键（终端标签优先，其次智能体会话）；没有返回 null */
+function firstWaitingTarget(attention: AttentionMap, workspace: Workspace): string | null {
+  const found: string[] = [];
+  for (const root of workspace.roots) {
+    const entry = attention[pathKey(root)];
+    if (entry) found.push(...Object.keys(entry));
+  }
+  return found.find((key) => key.startsWith("term:")) ?? found[0] ?? null;
 }
 
 /** 窗口级偏好，存 sessionStorage：多窗口下各收各的侧边栏 */
@@ -170,6 +183,7 @@ export function Sidebar({
   onReorder,
   onRunAiCommand,
   onResumeSession,
+  onFocusAttention,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   /** 展开态宽度，拖动分隔条改 */
@@ -233,6 +247,11 @@ export function Sidebar({
     requestDelete,
     requestRename,
   } = useAgentSession(activeRoot);
+  // 「在等用户」的标记（终端 CLI 与智能体会话都有）。侧栏要给所有工作区行做标记，
+  // 够不着单个 root 的 hook，所以取全局那一份，按各工作区的 root 查
+  const attentionByRoot = useAttentionAll();
+  // 当前工作区的那一份：对话历史行挂在当前工作区下面，标记只看它
+  const sessionAttention = activeRoot ? (attentionByRoot[pathKey(activeRoot)] ?? {}) : {};
   // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
   const guiActive = settings.agentEnabled && mode === "agent";
   // 空命令是用户在设置里加了还没填的，不进菜单
@@ -617,6 +636,8 @@ export function Sidebar({
           const isOpen = opened.includes(workspace.id);
           // 任一工作目录失效（被删 / 换盘）就在行上标一枚警告：点开必然失败，先给个预警
           const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
+          // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
+          const waiting = firstWaitingTarget(attentionByRoot, workspace);
           const dragging = dragOver?.id === workspace.id;
           // 落点线：插在第一项之前画在这行上面，插在最后一项之后画在最后一行下面
           const dropBefore = dragOver?.index === index;
@@ -656,6 +677,18 @@ export function Sidebar({
                     {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
                     {isOpen ? <IconFolderOpen /> : <IconFolder />}
                     <span className="truncate">{workspace.name}</span>
+                    {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区） */}
+                    {waiting && (
+                      <span
+                        title="有 AI 会话在等你输入，点击跳过去"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          onFocusAttention(workspace, waiting);
+                        }}
+                        className="h-1.5 w-1.5 shrink-0 cursor-pointer rounded-full bg-warn animate-pulse"
+                      />
+                    )}
                     {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
                     {broken && (
                       <span
@@ -756,6 +789,8 @@ export function Sidebar({
                     <ul className="flex flex-col pb-1">
                       {sessions.map((item) => {
                         const isActive = item.id === sessionId;
+                        // 这条对话是不是正等着用户输入（opencode 的权限询问 / 提问）
+                        const waitingSession = Boolean(sessionAttention[agentTarget(item.id)]);
                         return (
                           <li
                             key={item.id}
@@ -788,13 +823,16 @@ export function Sidebar({
                                 <button
                                   type="button"
                                   onClick={() => requestSession(item.id)}
-                                  title={item.title}
+                                  title={waitingSession ? `${item.title}（正在等你输入）` : item.title}
                                   className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-[34px] text-left text-[12px] ${
                                     isActive
                                       ? "text-fg"
                                       : "text-fg-muted group-hover/hist:text-fg"
                                   }`}
                                 >
+                                  {waitingSession && (
+                                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />
+                                  )}
                                   <span className="min-w-0 flex-1 truncate">{item.title}</span>
                                   {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」，两个都留会把标题挤没 */}
                                   <span className="shrink-0 text-[11px] text-fg-faint group-hover/hist:hidden">

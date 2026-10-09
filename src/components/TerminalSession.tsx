@@ -63,6 +63,60 @@ export interface TerminalSessionHandle {
   focus(): void;
 }
 
+/**
+ * 「终端是不是停在等用户输入的提示上」的启发式特征。
+ *
+ * 只能从 PTY 输出里猜——AI CLI（CodeBuddy CLI / Claude Code / Codex 这类）的确认框长什么样
+ * 没有稳定协议。挑的是「菜单式选择」和「明确的确认问句」，尽量避开助手正文里的普通疑问句。
+ */
+const WAIT_PATTERNS: RegExp[] = [
+  // inquirer / clack 风格的选择菜单：光标行紧跟编号选项
+  /^\s*[❯›]\s*[1-9][.)]\s+\S/,
+  // 是 / 否 的括号提示
+  /\[\s*[yYnN]\s*\/\s*[yYnN]\s*\]/,
+  /\(\s*[yYnN]\s*\/\s*[yYnN]\s*\)/,
+  // 明确的确认问句
+  /(do you want to proceed|would you like to proceed|are you sure|allow this|approve this)\b/i,
+  // 权限询问 + 问号
+  /(permission|approve|allow|deny|reject)\b[^?？]*[?？]\s*$/i,
+];
+
+/** 输出停下多久后去判一次：太短会在重绘中途误判，太长会显得迟钝 */
+const WAIT_CHECK_MS = 700;
+
+/**
+ * xterm 自己发出、并非用户按键的应答：焦点上报（`CSI I` / `CSI O`）与光标位置应答（`CSI r;c R`）。
+ * 它们和用户输入走同一条 `onData`，但**不代表用户给了交互**——不能拿它们清掉「在等用户」的标记。
+ * （实测踩过：切到别的工作区时终端失焦，xterm 上报 `ESC[O`，把标记误清了。）
+ */
+function isTerminalReport(data: string): boolean {
+  return data === "\x1b[I" || data === "\x1b[O" || /^\x1b\[\d+;\d+R$/.test(data);
+}
+
+/** 从屏幕底部往上取几行非空文本（只看一屏之内，别把整段回滚都扫一遍） */
+function recentLines(term: Terminal, max: number): string[] {
+  const buffer = term.buffer.active;
+  const bottom = buffer.baseY + term.rows - 1;
+  const top = Math.max(0, bottom - term.rows + 1);
+  const lines: string[] = [];
+  for (let y = bottom; y >= top && lines.length < max; y -= 1) {
+    const text = buffer.getLine(y)?.translateToString(true).trim() ?? "";
+    if (text) lines.push(text);
+  }
+  return lines;
+}
+
+/**
+ * 判定终端此刻是否停在等用户输入的提示上。
+ *
+ * **只在备用屏里判**：全屏 TUI（AI CLI、vim、less）跑在备用屏，裸 shell 提示符在普通屏——
+ * 这样普通 shell 永远不会被误标成「在等用户」，只有全屏程序才进这个判断。
+ */
+function looksLikeWaitingPrompt(term: Terminal): boolean {
+  if (term.buffer.active.type !== "alternate") return false;
+  return recentLines(term, 6).some((line) => WAIT_PATTERNS.some((pattern) => pattern.test(line)));
+}
+
 interface TerminalSessionProps {
   /** 这个会话属于哪个工作区；shell 就落在这个目录，后端也按它归属会话 */
   root: string;
@@ -86,6 +140,11 @@ interface TerminalSessionProps {
    * 同理，按了「新建标签页」的快捷键。标签栏归 TerminalPane 管，新会话由它开。
    */
   onRequestNew?: () => void;
+  /**
+   * 这个会话是否停在「等用户输入」的提示上（启发式判断，见 looksLikeWaitingPrompt）。
+   * 由 TerminalPane 收集后写进 attention store，在标签栏与侧栏上标记出来。
+   */
+  onAttentionChange?: (waiting: boolean) => void;
 }
 
 /**
@@ -96,7 +155,16 @@ export const TerminalSession = forwardRef<
   TerminalSessionHandle,
   TerminalSessionProps
 >(function TerminalSession(
-  { root, active, visible = active, initialCommand, shell, onRequestClose, onRequestNew },
+  {
+    root,
+    active,
+    visible = active,
+    initialCommand,
+    shell,
+    onRequestClose,
+    onRequestNew,
+    onAttentionChange,
+  },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -137,6 +205,12 @@ export const TerminalSession = forwardRef<
   onRequestCloseRef.current = onRequestClose;
   const onRequestNewRef = useRef(onRequestNew);
   onRequestNewRef.current = onRequestNew;
+  // 同理：上抛「在等用户」的回调每次渲染都是新的，建实例的 effect 依赖里塞不下
+  const onAttentionChangeRef = useRef(onAttentionChange);
+  onAttentionChangeRef.current = onAttentionChange;
+  // 等待提示的开关随时能关，而判定逻辑挂在建实例的 effect 里、只跑一次，所以也走 ref
+  const waitHintRef = useRef(settings.terminalWaitHint);
+  waitHintRef.current = settings.terminalWaitHint;
 
   // 要自动敲的那条命令只在"这个会话被创建"那一次算数，所以用 useState 的初始化
   // 把它定死、不跟着 prop 走（用户手动点「重开」或 cwd 变化重建 shell 时不该重放
@@ -209,6 +283,25 @@ export const TerminalSession = forwardRef<
 
     let cancelled = false;
 
+    /**
+     * 「在等用户」的判定：输出每来一块就重置计时器，停下来 WAIT_CHECK_MS 之后再看一眼屏幕。
+     * 只在实际翻转时上报，避免每次输出都惊动 React。用户一敲键立刻撤掉（他已经在交互了）。
+     */
+    let waiting = false;
+    let waitTimer: number | undefined;
+    const reportWaiting = (next: boolean) => {
+      if (next === waiting) return;
+      waiting = next;
+      onAttentionChangeRef.current?.(next);
+    };
+    const scheduleWaitCheck = () => {
+      window.clearTimeout(waitTimer);
+      waitTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        reportWaiting(waitHintRef.current && looksLikeWaitingPrompt(term));
+      }, WAIT_CHECK_MS);
+    };
+
     // 句柄就绪前先攒着的输入，见 writeInput
     let pendingInput: string[] = [];
 
@@ -226,6 +319,9 @@ export const TerminalSession = forwardRef<
      * 所以先攒起来，句柄就绪后按原顺序补发。
      */
     const writeInput = (data: string) => {
+      // 用户已经在敲了，标记立刻撤掉；等他停下来、若还停在提示上会再判一次。
+      // 但 xterm 自己的焦点 / 光标应答不算用户交互，别误清
+      if (!isTerminalReport(data)) reportWaiting(false);
       const pty = ptyRef.current;
       if (pty) pty.write(data);
       else pendingInput.push(data);
@@ -259,11 +355,14 @@ export const TerminalSession = forwardRef<
         // 不挡住的话，已经作废的那次会话会把"shell 已退出"打到存活的界面上。
         onData: (bytes) => {
           if (cancelled) return;
+          // 还有输出就说明它没停在那儿等人，先撤标记，等输出停了再重新判
+          reportWaiting(false);
           term.write(bytes);
           // 读 ptyRef 而不是直接用 handle：事件有可能先于 await 返回到达，
           // 那时 handle 还在 TDZ 里，碰它会直接抛 ReferenceError。
           // 那种情况下 ptyRef 还是 null，这一轮不消费，交给下面的补写。
           flushBoot(ptyRef.current);
+          scheduleWaitCheck();
         },
         onExit: (code) => {
           if (cancelled) return;
@@ -389,6 +488,9 @@ export const TerminalSession = forwardRef<
       cancelled = true;
       window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(waitTimer);
+      // 会话没了就别留着标记：StrictMode 的第一轮也会走到这儿，报一次 false 是无害的
+      reportWaiting(false);
       observer.disconnect();
       dataDisposable.dispose();
       scrollDisposable.dispose();

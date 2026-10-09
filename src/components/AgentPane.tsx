@@ -34,6 +34,7 @@ import {
   startAgent,
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
+import { useAttention } from "../lib/attention";
 import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentHistoryMenu } from "./AgentHistoryMenu";
@@ -247,6 +248,16 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
     requestedRename,
     clearRenameRequest,
   } = useAgentSession(root);
+  // 正等着用户输入的会话（opencode 的权限询问 / 提问），在历史菜单里点一颗脉冲点。
+  // attention 里会话类目标键是 `agent:<id>`，这里把 id 抠出来
+  const { entries: attentionEntries } = useAttention(root);
+  const waitingSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const key of Object.keys(attentionEntries)) {
+      if (key.startsWith("agent:")) ids.add(key.slice("agent:".length));
+    }
+    return ids;
+  }, [attentionEntries]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [fatal, setFatal] = useState<string | null>(null);
   const [conversation, setConversation] = useState<AgentConversation>(EMPTY_CONVERSATION);
@@ -743,6 +754,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
           onNew={newSession}
           onRename={requestRename}
           onDelete={setPendingDelete}
+          waitingIds={waitingSessionIds}
         />
         <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
           <IconPlus className="h-3.5 w-3.5" />
