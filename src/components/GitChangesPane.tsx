@@ -124,6 +124,11 @@ interface GitChangesPaneProps {
   /** 这个面板属于哪个工作区：所有 git / ai 命令都带着它，后端按它定位工作区 */
   root: string;
   /**
+   * 这个面板所属的**工作区根**（未切工作树时的那个根）。worktree 列表从它拉：
+   * 面板的 `root` 可能被切到一个不是 git 仓库的工作树，只有工作区根始终是正常仓库。
+   */
+  workspaceRoot: string;
+  /**
    * 这个工作区是不是当前显示的。非当前工作区只是 `hidden` 藏着、不卸载，
    * 所以面板还活着——轮询这类后台动作要靠它停掉，否则每个隐藏的工作区都在白跑 git。
    */
@@ -1586,6 +1591,7 @@ function TagDialog({
  */
 export function GitChangesPane({
   root,
+  workspaceRoot,
   visible,
   moduleVisible,
   reloadSignal,
@@ -2205,14 +2211,18 @@ export function GitChangesPane({
   /**
    * 拉这个仓库的 worktree 列表。
    *
-   * 只在面板可见（当前工作区 + 模块露在眼前）、且目录是仓库时拉（换 worktree 会换
-   * `root`，跟着重拉）。列表够稳定，不轮询。失败当空列表——拿不到就把入口藏起来，
-   * 不值得弹全局错误。后端顺带把存在的工作树登记进白名单，所以返回的 path 之后能直接当 root 用。
+   * **从工作区根拉，而不是面板自己的 `root`**：面板可能被切到某个不是 git 仓库的
+   * 工作树（`.git` 被删 / 损坏），拿它当 root 时后端只会返回空列表，工作树入口随之
+   * 消失、用户再也切不回来。工作区根始终是正常仓库，从这里拉才拿得到完整列表。
+   *
+   * 只在面板可见（当前工作区 + 模块露在眼前）时拉。列表够稳定，不轮询。失败当空列表
+   * ——拿不到就把入口藏起来，不值得弹全局错误。后端顺带把存在的工作树登记进白名单，
+   * 所以返回的 path 之后能直接当 root 用。
    */
   useEffect(() => {
-    if (!visible || !moduleVisible || !snapshot.isRepo) return;
+    if (!visible || !moduleVisible) return;
     let cancelled = false;
-    void gitWorktreeList(root)
+    void gitWorktreeList(workspaceRoot)
       .then((list) => {
         if (!cancelled) setWorktrees(list);
       })
@@ -2222,7 +2232,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [root, visible, moduleVisible, snapshot.isRepo, reloadSignal]);
+  }, [workspaceRoot, visible, moduleVisible, reloadSignal]);
 
   /** 切到某个工作树。只在真有多个工作树时才给入口，选自己那条等于恢复默认 */
   const pickWorktree = useCallback(
@@ -3261,6 +3271,25 @@ export function GitChangesPane({
     return () => observer.disconnect();
   }, [resizeMessage]);
 
+  /**
+   * worktree 列表。列表从**工作区根**拉（见上面的 effect），这里把「当前」按面板实际看的
+   * 目标 `root` 重算一遍——后端是按传进去的 root 标的，而我们要标的是这个面板选中的那条。
+   * 只有一个工作树时不显示入口（多一个点了没用的下拉，和现有界面风格不一致）。
+   *
+   * 判「当前」用词法前缀：面板 root 可能落在某个工作树的**子目录**里，此时它以工作树
+   * 路径为前缀。和 `same_dir` / `pathKey` 同一套归一化口径。
+   */
+  const wtList =
+    worktrees && worktrees.length > 1
+      ? worktrees.map((item) => {
+          const wt = pathKey(item.path);
+          const here = pathKey(root);
+          return { ...item, current: wt === here || here.startsWith(`${wt}/`) };
+        })
+      : null;
+  /** 当前面板所在的那个工作树（上面重算过 current 的那条） */
+  const currentWt = wtList?.find((item) => item.current) ?? null;
+
   // 目录还不是仓库：给一句说明 + 一键初始化，点进来看到的就是这里。
   // 放在所有 hooks 之后，条件返回不影响 hooks 顺序
   if (!snapshot.isRepo) {
@@ -3278,6 +3307,31 @@ export function GitChangesPane({
         </button>
         {error && (
           <p className="text-[11px] break-words whitespace-pre-wrap text-danger">{error}</p>
+        )}
+        {/* 选中的工作树不是仓库时，这里就是唯一的出口：给一份工作树列表，让用户能切回
+            主工作树（再在主工作树里切分支）。只有多个工作树时才显示 */}
+        {wtList && (
+          <div className="mt-1 flex w-full max-w-[260px] flex-col rounded border border-line-strong bg-raised py-1 text-left">
+            <p className="px-3 py-1 text-[11px] text-fg-faint">切换到其他工作树</p>
+            {wtList.map((item) => (
+              <button
+                key={item.path}
+                type="button"
+                onClick={() => pickWorktree(item)}
+                disabled={item.current || !item.exists}
+                title={toDisplayPath(item.path)}
+                className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
+              >
+                <span className="flex w-3 shrink-0 justify-center">
+                  {item.current && <IconCheck className="h-3 w-3 text-ok" />}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                <span className="shrink-0 truncate text-[10px] text-fg-faint">
+                  {item.branch ?? "游离 HEAD"}
+                </span>
+              </button>
+            ))}
+          </div>
         )}
       </div>
     );
@@ -3316,11 +3370,6 @@ export function GitChangesPane({
    */
   const commitHint =
     staged.length > 0 && busy === null && !message.trim() ? "填好提交信息就能提交" : null;
-
-  // 只有一个工作树时不显示入口——多一个点了没用的下拉，和现有界面风格不一致
-  const wtList = worktrees && worktrees.length > 1 ? worktrees : null;
-  // 当前面板所在的那个工作树（`git worktree list` 里唯一 current 的那条）
-  const currentWt = wtList?.find((item) => item.current) ?? null;
 
   /**
    * 提交框拖动条的无障碍数值（像素）。提交框没拖过时高度是内容撑的、不在 state 里，

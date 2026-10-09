@@ -272,6 +272,7 @@ export function ToolPane({
                 <GitChangesPane
                   key={target}
                   root={target}
+                  workspaceRoot={item}
                   visible={visible}
                   moduleVisible={changesVisible}
                   reloadSignal={reloadKey}
