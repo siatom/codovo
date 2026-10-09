@@ -134,6 +134,11 @@ interface GitChangesPaneProps {
    * 所以轮询这类后台动作除了看 `visible` 也得看它，否则模块不可见时仍在白跑 git。
    */
   moduleVisible: boolean;
+  /**
+   * 标题栏「刷新」传来的重载信号：值一变就把这个面板重载一遍（状态 / 历史 /
+   * worktree / 储藏）。初值只是哨兵，首次挂载不触发——各 effect 挂载时本就会自己拉一次。
+   */
+  reloadSignal: number;
   git: GitController;
   /** 点改动项 / 提交里的文件：打开差异视图，source 决定跟谁比 */
   onOpen: (path: string, source: DiffSource) => void;
@@ -1583,6 +1588,7 @@ export function GitChangesPane({
   root,
   visible,
   moduleVisible,
+  reloadSignal,
   git,
   onOpen,
   onOpenFile,
@@ -2181,6 +2187,22 @@ export function GitChangesPane({
   // ---- worktree ----
 
   /**
+   * 标题栏「刷新」：把整个面板重载一遍。
+   *
+   * 状态用 `refresh()` 立刻重拉（否则要等 2 秒轮询）；历史 / 储藏各自 +1，触发
+   * 它们下面的 effect 重拉；worktree 列表把它加进依赖里。用 ref 跳过首次挂载——
+   * 各 effect 挂载时本就会自己拉一次，不必重复。
+   */
+  const lastReload = useRef(reloadSignal);
+  useEffect(() => {
+    if (lastReload.current === reloadSignal) return;
+    lastReload.current = reloadSignal;
+    refresh();
+    setLogRevision((revision) => revision + 1);
+    setStashRevision((revision) => revision + 1);
+  }, [reloadSignal, refresh]);
+
+  /**
    * 拉这个仓库的 worktree 列表。
    *
    * 只在面板可见（当前工作区 + 模块露在眼前）、且目录是仓库时拉（换 worktree 会换
@@ -2200,7 +2222,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [root, visible, moduleVisible, snapshot.isRepo]);
+  }, [root, visible, moduleVisible, snapshot.isRepo, reloadSignal]);
 
   /** 切到某个工作树。只在真有多个工作树时才给入口，选自己那条等于恢复默认 */
   const pickWorktree = useCallback(

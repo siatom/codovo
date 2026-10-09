@@ -8,7 +8,7 @@ import { matchesShortcut } from "../lib/shortcuts";
 import { ExplorerPane } from "./ExplorerPane";
 import { GitChangesPane } from "./GitChangesPane";
 import { SearchPane } from "./SearchPane";
-import { IconChevronDown, IconChevronRight } from "./icons";
+import { IconChevronDown, IconChevronRight, IconRefresh } from "./icons";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
 export type ToolId = "files" | "changes" | "search" | "browser" | "remote" | "database";
@@ -16,6 +16,10 @@ export type ToolId = "files" | "changes" | "search" | "browser" | "remote" | "da
 const TOOL_KEY = "codedock.rightTool.";
 
 const TOOLS: ToolId[] = ["files", "changes", "search", "browser", "remote", "database"];
+
+/** 标题栏图标按钮的样式，和「文件」模块标题栏那几个按钮一致 */
+const ICON_BUTTON =
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
 /**
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
@@ -142,6 +146,11 @@ export function ToolPane({
   const [collapsedRoots, setCollapsedRoots] = useState<ReadonlySet<string>>(
     () => new Set(roots.slice(1).map(pathKey)),
   );
+  /**
+   * 「变更」标题栏的刷新信号：点一次 +1，传给每个根的面板，让它把状态 / 历史 /
+   * worktree / 储藏全重拉一遍。多根时一次刷新重载这一模块下的所有面板。
+   */
+  const [reloadKey, setReloadKey] = useState(0);
 
   const toggleRoot = (root: string) => {
     const key = pathKey(root);
@@ -199,11 +208,20 @@ export function ToolPane({
           面板本身是 h-full 的整高布局（内部自己滚），所以展开的块按份数分高度、
           开了折叠就只占一行，块多了整体滚 */}
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        {/* 模块自己的标题行，和「文件」「搜索」两个模块的头对齐（同为 h-8 + 下边框） */}
+        {/* 模块自己的标题行，和「文件」「搜索」两个模块的头对齐（同为 h-8 + 下边框）。
+            右侧「刷新」重载这一模块下所有根的面板（状态 / 历史 / worktree / 储藏） */}
         <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             变更
           </span>
+          <button
+            type="button"
+            onClick={() => setReloadKey((key) => key + 1)}
+            title="刷新"
+            className={ICON_BUTTON}
+          >
+            <IconRefresh className="h-3.5 w-3.5" />
+          </button>
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {roots.map((item) => {
@@ -256,6 +274,7 @@ export function ToolPane({
                   root={target}
                   visible={visible}
                   moduleVisible={changesVisible}
+                  reloadSignal={reloadKey}
                   git={gitByRoot[target]}
                   onOpen={onOpenDiff}
                   onOpenFile={onSelectFile}
