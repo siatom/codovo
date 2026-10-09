@@ -23,6 +23,7 @@ export function AgentHistoryMenu({
   onNew,
   onRename,
   onDelete,
+  waitingIds,
 }: {
   sessions: AgentSessionSummary[];
   /** 当前打开的是哪条，用来高亮 */
@@ -33,6 +34,8 @@ export function AgentHistoryMenu({
   onRename: (id: string, title: string) => void;
   /** 删除：确认框由调用方弹（两个面板各有各的 ConfirmDialog） */
   onDelete: (session: AgentSessionSummary) => void;
+  /** 正等着用户输入的会话 id（在行上点一颗脉冲点） */
+  waitingIds?: ReadonlySet<string>;
 }) {
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -91,6 +94,7 @@ export function AgentHistoryMenu({
               <ul className="flex flex-col">
                 {sessions.map((item) => {
                   const isActive = item.id === currentId;
+                  const waiting = waitingIds?.has(item.id) ?? false;
                   return (
                     <li
                       key={item.id}
@@ -126,11 +130,14 @@ export function AgentHistoryMenu({
                               closeAll();
                               onOpen(item.id);
                             }}
-                            title={item.title}
+                            title={waiting ? `${item.title}（正在等你输入）` : item.title}
                             className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-2 text-left text-[12px] ${
                               isActive ? "text-fg" : "text-fg-muted group-hover/hist:text-fg"
                             }`}
                           >
+                            {waiting && (
+                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />
+                            )}
                             <span className="min-w-0 flex-1 truncate">{item.title}</span>
                             {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」 */}
                             <span className="shrink-0 text-[11px] text-fg-faint group-hover/hist:hidden">

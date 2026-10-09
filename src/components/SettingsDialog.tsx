@@ -2348,6 +2348,16 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     />
                   </Field>
                   <Field
+                    label="等待提示"
+                    hint="终端里 AI CLI 停在需要输入的提示上时，在标签和侧栏标出来；靠输出特征判断，可能误报"
+                  >
+                    <BoolToggle
+                      value={settings.terminalWaitHint}
+                      options={VISIBLE_OPTIONS}
+                      onChange={(terminalWaitHint) => update({ terminalWaitHint })}
+                    />
+                  </Field>
+                  <Field
                     label="AI CLI"
                     hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中"
                     action={

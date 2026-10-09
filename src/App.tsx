@@ -10,7 +10,13 @@ import {
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { Toast } from "./components/Toast";
-import { AgentSessionProvider, useDropAgentSession, useNewChatAt } from "./lib/agent-session";
+import {
+  AgentSessionProvider,
+  useDropAgentSession,
+  useNewChatAt,
+  useOpenSessionAt,
+} from "./lib/agent-session";
+import { AttentionProvider, useDropAttention } from "./lib/attention";
 import { RemoteHostsProvider } from "./lib/remote-hosts";
 import { DbConnectionsProvider } from "./lib/db-connections";
 import {
@@ -78,8 +84,12 @@ function Shell() {
 
   /** 关工作区时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
+  /** 同理，丢掉它那份「等用户」标记 */
+  const dropAttention = useDropAttention();
   /** 给还没切过去的工作区「新建对话」用 */
   const newChatAt = useNewChatAt();
+  /** 给还没切过去的工作区「打开某条会话」用（侧栏的「在等用户」标记） */
+  const openSessionAt = useOpenSessionAt();
 
   const { settings, update } = useSettings();
   /** 关窗口的确认框：开着工作区、又还没记住选择时才弹 */
@@ -200,6 +210,29 @@ function Shell() {
     [openWorkspace, newChatAt],
   );
 
+  /**
+   * 侧栏点了「在等用户」的提示：切到那个工作区，并选中对应的标签 / 会话。
+   * `target` 形如 `term:<标签 id>` / `agent:<会话 id>`（见 lib/attention）。
+   * 工作区已经打开、只是切到后台时，实例还在，handle 拿得到。
+   */
+  const focusAttention = useCallback(
+    async (workspace: Workspace, target: string) => {
+      let root = workspace.activeRoot;
+      if (activeIdRef.current !== workspace.id) {
+        const next = await openWorkspace(workspace);
+        // 目录打不开时 openWorkspace 已经提示过，这里不再往下走
+        if (!next) return;
+        root = next.activeRoot;
+      }
+      if (target.startsWith("term:")) {
+        handlesRef.current.get(workspace.id)?.terminal?.focusSession(Number(target.slice(5)));
+      } else if (target.startsWith("agent:")) {
+        openSessionAt(root, target.slice(6));
+      }
+    },
+    [openWorkspace, openSessionAt],
+  );
+
   /** 「新建工作区」提交：新建一个工作区并打开它 */
   const createWorkspace = useCallback(
     async (value: { name: string; roots: string[] }) => {
@@ -253,7 +286,10 @@ function Shell() {
     (workspace: Workspace) => {
       void workspaceClose(workspace.roots).catch(() => {});
       // 每个根在会话状态里各占一份，都要丢
-      for (const root of workspace.roots) dropAgentSession(root);
+      for (const root of workspace.roots) {
+        dropAgentSession(root);
+        dropAttention(root);
+      }
       handlesRef.current.delete(workspace.id);
 
       const rest = openedRef.current.filter((id) => id !== workspace.id);
@@ -276,7 +312,7 @@ function Shell() {
         clearLastWorkspaceId();
       }
     },
-    [dropAgentSession],
+    [dropAgentSession, dropAttention],
   );
 
   /**
@@ -462,6 +498,7 @@ function Shell() {
           onReorder={reorder}
           onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
+          onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
         />
       </div>
       {/* 每个打开的工作区挂一个实例：非当前的 hidden 藏着不卸载，切回来是原样 */}
@@ -553,11 +590,13 @@ function Shell() {
 export default function App() {
   return (
     <AgentSessionProvider>
-      <RemoteHostsProvider>
-        <DbConnectionsProvider>
-          <Shell />
-        </DbConnectionsProvider>
-      </RemoteHostsProvider>
+      <AttentionProvider>
+        <RemoteHostsProvider>
+          <DbConnectionsProvider>
+            <Shell />
+          </DbConnectionsProvider>
+        </RemoteHostsProvider>
+      </AttentionProvider>
     </AgentSessionProvider>
   );
 }

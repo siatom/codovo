@@ -12,6 +12,7 @@ import {
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
+import { terminalTarget, useAttention } from "../lib/attention";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import type { EditorLocation } from "../lib/types";
@@ -55,6 +56,11 @@ export interface TerminalPaneHandle {
   insertToTerminal: (location: EditorLocation) => void;
   /** 把位置引用送进智能体输入框（插成一个可整体删除的 chip），顺带切到 GUI 模式 */
   insertToAgent: (location: EditorLocation) => void;
+  /**
+   * 选中某个已存在的终端标签（切到 TUI 并聚焦它）。侧栏的「在等用户」提示点它跳过来用。
+   * 标签已经关掉了就什么都不做。
+   */
+  focusSession: (id: number) => void;
 }
 
 interface TerminalPaneProps {
@@ -95,6 +101,13 @@ export function TerminalPane({
   // TUI/GUI 的选择提到了 AgentSessionContext：侧边栏要在 GUI 模式下才列对话历史。
   // 按工作区取——一个窗口里同时开着多个工作区，各有各的模式和会话列表
   const { mode, setMode } = useAgentSession(root);
+  // 终端标签的「在等用户」标记：TerminalSession 启发式判出来上抛，这里写进全局 store，
+  // 侧栏工作区行、标签栏据此提示（非当前工作区的也要看得见）
+  const {
+    entries: attention,
+    set: setAttention,
+    clear: clearAttention,
+  } = useAttention(root);
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
   /** 智能体面板的句柄：编辑器浮窗要把文本塞进它的输入框 */
@@ -204,6 +217,8 @@ export function TerminalPane({
   };
 
   const closeSession = (id: number) => {
+    // 标签没了，它的「在等用户」标记也一并撤掉（TerminalSession 的 cleanup 也会撤，双保险）
+    clearAttention(terminalTarget(id));
     // 关掉最后一个就换一个新的顶上，终端区不留空白
     if (sessions.length === 1) {
       const fresh = nextIdRef.current;
@@ -264,10 +279,21 @@ export function TerminalPane({
     [setMode],
   );
 
+  // 侧栏点了「在等用户」提示：切回 TUI 并选中那个标签。标签可能已经被关掉了，那就不动
+  const focusSession = useCallback(
+    (id: number) => {
+      if (!sessions.includes(id)) return;
+      setMode("terminal");
+      setActiveId(id);
+      handlesRef.current.get(id)?.focus();
+    },
+    [sessions, setMode],
+  );
+
   useImperativeHandle(
     ref,
-    () => ({ runInNewSession, insertToTerminal, insertToAgent }),
-    [runInNewSession, insertToTerminal, insertToAgent],
+    () => ({ runInNewSession, insertToTerminal, insertToAgent, focusSession }),
+    [runInNewSession, insertToTerminal, insertToAgent, focusSession],
   );
 
   // 开关是在设置里随时能关的，而 mode 是共享状态：关掉之后分段控件不画了，
@@ -333,6 +359,8 @@ export function TerminalPane({
               const title = custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
               // 悬停提示：启动过的会话报命令，普通会话报 shell 全名
               const hint = hintByIdRef.current.get(id) ?? shell?.label ?? shellName;
+              // 这个标签是不是正停在等用户输入的提示上
+              const waiting = Boolean(attention[terminalTarget(id)]);
               return (
                 <div
                   key={id}
@@ -343,11 +371,18 @@ export function TerminalPane({
                   <button
                     type="button"
                     onClick={() => setActiveId(id)}
-                    title={hint}
+                    title={waiting ? `${hint}（正在等待你的输入）` : hint}
                     className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
                   >
                     <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
                     <span className="truncate">{title}</span>
+                    {/* 停在交互提示上时点一颗脉冲点，切到别的工作区也看得见 */}
+                    {waiting && (
+                      <span
+                        title="正在等待你的输入"
+                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
+                      />
+                    )}
                   </button>
                   <button
                     type="button"
@@ -461,6 +496,12 @@ export function TerminalPane({
                   onRequestNew={() => addSession()}
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
+                  // 启发式判出「停在等用户输入的提示上」时上抛，写进全局 store
+                  onAttentionChange={(waiting) => {
+                    const target = terminalTarget(id);
+                    if (waiting) setAttention(target, "prompt");
+                    else clearAttention(target);
+                  }}
                   // 并列模式显示全部会话；标签模式只显示当前会话。active 仍只负责焦点和补尺寸。
                   visible={visible && view === "terminal" && (layout !== "tabs" || id === activeId)}
                   active={visible && view === "terminal" && id === activeId}

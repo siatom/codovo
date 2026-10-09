@@ -109,6 +109,11 @@ export interface Settings {
   terminalFontBold: boolean;
   /** 终端配色主题，取 xterm-theme 的导出名；空串表示跟随界面深/浅色 */
   terminalTheme: string;
+  /**
+   * 终端里 AI CLI 停在需要用户输入的提示上时，在标签与侧栏标出来。
+   * 判据是备用屏上的输出特征，属于启发式、可能误报，所以留个开关。
+   */
+  terminalWaitHint: boolean;
   /** 编辑器字体（CSS font-family），留空用默认 */
   editorFontFamily: string;
   /** 编辑器字号（px） */
@@ -190,6 +195,7 @@ const DEFAULTS: Settings = {
   terminalFontSize: 13,
   terminalFontBold: true,
   terminalTheme: "",
+  terminalWaitHint: true,
   editorFontFamily: "",
   editorFontSize: 13,
   editorFontBold: true,
@@ -417,6 +423,7 @@ function readSaved(): Settings {
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
     terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),
     terminalTheme: asString(raw.terminalTheme, DEFAULTS.terminalTheme),
+    terminalWaitHint: asBoolean(raw.terminalWaitHint, DEFAULTS.terminalWaitHint),
     editorFontFamily: asString(raw.editorFontFamily, DEFAULTS.editorFontFamily),
     editorFontSize: clampSize(raw.editorFontSize, DEFAULTS.editorFontSize),
     editorFontBold: asBoolean(raw.editorFontBold, DEFAULTS.editorFontBold),
