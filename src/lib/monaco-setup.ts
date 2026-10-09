@@ -7,6 +7,7 @@ import JsonWorker from "monaco-editor/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/language/typescript/ts.worker?worker";
 
 import { registerJsonLikeLanguages } from "./json5";
+import { registerConfigLanguages } from "./config-languages";
 import type { Theme } from "./theme";
 
 /**
@@ -139,5 +140,6 @@ setupMonacoTheme();
 // 注册 json5 / jsonc 语言与格式化器。放模块顶层：EditorPane 会先 import 本模块，
 // 保证任何 createModel 之前语言已经就位
 registerJsonLikeLanguages();
+registerConfigLanguages();
 
 export { monaco };

@@ -22,6 +22,7 @@ const BY_EXTENSION: Record<string, string> = {
   jsonc: "jsonc",
   jsx: "javascript",
   less: "less",
+  mk: "makefile",
   log: "plaintext",
   lua: "lua",
   md: "markdown",
@@ -50,6 +51,14 @@ const BY_FILENAME: Record<string, string> = {
   dockerfile: "dockerfile",
   "cargo.lock": "ini",
   makefile: "makefile",
+  gnumakefile: "makefile",
+  "cmakelists.txt": "cmake",
+  ".gitignore": "ignore",
+  ".dockerignore": "ignore",
+  ".npmignore": "ignore",
+  ".eslintignore": "ignore",
+  ".prettierignore": "ignore",
+  ".hgignore": "ignore",
 };
 
 export function languageOf(path: string): string {
