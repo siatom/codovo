@@ -68,7 +68,7 @@ git push --follow-tags            # 连 tag 一起推
 - 目录监听只推「哪个父目录变了」，编辑器重读另走 `fs-file-changed`；防抖 300ms 并跳过 `SKIP_DIRS`。
 - markdown 预览层的内容在渲染期算，**按 `activeKey` 从 model 缓存取**，绝不能读编辑器当前挂着的
   model：换 model 的 effect 在渲染之后才跑，从别的文件切到 md 的那一帧读到的还是上一个文件的
-  model，而 `isPreview` 由 false 变 true 只发生这一帧，之后依赖不变、memo 不重算，错误内容就一直
+  model，而 `isMarkdownPreview` 由 false 变 true 只发生这一帧，之后依赖不变、memo 不重算，错误内容就一直
   留在预览层上（切回编辑再进预览才会纠正）。
 - 内置浏览器预览工作区里的网页文件（`BrowserPane` 的 `request`）走 Tauri 的 **asset 协议**：
   WebView2 不让 http 源的 iframe 读 `file://`，塞 `srcdoc` 又会让相对路径的 css / js / 图片全废
@@ -80,6 +80,11 @@ git push --follow-tags            # 连 tag 一起推
   打开同一个目录会被永久拒绝。预览文件时 iframe 地址挂一个随 nonce 变的查询串（asset 协议不发
   `Cache-Control`，改完文件点「重新加载」要拿到新内容）；这时地址栏里显示的是相对路径、
   「用系统浏览器打开」也换成拿真实路径走 `openPath`（asset 地址只在本 webview 里认）。
+- 编辑器内的 html / htm / svg 预览（`HtmlPreview`）与内置浏览器**同一套 asset 协议**，`assetUrl` 抽到
+  `lib/asset-url.ts` 两处共用。与 markdown 预览的区别：markdown 从 model 现渲染、实时反映未保存的改动；
+  html / svg 的 iframe 读的是**磁盘**，所以 `EditorPane` 的 `togglePreview` 进入预览前先 `persist` 落盘
+  （保存失败就不进预览），再 bump `previewNonce` 让 iframe 重新加载。预览态按标签记在 `previewPaths`，
+  切走再切回仍是预览。`svg` 只在预览时当图，编辑时仍按 xml 高亮（`languages.ts`）。
 - 差异基线照 VS Code（暂存 `HEAD↔index`、未暂存 `index↔工作区`），两侧统一按 LF 比较；差异编辑器
   懒创建、只读、不参与脏标记，三种差异靠 model URI 的 scheme 段区分。
 - **行级**暂存 / 取消暂存 / 放弃复用整块的补丁链路：后端 `patch_for_lines` 把「选中若干行」转成

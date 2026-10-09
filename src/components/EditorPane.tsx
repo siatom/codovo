@@ -32,6 +32,7 @@ import type { EditorLocation } from "../lib/types";
 import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
+import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -306,6 +307,20 @@ function isImagePath(path: string): boolean {
   return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1));
 }
 
+/**
+ * 编辑器内可预览的网页文件：html / htm 是网页文档，svg 是浏览器能直接渲染的矢量图。
+ * 预览走 iframe + asset 协议读磁盘（相对路径的 css / js / 图片才加载得到），
+ * 和右栏「浏览器」模块同一套。`svg` 编辑时仍按 xml 高亮（见 `languages.ts`），
+ * 只是多给一个「编辑 / 预览」开关——它不是图片，别混进 `IMAGE_EXTENSIONS`。
+ */
+const HTML_PREVIEW_EXTENSIONS = new Set(["html", "htm", "svg"]);
+
+function isHtmlPreviewPath(path: string): boolean {
+  const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && HTML_PREVIEW_EXTENSIONS.has(name.slice(dot + 1));
+}
+
 function baseName(path: string): string {
   return toDisplayPath(path).split("/").pop() ?? path;
 }
@@ -398,8 +413,11 @@ export function EditorPane({
     request: CloseRequest;
     message: string;
   } | null>(null);
-  /** 正处在预览模式的 markdown 标签（存 tabKey）；不在集合里就是编辑模式 */
+  /** 正处在预览模式的标签（存 tabKey）；不在集合里就是编辑模式 */
   const [previewPaths, setPreviewPaths] = useState<ReadonlySet<string>>(new Set());
+  // togglePreview 是稳定回调（依赖为空），要用 ref 读预览集合的最新值来判断该进还是该退
+  const previewPathsRef = useRef(previewPaths);
+  previewPathsRef.current = previewPaths;
   const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
@@ -1323,16 +1341,33 @@ export function EditorPane({
     editor.focus();
   }, [reveal, active, status.kind]);
 
-  // 切换当前 markdown 文件的编辑/预览模式。用 ref 读当前标签，省得 active 一变就重建这个回调
+  /**
+   * 切换当前文件的编辑/预览模式。用 ref 读当前标签，省得 active 一变就重建这个回调。
+   * markdown 从 model 现渲染、实时；html / svg 的预览走 asset 协议读磁盘，所以进入
+   * 预览前先把未保存的改动落盘（保存失败就不进，错误由 persist 亮出来）。
+   */
   const togglePreview = useCallback(() => {
     const current = activeRef.current;
     if (!current || current.kind !== "file") return;
     const key = tabKey(current);
-    setPreviewPaths((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+    if (previewPathsRef.current.has(key)) {
+      setPreviewPaths((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      return;
+    }
+    const enter = () => setPreviewPaths((prev) => new Set(prev).add(key));
+    if (!isHtmlPreviewPath(current.path)) {
+      enter();
+      return;
+    }
+    void persistRef.current(key).then((ok) => {
+      if (!ok) return;
+      // 重新加载 iframe：磁盘内容可能刚被保存改过
+      setPreviewNonce((count) => count + 1);
+      enter();
     });
   }, []);
 
@@ -1452,24 +1487,29 @@ export function EditorPane({
   // 加载中和加载失败时也得把 Monaco 那块藏住，否则会露出上一次的残留内容
   const isImageTab = active?.kind === "file" && isImagePath(active.path);
 
-  // 只有加载完成的 markdown 文件才有预览可切
+  // 有预览可切的文件：markdown 实时渲染，html / htm / svg 走 asset 协议读磁盘。
+  // 判据是 status.kind === "ready"：加载中和加载失败时不给预览入口
   const canPreview =
     status.kind === "ready" &&
     active?.kind === "file" &&
-    languageOf(active.path) === "markdown";
+    (languageOf(active.path) === "markdown" || isHtmlPreviewPath(active.path));
   const isPreview = canPreview && activeKey !== null && previewPaths.has(activeKey);
+  const isMarkdownPreview =
+    isPreview && active?.kind === "file" && languageOf(active.path) === "markdown";
+  const isHtmlPreview =
+    isPreview && active?.kind === "file" && isHtmlPreviewPath(active.path);
 
   // 进预览时同步渲染一次：放在渲染期算完，就不会先闪一帧空白。
   // 内容按 activeKey 从缓存里取，**不能**读编辑器当前挂着的 model：换 model 的
   // effect 在渲染之后才跑，切到另一个 md 标签的这一帧读到的还是上一个文件的
-  // model；而 isPreview 由 false 变 true 就发生在这同一帧，等 effect 把 model
+  // model；而 isMarkdownPreview 由 false 变 true 就发生在这同一帧，等 effect 把 model
   // 换好之后依赖没再变过，memo 不会重算，上一个文件的内容就永久留在预览层上了。
   // 预览期间编辑器是 hidden 的、内容改不了，缓存里那份就是当前内容。
   const previewHtml = useMemo(() => {
-    if (!isPreview || activeKey === null) return "";
+    if (!isMarkdownPreview || activeKey === null) return "";
     const model = modelsRef.current.get(activeKey)?.model;
     return model ? renderMarkdown(model.getValue()) : "";
-  }, [isPreview, activeKey, previewNonce]);
+  }, [isMarkdownPreview, activeKey, previewNonce]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
   // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；工作区从后台切回来时同理
@@ -1831,7 +1871,11 @@ export function EditorPane({
           className={isDiffTab ? "absolute inset-0" : "hidden"}
         />
 
-        {isPreview && <MarkdownPreview html={previewHtml} />}
+        {isMarkdownPreview && <MarkdownPreview html={previewHtml} />}
+        {/* html / htm / svg 预览：iframe 走 asset 协议读磁盘，相对路径的 css / js / 图片一并生效 */}
+        {isHtmlPreview && active && active.kind === "file" && (
+          <HtmlPreview path={active.path} nonce={previewNonce} />
+        )}
 
         {/* 图片按原比例整体放进可视区，不放大也不让横竖滚动条出场 */}
         {status.kind === "image" && (
