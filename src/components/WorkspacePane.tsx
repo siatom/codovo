@@ -27,6 +27,19 @@ import type { BrowserFileRequest } from "./BrowserPane";
 export interface WorkspaceHandles {
   terminal: TerminalPaneHandle | null;
   editor: EditorPaneHandle | null;
+  /** 界面布局的入口：应用助手要能切右栏模块、收放右边栏 */
+  layout: WorkspaceLayoutHandle | null;
+}
+
+/**
+ * 界面布局的可编程入口。应用助手（`lib/app-agent.ts`）通过它操作**当前活动工作区**的
+ * 右栏——布局状态是每个工作区实例自己的 state，只能由实例自己改。
+ */
+export interface WorkspaceLayoutHandle {
+  /** 展开右栏并切到某个模块（不做「再点一次收起」的切换语义，那是图标条点击才有的） */
+  openTool: (id: ToolId) => void;
+  /** 展开 / 收起右边栏的内容面板 */
+  setRightOpen: (open: boolean) => void;
 }
 
 export type Fullscreen = "none" | "right" | "left";
@@ -195,6 +208,23 @@ export function WorkspacePane({
   }, [onExitFullscreen]);
 
   /**
+   * 界面操作智能体（应用助手）用的布局入口。刻意和 `pickTool` 分开：那边「再点一次当前
+   * 模块 = 收起」的切换语义是给图标条点击的，而工具调用说「切到变更面板」就该切过去、
+   * 不该因为面板正开着而把它收起来。
+   */
+  const layoutHandle = useMemo<WorkspaceLayoutHandle>(
+    () => ({
+      openTool: (id) => {
+        setTool(id);
+        saveTool(root, id);
+        setRightOpen(true);
+      },
+      setRightOpen: (open) => setRightOpen(open),
+    }),
+    [root],
+  );
+
+  /**
    * 点图标条上的空白处切显隐，和左侧栏一个手感——这是收起/展开右边栏的唯一空白区。
    * 工具面板的内容区不挂它：文件树等模块自己要用空白点击（收回锚点、清高亮），
    * 沾上「收起整条右栏」会误伤。编辑器是主区域、浏览器内容是 iframe，本来也不该算。
@@ -216,10 +246,16 @@ export function WorkspacePane({
 
   // handle 交回 App：侧栏的命令、编辑器的浮窗都得打在**当前工作区**的实例上。
   // 用回调 ref 上报，不能靠 effect——ref 变化不会触发渲染
-  const handlesRef = useRef<WorkspaceHandles>({ terminal: null, editor: null });
+  const handlesRef = useRef<WorkspaceHandles>({ terminal: null, editor: null, layout: null });
   const reportHandles = useCallback(() => {
     onHandles(workspace.id, { ...handlesRef.current });
   }, [workspace.id, onHandles]);
+
+  // 布局句柄上报给 App：应用助手要按工作区 id 找到当前实例的右栏去操作
+  useEffect(() => {
+    handlesRef.current.layout = layoutHandle;
+    reportHandles();
+  }, [layoutHandle, reportHandles]);
 
   const setTerminalHandle = useCallback(
     (handle: TerminalPaneHandle | null) => {

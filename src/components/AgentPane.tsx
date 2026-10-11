@@ -35,7 +35,7 @@ import {
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { useAttention } from "../lib/attention";
-import { primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
+import { APP_AGENT_NAME, primaryAgentOptions, resolveAgentLayer } from "../lib/agent-profiles";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
@@ -185,6 +185,8 @@ function PrimaryAgentPicker({
   onChange: (next: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // 按钮上显示的是候选里的**显示名**而不是原始值：应用助手的值是 `app`，直接摆出来没法看
+  const current = options.find((option) => option.value === value)?.label ?? value;
 
   return (
     <div className="relative shrink-0">
@@ -194,7 +196,7 @@ function PrimaryAgentPicker({
         title="选择智能体"
         className="flex items-center gap-1 rounded-md border border-line-strong px-1.5 py-0.5 text-[11px] text-fg-muted hover:border-line-hover hover:text-fg"
       >
-        {value}
+        {current}
         <IconChevronDown className="h-3 w-3 text-fg-faint" />
       </button>
 
@@ -780,12 +782,26 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
               <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
                 <IconBot className="h-5 w-5" />
               </span>
-              <div className="text-[13px] font-medium text-fg-muted">
-                让智能体读代码、改文件、跑命令
-              </div>
-              <div className="text-[12px] leading-relaxed text-fg-faint">
-                改动会直接落到工作区，git 面板能看到
-              </div>
+              {/* 应用助手面向的是 CodeDock 自己的界面，不是工作区代码，空态文案得跟着换 */}
+              {primary === APP_AGENT_NAME ? (
+                <>
+                  <div className="text-[13px] font-medium text-fg-muted">
+                    问答 CodeDock 用法，或让它改设置与界面
+                  </div>
+                  <div className="text-[12px] leading-relaxed text-fg-faint">
+                    改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-[13px] font-medium text-fg-muted">
+                    让智能体读代码、改文件、跑命令
+                  </div>
+                  <div className="text-[12px] leading-relaxed text-fg-faint">
+                    改动会直接落到工作区，git 面板能看到
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             messages.map((message) => (

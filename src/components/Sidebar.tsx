@@ -38,6 +38,7 @@ import {
   IconPlus,
   IconSearch,
   IconSettings,
+  IconSparkle,
   IconSun,
   IconTrash,
 } from "./icons";
@@ -80,6 +81,8 @@ interface SidebarProps {
   onResumeSession: (command: string, title: string) => void;
   /** 点「在等用户」的提示：由 App 切到该工作区并选中对应的标签 / 会话 */
   onFocusAttention: (workspace: Workspace, target: string) => void;
+  /** 打开「应用助手」（界面操作智能体）：切到当前工作区的智能体面板并选中内置 app agent */
+  onOpenAppAgent: () => void;
 }
 
 /** 一个工作区里第一个「在等用户」的目标键（终端标签优先，其次智能体会话）；没有返回 null */
@@ -184,6 +187,7 @@ export function Sidebar({
   onRunAiCommand,
   onResumeSession,
   onFocusAttention,
+  onOpenAppAgent,
 }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   /** 展开态宽度，拖动分隔条改 */
@@ -516,6 +520,15 @@ export function Sidebar({
             className={FOOTER_BUTTON}
           >
             <IconSettings />
+          </button>
+          {/* 应用助手：问答 CodeDock 用法、按指令改设置 / 工作区 / 界面布局 */}
+          <button
+            type="button"
+            onClick={onOpenAppAgent}
+            title="应用助手"
+            className={FOOTER_BUTTON}
+          >
+            <IconSparkle />
           </button>
           <button
             type="button"
@@ -897,6 +910,15 @@ export function Sidebar({
           className={FOOTER_BUTTON}
         >
           <IconSettings />
+        </button>
+        {/* 应用助手：问答 CodeDock 用法、按指令改设置 / 工作区 / 界面布局 */}
+        <button
+          type="button"
+          onClick={onOpenAppAgent}
+          title="应用助手"
+          className={FOOTER_BUTTON}
+        >
+          <IconSparkle />
         </button>
         {/* 收起按钮跟着主题、设置一起沉到底部，头部只留标题 */}
         <button
