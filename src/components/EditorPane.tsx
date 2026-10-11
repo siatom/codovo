@@ -27,6 +27,7 @@ import {
 } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { useSettings, resolveFont } from "../lib/settings";
+import { useTabReorder } from "../lib/use-tab-reorder";
 import { sameTab, tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
 import { useTheme } from "../lib/theme";
@@ -200,6 +201,8 @@ interface EditorPaneProps {
   gitMarks: ReadonlyMap<string, GitMark>;
   onActivate: (tab: Tab) => void;
   onClose: (tab: Tab) => void;
+  /** 拖动重排标签：只改显示顺序，不碰激活态和 model。父级负责把新顺序写回 openTabs */
+  onReorder: (from: number, to: number) => void;
   /** 批量关闭：标题栏右侧「⋯」菜单用 */
   onCloseAll: () => void;
   onCloseOthers: () => void;
@@ -363,6 +366,7 @@ export function EditorPane({
   gitMarks,
   onActivate,
   onClose,
+  onReorder,
   onCloseAll,
   onCloseOthers,
   fullscreen,
@@ -446,8 +450,12 @@ export function EditorPane({
    */
   const floatLocationRef = useRef<EditorLocation | null>(null);
   const floatRef = useRef<HTMLDivElement>(null);
-  /** 标签栏的横向滚动容器，用来在切换标签时把激活标签滚进可视区 */
-  const tabsScrollRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * 标签栏的拖动重排。这里只管指针状态机，新顺序由父级（WorkspacePane 的 openTabs）
+   * 落盘；scrollerRef 同时用来在切换标签时把激活标签滚进可视区。
+   */
+  const { scrollerRef: tabsScrollRef, dragFrom, dropIndex, onTabDown, onClickCapture } =
+    useTabReorder(onReorder);
   const { theme, palette } = useTheme();
   const { settings } = useSettings();
 
@@ -1667,25 +1675,38 @@ export function EditorPane({
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
         <div
           ref={tabsScrollRef}
+          onClickCapture={onClickCapture}
           className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
         >
           {tabs.length === 0 && (
             <span className="px-1 text-[11px] text-fg-faint">未打开文件</span>
           )}
-          {tabs.map((tab) => {
+          {tabs.map((tab, index) => {
             const key = tabKey(tab);
             const isActive = active !== null && tabKey(active) === key;
             const isDirty = dirtyPaths.has(key);
             const mark = gitMarks.get(pathKey(tab.path));
             const suffix = tabSuffix(tab);
+            const dropBefore = dropIndex === index;
+            const dropAfter = dropIndex === tabs.length && index === tabs.length - 1;
             return (
               <div
                 key={key}
+                data-tab-item
                 data-tab-active={isActive ? "" : undefined}
-                className={`flex shrink-0 items-center rounded ${
+                onPointerDown={onTabDown(index)}
+                className={`relative flex shrink-0 items-center rounded ${
                   isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-                }`}
+                } ${dragFrom === index ? "opacity-40" : ""}`}
               >
+                {/* 落点线：插在某个标签之前画在它左缘，插在末尾画在最后一个标签右缘 */}
+                {(dropBefore || dropAfter) && (
+                  <span
+                    className={`pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 rounded bg-accent-strong ${
+                      dropBefore ? "-left-0.5" : "-right-0.5"
+                    }`}
+                  />
+                )}
                 <button
                   type="button"
                   onClick={() => onActivate(tab)}
@@ -1707,6 +1728,7 @@ export function EditorPane({
                 </button>
                 <button
                   type="button"
+                  data-tab-close
                   onClick={() => closeTab(tab)}
                   title="关闭这个标签"
                   className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"
