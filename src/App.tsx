@@ -15,10 +15,19 @@ import {
   useDropAgentSession,
   useNewChatAt,
   useOpenSessionAt,
+  useSetAgentModeAt,
 } from "./lib/agent-session";
 import { AttentionProvider, useDropAttention } from "./lib/attention";
 import { RemoteHostsProvider } from "./lib/remote-hosts";
 import { DbConnectionsProvider } from "./lib/db-connections";
+import {
+  respondAppAgent,
+  runAppAgentTool,
+  takeAppAgentRequest,
+  type AppAgentContext,
+} from "./lib/app-agent";
+import { APP_AGENT_NAME } from "./lib/agent-profiles";
+import { useTheme } from "./lib/theme";
 import {
   isPathInside,
   onFilesChanged,
@@ -46,6 +55,12 @@ import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
 /** 新建 / 编辑工作区对话框的状态 */
 type DialogState = { mode: "create" } | { mode: "edit"; workspace: Workspace };
+
+/**
+ * 应用助手桥的轮询间隔。后端 MCP 子进程只能把请求写成文件，没有推送通道，
+ * 所以这里轮询——每轮就是读一个小文件，代价可以忽略。
+ */
+const APP_AGENT_POLL_MS = 500;
 
 /**
  * 一个窗口，多个工作区并行。
@@ -91,9 +106,19 @@ function Shell() {
   /** 给还没切过去的工作区「打开某条会话」用（侧栏的「在等用户」标记） */
   const openSessionAt = useOpenSessionAt();
 
-  const { settings, update } = useSettings();
+  const { settings, update, reset, resetSection } = useSettings();
+  const { preference: themePreference, setPreference: setTheme } = useTheme();
   /** 关窗口的确认框：开着工作区、又还没记住选择时才弹 */
   const [closePrompt, setClosePrompt] = useState(false);
+  /** 应用助手要执行破坏性操作时弹的确认框；非空时显示 */
+  const [agentConfirm, setAgentConfirm] = useState<{
+    message: string;
+    confirmLabel: string;
+  } | null>(null);
+  /** 上面那个确认框的 resolver；用户点了确认 / 取消后兑现，工具调用据此继续 */
+  const agentConfirmRef = useRef<((ok: boolean) => void) | null>(null);
+  /** 把当前工作区切成 GUI 视图（侧栏的应用助手入口用） */
+  const setModeAt = useSetAgentModeAt();
 
   const activeWorkspace = workspaces.find((item) => item.id === activeId) ?? null;
   const activeRoot = activeWorkspace?.activeRoot ?? null;
@@ -351,6 +376,100 @@ function Shell() {
 
   const exitFullscreen = useCallback(() => setFullscreen("none"), []);
 
+  // ---- 应用助手（界面操作智能体）的桥 ----
+
+  /**
+   * 应用助手要执行不可逆操作（移除工作区、恢复默认设置）时，工具调用会 await 这里：
+   * 弹确认框、等用户点，再把结果兑现回去。工具那边有超时，用户一直不理也不会永远挂着。
+   */
+  const confirmFromAgent = useCallback(
+    (message: string, confirmLabel: string) =>
+      new Promise<boolean>((resolve) => {
+        // 上一次还没结掉（模型连着调两次）：直接当拒绝，别把 resolver 覆盖掉
+        agentConfirmRef.current?.(false);
+        agentConfirmRef.current = resolve;
+        setAgentConfirm({ message, confirmLabel });
+      }),
+    [],
+  );
+
+  const settleAgentConfirm = useCallback((ok: boolean) => {
+    const resolve = agentConfirmRef.current;
+    agentConfirmRef.current = null;
+    setAgentConfirm(null);
+    resolve?.(ok);
+  }, []);
+
+  /**
+   * 应用助手执行一次工具调用所需的一切。**每次渲染重建**：它读的都是「此刻」的 state
+   * 与句柄；而轮询 effect 只挂一次，直接捕获的话拿到的是首帧的旧值，所以经 ref 传进去。
+   */
+  const appAgentCtxRef = useRef<AppAgentContext | null>(null);
+  appAgentCtxRef.current = {
+    settings,
+    theme: themePreference,
+    fullscreen,
+    activeWorkspace,
+    update,
+    setTheme,
+    reset,
+    resetSection,
+    workspaces,
+    setWorkspaces,
+    openWorkspace,
+    removeWorkspace,
+    // 右栏模块与展开状态挂在各工作区实例上，按工作区 id 路由到当前那个
+    layout: {
+      openTool: (id) => handlesRef.current.get(activeIdRef.current ?? "")?.layout?.openTool(id),
+      setRightOpen: (open) =>
+        handlesRef.current.get(activeIdRef.current ?? "")?.layout?.setRightOpen(open),
+    },
+    setFullscreen,
+    confirm: confirmFromAgent,
+  };
+
+  // 常驻轮询：工具调用可能发生在任何时候，不能只在智能体面板可见时才跑
+  useEffect(() => {
+    let stopped = false;
+    let busy = false;
+    // 启动时先丢掉上一轮残留的请求：应用崩溃 / 退出时留下的那条此刻已经没有等待者，
+    // 执行它只会在界面上莫名其妙弹一个确认框
+    void takeAppAgentRequest().catch(() => {});
+    const tick = async () => {
+      if (stopped || busy) return;
+      busy = true;
+      try {
+        const request = await takeAppAgentRequest();
+        const ctx = appAgentCtxRef.current;
+        if (!request || !ctx || stopped) return;
+        const outcome = await runAppAgentTool(request, ctx);
+        await respondAppAgent(request.id, outcome.ok, outcome.text);
+      } catch (reason) {
+        // 这里失败意味着结果没能写回去，MCP 那边只能等到超时；留个日志方便排查
+        console.error("应用助手工具调用失败", reason);
+      } finally {
+        busy = false;
+      }
+    };
+    const timer = window.setInterval(() => void tick(), APP_AGENT_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  /** 侧栏底部的「应用助手」入口：切到当前工作区的智能体面板，并选中内置的 app agent */
+  const openAppAgent = useCallback(() => {
+    const workspace = workspacesRef.current.find((item) => item.id === activeIdRef.current);
+    if (!workspace) {
+      setToast("先打开一个工作区，应用助手要在工作区里跑");
+      return;
+    }
+    // 智能体被关掉时先打开开关，否则面板根本不出现
+    update({ agentEnabled: true, agentPrimary: APP_AGENT_NAME });
+    setModeAt(workspace.activeRoot, "agent");
+  }, [update, setModeAt]);
+
   // 启动时恢复上次用的工作区。只恢复**一个**：同时挂起多个工作区意味着一次起好几个
   // shell 和 opencode，用户没点过的不该有这种代价
   useEffect(() => {
@@ -499,6 +618,7 @@ function Shell() {
           onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
           onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
+          onOpenAppAgent={openAppAgent}
         />
       </div>
       {/* 每个打开的工作区挂一个实例：非当前的 hidden 藏着不卸载，切回来是原样 */}
@@ -559,6 +679,17 @@ function Shell() {
             setPendingRemove(null);
           }}
           onCancel={() => setPendingRemove(null)}
+        />
+      )}
+
+      {/* 应用助手要执行不可逆操作（移除工作区、恢复默认设置）时的确认框。
+          工具调用会一直等着这个结果，所以确认 / 取消都要兑现 resolver */}
+      {agentConfirm && (
+        <ConfirmDialog
+          message={agentConfirm.message}
+          confirmLabel={agentConfirm.confirmLabel}
+          onConfirm={() => settleAgentConfirm(true)}
+          onCancel={() => settleAgentConfirm(false)}
         />
       )}
 

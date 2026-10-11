@@ -77,6 +77,8 @@ interface Store {
   newChatAt: (root: string) => void;
   /** 把某个工作区切成 GUI 并挂上「打开这条会话」请求（侧栏给还没切过去的工作区点标记时用） */
   openSessionAt: (root: string, id: string) => void;
+  /** 把某个工作区切成指定视图（应用助手入口从侧栏切到 GUI 时用） */
+  setModeAt: (root: string, mode: AgentView) => void;
 }
 
 const AgentSessionContext = createContext<Store | null>(null);
@@ -131,9 +133,15 @@ export function AgentSessionProvider({ children }: { children: ReactNode }) {
     [patch],
   );
 
+  // 只切视图，不带任何请求。应用助手入口从侧栏直接把当前工作区切到 GUI
+  const setModeAt = useCallback(
+    (root: string, mode: AgentView) => patch(root, { mode }),
+    [patch],
+  );
+
   const store = useMemo(
-    () => ({ byRoot, patch, refOf, drop, newChatAt, openSessionAt }),
-    [byRoot, patch, refOf, drop, newChatAt, openSessionAt],
+    () => ({ byRoot, patch, refOf, drop, newChatAt, openSessionAt, setModeAt }),
+    [byRoot, patch, refOf, drop, newChatAt, openSessionAt, setModeAt],
   );
 
   return (
@@ -210,4 +218,14 @@ export function useOpenSessionAt(): (root: string, id: string) => void {
   const store = useContext(AgentSessionContext);
   if (!store) throw new Error("useOpenSessionAt 必须在 AgentSessionProvider 内使用");
   return store.openSessionAt;
+}
+
+/**
+ * 只拿「把某个工作区切成指定视图」这一个入口。侧栏的应用助手入口用它把当前工作区
+ * 切到 GUI——此刻 Shell 自己并不在 `useAgentSession(activeRoot)` 的调用链上。
+ */
+export function useSetAgentModeAt(): (root: string, mode: AgentView) => void {
+  const store = useContext(AgentSessionContext);
+  if (!store) throw new Error("useSetAgentModeAt 必须在 AgentSessionProvider 内使用");
+  return store.setModeAt;
 }
