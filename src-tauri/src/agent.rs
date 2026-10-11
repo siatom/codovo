@@ -100,6 +100,87 @@ const DB_AGENT_SKILL_NAME: &str = "db-query";
 /// 数据库 Agent 专用 primary agent 的名字。
 const DB_AGENT_AGENT_NAME: &str = "database";
 
+/// 应用助手（界面操作）内置技能的名字。它同时是配置目录里的文件夹名。
+const APP_AGENT_SKILL_NAME: &str = "app-control";
+
+/// 应用助手专用 primary agent 的名字。前端 `lib/app-agent.ts` 的 `APP_AGENT_NAME` 与它对齐。
+const APP_AGENT_AGENT_NAME: &str = "app";
+
+/// 应用助手的技能正文（frontmatter 由 `render_skill` 补）。
+/// 目的：把 CodeDock 的界面结构和设置字段名写死给模型，用户问「怎么改字号」时它能答对，
+/// 而不是去翻代码或瞎猜。
+const APP_AGENT_SKILL_BODY: &str = "\
+# CodeDock 界面操作
+
+## 界面结构
+
+- 左侧栏：顶部是工作区列表，底部一排按钮依次是 **主题切换 / 意见反馈 / 设置 / 应用助手 / 收起侧边栏**。
+- 中间左侧一列：**终端（TUI）** 与 **智能体（GUI）** 两个视图，靠顶栏居中的分段控件切换。
+- 右侧栏：最左是模块图标条（文件 / 搜索 / 变更 / 浏览器 / 远程连接 / 数据库），
+  图标条底部那个按钮收起/展开整条右栏；每个模块的标题栏右上角有全屏按钮。
+
+## 常用设置在哪（回答「怎么改 X」时照这个说）
+
+- 终端字体 / 字号 / 字重 / 配色主题 / 终端程序 / AI CLI 列表：**设置 → 终端**
+- 编辑器字体 / 字号 / 自动保存：**设置 → 编辑器**
+- 主题（深色 / 浅色 / 跟随系统 / 各种配色）、右栏模块显隐、关闭时收进托盘：**设置 → 外观**
+- 模型提供商、opencode 命令与端口、规则 / 记忆 / 技能 / Agents：**设置 → 智能体**
+- 设置入口在左侧栏底部那一排按钮里（齿轮图标）。
+
+## 设置字段（`update_settings` 的 patch 用这些键）
+
+- `terminalFontFamily`：字符串，CSS 字体栈，留空表示默认
+- `terminalFontSize`：11-20 的数字
+- `terminalFontBold`：true / false
+- `terminalTheme`：字符串，xterm 配色名；留空表示跟随界面深/浅色
+- `terminalShell`：字符串，shell 的 id；留空表示自动
+- `terminalWaitHint`：true / false
+- `editorFontFamily` / `editorFontSize`（11-20）/ `editorFontBold`
+- `editorAutoSave`：\"off\" / \"afterDelay\" / \"onFocusChange\" / \"onWindowChange\"
+- `editorAutoSaveDelay`：300-10000 毫秒
+- `agentEnabled`：true / false，左侧是否出现「终端 / 智能体」切换
+- `agentCommand` / `agentPort` / `agentPrimary`
+- `rightFilesVisible` / `rightChangesVisible` / `rightSearchVisible` / `rightBrowserVisible` /
+  `rightRemoteVisible` / `rightDatabaseVisible`：true / false
+- `closeToTray`：true / false
+- `theme`：**特殊键**，不写进设置文件而是直接切主题；取 \"dark\" / \"light\" / \"system\"
+  或配色名（如 \"dracula\" / \"one-dark\" / \"github-light\"）
+
+## 界面工具
+
+- `switch_panel`：panel 取 files / search / changes / browser / remote / database，
+  会展开右栏并切到该模块。
+- `set_right_pane`：open=true 展开、false 收起整条右栏。
+- `set_fullscreen`：area 取 none / left / right
+  （left=终端与智能体那一列铺满窗口，right=整个右边栏铺满窗口）。
+
+## 工作区
+
+- `add_workspace` 需要**绝对路径**，工作区名默认取目录名。
+- `remove_workspace` 只从列表移除、**不删磁盘目录**，执行前会弹确认框。";
+
+/// 应用助手专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
+const APP_AGENT_PROMPT: &str = "\
+你是 CodeDock（一个 AI 编程驾驶舱桌面应用）的界面操作助手。你能看到的工具只有一组界面工具\
+（app_get_state / app_update_settings / app_add_workspace / app_rename_workspace / \
+app_pin_workspace / app_remove_workspace / app_reset_settings / app_switch_panel / \
+app_set_right_pane / app_set_fullscreen），它们改的是 CodeDock 自己的设置、工作区列表与界面布局。\n\
+规则：\n\
+1. 用户问「怎么改 X」「X 在哪」时，直接用中文讲清路径（例如「设置 → 终端 → 字号」），\
+不要调用工具；拿不准当前值时才先调 app_get_state。\n\
+2. 用户要求「把 X 改成 Y」时才调用工具，一次只做用户明确要求的事，不要顺带改别的设置。\n\
+3. 移除工作区、恢复默认设置这类不可逆操作，工具内部会弹确认框，你只需调用并如实汇报结果。\n\
+4. 工具返回错误时把原因讲清楚，不要反复重试同一个调用。\n\
+5. 你改不了工作区里的代码、也跑不了命令；这类请求请让用户切到「终端」或普通智能体。";
+
+/// 应用助手要关掉的工具：它只操作界面，不该去翻磁盘或跑 shell。
+/// 用 per-agent 的 `tools`（opencode 已标记为 deprecated，但 `permission` 尚无等价的
+/// 逐工具开关），只影响这一个 agent，不动别人的。
+const APP_AGENT_DISABLED_TOOLS: &[&str] = &[
+    "bash", "edit", "write", "patch", "read", "grep", "glob", "list", "webfetch", "websearch",
+    "task",
+];
+
 /// 对接的是哪一带 opencode 的接口。
 ///
 /// 两代差异不小，但**相对路径几乎一样**：除了探针、发消息、中断这三处名字真的不同，
@@ -843,10 +924,16 @@ fn provider_hint() -> String {
 ///
 /// `db_target` 为 `Some` 表示这次起的是数据库 Agent：除常规配置外，再注入只读的数据库
 /// MCP 工具（本 exe 的 `--mcp-db` 子命令）、内置技能与专用 primary agent。
+///
+/// `app_mailbox` 为 `Some`（所有**工作区**智能体都是）时，额外注入「应用助手」：
+/// 界面操作的 MCP 工具（本 exe 的 `--mcp-app`）、内置技能与专用 primary agent。
+/// 它**总是**注入而不是按需——opencode 的 agent 与 MCP 都是启动时读配置定下的，
+/// 起完再切 primary agent 不会重读，按需注入就得在切换时重启整个服务。
 fn write_config(
     dir: &Path,
     cfg: &AgentConfig,
     db_target: Option<&Path>,
+    app_mailbox: Option<&Path>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
 
@@ -880,6 +967,22 @@ fn write_config(
             description: "用只读 SQL 查询当前数据库连接：先列表、再看表结构、最后执行查询"
                 .to_string(),
             content: DB_AGENT_SKILL_BODY.to_string(),
+        };
+        std::fs::write(target.join("SKILL.md"), render_skill(&skill))
+            .map_err(|e| format!("写入技能失败: {e}"))?;
+        wrote_skill = true;
+    }
+
+    // 应用助手也内置一份技能：把 CodeDock 的界面结构与设置字段名写死给模型，
+    // 用户问「怎么改字号」时能直接答对
+    if app_mailbox.is_some() {
+        let target = skills_dir.join(APP_AGENT_SKILL_NAME);
+        std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
+        let skill = SkillSpec {
+            name: APP_AGENT_SKILL_NAME.to_string(),
+            description: "CodeDock 界面结构与设置字段速查：界面操作助手回答「怎么改某设置」时用"
+                .to_string(),
+            content: APP_AGENT_SKILL_BODY.to_string(),
         };
         std::fs::write(target.join("SKILL.md"), render_skill(&skill))
             .map_err(|e| format!("写入技能失败: {e}"))?;
@@ -966,6 +1069,25 @@ fn write_config(
         );
     }
 
+    if app_mailbox.is_some() {
+        // 应用助手：同样是固定角色 + 固定边界。`tools` 逐项关掉文件 / 命令 / 联网类工具，
+        // 它只该动 CodeDock 界面（`app_*` 那组 MCP 工具）——这是 per-agent 的开关，
+        // 不会波及用户自己的 coding agent。
+        let tools = APP_AGENT_DISABLED_TOOLS
+            .iter()
+            .map(|name| (name.to_string(), serde_json::json!(false)))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        agents.insert(
+            APP_AGENT_AGENT_NAME.to_string(),
+            serde_json::json!({
+                "description": "CodeDock 界面操作助手：问答并修改设置、工作区与界面布局",
+                "mode": "primary",
+                "prompt": APP_AGENT_PROMPT,
+                "tools": serde_json::Value::Object(tools),
+            }),
+        );
+    }
+
     let mut config = serde_json::json!({
         "provider": serde_json::Value::Object(providers),
         "model": default_model,
@@ -1010,6 +1132,27 @@ fn write_config(
         });
         // 强制用内置的 database agent，盖掉面板传上来的 primary
         config["default_agent"] = serde_json::json!(DB_AGENT_AGENT_NAME);
+    }
+
+    if let Some(mailbox) = app_mailbox {
+        // 界面操作工具走本 exe 的 `--mcp-app` 子命令。邮箱目录用环境变量告诉子进程，
+        // 它只负责写请求 / 读响应，真正执行在前端（见 src-tauri/src/app_agent.rs）。
+        // `timeout` 放到 2 分钟：工具要一直等前端执行完，用户还可能要点确认框，
+        // 默认 5s 必然掐断。
+        let exe = std::env::current_exe().map_err(|e| format!("拿不到程序路径: {e}"))?;
+        let entry = serde_json::json!({
+            "type": "local",
+            "command": [exe.to_string_lossy(), "--mcp-app"],
+            "environment": { "CODEDOCK_APP_MAILBOX": mailbox.to_string_lossy() },
+            "timeout": 120000,
+        });
+        // 与上面 db 那块互斥（工作区智能体不会是数据库 Agent），但真撞上也得两边都留住
+        match config.get_mut("mcp") {
+            Some(serde_json::Value::Object(map)) => {
+                map.insert("app".to_string(), entry);
+            }
+            _ => config["mcp"] = serde_json::json!({ "app": entry }),
+        }
     }
 
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
@@ -1589,7 +1732,13 @@ pub async fn agent_start(
         } else {
             None
         };
-        write_config(&config_dir, &config, db_target.as_deref())?;
+        // 应用助手的界面操作邮箱同理，只给工作区智能体（数据库 Agent 用不到界面工具）
+        let app_mailbox = if config.database {
+            None
+        } else {
+            Some(crate::app_agent::mailbox_dir(&app)?)
+        };
+        write_config(&config_dir, &config, db_target.as_deref(), app_mailbox.as_deref())?;
 
         let password = random_password();
         let (child, log) = spawn_opencode(
@@ -2029,7 +2178,7 @@ mod tests {
         }];
         cfg.primary = "reviewer".to_string();
 
-        write_config(&dir, &cfg, None).unwrap();
+        write_config(&dir, &cfg, None, None).unwrap();
 
         // 规则 / 记忆落成文件，并在 instructions 里用绝对路径引用
         assert!(dir.join("rules.md").exists());
@@ -2068,7 +2217,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codedock-agent-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg, None).unwrap();
+        write_config(&dir, &cfg, None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2089,7 +2238,7 @@ mod tests {
         let mut cfg = bare_config();
         cfg.database = true;
         let target = dir.join("target.json");
-        write_config(&dir, &cfg, Some(&target)).unwrap();
+        write_config(&dir, &cfg, Some(&target), None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2109,6 +2258,42 @@ mod tests {
         assert_eq!(value["tools"]["edit"], false);
         // 内置技能落盘，并登记进 skills.paths
         assert!(dir.join("skills").join("db-query").join("SKILL.md").exists());
+        assert!(value.get("skills").is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_agent_config_injects_the_app_assistant() {
+        let dir = std::env::temp_dir().join(format!("codedock-agent-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let cfg = bare_config();
+        let mailbox = dir.join("app-agent");
+        write_config(&dir, &cfg, None, Some(&mailbox)).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        // MCP：本地 stdio，命令是本 exe 的 --mcp-app，环境变量指向邮箱目录
+        assert_eq!(value["mcp"]["app"]["type"], "local");
+        assert_eq!(value["mcp"]["app"]["command"][1], "--mcp-app");
+        assert_eq!(
+            value["mcp"]["app"]["environment"]["CODEDOCK_APP_MAILBOX"]
+                .as_str()
+                .unwrap(),
+            mailbox.to_string_lossy()
+        );
+        // 超时要放宽：工具会一直等前端执行 + 用户确认，默认 5s 必然掐断
+        assert!(value["mcp"]["app"]["timeout"].as_u64().unwrap() >= 60000);
+        // 内置 primary agent + 关掉文件 / 命令类工具（只影响它自己）
+        assert_eq!(value["agent"]["app"]["mode"], "primary");
+        assert_eq!(value["agent"]["app"]["tools"]["bash"], false);
+        assert_eq!(value["agent"]["app"]["tools"]["write"], false);
+        // 应用助手存在，但 default_agent 仍听面板传上来的 primary（不是强制切换）
+        assert!(value["agent"].get("app").is_some());
+        // 内置技能落盘，并登记进 skills.paths
+        assert!(dir.join("skills").join("app-control").join("SKILL.md").exists());
         assert!(value.get("skills").is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2244,7 +2429,7 @@ mod tests {
         let dir = std::env::temp_dir().join("codedock-agent-test-config");
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg, None).unwrap();
+        write_config(&dir, &cfg, None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2293,7 +2478,7 @@ mod tests {
             },
         ];
         cfg.default_model = "deepseek/deepseek-reasoner".to_string();
-        write_config(&dir, &cfg, None).unwrap();
+        write_config(&dir, &cfg, None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2317,7 +2502,7 @@ mod tests {
             default_model: "my-vendor/m".to_string(),
             ..cfg
         };
-        write_config(&dir, &cfg, None).unwrap();
+        write_config(&dir, &cfg, None, None).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
                 .unwrap();
@@ -2356,7 +2541,7 @@ mod tests {
                 prompt: String::new(),
             },
         ];
-        write_config(&dir, &cfg, None).unwrap();
+        write_config(&dir, &cfg, None, None).unwrap();
 
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
