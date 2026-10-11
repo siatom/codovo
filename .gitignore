@@ -22,6 +22,9 @@ lerna-debug.log*
 # 机器相关的本地覆盖
 *.local
 
+# 本地 CICD 运行时产物（releases/、run/、log/）；配置 .local-cicd.yaml 随仓库共享
+.local-cicd/
+
 # 编辑器
 .vscode/
 .idea/
