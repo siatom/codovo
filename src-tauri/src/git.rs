@@ -1169,6 +1169,12 @@ fn worktree_owners(root: &Path) -> HashMap<String, String> {
         let Some(branch) = item.branch else {
             continue; // 游离 HEAD / bare 不占用分支
         };
+        // 目录已经不存在的失效记录（外部 rm -rf 后没跑 prune 留下的）不算「占用」：
+        // 它并没有真的检出这个分支，却会让分支列表提前拦下切换，而那条记录又切不过去
+        // （目录都没了），用户既切不了分支也没有清理入口。交给 prune 处理。
+        if item.prunable || !Path::new(&item.path).is_dir() {
+            continue;
+        }
         // 当前工作树自己的分支不算「被占用」（它本来就显示成 current）
         if top.as_deref().is_some_and(|value| same_dir(value, &item.path)) {
             continue;
@@ -2525,6 +2531,21 @@ pub fn git_worktree_list(
     root: String,
 ) -> Result<Vec<WorktreeInfo>, String> {
     let root = state.checked_root(&root)?;
+    worktrees_of(&root, &state)
+}
+
+/// 清理失效的 worktree 记录（`git worktree prune`）。
+///
+/// 目录被外部删掉、又没跑过 prune 时，`git worktree list` 会一直留着那条 prunable
+/// 记录，它检出的分支也就一直「被占用」——主工作树和别的 worktree 都切不过去。这里
+/// 跑一次 prune 把记录清掉，分支随之释放。返回清理后的列表，调用方直接落地即可。
+#[tauri::command(async)]
+pub fn git_worktree_prune(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<WorktreeInfo>, String> {
+    let root = state.checked_root(&root)?;
+    run_git_checked(&root, &["worktree", "prune"])?;
     worktrees_of(&root, &state)
 }
 
@@ -5763,6 +5784,68 @@ mod tests {
         let err = switch_branch(&repo, "feat/x").unwrap_err();
         assert!(err.contains("已被工作树"), "实际：{err}");
         assert!(err.contains("feat/x"), "实际：{err}");
+
+        cleanup(&top);
+    }
+
+    /// 目录被外部删掉（没跑 prune）留下的 prunable 记录不该再占着分支——否则分支列表
+    /// 会提前拦下切换，而那条记录又切不过去（目录都没了），用户被堵死。清理后才真正释放。
+    #[test]
+    fn a_deleted_worktree_stops_owning_its_branch_and_can_be_pruned() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        assert!(git(&repo, &["branch", "feat/x"]));
+
+        let wt = top.join("repo-wt");
+        assert!(
+            git(&repo, &["worktree", "add", wt.to_str().unwrap(), "feat/x"]),
+            "git worktree add 失败"
+        );
+
+        // 目录还在：分支列表标出占用者
+        let list = branches_of(&repo).unwrap();
+        assert!(
+            list.iter()
+                .find(|item| item.name == "feat/x")
+                .unwrap()
+                .worktree
+                .is_some()
+        );
+
+        // 手动删目录（不跑 prune）：git 会留下一条 prunable 记录
+        fs::remove_dir_all(&wt).unwrap();
+        let list = branches_of(&repo).unwrap();
+        assert!(
+            list.iter()
+                .find(|item| item.name == "feat/x")
+                .unwrap()
+                .worktree
+                .is_none(),
+            "目录已删除的工作树不该再占用分支"
+        );
+
+        // 列表里仍能看出它是失效记录（供前端给「清理」入口）
+        let wts = worktrees_of(&repo, &state).unwrap();
+        let stale = wts
+            .iter()
+            .find(|item| same_dir(&item.path, wt.to_str().unwrap()))
+            .expect("应留下失效记录");
+        assert!(!stale.exists && stale.prunable, "应为 prunable 且目录不存在");
+
+        // prune 之后记录消失，分支占用随之释放
+        run_git_checked(&repo, &["worktree", "prune"]).unwrap();
+        let wts = worktrees_of(&repo, &state).unwrap();
+        assert!(
+            wts.iter()
+                .all(|item| !same_dir(&item.path, wt.to_str().unwrap())),
+            "prune 后不该再有这条记录"
+        );
 
         cleanup(&top);
     }

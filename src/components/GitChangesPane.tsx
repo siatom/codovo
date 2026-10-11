@@ -45,6 +45,7 @@ import {
   gitUnstage,
   gitUnpushed,
   gitWorktreeList,
+  gitWorktreePrune,
   pathKey,
   toDisplayPath,
 } from "../lib/fs";
@@ -66,6 +67,7 @@ import {
   type CommitPlanItem,
 } from "../lib/ai";
 import { useSettings } from "../lib/settings";
+import { folderName } from "../lib/workspaces";
 import { formatShortcut, matchesShortcut } from "../lib/shortcuts";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { DiffSource } from "../lib/tabs";
@@ -559,6 +561,7 @@ type Busy =
   | "merge"
   | "mergeAbort"
   | "mergeContinue"
+  | "prune"
   | "resolve";
 
 /**
@@ -2227,6 +2230,15 @@ export function GitChangesPane({
   }, [reloadSignal, refresh]);
 
   /**
+   * 切回工作区根用的回调。`onSelectWorktree` 是上层的内联箭头、每次渲染都是新的，
+   * 放进 effect 依赖会让它每帧重跑，所以用 ref 转一手。
+   */
+  const selectWorktreeRef = useRef(onSelectWorktree);
+  useEffect(() => {
+    selectWorktreeRef.current = onSelectWorktree;
+  }, [onSelectWorktree]);
+
+  /**
    * 拉这个仓库的 worktree 列表。
    *
    * **从工作区根拉，而不是面板自己的 `root`**：面板可能被切到某个不是 git 仓库的
@@ -2242,7 +2254,15 @@ export function GitChangesPane({
     let cancelled = false;
     void gitWorktreeList(workspaceRoot)
       .then((list) => {
-        if (!cancelled) setWorktrees(list);
+        if (cancelled) return;
+        setWorktrees(list);
+        // 兜底：面板看的那个 worktree 已经不在了（外部 rm -rf / git worktree remove），
+        // 自动切回工作区根——否则面板会一直卡在「不是 Git 仓库」的空状态。整条记录消失、
+        // 或只剩目录已不存在的 prunable 记录，都算「不在了」。
+        if (pathKey(root) !== pathKey(workspaceRoot)) {
+          const found = list.find((item) => pathKey(item.path) === pathKey(root));
+          if (!found || !found.exists) selectWorktreeRef.current(workspaceRoot);
+        }
       })
       .catch(() => {
         if (!cancelled) setWorktrees([]);
@@ -2250,17 +2270,34 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [workspaceRoot, visible, moduleVisible, reloadSignal]);
+  }, [workspaceRoot, root, visible, moduleVisible, reloadSignal]);
 
-  /** 切到某个工作树。只在真有多个工作树时才给入口，选自己那条等于恢复默认 */
+  /** 切到某个工作树。选当前这条等于恢复默认（也兜住列表里 current 被标错的情形） */
   const pickWorktree = useCallback(
     (target: WorktreeInfo) => {
       setWtMenu(false);
-      if (target.current) return;
+      // 比较面板实际看的 root，而不是列表里那个 current：被外部删掉的 worktree 会因
+      // 词法前缀被标成 current，拿它判断会直接 return、反而切不回去
+      if (pathKey(target.path) === pathKey(root)) return;
       onSelectWorktree(target.path);
     },
-    [onSelectWorktree],
+    [onSelectWorktree, root],
   );
+
+  /**
+   * 清理失效的 worktree 记录（`git worktree prune`）。
+   *
+   * 目录被外部删掉又没 prune 时，那条记录会一直占着它检出的分支，主工作树和别的
+   * worktree 都切不过去。prune 跑完把新列表落地，顺带重拉分支（占用信息跟着更新）。
+   */
+  const pruneWorktrees = useCallback(() => {
+    setWtMenu(false);
+    void run("prune", async () => {
+      const list = await gitWorktreePrune(workspaceRoot);
+      setWorktrees(list);
+      loadBranches();
+    });
+  }, [run, workspaceRoot, loadBranches]);
 
   // ---- stash ----
 
@@ -3292,21 +3329,29 @@ export function GitChangesPane({
   /**
    * worktree 列表。列表从**工作区根**拉（见上面的 effect），这里把「当前」按面板实际看的
    * 目标 `root` 重算一遍——后端是按传进去的 root 标的，而我们要标的是这个面板选中的那条。
-   * 只有一个工作树时不显示入口（多一个点了没用的下拉，和现有界面风格不一致）。
    *
-   * 判「当前」用词法前缀：面板 root 可能落在某个工作树的**子目录**里，此时它以工作树
-   * 路径为前缀。和 `same_dir` / `pathKey` 同一套归一化口径。
+   * 只有多个工作树、或面板切到了别的 worktree 时才给列表：前者是正常的切换入口，
+   * 后者是「切回工作区根」的出口——被外部删掉的 worktree 会让列表只剩工作区根一条，
+   * 那时若还按「长度 > 1」卡住，用户就再也切不回来了。
+   *
+   * 切到 worktree 后「当前」按整条路径等值判：原先的词法前缀会把**嵌在仓库里的**
+   * worktree 误判成它父目录那条工作区根，工作区根被标成 current 后就禁掉了、出口反而
+   * 没了。没切（看的就是工作区根）时沿用后端按 toplevel 算的那条，兼容「工作区根本身
+   * 是仓库子目录」的情形。
    */
+  const here = pathKey(root);
+  const offWorkspaceRoot = here !== pathKey(workspaceRoot);
   const wtList =
-    worktrees && worktrees.length > 1
-      ? worktrees.map((item) => {
-          const wt = pathKey(item.path);
-          const here = pathKey(root);
-          return { ...item, current: wt === here || here.startsWith(`${wt}/`) };
-        })
+    worktrees && (worktrees.length > 1 || offWorkspaceRoot)
+      ? worktrees.map((item) => ({
+          ...item,
+          current: offWorkspaceRoot ? pathKey(item.path) === here : item.current,
+        }))
       : null;
   /** 当前面板所在的那个工作树（上面重算过 current 的那条） */
   const currentWt = wtList?.find((item) => item.current) ?? null;
+  /** 列表里有没有失效记录（目录已不存在），决定要不要给「清理失效记录」入口 */
+  const hasPrunable = (worktrees ?? []).some((item) => item.prunable || !item.exists);
   /**
    * 点了被占用的分支时，占用它的那个工作树在本面板列表里的条目（供「切到该工作树」
    * 用）。目录不存在（prunable）的不给入口——切过去也没意义。
@@ -3323,19 +3368,32 @@ export function GitChangesPane({
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <IconBranch className="h-6 w-6 text-fg-faint" />
         <p className="text-[12px] text-fg-dim">当前目录还不是 Git 仓库</p>
-        <button
-          type="button"
-          onClick={initRepo}
-          disabled={busy !== null}
-          className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
-        >
-          {busy === "init" ? "正在初始化…" : "初始化 Git 仓库"}
-        </button>
+        {/* 面板切到了某个 worktree 时，「初始化」是在那个（多半已不存在的）目录里跑
+            git init，纯属死路；改成给「切回工作区根」的出口 */}
+        {offWorkspaceRoot ? (
+          <button
+            type="button"
+            onClick={() => onSelectWorktree(workspaceRoot)}
+            className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-app hover:opacity-90"
+          >
+            切回 {folderName(workspaceRoot)}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={initRepo}
+            disabled={busy !== null}
+            className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
+          >
+            {busy === "init" ? "正在初始化…" : "初始化 Git 仓库"}
+          </button>
+        )}
         {error && (
           <p className="text-[11px] break-words whitespace-pre-wrap text-danger">{error}</p>
         )}
         {/* 选中的工作树不是仓库时，这里就是唯一的出口：给一份工作树列表，让用户能切回
-            主工作树（再在主工作树里切分支）。只有多个工作树时才显示 */}
+            主工作树（再在主工作树里切分支）。面板切到了别的 worktree 时即便只剩根一条
+            也要显示——那正是切回去的出口 */}
         {wtList && (
           <div className="mt-1 flex w-full max-w-[260px] flex-col rounded border border-line-strong bg-raised py-1 text-left">
             <p className="px-3 py-1 text-[11px] text-fg-faint">切换到其他工作树</p>
@@ -3353,11 +3411,22 @@ export function GitChangesPane({
                 </span>
                 <span className="min-w-0 flex-1 truncate">{item.name}</span>
                 <span className="shrink-0 truncate text-[10px] text-fg-faint">
-                  {item.branch ?? "游离 HEAD"}
+                  {item.prunable || !item.exists ? "已失效" : (item.branch ?? "游离 HEAD")}
                 </span>
               </button>
             ))}
           </div>
+        )}
+        {/* 有失效记录就给清理入口：清掉后它占用的分支才能在主工作树切过去 */}
+        {hasPrunable && (
+          <button
+            type="button"
+            onClick={pruneWorktrees}
+            disabled={busy !== null}
+            className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline disabled:opacity-40"
+          >
+            {busy === "prune" ? "正在清理…" : "清理失效记录"}
+          </button>
         )}
       </div>
     );
@@ -3622,6 +3691,19 @@ export function GitChangesPane({
                         </span>
                       </button>
                     ))}
+                    {/* 失效记录占着分支、让别的 worktree 切不过去：给个清理入口 */}
+                    {hasPrunable && (
+                      <button
+                        type="button"
+                        onClick={pruneWorktrees}
+                        disabled={busy !== null}
+                        title="清理目录已不存在的 worktree 记录（git worktree prune）"
+                        className="mt-1 flex items-center gap-1.5 border-t border-line px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
+                      >
+                        <IconTrash className="h-3 w-3 shrink-0" />
+                        {busy === "prune" ? "正在清理…" : "清理失效记录"}
+                      </button>
+                    )}
                   </div>
                 </>
               )}

@@ -87,6 +87,7 @@ pub fn run() {
             git::git_status,
             git::git_init,
             git::git_worktree_list,
+            git::git_worktree_prune,
             git::git_stage,
             git::git_unstage,
             git::git_discard,

@@ -290,6 +290,16 @@ export function gitWorktreeList(root: string): Promise<WorktreeInfo[]> {
 }
 
 /**
+ * 清理失效的 worktree 记录（`git worktree prune`）。
+ *
+ * 目录被外部删掉后 `git worktree list` 仍会留着那条 prunable 记录、并占着它检出的
+ * 分支。清理后返回最新列表，调用方直接落地即可（分支占用也随之释放）。
+ */
+export function gitWorktreePrune(root: string): Promise<WorktreeInfo[]> {
+  return invoke<WorktreeInfo[]>("git_worktree_prune", { root });
+}
+
+/**
  * 这批绝对路径里，哪些被 .gitignore 之类的规则忽略了。文件树按它把条目置灰。
  * 目录不是仓库（或没装 git）时返回空数组，不是错误。
  */
