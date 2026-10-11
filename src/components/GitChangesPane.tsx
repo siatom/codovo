@@ -1774,6 +1774,8 @@ export function GitChangesPane({
   const [branchError, setBranchError] = useState<string | null>(null);
   /** 新建分支的输入框：null = 没在输入 */
   const [newBranch, setNewBranch] = useState<string | null>(null);
+  /** 点了被别的 worktree 占用的分支：菜单里就地提示 + 给「切到该工作树」入口 */
+  const [blocked, setBlocked] = useState<{ name: string; worktree: string } | null>(null);
 
   // worktree 下拉：null = 还没拉到。列表只在仓库有这个仓库的多个工作树时才有意义
   const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
@@ -2141,6 +2143,7 @@ export function GitChangesPane({
   const loadBranches = useCallback(() => {
     setBranchError(null);
     setNewBranch(null);
+    setBlocked(null);
     void gitBranches(root)
       .then(setBranches)
       .catch((reason) => {
@@ -2173,6 +2176,21 @@ export function GitChangesPane({
       });
     },
     [run, root, onBranchChanged, onBeforeBranchSwitch],
+  );
+
+  /**
+   * 点分支列表里的一条。被别的 worktree 占用的分支 git 不让切（会报
+   * `already used by worktree`），就不发命令，改成菜单里就地提示 + 给跳转入口。
+   */
+  const onBranchClick = useCallback(
+    (item: GitBranch) => {
+      if (item.worktree && !item.current) {
+        setBlocked({ name: item.name, worktree: item.worktree });
+        return;
+      }
+      switchTo(item.name);
+    },
+    [switchTo],
   );
 
   const createBranchAndSwitch = useCallback(() => {
@@ -3289,6 +3307,14 @@ export function GitChangesPane({
       : null;
   /** 当前面板所在的那个工作树（上面重算过 current 的那条） */
   const currentWt = wtList?.find((item) => item.current) ?? null;
+  /**
+   * 点了被占用的分支时，占用它的那个工作树在本面板列表里的条目（供「切到该工作树」
+   * 用）。目录不存在（prunable）的不给入口——切过去也没意义。
+   */
+  const blockedTarget =
+    blocked && wtList
+      ? (wtList.find((item) => item.exists && pathKey(item.path) === pathKey(blocked.worktree)) ?? null)
+      : null;
 
   // 目录还不是仓库：给一句说明 + 一键初始化，点进来看到的就是这里。
   // 放在所有 hooks 之后，条件返回不影响 hooks 顺序
@@ -3433,36 +3459,72 @@ export function GitChangesPane({
                 {branches.length === 0 && !branchError && (
                   <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
                 )}
-                {branches.map((item) => (
-                  <button
-                    key={item.name}
-                    type="button"
-                    onClick={() => switchTo(item.name)}
-                    disabled={item.current || busy !== null}
-                    title={
-                      item.gone
-                        ? `上游 ${item.upstream} 已经不存在了`
-                        : item.upstream
-                          ? `上游 ${item.upstream}`
-                          : "还没有上游分支"
-                    }
-                    className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
-                  >
-                    <span className="flex w-3 shrink-0 justify-center">
-                      {item.current && <IconCheck className="h-3 w-3 text-ok" />}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                    {item.gone ? (
-                      <span className="shrink-0 text-[10px] text-danger">已删除</span>
-                    ) : (
-                      <span className="flex shrink-0 items-center gap-1 text-[10px] text-fg-faint">
-                        {item.ahead > 0 && <span>↑{item.ahead}</span>}
-                        {item.behind > 0 && <span>↓{item.behind}</span>}
+                {branches.map((item) => {
+                  // 被别的 worktree 占用的分支切不过去（git 会报 already used by
+                  // worktree），标出来、点了就地提示，不发命令
+                  const occupied = item.worktree !== null && !item.current;
+                  return (
+                    <button
+                      key={item.name}
+                      type="button"
+                      onClick={() => onBranchClick(item)}
+                      disabled={item.current || busy !== null}
+                      title={
+                        occupied && item.worktree
+                          ? `已在工作树 ${toDisplayPath(item.worktree)} 中检出`
+                          : item.gone
+                            ? `上游 ${item.upstream} 已经不存在了`
+                            : item.upstream
+                              ? `上游 ${item.upstream}`
+                              : "还没有上游分支"
+                      }
+                      className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
+                    >
+                      <span className="flex w-3 shrink-0 justify-center">
+                        {item.current && <IconCheck className="h-3 w-3 text-ok" />}
                       </span>
+                      <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                      {occupied ? (
+                        <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-warn">
+                          <IconWorktree className="h-3 w-3" />
+                          已检出
+                        </span>
+                      ) : item.gone ? (
+                        <span className="shrink-0 text-[10px] text-danger">已删除</span>
+                      ) : (
+                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-fg-faint">
+                          {item.ahead > 0 && <span>↑{item.ahead}</span>}
+                          {item.behind > 0 && <span>↓{item.behind}</span>}
+                        </span>
+                      )}
+                      {!occupied && <span className={MENU_CMD}>switch</span>}
+                    </button>
+                  );
+                })}
+
+                {/* 点了被别的 worktree 占用的分支：说明原因，能给跳转入口就给 */}
+                {blocked && (
+                  <div className="mt-1 border-t border-line px-3 py-1.5 text-[11px]">
+                    <p className="text-warn" title={toDisplayPath(blocked.worktree)}>
+                      分支 {blocked.name} 已在工作树{" "}
+                      {blocked.worktree.split(/[\\/]/).filter(Boolean).pop() ?? blocked.worktree}{" "}
+                      中检出，不能在这里切换。
+                    </p>
+                    {blockedTarget && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          pickWorktree(blockedTarget);
+                          setBlocked(null);
+                        }}
+                        className="mt-1 flex items-center gap-1 text-fg-muted hover:text-fg"
+                      >
+                        <IconWorktree className="h-3 w-3 shrink-0" />
+                        切到该工作树
+                      </button>
                     )}
-                    <span className={MENU_CMD}>switch</span>
-                  </button>
-                ))}
+                  </div>
+                )}
 
                 {/* 新建分支：点开输入框，回车或点 ✓ 建出来并切过去。
                     不用 window.prompt（WKWebView 不支持），和重命名那套一致 */}

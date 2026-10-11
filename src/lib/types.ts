@@ -71,6 +71,11 @@ export interface GitBranch {
   /** 上游被删了（`[gone]`），这时 ahead/behind 没有意义 */
   gone: boolean;
   current: boolean;
+  /**
+   * 被**另一个** worktree 检出的那个工作树路径；没被别的 worktree 占用时是 null。
+   * git 不允许同一分支被两个 worktree 同时检出，切过去必然报错，界面据此提前拦下。
+   */
+  worktree: string | null;
 }
 
 /** 一个 git 标签 */

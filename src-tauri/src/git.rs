@@ -1094,6 +1094,9 @@ pub struct BranchInfo {
     gone: bool,
     /// 是不是当前所在的分支
     current: bool,
+    /// 被**另一个** worktree 检出的那个工作树路径；没被别的 worktree 占用时是 None。
+    /// git 不允许同一分支被两个 worktree 同时检出，切过去必然报错，界面据此提前拦下。
+    worktree: Option<String>,
 }
 
 /// 解析 `%(upstream:track)`：形如 `[ahead 1, behind 2]` / `[gone]` / 空串（与上游同步）。
@@ -1138,9 +1141,41 @@ fn parse_branches(raw: &[u8]) -> Vec<BranchInfo> {
             behind,
             gone,
             current,
+            // 占用信息不在 for-each-ref 里，由 branches_of 另外查出来回填
+            worktree: None,
         });
     }
     branches
+}
+
+/// 「分支短名 → 检出它的工作树路径」，只收**别的**工作树（排除 root 自己那个）。
+///
+/// git 不允许同一分支被两个 worktree 同时检出，切到被别的工作树占用的分支必然报
+/// `already used by worktree`。这里提前查出来，让分支列表能标出来、提前拦下。
+/// 非仓库 / 没装 git 时返回空映射，不影响分支列表本身。
+fn worktree_owners(root: &Path) -> HashMap<String, String> {
+    let mut owners = HashMap::new();
+    let Some(raw) = run_git(root, &["worktree", "list", "--porcelain"]).ok().flatten() else {
+        return owners;
+    };
+    let text = String::from_utf8_lossy(&raw);
+    // root 所属的工作树根：root 可能是仓库子目录，也可能就是某个 worktree
+    let top = run_git(root, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .flatten()
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|value| !value.is_empty());
+    for item in parse_worktrees(&text) {
+        let Some(branch) = item.branch else {
+            continue; // 游离 HEAD / bare 不占用分支
+        };
+        // 当前工作树自己的分支不算「被占用」（它本来就显示成 current）
+        if top.as_deref().is_some_and(|value| same_dir(value, &item.path)) {
+            continue;
+        }
+        owners.insert(branch, item.path);
+    }
+    owners
 }
 
 /// 本地分支清单。只列 `refs/heads`——远程分支要切必须先建出本地跟踪分支，
@@ -1154,7 +1189,15 @@ fn branches_of(root: &Path) -> Result<Vec<BranchInfo>, String> {
     let Some(raw) = run_git(root, &["for-each-ref", FORMAT, "refs/heads"])? else {
         return Ok(Vec::new());
     };
-    Ok(parse_branches(&raw))
+    let mut branches = parse_branches(&raw);
+    // 占用信息不在 for-each-ref 里，另行查 worktree 列表回填
+    let owners = worktree_owners(root);
+    for branch in &mut branches {
+        if let Some(path) = owners.get(&branch.name) {
+            branch.worktree = Some(path.clone());
+        }
+    }
+    Ok(branches)
 }
 
 /// 分支名先过一遍这两道，再交给 git。
@@ -1175,12 +1218,28 @@ fn check_branch_name(root: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `git switch` 的报错里，唯一值得翻译的是「分支已被别的工作树检出」：原文是
+/// `fatal: 'x' is already used by worktree at 'D:/...'`，直接透给用户既看不懂也
+/// 不知怎么办。翻成中文并带上工作树路径，指个方向。
+fn friendly_switch_error(name: &str, err: &str) -> String {
+    const MARKER: &str = "is already used by worktree at ";
+    if let Some(rest) = err.split(MARKER).nth(1) {
+        let path = rest.trim().trim_matches(|c| c == '\'' || c == '"');
+        if !path.is_empty() {
+            return format!("分支 {name} 已被工作树 {path} 检出，不能在这里切换。");
+        }
+    }
+    err.to_string()
+}
+
 fn switch_branch(root: &Path, name: &str) -> Result<GitStatus, String> {
     let name = name.trim();
     check_branch_name(root, name)?;
     // 用 switch 而不是 checkout：checkout 还能接受路径，语义太杂，容易把分支名
     // 当成文件。工作区有未提交改动时 git 自己会拒绝或带走，报错原文透传给用户
-    run_git_checked(root, &["switch", name])?;
+    if let Err(err) = run_git_checked(root, &["switch", name]) {
+        return Err(friendly_switch_error(name, &err));
+    }
     status_of(root)
 }
 
@@ -5670,6 +5729,40 @@ mod tests {
         assert!(switch_branch(&repo, "-bad").is_err());
         assert!(create_branch(&repo, "bad name").is_err());
         assert!(create_branch(&repo, "").is_err());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn switching_to_a_branch_checked_out_in_another_worktree_is_explained() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        assert!(git(&repo, &["branch", "feat/x"]));
+
+        // 把 feat/x 在另一个 worktree 里检出——之后 git 就不许别处再切它
+        let wt = top.join("repo-wt");
+        assert!(
+            git(&repo, &["worktree", "add", wt.to_str().unwrap(), "feat/x"]),
+            "git worktree add 失败"
+        );
+
+        // 分支列表要标出它被哪个工作树占用
+        let list = branches_of(&repo).unwrap();
+        let feat = list.iter().find(|item| item.name == "feat/x").unwrap();
+        assert!(!feat.current);
+        let owner = feat.worktree.as_deref().expect("应标出占用它的工作树");
+        assert!(same_dir(owner, wt.to_str().unwrap()), "实际占用者：{owner}");
+
+        // 直接切会被友好地拦下（中文 + 分支名），而不是抛英文 fatal
+        let err = switch_branch(&repo, "feat/x").unwrap_err();
+        assert!(err.contains("已被工作树"), "实际：{err}");
+        assert!(err.contains("feat/x"), "实际：{err}");
 
         cleanup(&top);
     }
