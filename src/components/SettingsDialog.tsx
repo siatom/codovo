@@ -17,10 +17,12 @@ import {
   type AgentLayer,
   type AgentProfile,
   type AgentSkill,
+  type AiCommand,
   type AiProvider,
   type AutoSaveMode,
   type ProviderModel,
   type Settings,
+  type SettingsSection,
 } from "../lib/settings";
 import {
   isValidAgentName,
@@ -57,7 +59,7 @@ import {
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconPlus } from "./icons";
+import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconGripVertical, IconPlus } from "./icons";
 
 interface SettingsDialogProps {
   onClose: () => void;
@@ -76,6 +78,20 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+/** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
+const SECTION_RESET_HINT: Record<SettingsSection, string> = {
+  appearance: "主题、右栏模块显隐、智能体入口和关闭窗口行为",
+  terminal: "终端程序、配色、字体，以及 AI CLI 列表",
+  editor: "编辑器字体和自动保存",
+  shortcuts: "全部快捷键键位",
+  agent: "模型提供商、密钥和智能体配置",
+};
+
+/** 依赖页只有环境检测与安装，没有可恢复的设置项 */
+function isResettableTab(tab: TabId): tab is SettingsSection {
+  return tab !== "dependencies";
+}
 
 /** 下拉里的双色圆点用 [背景, 前景]，跟 styles.css / monaco 里那套色值对齐 */
 const THEME_OPTIONS: { value: Theme; label: string; swatch: [string, string] }[] = [
@@ -138,6 +154,9 @@ const RESET_BUTTON =
 
 /** 两次边界滚轮事件间隔小于它，就当作触控板的同一次惯性滑动：只有停手后再滑才算新的一下 */
 const EDGE_GAP_MS = 200;
+
+/** 拖动把手要挪过这么多像素才算「真在拖」，否则只当是手抖 */
+const DRAG_THRESHOLD = 4;
 
 /** 标签在上、控件在下：字体名可能很长，横排放不下。
     action 放在标签那一行的右端，省掉列表下面单独占一行的操作按钮。 */
@@ -1787,8 +1806,175 @@ function DependencyRow({
   );
 }
 
+/**
+ * AI CLI 列表：每行左侧一个抓握把手，按住把手上下拖可以调整顺序——顺序就是终端工具条
+ * 那个 AI 下拉里的顺序。
+ *
+ * 拖动只从把手发起：一行里是两个文本输入框，整行可拖会把「在输入框里划选文字」变成拖行。
+ * pointermove / pointerup 挂 window 而不是把手自己（指针一移出把手就断了），把手刻意不
+ * setPointerCapture——和侧边栏工作区行的重排同一套做法。
+ */
+function AiCommandList({
+  commands,
+  onChange,
+}: {
+  commands: AiCommand[];
+  onChange: (next: AiCommand[]) => void;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const dragRef = useRef<{ from: number; startY: number; started: boolean } | null>(null);
+  const [pending, setPending] = useState(false);
+  /** 正在被拖的那一行；null 表示没在拖 */
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  /** 落点空档的下标（0..n）；null 表示没在拖 */
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const dropRef = useRef<number | null>(null);
+  // 拖动期间列表可能被别处改（比如同时还在编辑输入框），落盘时取最新一份
+  const commandsRef = useRef(commands);
+  commandsRef.current = commands;
+  // 用 ref 存最新回调：父组件每次渲染都会传新函数，进了依赖数组会反复解绑重挂
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  /** 光标落在第几个空档：逐行比中线，过了最后一行中线就落到末尾 */
+  const dropIndexAt = (clientY: number): number => {
+    const rows = listRef.current
+      ? (Array.from(listRef.current.children) as HTMLElement[])
+      : [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const rect = rows[i].getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return i;
+    }
+    return rows.length;
+  };
+
+  /** 把手按下：只记起点，「到底在不在拖」交给 window 上的 pointermove 判 */
+  const onHandleDown = (index: number) => (event: ReactPointerEvent<HTMLDivElement>) => {
+    // 只认鼠标左键：触摸的纵向拖动要留给面板滚动
+    if (event.button !== 0 || event.pointerType !== "mouse") return;
+    // 挡住默认行为，免得按住把手就开始选文本
+    event.preventDefault();
+    dragRef.current = { from: index, startY: event.clientY, started: false };
+    setPending(true);
+  };
+
+  useEffect(() => {
+    if (!pending) return;
+    const onMove = (event: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (!drag.started) {
+        if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD) return;
+        drag.started = true;
+        window.getSelection()?.removeAllRanges();
+        document.body.classList.add("codedock-dragging-list");
+        setDragFrom(drag.from);
+      }
+      const index = dropIndexAt(event.clientY);
+      dropRef.current = index;
+      setDropIndex(index);
+    };
+    const finish = (commit: boolean) => {
+      const drag = dragRef.current;
+      dragRef.current = null;
+      setPending(false);
+      setDragFrom(null);
+      setDropIndex(null);
+      document.body.classList.remove("codedock-dragging-list");
+      const index = dropRef.current;
+      dropRef.current = null;
+      // 按下了但没挪过，那就是普通点击，什么都不用做
+      if (!drag?.started || !commit || index === null) return;
+
+      // 落点下标数的是「空档」，抽走源项后它后面的空档会左移一格
+      const insertAt = index > drag.from ? index - 1 : index;
+      if (insertAt === drag.from) return;
+      const next = [...commandsRef.current];
+      const [moved] = next.splice(drag.from, 1);
+      next.splice(insertAt, 0, moved);
+      onChangeRef.current(next);
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+  }, [pending]);
+
+  return (
+    <div ref={listRef} className="flex w-full flex-col gap-1.5">
+      {commands.map((item, index) => {
+        const dropBefore = dropIndex === index;
+        const dropAfter = dropIndex === commands.length && index === commands.length - 1;
+        return (
+          <div key={index} className="relative flex items-center gap-1.5">
+            {/* 落点线：插在某行之前画在它上面，插在末尾画在最后一行下面 */}
+            {(dropBefore || dropAfter) && (
+              <span
+                className={`pointer-events-none absolute right-0 left-0 z-10 h-0.5 rounded bg-accent-strong ${
+                  dropBefore ? "-top-0.5" : "-bottom-0.5"
+                }`}
+              />
+            )}
+            <div
+              onPointerDown={onHandleDown(index)}
+              title="拖动调整顺序"
+              className={`flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-fg-faint hover:text-fg-muted ${
+                dragFrom === index ? "opacity-40" : ""
+              }`}
+            >
+              <IconGripVertical className="h-3.5 w-3.5" />
+            </div>
+            <input
+              type="text"
+              value={item.name}
+              spellCheck={false}
+              placeholder="名称"
+              onChange={(event) =>
+                onChange(
+                  commands.map((entry, i) =>
+                    i === index ? { ...entry, name: event.target.value } : entry,
+                  ),
+                )
+              }
+              className={`${TEXT_INPUT} min-w-0 flex-1`}
+            />
+            <input
+              type="text"
+              value={item.command}
+              spellCheck={false}
+              placeholder="命令，例如 claude"
+              onChange={(event) =>
+                onChange(
+                  commands.map((entry, i) =>
+                    i === index ? { ...entry, command: event.target.value } : entry,
+                  ),
+                )
+              }
+              className={`${TEXT_INPUT} min-w-0 flex-[1.5]`}
+            />
+            <button
+              type="button"
+              onClick={() => onChange(commands.filter((_, i) => i !== index))}
+              title="删除这个 AI CLI"
+              className={LIST_ACTION}
+            >
+              <IconClose className="h-3 w-3" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
-  const { settings, update, reset, secretNotice } = useSettings();
+  const { settings, update, reset, resetSection, secretNotice } = useSettings();
   // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
   const devAi = useDevAiOverrides();
   const overriddenAi = [
@@ -1800,8 +1986,8 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const [tab, setTab] = useState<TabId>("appearance");
   /** 「智能体」分类的作用域：全局层还是当前工作区的层 */
   const [agentScope, setAgentScope] = useState<"global" | "workspace">("global");
-  /** 等确认的「恢复默认」；非空时弹确认框 */
-  const [confirmReset, setConfirmReset] = useState(false);
+  /** 等确认的恢复默认：某个分类 id、`all` 表示整块回厂、null 表示没有 */
+  const [confirmReset, setConfirmReset] = useState<TabId | "all" | null>(null);
   /** 提供商列表的手风琴：一次只展开一条，和技能 / Agent 一个交互 */
   const [openProvider, setOpenProvider] = useState<number | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
@@ -2359,7 +2545,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   </Field>
                   <Field
                     label="AI CLI"
-                    hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中"
+                    hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中。按住左侧把手可拖动调整顺序"
                     action={
                       <button
                         type="button"
@@ -2378,58 +2564,10 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       </button>
                     }
                   >
-                    <div className="flex w-full flex-col gap-1.5">
-                      {settings.aiCommands.map((item, index) => (
-                        <div key={index} className="flex items-center gap-1.5">
-                          <input
-                            type="text"
-                            value={item.name}
-                            spellCheck={false}
-                            placeholder="名称"
-                            onChange={(event) =>
-                              update({
-                                aiCommands: settings.aiCommands.map((entry, i) =>
-                                  i === index
-                                    ? { ...entry, name: event.target.value }
-                                    : entry,
-                                ),
-                              })
-                            }
-                            className={`${TEXT_INPUT} min-w-0 flex-1`}
-                          />
-                          <input
-                            type="text"
-                            value={item.command}
-                            spellCheck={false}
-                            placeholder="命令，例如 claude"
-                            onChange={(event) =>
-                              update({
-                                aiCommands: settings.aiCommands.map((entry, i) =>
-                                  i === index
-                                    ? { ...entry, command: event.target.value }
-                                    : entry,
-                                ),
-                              })
-                            }
-                            className={`${TEXT_INPUT} min-w-0 flex-[1.5]`}
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              update({
-                                aiCommands: settings.aiCommands.filter(
-                                  (_, i) => i !== index,
-                                ),
-                              })
-                            }
-                            title="删除这个 AI CLI"
-                            className={LIST_ACTION}
-                          >
-                            <IconClose className="h-3 w-3" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+                    <AiCommandList
+                      commands={settings.aiCommands}
+                      onChange={(aiCommands) => update({ aiCommands })}
+                    />
                   </Field>
                 </>
               )}
@@ -2779,20 +2917,31 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
           </div>
         </div>
 
-        {/* 恢复默认沉在底部：它管的是所有分类，放某个 tab 里会让人以为只重置那一页。
+        {/* 恢复默认沉在底部：本页那个跟随当前分类，全部那个整块回厂。
             左上角顺手显示版本，装完能自己核对（dev 构建额外带个标记） */}
         <footer className="flex h-12 shrink-0 items-center justify-between border-t border-line px-4">
           <span className="select-text text-[11px] text-fg-faint">
             CodeDock v{__APP_VERSION__}
             {import.meta.env.DEV ? " (dev)" : ""}
           </span>
-          <button
-            type="button"
-            onClick={() => setConfirmReset(true)}
-            className={RESET_BUTTON}
-          >
-            恢复默认设置
-          </button>
+          <div className="flex items-center gap-2">
+            {isResettableTab(tab) && (
+              <button
+                type="button"
+                onClick={() => setConfirmReset(tab)}
+                className={RESET_BUTTON}
+              >
+                恢复本页默认
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setConfirmReset("all")}
+              className={RESET_BUTTON}
+            >
+              恢复全部默认
+            </button>
+          </div>
         </footer>
       </div>
 
@@ -2820,14 +2969,29 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
 
       {confirmReset && (
         <ConfirmDialog
-          message="恢复默认设置？模型提供商、密钥、AI CLI 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。"
+          message={
+            confirmReset === "all"
+              ? "恢复全部默认设置？模型提供商、密钥、AI CLI 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。"
+              : isResettableTab(confirmReset)
+                ? `恢复「${
+                    TABS.find((item) => item.id === confirmReset)?.label
+                  }」这一页的默认设置？${SECTION_RESET_HINT[confirmReset]}会回到初始值，无法撤销。`
+                : ""
+          }
           confirmLabel="恢复默认"
           onConfirm={() => {
-            reset();
-            setPreference(DEFAULT_THEME);
-            setConfirmReset(false);
+            const target = confirmReset;
+            if (target === "all") {
+              reset();
+              setPreference(DEFAULT_THEME);
+            } else if (isResettableTab(target)) {
+              resetSection(target);
+              // 主题不在 Settings 上（在 theme.tsx），外观页要单独带一下
+              if (target === "appearance") setPreference(DEFAULT_THEME);
+            }
+            setConfirmReset(null);
           }}
-          onCancel={() => setConfirmReset(false)}
+          onCancel={() => setConfirmReset(null)}
         />
       )}
     </div>

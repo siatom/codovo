@@ -372,6 +372,18 @@ export const IconMore = icon(
   </>,
 );
 
+/** 列表行的拖动把手：两列三行实心点，同 IconMore 填实心才看得清 */
+export const IconGripVertical = icon(
+  <>
+    <circle cx="9" cy="6" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="9" cy="12" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="9" cy="18" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="6" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="12" r="1.3" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="18" r="1.3" fill="currentColor" stroke="none" />
+  </>,
+);
+
 export const IconSun = icon(
   <>
     <circle cx="12" cy="12" r="4" />

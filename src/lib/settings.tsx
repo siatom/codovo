@@ -142,6 +142,58 @@ export interface Settings {
 
 const SETTINGS_KEY = "codedock.settings";
 
+/**
+ * 设置面板上可单独恢复默认的分类，和 SettingsDialog 的 tab 一一对应。
+ * `dependencies` 只有环境检测与安装、没有设置项，所以不在这里。
+ */
+export type SettingsSection = "appearance" | "terminal" | "editor" | "shortcuts" | "agent";
+
+/**
+ * 每个分类各管哪些字段。恢复某一页默认时只把这些键写回出厂值，别的分类原样留着。
+ * 新增设置项时把它加进对应分类，否则「恢复本页默认」会漏掉它。
+ *
+ * 注意 `appearance` 里的主题不在 Settings 上（在 theme.tsx），由设置面板另外处理。
+ */
+const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
+  appearance: [
+    "agentEnabled",
+    "rightFilesVisible",
+    "rightChangesVisible",
+    "rightSearchVisible",
+    "rightBrowserVisible",
+    "rightRemoteVisible",
+    "rightDatabaseVisible",
+    "closeToTray",
+  ],
+  terminal: [
+    "terminalShell",
+    "terminalTheme",
+    "terminalFontFamily",
+    "terminalFontSize",
+    "terminalFontBold",
+    "terminalWaitHint",
+    "aiCommands",
+  ],
+  editor: [
+    "editorFontFamily",
+    "editorFontSize",
+    "editorFontBold",
+    "editorAutoSave",
+    "editorAutoSaveDelay",
+  ],
+  shortcuts: ["shortcuts"],
+  agent: [
+    "aiProviders",
+    "aiDefaultProvider",
+    "aiDefaultModel",
+    "agentCommand",
+    "agentPort",
+    "agentPrimary",
+    "agentGlobal",
+    "agentWorkspaces",
+  ],
+};
+
 export const FONT_SIZE_MIN = 11;
 export const FONT_SIZE_MAX = 20;
 export const AUTOSAVE_DELAY_MIN = 300;
@@ -176,8 +228,9 @@ const DEFAULTS: Settings = {
   // command 才是实际会跑的可执行文件名
   aiCommands: [
     { name: "Claude Code", command: "claude" },
-    { name: "CodeBuddy", command: "codebuddy" },
     { name: "Codex", command: "codex --no-daemon" },
+    { name: "Antigravity", command: "agy" },
+    { name: "CodeBuddy", command: "codebuddy" },
     { name: "opencode", command: "opencode" },
   ],
   // 不预置任何厂商：提供商和模型都由用户自己加
@@ -466,11 +519,28 @@ interface SettingsValue {
   update: (patch: Partial<Settings>) => void;
   /** 整块回到出厂默认，设置面板上的每一项都算在内 */
   reset: () => void;
+  /** 只把某个分类的字段写回出厂默认，其余分类不动 */
+  resetSection: (section: SettingsSection) => void;
   /** 系统钥匙串相关的提示，空串表示一切正常。有值时设置面板要如实显示 */
   secretNotice: string;
 }
 
 const SettingsContext = createContext<SettingsValue | null>(null);
+
+/**
+ * 一份全新的出厂默认值。DEFAULTS 是模块级常量，数组和对象必须换新副本再挂进
+ * state，否则哪天有人在原地改这些引用，默认值本身就跟着被改掉了。
+ */
+function freshDefaults(): Settings {
+  return {
+    ...DEFAULTS,
+    aiCommands: DEFAULTS.aiCommands.map((item) => ({ ...item })),
+    aiProviders: [],
+    agentGlobal: emptyAgentLayer(),
+    agentWorkspaces: {},
+    shortcuts: defaultShortcuts(),
+  };
+}
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<Settings>(readSaved);
@@ -556,24 +626,26 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     // 一次性的 bootstrap，只认挂载时那份设置
   }, []);
 
-  // aiCommands 要拷一份：DEFAULTS 是模块级常量，直接把它的数组当成实时状态挂上去，
-  // 哪天有人在原地改这个数组，默认值就跟着被改掉了
+  /** 整块回厂：每个字段都取 freshDefaults 里的新副本 */
   const reset = useCallback(() => {
-    setSettings({
-      ...DEFAULTS,
-      aiCommands: DEFAULTS.aiCommands.map((item) => ({ ...item })),
-      // 同上：DEFAULTS 是模块级常量，空数组也得换成新的，免得被就地改到
-      aiProviders: [],
-      // 同 aiCommands：DEFAULTS 是模块级常量，层里带数组，必须换成新对象
-      agentGlobal: emptyAgentLayer(),
-      agentWorkspaces: {},
-      // 同 aiCommands：DEFAULTS 是模块级常量，键位表也得换成新的，免得被就地改到
-      shortcuts: defaultShortcuts(),
+    setSettings(freshDefaults());
+  }, []);
+
+  /** 只挑出该分类的键，从全新默认值里取值盖上去；别的分类原样保留 */
+  const resetSection = useCallback((section: SettingsSection) => {
+    const defaults = freshDefaults();
+    setSettings((current) => {
+      const patch: Partial<Settings> = {};
+      for (const key of SECTION_KEYS[section]) {
+        // 逐键赋值，值的来源是 freshDefaults 里各自的新副本
+        (patch as Record<string, unknown>)[key] = defaults[key];
+      }
+      return { ...current, ...patch };
     });
   }, []);
 
   return (
-    <SettingsContext.Provider value={{ settings, update, reset, secretNotice }}>
+    <SettingsContext.Provider value={{ settings, update, reset, resetSection, secretNotice }}>
       {children}
     </SettingsContext.Provider>
   );
