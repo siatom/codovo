@@ -8,5 +8,9 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--mcp-db") {
         std::process::exit(codedock_lib::run_db_mcp());
     }
+    // 应用助手的 MCP 工具服务（界面操作），同样在 Tauri 初始化之前分流
+    if std::env::args().nth(1).as_deref() == Some("--mcp-app") {
+        std::process::exit(codedock_lib::run_app_mcp());
+    }
     codedock_lib::run()
 }

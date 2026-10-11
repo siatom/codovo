@@ -7,6 +7,14 @@ import {
 /** 技能名 / agent 名的合法形态：和后端 validate_name、opencode 的技能名规则一致 */
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+/**
+ * 内置「应用助手」primary agent 的名字与显示名。名字要和后端
+ * `src-tauri/src/agent.rs` 的 `APP_AGENT_AGENT_NAME` 对齐——那边把它写进 opencode 的
+ * agent map，这边只是选它。
+ */
+export const APP_AGENT_NAME = "app";
+export const APP_AGENT_LABEL = "应用助手";
+
 export function isValidAgentName(name: string): boolean {
   return NAME_PATTERN.test(name.trim());
 }
@@ -52,7 +60,7 @@ export function resolveAgentLayer(settings: Settings, cwd: string | null): Agent
   };
 }
 
-/** 对话面板选择器的 primary agent 候选：内置 build / plan + 生效层里的 primary / all */
+/** 对话面板选择器的 primary agent 候选：内置 build / plan / 应用助手 + 生效层里的 primary / all */
 export function primaryAgentOptions(layer: AgentLayer): { value: string; label: string }[] {
   const custom = layer.agents
     .filter((agent) => agent.mode === "primary" || agent.mode === "all")
@@ -60,6 +68,9 @@ export function primaryAgentOptions(layer: AgentLayer): { value: string; label: 
   return [
     { value: "build", label: "build" },
     { value: "plan", label: "plan" },
+    // 应用助手由后端无条件注入到工作区智能体的配置里（见 agent.rs 的 write_config），
+    // 所以它总在候选里；选中它只是把 primary 切成 app
+    { value: APP_AGENT_NAME, label: APP_AGENT_LABEL },
     ...custom,
   ];
 }

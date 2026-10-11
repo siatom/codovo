@@ -2,6 +2,7 @@
 
 mod agent;
 mod ai;
+mod app_agent;
 mod cli_sessions;
 mod database;
 mod db_agent;
@@ -26,6 +27,11 @@ use tauri::{Emitter, Manager};
 /// 所以这条路径不会建窗口、也不碰任何 Tauri 状态。返回进程退出码。
 pub fn run_db_mcp() -> i32 {
     db_agent::run_stdio()
+}
+
+/// 应用助手（界面操作）的 MCP 服务入口。同样在 Tauri 初始化之前分流，返回进程退出码。
+pub fn run_app_mcp() -> i32 {
+    app_agent::run_stdio()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -178,6 +184,8 @@ pub fn run() {
             database::db_query,
             database::db_export,
             db_agent::db_agent_set_target,
+            app_agent::app_agent_take_request,
+            app_agent::app_agent_respond,
             tray::app_quit,
             tray::app_hide_to_tray,
         ])

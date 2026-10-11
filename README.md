@@ -100,6 +100,19 @@ Monaco（VS Code 内核），离线可用。多标签 + `Ctrl+S`，打开的文�
 
 设置里分**全局**和**本工作区**两层，配置**规则 / 记忆 / 技能 / Agents**；工作区层覆盖同名全局项。
 
+### 应用助手（界面操作）
+
+侧栏底部「设置」右侧的入口打开**应用助手**：终端区对话面板里一个内置的 primary agent，专门问答 CodeDock 自己的用法，并按指令改设置、工作区与界面布局。
+
+- **问答**：问「怎么改终端字号」「变更面板在哪」，直接给出界面路径。
+- **改设置**：字号 / 字体 / 配色主题 / 自动保存 / 右栏模块显隐等。
+- **管工作区**：新增 / 重命名 / 置顶 / 移除（只动记录，不删磁盘目录）。
+- **动界面**：切右栏模块、展开 / 收起右边栏、开关全屏。
+
+移除工作区、恢复默认设置这类不可逆操作会先弹确认框，其余直接生效。
+
+实现上和数据库 Agent 同一套路（内置 agent + 专用 MCP 工具 + 关掉文件类工具），区别在于**操作对象在前端**：设置、工作区列表、界面布局都在 WebView 里，而后端 MCP 工具进程够不着，所以工具调用经一个文件邮箱转给前端执行、再回传结果（见 `src-tauri/src/app_agent.rs` 与 `src/lib/app-agent.ts`）。
+
 ### 主题与设置
 
 深色 / 浅色 / 跟随系统，另有多套预设配色（VS Code、One Dark、Dracula、Nord…）；设置分为**外观 / 终端 / 编辑器 / 快捷键 / 智能体 / 依赖**六页。可调整字体、字号、终端配色、自动保存与右栏模块显隐，并自定义快捷键。侧边栏另有意见反馈入口。
@@ -118,7 +131,7 @@ src/                  React 前端
   lib/                Context 与薄封装：主题、设置、pty / fs / git / ai / agent / remote / database、Monaco 与语言
 src-tauri/src/        Rust 后端
   lib.rs              命令注册与 state
-  main.rs             进程入口（含 `--mcp-db` 的 MCP 分流）
+  main.rs             进程入口（含 `--mcp-db` / `--mcp-app` 的 MCP 分流）
   pty.rs, shells.rs   终端会话与 shell 候选探测
   shell_env.rs        默认 shell 与登录参数（跨平台差异）
   fs_api.rs           文件读写 + 路径沙箱 + 搜索
@@ -130,6 +143,7 @@ src-tauri/src/        Rust 后端
   remote.rs           远程连接：SSH 终端 + SFTP 传输
   database.rs         数据库：MySQL / PostgreSQL / SQLite 连接池与查询
   db_agent.rs         数据库 Agent：只读 SQL 的 MCP 工具服务
+  app_agent.rs        应用助手：界面操作的 MCP 工具服务（经文件邮箱转给前端执行）
   cli_sessions.rs     各 CLI 的会话历史
   secrets.rs          操作系统凭据库中的 API 密钥
   installer.rs        依赖检测与安装
