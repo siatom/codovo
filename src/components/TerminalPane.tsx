@@ -15,6 +15,7 @@ import { useAgentSession } from "../lib/agent-session";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
+import { useTabReorder } from "../lib/use-tab-reorder";
 import type { EditorLocation } from "../lib/types";
 import { AgentPane, type AgentPaneHandle } from "./AgentPane";
 import { FullscreenButton } from "./FullscreenButton";
@@ -239,6 +240,23 @@ export function TerminalPane({
   };
 
   /**
+   * 拖动重排标签：只换 sessions 的顺序，会话 id 不动——TerminalSession 按 id 做 key，
+   * 重排不会重建实例，正在跑的 shell 和滚动历史都不受影响。
+   */
+  const reorderSessions = useCallback((from: number, to: number) => {
+    setSessions((current) => {
+      if (from < 0 || from >= current.length || from === to) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const { scrollerRef: tabsScrollRef, dragFrom, dropIndex, onTabDown, onClickCapture } =
+    useTabReorder(reorderSessions);
+
+  /**
    * 新开标签跑一条命令。命令不在这儿写——新会话的 PTY 还在异步 spawn，
    * 现在写必然被丢掉。交给 initialCommand，由 TerminalSession 在 shell
    * 就绪后自己敲。
@@ -346,7 +364,11 @@ export function TerminalPane({
       <div className={view === "terminal" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
         {/* 高度和上面 AgentPane 的状态条对齐（都是 h-8），TUI / GUI 来回切时下面内容不跳 */}
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
-          <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+          <div
+            ref={tabsScrollRef}
+            onClickCapture={onClickCapture}
+            className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+          >
             {sessions.map((id, index) => {
               const isActive = id === activeId;
               // 会话自己在下拉里选过就用它，否则跟着设置走，都没有就是「自动」
@@ -361,13 +383,25 @@ export function TerminalPane({
               const hint = hintByIdRef.current.get(id) ?? shell?.label ?? shellName;
               // 这个标签是不是正停在等用户输入的提示上
               const waiting = Boolean(attention[terminalTarget(id)]);
+              const dropBefore = dropIndex === index;
+              const dropAfter = dropIndex === sessions.length && index === sessions.length - 1;
               return (
                 <div
                   key={id}
-                  className={`flex shrink-0 items-center rounded ${
+                  data-tab-item
+                  onPointerDown={onTabDown(index)}
+                  className={`relative flex shrink-0 items-center rounded ${
                     isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-                  }`}
+                  } ${dragFrom === index ? "opacity-40" : ""}`}
                 >
+                  {/* 落点线：插在某个标签之前画在它左缘，插在末尾画在最后一个标签右缘 */}
+                  {(dropBefore || dropAfter) && (
+                    <span
+                      className={`pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 rounded bg-accent-strong ${
+                        dropBefore ? "-left-0.5" : "-right-0.5"
+                      }`}
+                    />
+                  )}
                   <button
                     type="button"
                     onClick={() => setActiveId(id)}
@@ -386,6 +420,7 @@ export function TerminalPane({
                   </button>
                   <button
                     type="button"
+                    data-tab-close
                     onClick={() => closeSession(id)}
                     title="关闭这个终端"
                     className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"

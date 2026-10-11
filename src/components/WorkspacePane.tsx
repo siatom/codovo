@@ -419,6 +419,17 @@ export function WorkspacePane({
     [openTabs, activeTab],
   );
 
+  /** 编辑器标签拖动重排：只换 openTabs 的顺序，激活的标签对象不变、dirty 标记跟着标签走 */
+  const reorderTabs = useCallback((from: number, to: number) => {
+    setOpenTabs((current) => {
+      if (from < 0 || from >= current.length || from === to) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }, []);
+
   /**
    * 变更面板里切了分支：整个工作区被换成那条分支的内容，按旧内容缓存下来的东西
    * 全都不能信了。
@@ -548,6 +559,7 @@ export function WorkspacePane({
                       gitMarks={git.marks}
                       onActivate={setActiveTab}
                       onClose={closeTab}
+                      onReorder={reorderTabs}
                       onCloseAll={closeAllTabs}
                       onCloseOthers={closeOtherTabs}
                       fullscreen={rightFullscreen}
