@@ -12,6 +12,9 @@ import { defaultShortcuts, resolveShortcuts } from "./shortcuts";
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
 
+/** 编辑器缩进宽度；auto 表示按文件内容探测（Monaco 默认行为） */
+export type EditorIndent = "auto" | "2" | "4" | "8";
+
 export interface AiCommand {
   name: string;
   command: string;
@@ -126,6 +129,10 @@ export interface Settings {
   editorFontSize: number;
   /** 编辑器字体是否加粗 */
   editorFontBold: boolean;
+  /** 编辑器是否显示右侧缩略图（minimap） */
+  editorMinimap: boolean;
+  /** 编辑器缩进宽度；auto 按文件内容探测，否则固定用该数量的空格 */
+  editorIndent: EditorIndent;
   /** 编辑器自动保存时机 */
   editorAutoSave: AutoSaveMode;
   /** afterDelay 模式下停手多久才落盘（毫秒） */
@@ -135,6 +142,8 @@ export interface Settings {
    * 用户在某次确认框里勾了「不再提醒」就会置成 true
    */
   closeToTray: boolean;
+  /** 启动时恢复上次打开的工作区；关掉就每次从空界面开始（记录留着，开回来还在） */
+  restoreWorkspace: boolean;
   /** 右边栏的各个模块：关掉哪个，图标条上就不出哪个入口 */
   rightFilesVisible: boolean;
   rightChangesVisible: boolean;
@@ -165,6 +174,12 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   appearance: [
     "agentEnabled",
     "uiFontFamily",
+    "terminalFontFamily",
+    "terminalFontSize",
+    "terminalFontBold",
+    "editorFontFamily",
+    "editorFontSize",
+    "editorFontBold",
     "rightFilesVisible",
     "rightChangesVisible",
     "rightSearchVisible",
@@ -173,23 +188,15 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "rightDatabaseVisible",
     "rightPreviewVisible",
     "closeToTray",
+    "restoreWorkspace",
   ],
   terminal: [
     "terminalShell",
     "terminalTheme",
-    "terminalFontFamily",
-    "terminalFontSize",
-    "terminalFontBold",
     "terminalWaitHint",
     "aiCommands",
   ],
-  editor: [
-    "editorFontFamily",
-    "editorFontSize",
-    "editorFontBold",
-    "editorAutoSave",
-    "editorAutoSaveDelay",
-  ],
+  editor: ["editorAutoSave", "editorAutoSaveDelay", "editorMinimap", "editorIndent"],
   shortcuts: ["shortcuts"],
   agent: [
     "aiProviders",
@@ -271,10 +278,15 @@ const DEFAULTS: Settings = {
   editorFontFamily: "",
   editorFontSize: 13,
   editorFontBold: true,
+  editorMinimap: true,
+  // 默认按文件内容探测（Monaco 原行为），别一上来就强行统一缩进
+  editorIndent: "auto",
   editorAutoSave: "afterDelay",
   editorAutoSaveDelay: 1000,
   // 默认还是要问一句：第一次关窗口时得让用户知道工作区还在后台跑着
   closeToTray: false,
+  // 默认接着上次的位置：用户上次停在哪就恢复到哪
+  restoreWorkspace: true,
   rightFilesVisible: true,
   rightChangesVisible: true,
   rightSearchVisible: true,
@@ -306,6 +318,15 @@ function asAutoSave(value: unknown): AutoSaveMode {
   return AUTO_SAVE_MODES.includes(value as AutoSaveMode)
     ? (value as AutoSaveMode)
     : DEFAULTS.editorAutoSave;
+}
+
+const EDITOR_INDENTS: EditorIndent[] = ["auto", "2", "4", "8"];
+
+/** 缩进宽度同理：值域固定，读坏了回落 auto */
+function asEditorIndent(value: unknown): EditorIndent {
+  return EDITOR_INDENTS.includes(value as EditorIndent)
+    ? (value as EditorIndent)
+    : DEFAULTS.editorIndent;
 }
 
 function asString(value: unknown, fallback: string): string {
@@ -501,6 +522,8 @@ function readSaved(): Settings {
     editorFontFamily: asString(raw.editorFontFamily, DEFAULTS.editorFontFamily),
     editorFontSize: clampSize(raw.editorFontSize, DEFAULTS.editorFontSize),
     editorFontBold: asBoolean(raw.editorFontBold, DEFAULTS.editorFontBold),
+    editorMinimap: asBoolean(raw.editorMinimap, DEFAULTS.editorMinimap),
+    editorIndent: asEditorIndent(raw.editorIndent),
     editorAutoSave: asAutoSave(raw.editorAutoSave),
     editorAutoSaveDelay: clampDelay(
       raw.editorAutoSaveDelay,
@@ -508,6 +531,7 @@ function readSaved(): Settings {
     ),
     // 老版本的设置里没有这个字段，回落 false：默认仍然弹确认框
     closeToTray: asBoolean(raw.closeToTray, DEFAULTS.closeToTray),
+    restoreWorkspace: asBoolean(raw.restoreWorkspace, DEFAULTS.restoreWorkspace),
     // 老版本的设置里没有这几个字段，asBoolean 会回落到 true，也就是默认全展示
     rightFilesVisible: asBoolean(raw.rightFilesVisible, DEFAULTS.rightFilesVisible),
     rightChangesVisible: asBoolean(

@@ -198,6 +198,8 @@ function describeState(ctx: AppAgentContext) {
       editorFontBold: settings.editorFontBold,
       editorAutoSave: settings.editorAutoSave,
       editorAutoSaveDelay: settings.editorAutoSaveDelay,
+      editorMinimap: settings.editorMinimap,
+      editorIndent: settings.editorIndent,
       agentEnabled: settings.agentEnabled,
       agentCommand: settings.agentCommand,
       agentPort: settings.agentPort,
@@ -210,6 +212,7 @@ function describeState(ctx: AppAgentContext) {
       rightDatabaseVisible: settings.rightDatabaseVisible,
       rightPreviewVisible: settings.rightPreviewVisible,
       closeToTray: settings.closeToTray,
+      restoreWorkspace: settings.restoreWorkspace,
     },
     workspaces: ctx.workspaces.map((workspace) => ({
       name: workspace.name,
@@ -232,8 +235,10 @@ const BOOLEAN_KEYS = new Set([
   "terminalFontBold",
   "terminalWaitHint",
   "editorFontBold",
+  "editorMinimap",
   "agentEnabled",
   "closeToTray",
+  "restoreWorkspace",
   "rightFilesVisible",
   "rightChangesVisible",
   "rightSearchVisible",
@@ -255,6 +260,7 @@ const STRING_KEYS = new Set([
 
 const ENUM_KEYS: Record<string, string[]> = {
   editorAutoSave: ["off", "afterDelay", "onFocusChange", "onWindowChange"],
+  editorIndent: ["auto", "2", "4", "8"],
 };
 
 const SECTION_LABELS: Record<SettingsSection, string> = {

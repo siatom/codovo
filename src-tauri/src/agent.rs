@@ -121,9 +121,9 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 ## 常用设置在哪（回答「怎么改 X」时照这个说）
 
-- 终端字体 / 字号 / 字重 / 配色主题 / 终端程序 / AI CLI 列表：**设置 → 终端**
-- 编辑器字体 / 字号 / 自动保存：**设置 → 编辑器**
-- 主题（深色 / 浅色 / 跟随系统 / 各种配色）、界面字体、右栏模块显隐、关闭时收进托盘：**设置 → 外观**
+- 终端程序 / 配色主题 / AI CLI 列表：**设置 → 终端**
+- 编辑器自动保存、缩进宽度、缩略图（minimap）：**设置 → 编辑器**
+- 主题（深色 / 浅色 / 跟随系统 / 各种配色）、界面 / 终端 / 编辑器字体（字体 / 字号 / 字重）、右栏模块显隐、启动恢复上次工作区、关闭时收进托盘：**设置 → 外观**
 - 模型提供商、opencode 命令与端口、规则 / 记忆 / 技能 / Agents：**设置 → 智能体**
 - 设置入口在左侧栏底部那一排按钮里（齿轮图标）。
 
@@ -139,11 +139,14 @@ const APP_AGENT_SKILL_BODY: &str = "\
 - `editorFontFamily` / `editorFontSize`（11-20）/ `editorFontBold`
 - `editorAutoSave`：\"off\" / \"afterDelay\" / \"onFocusChange\" / \"onWindowChange\"
 - `editorAutoSaveDelay`：300-10000 毫秒
+- `editorMinimap`：true / false，编辑器右侧代码缩略图
+- `editorIndent`：\"auto\"（按文件内容探测）/ \"2\" / \"4\" / \"8\"
 - `agentEnabled`：true / false，左侧是否出现「终端 / 智能体」切换
 - `agentCommand` / `agentPort` / `agentPrimary`
 - `rightFilesVisible` / `rightChangesVisible` / `rightSearchVisible` / `rightBrowserVisible` /
   `rightRemoteVisible` / `rightDatabaseVisible`：true / false
 - `closeToTray`：true / false
+- `restoreWorkspace`：true / false，启动时是否自动打开上次的工作区
 - `theme`：**特殊键**，不写进设置文件而是直接切主题；取 \"dark\" / \"light\" / \"system\"
   或配色名（如 \"dracula\" / \"one-dark\" / \"github-light\"）
 

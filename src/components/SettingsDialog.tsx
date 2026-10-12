@@ -22,6 +22,7 @@ import {
   type AiCommand,
   type AiProvider,
   type AutoSaveMode,
+  type EditorIndent,
   type ProviderModel,
   type Settings,
   type SettingsSection,
@@ -83,9 +84,9 @@ type TabId = (typeof TABS)[number]["id"];
 
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
-  appearance: "主题、界面字体、右栏模块显隐、智能体入口和关闭窗口行为",
-  terminal: "终端程序、配色、字体，以及 AI CLI 列表",
-  editor: "编辑器字体和自动保存",
+  appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、智能体入口、启动恢复和关闭窗口行为",
+  terminal: "终端程序、配色，以及 AI CLI 列表",
+  editor: "缩进宽度、缩略图和自动保存",
   shortcuts: "全部快捷键键位",
   agent: "模型提供商、密钥和智能体配置",
 };
@@ -126,6 +127,12 @@ const VISIBLE_OPTIONS: { value: boolean; label: string }[] = [
   { value: false, label: "隐藏" },
 ];
 
+/** 通用的开 / 关（启动恢复、minimap 这类没有更贴切措辞的布尔项） */
+const ON_OFF_OPTIONS: { value: boolean; label: string }[] = [
+  { value: true, label: "开启" },
+  { value: false, label: "关闭" },
+];
+
 /** 开着工作区时关窗口：直接收进托盘，还是每次都问一句 */
 const CLOSE_OPTIONS: { value: boolean; label: string }[] = [
   { value: false, label: "每次询问" },
@@ -138,6 +145,14 @@ const AUTO_SAVE_OPTIONS: { value: AutoSaveMode; label: string }[] = [
   { value: "afterDelay", label: "延迟后" },
   { value: "onFocusChange", label: "焦点离开编辑器时" },
   { value: "onWindowChange", label: "窗口失焦时" },
+];
+
+/** 编辑器缩进宽度；auto 交回 Monaco 按文件内容探测 */
+const INDENT_OPTIONS: { value: EditorIndent; label: string }[] = [
+  { value: "auto", label: "按文件内容自动探测" },
+  { value: "2", label: "2 空格" },
+  { value: "4", label: "4 空格" },
+  { value: "8", label: "8 空格" },
 ];
 
 const TEXT_INPUT =
@@ -185,17 +200,43 @@ function Field({
   );
 }
 
+/** 一行设置：左标签、右控件。外观页那种成片的短选项用它，比「标签在上、控件在下」的
+    Field 省一半高度。控件区 flex-1：输入框 / 滑杆自然铺满，分段开关靠 justify-end 贴右，
+    几行看下来控件落在同一条竖线上。hint 缩进到与控件对齐，挂在行下方。 */
+function Row({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-3">
+        <span className="w-24 shrink-0 text-[12px] text-fg-muted">{label}</span>
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-2">{children}</div>
+      </div>
+      {hint && <p className="pl-[108px] text-[11px] text-fg-faint">{hint}</p>}
+    </div>
+  );
+}
+
 /** 设置页里的一组字段：一道细分隔线 + 标题 +（可选）右侧操作，让长页面能扫读 */
 function Section({
   title,
   hint,
   action,
+  dense,
   children,
 }: {
   title: string;
   hint?: string;
   /** 放标题行右端，例如作用域切换 */
   action?: ReactNode;
+  /** 子项是紧凑的单行 Row 时收紧行距（外观页那种成片的短选项） */
+  dense?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -207,7 +248,7 @@ function Section({
         </div>
         {hint && <p className="text-[11px] text-fg-faint">{hint}</p>}
       </div>
-      <div className="flex flex-col gap-3">{children}</div>
+      <div className={`flex flex-col ${dense ? "gap-2" : "gap-3"}`}>{children}</div>
     </section>
   );
 }
@@ -2442,101 +2483,171 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
             <div className="flex flex-col gap-3.5 p-4">
               {tab === "appearance" && (
                 <>
-                  <Field label="主题">
-                    <ThemeSelect />
-                  </Field>
-                  <Field
-                    label="界面字体"
-                    hint={`CSS font-family，可写多个用逗号分隔；留空用 ${DEFAULT_UI_FONT}。只作用于界面，终端与编辑器各自另设`}
+                  <Section title="主题" dense>
+                    <Row label="配色方案">
+                      <ThemeSelect />
+                    </Row>
+                  </Section>
+                  <Section
+                    title="字体"
+                    dense
+                    hint={`字体名写 CSS font-family，可写多个用逗号分隔。界面留空用默认无衬线栈；终端与编辑器留空用 ${DEFAULT_MONO_FONT}`}
                   >
-                    <input
-                      type="text"
-                      value={settings.uiFontFamily}
-                      spellCheck={false}
-                      placeholder={DEFAULT_UI_FONT}
-                      onChange={(event) => update({ uiFontFamily: event.target.value })}
-                      className={TEXT_INPUT}
-                    />
-                  </Field>
-                  <Field
-                    label="智能体（GUI）"
-                    hint="终端区顶栏的「智能体」入口；隐藏后只剩终端"
+                    <Row label="界面字体">
+                      <input
+                        type="text"
+                        value={settings.uiFontFamily}
+                        spellCheck={false}
+                        placeholder={DEFAULT_UI_FONT}
+                        onChange={(event) => update({ uiFontFamily: event.target.value })}
+                        className={TEXT_INPUT}
+                      />
+                    </Row>
+                    <Row label="终端字体">
+                      <input
+                        type="text"
+                        value={settings.terminalFontFamily}
+                        spellCheck={false}
+                        placeholder={DEFAULT_MONO_FONT}
+                        onChange={(event) =>
+                          update({ terminalFontFamily: event.target.value })
+                        }
+                        className={TEXT_INPUT}
+                      />
+                    </Row>
+                    <Row label="终端字号">
+                      <SizeSlider
+                        value={settings.terminalFontSize}
+                        onChange={(terminalFontSize) => update({ terminalFontSize })}
+                      />
+                    </Row>
+                    <Row label="终端字重">
+                      <BoolToggle
+                        value={settings.terminalFontBold}
+                        options={WEIGHT_OPTIONS}
+                        onChange={(terminalFontBold) => update({ terminalFontBold })}
+                      />
+                    </Row>
+                    <Row label="编辑器字体">
+                      <input
+                        type="text"
+                        value={settings.editorFontFamily}
+                        spellCheck={false}
+                        placeholder={DEFAULT_MONO_FONT}
+                        onChange={(event) =>
+                          update({ editorFontFamily: event.target.value })
+                        }
+                        className={TEXT_INPUT}
+                      />
+                    </Row>
+                    <Row label="编辑器字号">
+                      <SizeSlider
+                        value={settings.editorFontSize}
+                        onChange={(editorFontSize) => update({ editorFontSize })}
+                      />
+                    </Row>
+                    <Row label="编辑器字重">
+                      <BoolToggle
+                        value={settings.editorFontBold}
+                        options={WEIGHT_OPTIONS}
+                        onChange={(editorFontBold) => update({ editorFontBold })}
+                      />
+                    </Row>
+                  </Section>
+                  <Section
+                    title="界面"
+                    dense
+                    hint="智能体入口和右栏模块显隐；右边栏关掉的模块不再出现在图标条上，至少留一个。"
                   >
-                    <BoolToggle
-                      value={settings.agentEnabled}
-                      options={VISIBLE_OPTIONS}
-                      onChange={(agentEnabled) => update({ agentEnabled })}
-                    />
-                  </Field>
-                  <p className="text-[11px] leading-relaxed text-fg-faint">
-                    右边栏：关掉的模块不再出现在图标条上，至少留一个。
-                  </p>
-                  <Field label="文件">
-                    <BoolToggle
-                      value={settings.rightFilesVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "files" ? false : undefined}
-                      onChange={(rightFilesVisible) => update({ rightFilesVisible })}
-                    />
-                  </Field>
-                  <Field label="变更">
-                    <BoolToggle
-                      value={settings.rightChangesVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "changes" ? false : undefined}
-                      onChange={(rightChangesVisible) => update({ rightChangesVisible })}
-                    />
-                  </Field>
-                  <Field label="搜索">
-                    <BoolToggle
-                      value={settings.rightSearchVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "search" ? false : undefined}
-                      onChange={(rightSearchVisible) => update({ rightSearchVisible })}
-                    />
-                  </Field>
-                  <Field label="浏览器">
-                    <BoolToggle
-                      value={settings.rightBrowserVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "browser" ? false : undefined}
-                      onChange={(rightBrowserVisible) => update({ rightBrowserVisible })}
-                    />
-                  </Field>
-                  <Field label="远程连接">
-                    <BoolToggle
-                      value={settings.rightRemoteVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "remote" ? false : undefined}
-                      onChange={(rightRemoteVisible) => update({ rightRemoteVisible })}
-                    />
-                  </Field>
-                  <Field label="数据库">
-                    <BoolToggle
-                      value={settings.rightDatabaseVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "database" ? false : undefined}
-                      onChange={(rightDatabaseVisible) => update({ rightDatabaseVisible })}
-                    />
-                  </Field>
-                  <Field label="预览">
-                    <BoolToggle
-                      value={settings.rightPreviewVisible}
-                      options={VISIBLE_OPTIONS}
-                      disabledValue={lastVisible === "preview" ? false : undefined}
-                      onChange={(rightPreviewVisible) => update({ rightPreviewVisible })}
-                    />
-                  </Field>
-                  <Field
-                    label="关闭窗口"
-                    hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
-                  >
-                    <BoolToggle
-                      value={settings.closeToTray}
-                      options={CLOSE_OPTIONS}
-                      onChange={(closeToTray) => update({ closeToTray })}
-                    />
-                  </Field>
+                    <Row
+                      label="智能体（GUI）"
+                      hint="终端区顶栏的「智能体」入口；隐藏后只剩终端"
+                    >
+                      <BoolToggle
+                        value={settings.agentEnabled}
+                        options={VISIBLE_OPTIONS}
+                        onChange={(agentEnabled) => update({ agentEnabled })}
+                      />
+                    </Row>
+                    <Row label="文件">
+                      <BoolToggle
+                        value={settings.rightFilesVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "files" ? false : undefined}
+                        onChange={(rightFilesVisible) => update({ rightFilesVisible })}
+                      />
+                    </Row>
+                    <Row label="变更">
+                      <BoolToggle
+                        value={settings.rightChangesVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "changes" ? false : undefined}
+                        onChange={(rightChangesVisible) => update({ rightChangesVisible })}
+                      />
+                    </Row>
+                    <Row label="搜索">
+                      <BoolToggle
+                        value={settings.rightSearchVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "search" ? false : undefined}
+                        onChange={(rightSearchVisible) => update({ rightSearchVisible })}
+                      />
+                    </Row>
+                    <Row label="浏览器">
+                      <BoolToggle
+                        value={settings.rightBrowserVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "browser" ? false : undefined}
+                        onChange={(rightBrowserVisible) => update({ rightBrowserVisible })}
+                      />
+                    </Row>
+                    <Row label="远程连接">
+                      <BoolToggle
+                        value={settings.rightRemoteVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "remote" ? false : undefined}
+                        onChange={(rightRemoteVisible) => update({ rightRemoteVisible })}
+                      />
+                    </Row>
+                    <Row label="数据库">
+                      <BoolToggle
+                        value={settings.rightDatabaseVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "database" ? false : undefined}
+                        onChange={(rightDatabaseVisible) => update({ rightDatabaseVisible })}
+                      />
+                    </Row>
+                    <Row label="预览">
+                      <BoolToggle
+                        value={settings.rightPreviewVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "preview" ? false : undefined}
+                        onChange={(rightPreviewVisible) => update({ rightPreviewVisible })}
+                      />
+                    </Row>
+                  </Section>
+                  <Section title="行为" dense>
+                    <Row
+                      label="关闭窗口"
+                      hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
+                    >
+                      <BoolToggle
+                        value={settings.closeToTray}
+                        options={CLOSE_OPTIONS}
+                        onChange={(closeToTray) => update({ closeToTray })}
+                      />
+                    </Row>
+                    <Row
+                      label="启动恢复工作区"
+                      hint="启动时自动打开上次的工作区；关掉则每次从空界面开始（记录留着，开回来还在）"
+                    >
+                      <BoolToggle
+                        value={settings.restoreWorkspace}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(restoreWorkspace) => update({ restoreWorkspace })}
+                      />
+                    </Row>
+                  </Section>
                 </>
               )}
 
@@ -2560,34 +2671,6 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       fallback={theme}
                       preference={palette}
                       onChange={(terminalTheme) => update({ terminalTheme })}
-                    />
-                  </Field>
-                  <Field
-                    label="字体"
-                    hint={`CSS font-family，可写多个用逗号分隔；留空用 ${DEFAULT_MONO_FONT}`}
-                  >
-                    <input
-                      type="text"
-                      value={settings.terminalFontFamily}
-                      spellCheck={false}
-                      placeholder={DEFAULT_MONO_FONT}
-                      onChange={(event) =>
-                        update({ terminalFontFamily: event.target.value })
-                      }
-                      className={TEXT_INPUT}
-                    />
-                  </Field>
-                  <Field label="字号">
-                    <SizeSlider
-                      value={settings.terminalFontSize}
-                      onChange={(terminalFontSize) => update({ terminalFontSize })}
-                    />
-                  </Field>
-                  <Field label="字重">
-                    <BoolToggle
-                      value={settings.terminalFontBold}
-                      options={WEIGHT_OPTIONS}
-                      onChange={(terminalFontBold) => update({ terminalFontBold })}
                     />
                   </Field>
                   <Field
@@ -2632,31 +2715,20 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
               {tab === "editor" && (
                 <>
                   <Field
-                    label="字体"
-                    hint={`CSS font-family，可写多个用逗号分隔；留空用 ${DEFAULT_MONO_FONT}`}
+                    label="缩进宽度"
+                    hint="按文件内容自动探测是 Monaco 的默认行为；选了具体宽度就固定下来"
                   >
-                    <input
-                      type="text"
-                      value={settings.editorFontFamily}
-                      spellCheck={false}
-                      placeholder={DEFAULT_MONO_FONT}
-                      onChange={(event) =>
-                        update({ editorFontFamily: event.target.value })
-                      }
-                      className={TEXT_INPUT}
+                    <Select
+                      value={settings.editorIndent}
+                      options={INDENT_OPTIONS}
+                      onChange={(editorIndent) => update({ editorIndent })}
                     />
                   </Field>
-                  <Field label="字号">
-                    <SizeSlider
-                      value={settings.editorFontSize}
-                      onChange={(editorFontSize) => update({ editorFontSize })}
-                    />
-                  </Field>
-                  <Field label="字重">
+                  <Field label="缩略图" hint="编辑器右侧的 minimap（代码缩略图）">
                     <BoolToggle
-                      value={settings.editorFontBold}
-                      options={WEIGHT_OPTIONS}
-                      onChange={(editorFontBold) => update({ editorFontBold })}
+                      value={settings.editorMinimap}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorMinimap) => update({ editorMinimap })}
                     />
                   </Field>
                   <Field
