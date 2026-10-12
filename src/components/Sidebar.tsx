@@ -29,6 +29,7 @@ import {
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
+  IconHistory,
   IconMoon,
   IconMore,
   IconPanelCollapse,
@@ -215,8 +216,8 @@ export function Sidebar({
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  /** 当前工作区的对话历史是否展开；默认展开 */
-  const [historyOpen, setHistoryOpen] = useState(true);
+  /** 当前工作区的对话历史是否展开；默认收起 */
+  const [historyOpen, setHistoryOpen] = useState(false);
   /** 工作区名过滤词。纯展示层：只影响渲染哪些行，不动列表的存储顺序 */
   const [wsQuery, setWsQuery] = useState("");
   /** 过滤框是否展开：默认只留一个搜索图标，点开才出现输入框 */
@@ -852,6 +853,7 @@ export function Sidebar({
                                       : "text-fg-muted group-hover/hist:text-fg"
                                   }`}
                                 >
+                                  <IconHistory className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
                                   {waitingSession && (
                                     <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />
                                   )}
