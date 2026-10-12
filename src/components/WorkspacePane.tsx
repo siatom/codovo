@@ -480,6 +480,8 @@ export function WorkspacePane({
         initial={52}
         min={20}
         max={78}
+        // 双击这条主分栏线（终端 / 右边栏）复位成均分
+        resetOnDoubleClick
         // 左栏全屏时右栏整列让位（连图标条一起）；平时收起右栏仍是原来的窄条状态
         secondCollapsed={rightCollapsed || leftFullscreen}
         firstCollapsed={rightFullscreen}

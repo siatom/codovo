@@ -18,6 +18,12 @@ interface SplitPaneProps {
    * 终端得留着（PTY 在跑），所以同样是宽度归零而不是卸载。
    */
   firstCollapsed?: boolean;
+  /**
+   * 双击分隔条把两块复位成均分（各 50%，受 min/max 约束）。
+   * 默认关闭：只有「终端 / 右边栏」这条主分栏需要它——内层文件栏的 max 不到 50，
+   * 均分在那里落不下去。
+   */
+  resetOnDoubleClick?: boolean;
 }
 
 export function SplitPane({
@@ -28,6 +34,7 @@ export function SplitPane({
   max = 85,
   secondCollapsed = false,
   firstCollapsed = false,
+  resetOnDoubleClick = false,
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(initial);
@@ -50,6 +57,11 @@ export function SplitPane({
     },
     [dragging, max, min],
   );
+
+  /** 双击复位：均分，但仍在 min/max 允许的区间内 */
+  const resetRatio = useCallback(() => {
+    setRatio(Math.min(max, Math.max(min, 50)));
+  }, [max, min]);
 
   const stop = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -83,6 +95,7 @@ export function SplitPane({
           onPointerMove={onPointerMove}
           onPointerUp={stop}
           onPointerCancel={stop}
+          onDoubleClick={resetOnDoubleClick ? resetRatio : undefined}
           className={`relative w-px shrink-0 cursor-col-resize bg-line-strong transition-colors ${
             dragging ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
