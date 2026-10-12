@@ -2140,7 +2140,8 @@ export function GitChangesPane({
   /**
    * 打开分支下拉时现拉一次列表。
    *
-   * 不用轮询：分支列表只在面板上摆一会儿，切分支/新建分支之后这个函数会被再调一次。
+   * 下拉打开期间会随 status 轮询（2 秒）自动重拉：终端里切换分支 / fetch 之后，
+   * 不用关掉菜单再开一次就能看到最新列表。
    * 失败就当空列表，把原因摆在菜单里——不值得弹全局错误。
    */
   const loadBranches = useCallback(() => {
@@ -2154,6 +2155,12 @@ export function GitChangesPane({
         setBranchError(String(reason));
       });
   }, [root]);
+
+  // 分支下拉打开期间，HEAD 或分支名变了就重拉一次列表
+  useEffect(() => {
+    if (!branchMenu) return;
+    loadBranches();
+  }, [branchMenu, snapshot.head, snapshot.branch, loadBranches]);
 
   const openBranchMenu = useCallback(() => {
     loadBranches();
@@ -2245,9 +2252,11 @@ export function GitChangesPane({
    * 工作树（`.git` 被删 / 损坏），拿它当 root 时后端只会返回空列表，工作树入口随之
    * 消失、用户再也切不回来。工作区根始终是正常仓库，从这里拉才拿得到完整列表。
    *
-   * 只在面板可见（当前工作区 + 模块露在眼前）时拉。列表够稳定，不轮询。失败当空列表
+   * 只在面板可见（当前工作区 + 模块露在眼前）时拉。失败当空列表
    * ——拿不到就把入口藏起来，不值得弹全局错误。后端顺带把存在的工作树登记进白名单，
    * 所以返回的 path 之后能直接当 root 用。
+   * `snapshot.head` 变化（提交/切分支）时也重拉：各工作树检出的分支 / HEAD 会跟着变，
+   * 不更新的话显示的还是旧信息。
    */
   useEffect(() => {
     if (!visible || !moduleVisible) return;
@@ -2270,7 +2279,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [workspaceRoot, root, visible, moduleVisible, reloadSignal]);
+  }, [workspaceRoot, root, visible, moduleVisible, reloadSignal, snapshot.head]);
 
   /** 切到某个工作树。选当前这条等于恢复默认（也兜住列表里 current 被标错的情形） */
   const pickWorktree = useCallback(
