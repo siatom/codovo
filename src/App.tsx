@@ -113,6 +113,8 @@ function Shell() {
   const openSessionAt = useOpenSessionAt();
 
   const { settings, update, reset, resetSection } = useSettings();
+  // 启动恢复只在挂载时判定一次：之后用户在设置里改开关，不该影响本次启动
+  const restoreWorkspaceRef = useRef(settings.restoreWorkspace);
   const { preference: themePreference, setPreference: setTheme } = useTheme();
   /** 关窗口的确认框：开着工作区、又还没记住选择时才弹 */
   const [closePrompt, setClosePrompt] = useState(false);
@@ -522,7 +524,8 @@ function Shell() {
     const list = migrateWorkspaces();
     setWorkspaces(list);
 
-    const lastId = readLastWorkspaceId();
+    // 关掉「启动恢复工作区」就直接进空态；lastWorkspace 记录留着，下次开回来还在
+    const lastId = restoreWorkspaceRef.current ? readLastWorkspaceId() : null;
     const last = list.find((item) => item.id === lastId) ?? null;
     if (!last) {
       setBooting(false);
@@ -753,6 +756,8 @@ function Shell() {
             setClosePrompt(false);
             void hideToTray();
           }}
+          // 按 Esc / 点遮罩是「反悔」：只收起弹窗，窗口、终端、智能体都不动
+          onDismiss={() => setClosePrompt(false)}
         />
       )}
 
