@@ -1611,7 +1611,7 @@ export function ExplorerPane({
   const headerHint = roots.map((root) => toDisplayPath(root)).join("\n");
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-panel">
+    <section className="flex h-full min-h-0 flex-col bg-content">
       {/* 右上角并排 4 个图标按钮，间距压到 2px：24px 的按钮本身已经留了 5px 内边距，
           gap 再给 4px 就散开了 */}
       <header className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">

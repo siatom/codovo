@@ -294,7 +294,7 @@ export function SearchPane({
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-panel">
+    <section className="flex h-full min-h-0 flex-col bg-content">
       {/* 标题栏：重新搜索 / 清除结果。跟「文件」「变更」两个模块的头对齐 */}
       <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">

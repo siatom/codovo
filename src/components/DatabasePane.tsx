@@ -567,7 +567,7 @@ export function DatabasePane({
   };
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-1 bg-panel">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 bg-content">
       {/* 左栏：连接 → 数据库 →（PG 才有 schema）→ 表/视图分组 → 条目 */}
       <div className="flex h-full w-52 shrink-0 flex-col border-r border-line">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">

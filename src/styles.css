@@ -2,13 +2,17 @@
 
 /* 界面配色统一走这组变量：深色是默认值，浅色整组覆盖。
    组件里只用语义名（bg-surface / text-fg-dim / border-line …），不再写死十六进制，
-   否则加一套主题就得把每个色值再抄一遍。 */
+   否则加一套主题就得把每个色值再抄一遍。
+   侧栏与中间之间不画竖线，改靠背景深浅区分：深色主题下 --c-panel（左侧栏 / 右侧图标栏）
+   比 --c-surface（终端 / 编辑器）亮一档，--c-app 再暗一档。
+   右侧内容面板（--c-content）比 --c-panel 再浅一档，跟同色的图标栏分开。 */
 :root {
   color-scheme: dark;
 
-  --c-app: #0b0d11;
+  --c-app: #06080b;
   --c-panel: #0d1014;
-  --c-surface: #0f1115;
+  --c-surface: #080b0f;
+  --c-content: #13181d;
   --c-raised: #161a21;
   --c-hover: #171b22;
   --c-active: #1c212b;
@@ -58,6 +62,7 @@
   --c-app: #eef0f3;
   --c-panel: #f6f7f9;
   --c-surface: #ffffff;
+  --c-content: #fbfcfd;
   --c-raised: #f1f3f6;
   --c-hover: #e9ecf0;
   --c-active: #e1e5ea;
@@ -99,7 +104,7 @@
 
 /* IDE 配色覆盖语义色，组件仍只依赖同一组变量。 */
 :root[data-palette="vscode"] {
-  --c-app: #181818; --c-panel: #181818; --c-surface: #1f1f1f;
+  --c-app: #0e0e0e; --c-panel: #181818; --c-surface: #121212; --c-content: #1f1f1f;
   --c-raised: #252526; --c-hover: #2a2d2e; --c-active: #37373d;
   --c-selected: #04395e; --c-line: #2b2b2b; --c-line-strong: #3c3c3c;
   --c-line-hover: #555555; --c-fg: #cccccc; --c-fg-muted: #b3b3b3;
@@ -110,7 +115,7 @@
 
 /* VS Code Light+：跟上面那套同源，只是深浅相反 */
 :root[data-palette="vscode-light"] {
-  --c-app: #f3f3f3; --c-panel: #f3f3f3; --c-surface: #ffffff;
+  --c-app: #f3f3f3; --c-panel: #f3f3f3; --c-surface: #ffffff; --c-content: #f9f9f9;
   --c-raised: #f8f8f8; --c-hover: #e8e8e8; --c-active: #e0e0e0;
   --c-selected: #d6ebff; --c-line: #e7e7e7; --c-line-strong: #cecece;
   --c-line-hover: #a0a0a0; --c-fg: #333333; --c-fg-muted: #616161;
@@ -120,7 +125,7 @@
 }
 
 :root[data-palette="one-dark"] {
-  --c-app: #21252b; --c-panel: #21252b; --c-surface: #282c34;
+  --c-app: #16191e; --c-panel: #21252b; --c-surface: #1a1d23; --c-content: #282d34;
   --c-raised: #2c313a; --c-hover: #323842; --c-active: #3e4451;
   --c-selected: #334255; --c-line: #303640; --c-line-strong: #3e4451;
   --c-line-hover: #5c6370; --c-fg: #abb2bf; --c-fg-muted: #9da5b4;
@@ -130,7 +135,7 @@
 }
 
 :root[data-palette="dracula"] {
-  --c-app: #21222c; --c-panel: #21222c; --c-surface: #282a36;
+  --c-app: #16171d; --c-panel: #21222c; --c-surface: #1a1b23; --c-content: #282a35;
   --c-raised: #303241; --c-hover: #343746; --c-active: #44475a;
   --c-selected: #44475a; --c-line: #343746; --c-line-strong: #44475a;
   --c-line-hover: #6272a4; --c-fg: #f8f8f2; --c-fg-muted: #d7d8e2;
@@ -140,7 +145,7 @@
 }
 
 :root[data-palette="github-dark"] {
-  --c-app: #010409; --c-panel: #0d1117; --c-surface: #0d1117;
+  --c-app: #04070a; --c-panel: #0d1117; --c-surface: #080c11; --c-content: #131920;
   --c-raised: #161b22; --c-hover: #1c2128; --c-active: #262c36;
   --c-selected: #16345a; --c-line: #21262d; --c-line-strong: #30363d;
   --c-line-hover: #484f58; --c-fg: #e6edf3; --c-fg-muted: #b1bac4;
@@ -150,7 +155,7 @@
 }
 
 :root[data-palette="github-light"] {
-  --c-app: #f6f8fa; --c-panel: #f6f8fa; --c-surface: #ffffff;
+  --c-app: #f6f8fa; --c-panel: #f6f8fa; --c-surface: #ffffff; --c-content: #fbfcfd;
   --c-raised: #f6f8fa; --c-hover: #eaeef2; --c-active: #dfe5eb;
   --c-selected: #ddf4ff; --c-line: #d8dee4; --c-line-strong: #afb8c1;
   --c-line-hover: #8c959f; --c-fg: #1f2328; --c-fg-muted: #424a53;
@@ -160,7 +165,7 @@
 }
 
 :root[data-palette="material-nova"] {
-  --c-app: #1b1f27; --c-panel: #1f2430; --c-surface: #232936;
+  --c-app: #151820; --c-panel: #1f2430; --c-surface: #191d27; --c-content: #262c3a;
   --c-raised: #292e39; --c-hover: #303746; --c-active: #3b4352;
   --c-selected: #344052; --c-line: #303746; --c-line-strong: #414a5b;
   --c-line-hover: #596579; --c-fg: #d8dee9; --c-fg-muted: #b8c0cf;
@@ -170,7 +175,7 @@
 }
 
 :root[data-palette="neon-green"] {
-  --c-app: #080d0a; --c-panel: #0b1210; --c-surface: #0e1813;
+  --c-app: #040a07; --c-panel: #0b1210; --c-surface: #060d09; --c-content: #111a16;
   --c-raised: #122019; --c-hover: #172a20; --c-active: #1d3828;
   --c-selected: #174d32; --c-line: #193025; --c-line-strong: #25503a;
   --c-line-hover: #357451; --c-fg: #d9ffe2; --c-fg-muted: #a8e6b8;
@@ -180,7 +185,7 @@
 }
 
 :root[data-palette="tokyo-night"] {
-  --c-app: #16161e; --c-panel: #1a1b26; --c-surface: #1a1b26;
+  --c-app: #101119; --c-panel: #1a1b26; --c-surface: #13141d; --c-content: #21222f;
   --c-raised: #1f2335; --c-hover: #24283b; --c-active: #343b58;
   --c-selected: #283457; --c-line: #23273a; --c-line-strong: #3b4261;
   --c-line-hover: #545c7e; --c-fg: #c0caf5; --c-fg-muted: #a9b1d6;
@@ -190,7 +195,7 @@
 }
 
 :root[data-palette="catppuccin-mocha"] {
-  --c-app: #11111b; --c-panel: #181825; --c-surface: #1e1e2e;
+  --c-app: #0e0e17; --c-panel: #181825; --c-surface: #12121c; --c-content: #1f1f2e;
   --c-raised: #252537; --c-hover: #313244; --c-active: #45475a;
   --c-selected: #3e3358; --c-line: #2a2a3c; --c-line-strong: #45475a;
   --c-line-hover: #585b70; --c-fg: #cdd6f4; --c-fg-muted: #bac2de;
@@ -200,7 +205,7 @@
 }
 
 :root[data-palette="nord"] {
-  --c-app: #242933; --c-panel: #2e3440; --c-surface: #2e3440;
+  --c-app: #21252d; --c-panel: #2e3440; --c-surface: #262b35; --c-content: #353c4a;
   --c-raised: #3b4252; --c-hover: #434c5e; --c-active: #4c566a;
   --c-selected: #3b5878; --c-line: #353c4a; --c-line-strong: #434c5e;
   --c-line-hover: #4c566a; --c-fg: #d8dee9; --c-fg-muted: #c2cad8;
@@ -211,7 +216,7 @@
 
 /* Solarized Dark：跟 Light 同一套 16 色，只是 base 明暗互换 */
 :root[data-palette="solarized-dark"] {
-  --c-app: #002b36; --c-panel: #002b36; --c-surface: #002b36;
+  --c-app: #001d24; --c-panel: #002b36; --c-surface: #00222b; --c-content: #01333f;
   --c-raised: #073642; --c-hover: #0c3d4a; --c-active: #12505f;
   --c-selected: #10485f; --c-line: #073642; --c-line-strong: #0e4a58;
   --c-line-hover: #586e75; --c-fg: #93a1a1; --c-fg-muted: #839496;
@@ -221,7 +226,7 @@
 }
 
 :root[data-palette="solarized-light"] {
-  --c-app: #eee8d5; --c-panel: #f7f1de; --c-surface: #fdf6e3;
+  --c-app: #eee8d5; --c-panel: #f7f1de; --c-surface: #fdf6e3; --c-content: #faf4e1;
   --c-raised: #f2ecda; --c-hover: #e9e2cc; --c-active: #ded8c4;
   --c-selected: #d6e8f2; --c-line: #e4ddc9; --c-line-strong: #d3ccb8;
   --c-line-hover: #b3ac98; --c-fg: #073642; --c-fg-muted: #3c5a62;
@@ -231,7 +236,7 @@
 }
 
 :root[data-palette="monokai"] {
-  --c-app: #1e1f1c; --c-panel: #272822; --c-surface: #272822;
+  --c-app: #1b1c17; --c-panel: #272822; --c-surface: #1f201b; --c-content: #2e2f28;
   --c-raised: #31322b; --c-hover: #383930; --c-active: #49483e;
   --c-selected: #3a4a4a; --c-line: #35362e; --c-line-strong: #49483e;
   --c-line-hover: #75715e; --c-fg: #f8f8f2; --c-fg-muted: #d8d8d0;
@@ -246,6 +251,7 @@
   --color-app: var(--c-app);
   --color-panel: var(--c-panel);
   --color-surface: var(--c-surface);
+  --color-content: var(--c-content);
   --color-raised: var(--c-raised);
   --color-hover: var(--c-hover);
   --color-active: var(--c-active);

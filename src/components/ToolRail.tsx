@@ -12,8 +12,11 @@ import {
   IconServer,
 } from "./icons";
 
-/** 和左侧栏收起时同宽，两条竖栏看起来才是一套 */
-const RAIL = "flex h-full w-11 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2";
+/** 和左侧栏收起时同宽，两条竖栏看起来才是一套。
+    不画右边框：整块界面靠背景深浅区分，没有常驻竖线。
+    背景用 --c-panel，跟左侧栏完全同色——两边竖栏是一套；
+    挨着的内容面板用 --c-content 略浅一档，靠这点差把图标栏和内容分开。 */
+const RAIL = "flex h-full w-11 shrink-0 flex-col items-center gap-1 bg-panel py-2";
 
 // relative 是给「变更」角标定位用的，放在这行省得每个按钮各写一遍
 const BUTTON =

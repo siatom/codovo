@@ -334,7 +334,7 @@ export function RemotePane({
   };
 
   return (
-    <section ref={containerRef} className="flex h-full min-h-0 min-w-0 flex-1 bg-panel">
+    <section ref={containerRef} className="flex h-full min-h-0 min-w-0 flex-1 bg-content">
       {/* 左窄栏：主机列表。宽度可拖动 */}
       <div className="flex h-full shrink-0 flex-col" style={{ width: railWidth }}>
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">

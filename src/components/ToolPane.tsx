@@ -190,7 +190,7 @@ export function ToolPane({
 
   return (
     <section
-      className="flex h-full min-h-0 flex-col bg-panel"
+      className="flex h-full min-h-0 flex-col bg-content"
       onKeyDownCapture={onPanelKeyDown}
     >
       <div className={filesHidden ? "hidden" : "flex min-h-0 flex-1 flex-col"}>

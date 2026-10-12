@@ -96,12 +96,15 @@ export function SplitPane({
           onPointerUp={stop}
           onPointerCancel={stop}
           onDoubleClick={resetOnDoubleClick ? resetRatio : undefined}
-          className={`relative w-px shrink-0 cursor-col-resize bg-line-strong transition-colors ${
-            dragging ? "bg-accent-strong" : "hover:bg-line-hover"
-          }`}
+          className="relative w-0 shrink-0 cursor-col-resize"
         >
-          {/* 加宽命中区，视觉上仍是一条细线 */}
-          <span className="absolute inset-y-0 -left-1 -right-1" />
+          {/* 分隔处不画常驻竖线：两侧靠背景深浅区分（侧栏 panel 比中间 surface 亮）。
+              这里只留一条加宽的命中区，悬停 / 拖动时才浮出一条窄带提示分界在哪 */}
+          <span
+            className={`absolute inset-y-0 -left-1 -right-1 transition-colors ${
+              dragging ? "bg-accent-strong/50" : "hover:bg-line-hover/35"
+            }`}
+          />
         </div>
       )}
 

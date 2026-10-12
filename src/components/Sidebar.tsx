@@ -478,7 +478,7 @@ export function Sidebar({
   if (collapsed) {
     return (
       <div
-        className="flex h-full w-11 shrink-0 flex-col border-r border-line bg-panel"
+        className="flex h-full w-11 shrink-0 flex-col bg-panel"
       >
         {/* 收起后这里只剩个空挡太素，摆上应用 logo。高度仍与展开态头部一致，
             这样来回切换时下面的图标只横向挪位、不上下跳 */}
@@ -574,7 +574,7 @@ export function Sidebar({
 
   return (
     <div
-      className="relative flex h-full shrink-0 flex-col border-r border-line bg-panel"
+      className="relative flex h-full shrink-0 flex-col bg-panel"
       style={{ width }}
     >
       {/* 标题栏只放 CodeDock，顶部高度与右侧保持一致 */}
