@@ -690,7 +690,9 @@ export function Sidebar({
                     {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
                     {isOpen ? <IconFolderOpen /> : <IconFolder />}
                     <span className="truncate">{workspace.name}</span>
-                    {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区） */}
+                    {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区）。
+                        非当前工作区额外挂一枚文字徽章——橙点太小，视线不在侧栏时容易漏看；
+                        当前工作区已经能在终端标签上看到脉冲点，不必再加文字 */}
                     {waiting && (
                       <span
                         title="有 AI 会话在等你输入，点击跳过去"
@@ -699,8 +701,15 @@ export function Sidebar({
                           event.stopPropagation();
                           onFocusAttention(workspace, waiting);
                         }}
-                        className="h-1.5 w-1.5 shrink-0 cursor-pointer rounded-full bg-warn animate-pulse"
-                      />
+                        className="flex shrink-0 cursor-pointer items-center gap-1"
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
+                        {!isCurrent && (
+                          <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
+                            等待输入
+                          </span>
+                        )}
+                      </span>
                     )}
                     {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
                     {broken && (

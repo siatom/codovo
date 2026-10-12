@@ -409,7 +409,8 @@ export function TerminalPane({
                     className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
                   >
                     <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
-                    <span className="truncate">{title}</span>
+                    {/* 在等用户输入时标题也一起变色（同脉冲点的 warn 色），标签多时更好认 */}
+                    <span className={`truncate ${waiting ? "text-warn" : ""}`}>{title}</span>
                     {/* 停在交互提示上时点一颗脉冲点，切到别的工作区也看得见 */}
                     {waiting && (
                       <span

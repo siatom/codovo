@@ -64,21 +64,46 @@ export interface TerminalSessionHandle {
 }
 
 /**
- * 「终端是不是停在等用户输入的提示上」的启发式特征。
+ * 「终端是不是停在等用户输入的提示上」的启发式特征（逐行判断的那部分）。
  *
  * 只能从 PTY 输出里猜——AI CLI（CodeBuddy CLI / Claude Code / Codex 这类）的确认框长什么样
  * 没有稳定协议。挑的是「菜单式选择」和「明确的确认问句」，尽量避开助手正文里的普通疑问句。
  */
 const WAIT_PATTERNS: RegExp[] = [
-  // inquirer / clack 风格的选择菜单：光标行紧跟编号选项
+  // inquirer / clack 风格的选择菜单：光标行紧跟编号选项（Unicode 光标）
   /^\s*[❯›]\s*[1-9][.)]\s+\S/,
+  // 同一个菜单的 ASCII 光标版本（部分 CLI 用 `>` 当选中指示）。
+  // 刻意只在后面跟「编号 / 是 / 否」时才算，否则助手正文里的 markdown 引用行 `> xxx` 会误判
+  /^\s*>\s+(\[?\d|yes\b|no\b)/i,
+  // 单行的 [1] xxx / (1) xxx 选项行
+  /^\s*[\[(]\s*[1-9]\s*[\])]\s+\S/,
   // 是 / 否 的括号提示
   /\[\s*[yYnN]\s*\/\s*[yYnN]\s*\]/,
   /\(\s*[yYnN]\s*\/\s*[yYnN]\s*\)/,
+  // 按键提示：只有真的在等按键才会出现
+  /(press\s+enter|press\s+any\s+key|hit\s+enter|press\s+y)\b/i,
+  // 简短确认问句：必须带问号且在行尾，避免把正文里的陈述误判
+  /\b(continue|proceed|confirm|overwrite)\?\s*$/i,
   // 明确的确认问句
   /(do you want to proceed|would you like to proceed|are you sure|allow this|approve this)\b/i,
   // 权限询问 + 问号
   /(permission|approve|allow|deny|reject)\b[^?？]*[?？]\s*$/i,
+  // Claude Code 这类「要不要执行这条命令」的许可框
+  /(run this command|execute this|run bash)\b/i,
+];
+
+/**
+ * 需要看「相邻两行」才能判定的菜单特征：单独一行 `1. xxx` 可能是正文列表，
+ * 但连着两行编号选项（`1. yes / 2. no`）就基本只可能是选择菜单了。
+ * 这些正则带 `m` 且作用在「拼好的整块文本」上（见 looksLikeWaitingPrompt）。
+ */
+const WAIT_BLOCK_PATTERNS: RegExp[] = [
+  // 1. xxx / 2. xxx
+  /^\s*[1-9][.)][ \t]+\S[^\n]*\n[ \t]*[2-9][.)][ \t]+\S/m,
+  // [1] xxx / [2] xxx
+  /^\s*\[\s*[1-9]\s*\][ \t]+\S[^\n]*\n[ \t]*\[\s*[2-9]\s*\][ \t]+\S/m,
+  // (1) xxx / (2) xxx
+  /^\s*\(\s*[1-9]\s*\)[ \t]+\S[^\n]*\n[ \t]*\(\s*[2-9]\s*\)[ \t]+\S/m,
 ];
 
 /** 输出停下多久后去判一次：太短会在重绘中途误判，太长会显得迟钝 */
@@ -107,14 +132,39 @@ function recentLines(term: Terminal, max: number): string[] {
 }
 
 /**
+ * 屏幕底部连续 N 行的原文（自上而下，**保留空行**）。
+ *
+ * 保留空行是给「相邻两行」的多行特征用的：真菜单的编号选项是紧挨着的屏幕行，
+ * 助手正文里的 markdown 编号列表项之间常夹空行——丢了空行会把后者也误判成菜单。
+ * 只看底部若干行也是同样的理由：菜单贴着屏幕底部的提示符，正文列表可能在任意位置。
+ */
+function recentRows(term: Terminal, max: number): string[] {
+  const buffer = term.buffer.active;
+  const bottom = buffer.baseY + term.rows - 1;
+  const top = Math.max(0, bottom - max + 1);
+  const rows: string[] = [];
+  for (let y = top; y <= bottom; y += 1) {
+    rows.push(buffer.getLine(y)?.translateToString(true).trimEnd() ?? "");
+  }
+  return rows;
+}
+
+/**
  * 判定终端此刻是否停在等用户输入的提示上。
  *
  * **只在备用屏里判**：全屏 TUI（AI CLI、vim、less）跑在备用屏，裸 shell 提示符在普通屏——
  * 这样普通 shell 永远不会被误标成「在等用户」，只有全屏程序才进这个判断。
+ * （当前 CLI 的交互提示基本都出在全屏 TUI 里，所以没有为主屏另开一条宽松判定。）
+ *
+ * 单行特征沿屏幕取若干「非空行」扫（屏幕上内容稀疏时也能扫到）；多行特征只看底部连续屏行，
+ * 靠「紧挨着的两行编号选项」把菜单和正文里的编号列表区分开。
  */
 function looksLikeWaitingPrompt(term: Terminal): boolean {
   if (term.buffer.active.type !== "alternate") return false;
-  return recentLines(term, 6).some((line) => WAIT_PATTERNS.some((pattern) => pattern.test(line)));
+  if (recentLines(term, 6).some((line) => WAIT_PATTERNS.some((pattern) => pattern.test(line)))) {
+    return true;
+  }
+  return WAIT_BLOCK_PATTERNS.some((pattern) => pattern.test(recentRows(term, 12).join("\n")));
 }
 
 interface TerminalSessionProps {
