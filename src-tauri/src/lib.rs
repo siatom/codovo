@@ -1,6 +1,7 @@
 #![allow(linker_messages)]
 
 mod agent;
+mod agent_config;
 mod ai;
 mod app_agent;
 mod cli_sessions;
@@ -13,6 +14,8 @@ mod fs_api;
 mod git;
 mod installer;
 mod local_fs;
+mod preview;
+mod preview_agent;
 mod pty;
 mod remote;
 mod secrets;
@@ -34,6 +37,11 @@ pub fn run_app_mcp() -> i32 {
     app_agent::run_stdio()
 }
 
+/// 预览助手（启动/停止项目预览）的 MCP 服务入口。同样在 Tauri 初始化之前分流。
+pub fn run_preview_mcp() -> i32 {
+    preview_agent::run_stdio()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -51,6 +59,7 @@ pub fn run() {
         .manage(agent::AgentState::new())
         .manage(remote::RemoteState::new())
         .manage(database::DbState::new())
+        .manage(preview::PreviewState::new())
         .setup(|app| {
             // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
             tray::init(app.handle())?;
@@ -186,6 +195,14 @@ pub fn run() {
             db_agent::db_agent_set_target,
             app_agent::app_agent_take_request,
             app_agent::app_agent_respond,
+            preview::preview_detect,
+            preview::preview_start,
+            preview::preview_stop,
+            preview::preview_status,
+            preview_agent::preview_agent_take_request,
+            preview_agent::preview_agent_respond,
+            agent_config::agent_config_read,
+            agent_config::agent_config_write,
             tray::app_quit,
             tray::app_hide_to_tray,
         ])
@@ -210,6 +227,10 @@ pub fn run() {
                 }
                 // 数据库连接池也跟着收掉
                 if let Some(state) = app.try_state::<database::DbState>() {
+                    state.kill_all();
+                }
+                // 预览 dev server 是常驻子进程，退出时带走（每个工作区一个）
+                if let Some(state) = app.try_state::<preview::PreviewState>() {
                     state.kill_all();
                 }
             }

@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   useSettings,
+  emptyAgentLayer,
   FONT_SIZE_MIN,
   FONT_SIZE_MAX,
   AUTOSAVE_DELAY_MIN,
@@ -24,11 +25,11 @@ import {
   type Settings,
   type SettingsSection,
 } from "../lib/settings";
+import { isValidAgentName, withGlobalLayer } from "../lib/agent-profiles";
 import {
-  isValidAgentName,
-  workspaceLayer,
-  withLayer,
-} from "../lib/agent-profiles";
+  readWorkspaceLayerFile,
+  writeWorkspaceLayerFile,
+} from "../lib/agent-config";
 import {
   emptyModel,
   emptyProvider,
@@ -1475,7 +1476,7 @@ function defaultPatch(settings: Settings): Partial<Settings> {
   return { aiDefaultProvider: resolved.providerId, aiDefaultModel: resolved.modelId };
 }
 
-/** 有多少个 Agent 绑在这个提供商的模型上（全局层 + 所有工作区层） */
+/** 有多少个 Agent 绑在这个提供商的模型上（全局层 + 遗留的工作区层 localStorage 值） */
 function countAgentRefs(settings: Settings, providerId: string): number {
   const prefix = modelRef(providerId, "");
   const layers = [settings.agentGlobal, ...Object.values(settings.agentWorkspaces)];
@@ -1986,6 +1987,13 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const [tab, setTab] = useState<TabId>("appearance");
   /** 「智能体」分类的作用域：全局层还是当前工作区的层 */
   const [agentScope, setAgentScope] = useState<"global" | "workspace">("global");
+  /**
+   * 「本工作区」作用域下从 `<cwd>/.codedock/` 读到的项目层；null 表示还没读到
+   * （或当前是全局作用域）。项目层以文件为准，不再走 localStorage。
+   */
+  const [workspaceLayer, setWorkspaceLayer] = useState<AgentLayer | null>(null);
+  /** 项目层落盘 / 读取失败时的提示（例如工作区目录只读） */
+  const [workspaceError, setWorkspaceError] = useState("");
   /** 等确认的恢复默认：某个分类 id、`all` 表示整块回厂、null 表示没有 */
   const [confirmReset, setConfirmReset] = useState<TabId | "all" | null>(null);
   /** 提供商列表的手风琴：一次只展开一条，和技能 / Agent 一个交互 */
@@ -2030,6 +2038,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
+    preview: settings.rightPreviewVisible,
   };
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
@@ -2063,6 +2072,32 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   useEffect(() => {
     void refreshDependencies();
   }, []);
+
+  // 项目层以工作区根下的 `.codedock/` 文件为准；切到「本工作区」或换 cwd 时重读。
+  // 全局作用域不读文件，顺手把状态清掉，避免下次切回来时短暂显示旧值。
+  useEffect(() => {
+    if (agentScope !== "workspace" || !cwd) {
+      setWorkspaceLayer(null);
+      setWorkspaceError("");
+      return;
+    }
+    let cancelled = false;
+    setWorkspaceLayer(null);
+    readWorkspaceLayerFile(cwd)
+      .then((loaded) => {
+        if (cancelled) return;
+        setWorkspaceLayer(loaded);
+        setWorkspaceError("");
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setWorkspaceLayer(emptyAgentLayer());
+        setWorkspaceError(String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentScope, cwd]);
 
   // ---- 模型提供商 ----
 
@@ -2470,6 +2505,14 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       onChange={(rightDatabaseVisible) => update({ rightDatabaseVisible })}
                     />
                   </Field>
+                  <Field label="预览">
+                    <BoolToggle
+                      value={settings.rightPreviewVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "preview" ? false : undefined}
+                      onChange={(rightPreviewVisible) => update({ rightPreviewVisible })}
+                    />
+                  </Field>
                   <Field
                     label="关闭窗口"
                     hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
@@ -2872,7 +2915,9 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     hint={
                       agentScope === "workspace" && !cwd
                         ? "先打开一个工作区，才能编辑工作区层"
-                        : "启动时注入 / 加载；工作区层覆盖同名全局项，改动下次启动生效"
+                        : agentScope === "workspace"
+                          ? "存到工作区根的 .codedock/ 下、随仓库走；工作区层覆盖同名全局项，改动下次启动生效"
+                          : "启动时注入 / 加载；工作区层覆盖同名全局项，改动下次启动生效"
                     }
                     action={
                       <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
@@ -2901,15 +2946,42 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       </div>
                     }
                   >
-                    <LayerEditor
-                      layer={
-                        agentScope === "global"
-                          ? settings.agentGlobal
-                          : workspaceLayer(settings, cwd)
-                      }
-                      modelOptions={modelOptions}
-                      onChange={(next) => update(withLayer(settings, agentScope, cwd, next))}
-                    />
+                    {agentScope === "workspace" && !cwd ? (
+                      <p className="text-[12px] text-fg-faint">
+                        先打开一个工作区，才能编辑工作区层
+                      </p>
+                    ) : agentScope === "workspace" && workspaceLayer === null ? (
+                      <p className="text-[12px] text-fg-faint">正在读取 .codedock/ 配置…</p>
+                    ) : (
+                      <>
+                        {workspaceError !== "" && (
+                          <p className="text-[11px] text-danger">
+                            项目层读写失败：{workspaceError}
+                          </p>
+                        )}
+                        <LayerEditor
+                          layer={
+                            agentScope === "global"
+                              ? settings.agentGlobal
+                              : (workspaceLayer ?? emptyAgentLayer())
+                          }
+                          modelOptions={modelOptions}
+                          onChange={(next) => {
+                            if (agentScope === "global") {
+                              update(withGlobalLayer(next));
+                              return;
+                            }
+                            // 项目层：先本地生效，再落盘；落盘失败只提示、不回滚输入，
+                            // 免得用户敲一半的改动被吞掉
+                            setWorkspaceLayer(next);
+                            if (!cwd) return;
+                            writeWorkspaceLayerFile(cwd, next)
+                              .then(() => setWorkspaceError(""))
+                              .catch((reason) => setWorkspaceError(String(reason)));
+                          }}
+                        />
+                      </>
+                    )}
                   </Section>
                 </>
               )}

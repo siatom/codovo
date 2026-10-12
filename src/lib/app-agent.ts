@@ -207,6 +207,7 @@ function describeState(ctx: AppAgentContext) {
       rightBrowserVisible: settings.rightBrowserVisible,
       rightRemoteVisible: settings.rightRemoteVisible,
       rightDatabaseVisible: settings.rightDatabaseVisible,
+      rightPreviewVisible: settings.rightPreviewVisible,
       closeToTray: settings.closeToTray,
     },
     workspaces: ctx.workspaces.map((workspace) => ({
@@ -238,6 +239,7 @@ const BOOLEAN_KEYS = new Set([
   "rightBrowserVisible",
   "rightRemoteVisible",
   "rightDatabaseVisible",
+  "rightPreviewVisible",
 ]);
 
 const STRING_KEYS = new Set([

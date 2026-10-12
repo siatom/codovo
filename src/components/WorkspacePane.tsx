@@ -13,6 +13,7 @@ import { RIGHT_TOOLS, ToolRail } from "./ToolRail";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { BrowserPane } from "./BrowserPane";
 import { DatabasePane } from "./DatabasePane";
+import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
@@ -174,6 +175,7 @@ export function WorkspacePane({
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
+    preview: settings.rightPreviewVisible,
   };
   // 当前模块被关掉时落到第一个还开着的模块。派生值兜底而不是改 state：
   // 用户选的模块不会被抹掉，重新打开设置里的开关就回到原样。
@@ -513,7 +515,8 @@ export function WorkspacePane({
                   rightOpen &&
                   activeTool !== "browser" &&
                   activeTool !== "remote" &&
-                  activeTool !== "database"
+                  activeTool !== "database" &&
+                  activeTool !== "preview"
                     ? "flex min-h-0 min-w-0 flex-1"
                     : "hidden"
                 }
@@ -604,6 +607,20 @@ export function WorkspacePane({
                 }
               >
                 <DatabasePane
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              </div>
+              <div
+                className={
+                  rightOpen && activeTool === "preview"
+                    ? "flex min-h-0 min-w-0 flex-1"
+                    : "hidden"
+                }
+              >
+                <PreviewPane
+                  root={root}
+                  visible={rightOpen && activeTool === "preview"}
                   fullscreen={rightFullscreen}
                   onToggleFullscreen={onToggleRightFullscreen}
                 />

@@ -25,18 +25,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// 客户端没给 protocolVersion 时的兜底版本。
-const DEFAULT_PROTOCOL: &str = "2025-06-18";
+pub(crate) const DEFAULT_PROTOCOL: &str = "2025-06-18";
 
 /// 等前端执行完的时限。要**短于** opencode.json 里给这个 MCP 配的 `timeout`（120s），
 /// 否则超时那一下是 opencode 掐断的、错误文案没法自己写。留出来的 10s 给往返。
-const WAIT_TIMEOUT: Duration = Duration::from_secs(110);
+pub(crate) const WAIT_TIMEOUT: Duration = Duration::from_secs(110);
 
 /// 轮询响应文件的间隔。前端那边是 500ms 一轮，这里密一点免得白等一个整周期。
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 
 /// 请求文件 / 响应文件名，和前端 `lib/app-agent.ts` 对齐。
-const REQUEST_FILE: &str = "request.json";
-const RESPONSE_FILE: &str = "response.json";
+pub(crate) const REQUEST_FILE: &str = "request.json";
+pub(crate) const RESPONSE_FILE: &str = "response.json";
 
 /// 请求 id 的自增段，配合 pid 与纳秒保证唯一。
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -57,7 +57,7 @@ pub(crate) fn mailbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// 原子写一个 JSON 文件：先写临时文件再 rename，免得对端正好读到半截内容。
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+pub(crate) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, text).map_err(|e| format!("写入失败: {e}"))?;
@@ -208,11 +208,11 @@ fn handle(mailbox: Option<&Path>, request: Value) -> Option<Value> {
     }
 }
 
-fn ok_response(id: Option<Value>, result: Value) -> Value {
+pub(crate) fn ok_response(id: Option<Value>, result: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id.unwrap_or(Value::Null), "result": result })
 }
 
-fn error_response(id: Value, code: i64, message: &str) -> Value {
+pub(crate) fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -318,7 +318,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "switch_panel",
-            "description": "切到右边栏的某个模块（并展开右栏）。panel 取 files / search / changes / browser / remote / database。",
+            "description": "切到右边栏的某个模块（并展开右栏）。panel 取 files / search / changes / browser / remote / database / preview。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -359,7 +359,7 @@ fn tool_definitions() -> Value {
 }
 
 /// 把工具调用投进邮箱，等前端执行完再拿结果。
-fn call_tool(mailbox: Option<&Path>, request: &Value) -> Result<String, String> {
+pub(crate) fn call_tool(mailbox: Option<&Path>, request: &Value) -> Result<String, String> {
     let name = request
         .pointer("/params/name")
         .and_then(Value::as_str)
@@ -386,7 +386,7 @@ fn call_tool(mailbox: Option<&Path>, request: &Value) -> Result<String, String> 
 /// 轮询响应文件，直到 id 对上或超时。
 ///
 /// **必须校验 id**：超时后前端仍可能把上一条的结果写进来，认错就会张冠李戴。
-fn wait_response(path: &Path, id: &str, timeout: Duration) -> Result<String, String> {
+pub(crate) fn wait_response(path: &Path, id: &str, timeout: Duration) -> Result<String, String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Ok(text) = std::fs::read_to_string(path) {
@@ -415,7 +415,7 @@ fn wait_response(path: &Path, id: &str, timeout: Duration) -> Result<String, Str
 }
 
 /// 请求 id：pid + 自增序号 + 纳秒。前两者保证同进程内不重，纳秒挡住进程重启后的撞号。
-fn next_request_id() -> String {
+pub(crate) fn next_request_id() -> String {
     let seq = REQUEST_SEQ.fetch_add(1, Ordering::SeqCst);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
