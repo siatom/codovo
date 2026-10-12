@@ -123,12 +123,13 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 - 终端字体 / 字号 / 字重 / 配色主题 / 终端程序 / AI CLI 列表：**设置 → 终端**
 - 编辑器字体 / 字号 / 自动保存：**设置 → 编辑器**
-- 主题（深色 / 浅色 / 跟随系统 / 各种配色）、右栏模块显隐、关闭时收进托盘：**设置 → 外观**
+- 主题（深色 / 浅色 / 跟随系统 / 各种配色）、界面字体、右栏模块显隐、关闭时收进托盘：**设置 → 外观**
 - 模型提供商、opencode 命令与端口、规则 / 记忆 / 技能 / Agents：**设置 → 智能体**
 - 设置入口在左侧栏底部那一排按钮里（齿轮图标）。
 
 ## 设置字段（`update_settings` 的 patch 用这些键）
 
+- `uiFontFamily`：字符串，界面字体的 CSS 字体栈，留空表示默认无衬线栈
 - `terminalFontFamily`：字符串，CSS 字体栈，留空表示默认
 - `terminalFontSize`：11-20 的数字
 - `terminalFontBold`：true / false

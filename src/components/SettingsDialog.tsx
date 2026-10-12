@@ -15,6 +15,7 @@ import {
   AUTOSAVE_DELAY_MIN,
   AUTOSAVE_DELAY_MAX,
   DEFAULT_MONO_FONT,
+  DEFAULT_UI_FONT,
   type AgentLayer,
   type AgentProfile,
   type AgentSkill,
@@ -82,7 +83,7 @@ type TabId = (typeof TABS)[number]["id"];
 
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
-  appearance: "主题、右栏模块显隐、智能体入口和关闭窗口行为",
+  appearance: "主题、界面字体、右栏模块显隐、智能体入口和关闭窗口行为",
   terminal: "终端程序、配色、字体，以及 AI CLI 列表",
   editor: "编辑器字体和自动保存",
   shortcuts: "全部快捷键键位",
@@ -2443,6 +2444,19 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                 <>
                   <Field label="主题">
                     <ThemeSelect />
+                  </Field>
+                  <Field
+                    label="界面字体"
+                    hint={`CSS font-family，可写多个用逗号分隔；留空用 ${DEFAULT_UI_FONT}。只作用于界面，终端与编辑器各自另设`}
+                  >
+                    <input
+                      type="text"
+                      value={settings.uiFontFamily}
+                      spellCheck={false}
+                      placeholder={DEFAULT_UI_FONT}
+                      onChange={(event) => update({ uiFontFamily: event.target.value })}
+                      className={TEXT_INPUT}
+                    />
                   </Field>
                   <Field
                     label="智能体（GUI）"

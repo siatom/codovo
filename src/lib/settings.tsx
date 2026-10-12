@@ -103,6 +103,8 @@ export interface Settings {
    * 以及删除提供商时对遗留引用的粗略计数。新代码不要再读写它。
    */
   agentWorkspaces: Record<string, AgentLayer>;
+  /** 界面字体（CSS font-family），留空用默认无衬线栈；只作用于界面，终端与编辑器各自另设 */
+  uiFontFamily: string;
   /** 终端启动的 shell 候选 id；空串表示自动（后端按平台挑） */
   terminalShell: string;
   /** 终端字体（CSS font-family），留空用默认 */
@@ -162,6 +164,7 @@ export type SettingsSection = "appearance" | "terminal" | "editor" | "shortcuts"
 const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   appearance: [
     "agentEnabled",
+    "uiFontFamily",
     "rightFilesVisible",
     "rightChangesVisible",
     "rightSearchVisible",
@@ -221,6 +224,15 @@ export function resolveFont(value: string): string {
   return value.trim() || DEFAULT_MONO_FONT;
 }
 
+/** 界面默认字体栈：无衬线，跟 styles.css 里 body 的兜底保持一致 */
+export const DEFAULT_UI_FONT =
+  'ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif';
+
+/** 界面字体名留空就回落默认无衬线栈 */
+export function resolveUiFont(value: string): string {
+  return value.trim() || DEFAULT_UI_FONT;
+}
+
 /** 智能体的 mode 取值；和 opencode 的 AgentConfig.mode 对齐 */
 const AGENT_MODES: AgentProfile["mode"][] = ["primary", "subagent", "all"];
 
@@ -249,6 +261,7 @@ const DEFAULTS: Settings = {
   agentPrimary: "build",
   agentGlobal: emptyAgentLayer(),
   agentWorkspaces: {},
+  uiFontFamily: "",
   terminalShell: "",
   terminalFontFamily: "",
   terminalFontSize: 13,
@@ -478,6 +491,7 @@ function readSaved(): Settings {
     // 老版本的设置里没有这两项，回落成空层 / 空表；更早的字段叫 agentProjects，兜底读旧名
     agentGlobal: asLayer(raw.agentGlobal),
     agentWorkspaces: asWorkspaceLayers(raw.agentWorkspaces ?? raw.agentProjects),
+    uiFontFamily: asString(raw.uiFontFamily, DEFAULTS.uiFontFamily),
     terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
@@ -565,6 +579,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       // 写不进去只影响下次启动，本次会话照常生效
     }
   }, [settings]);
+
+  // 界面字体挂到 <html> 的 CSS 变量上；styles.css 里 body 按它取字体
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--ui-font-family",
+      resolveUiFont(settings.uiFontFamily),
+    );
+  }, [settings.uiFontFamily]);
 
   // 另一个窗口改了设置就跟着走。storage 事件只在别的 document 触发，不会自回流
   useEffect(() => {

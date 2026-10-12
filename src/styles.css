@@ -291,7 +291,15 @@ body,
 body {
   background: var(--c-app);
   color: var(--c-fg);
-  font-family: ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  /* 界面字体由设置注入到 --ui-font-family；兜底栈跟 settings.tsx 的 DEFAULT_UI_FONT 保持一致 */
+  font-family: var(
+    --ui-font-family,
+    ui-sans-serif,
+    system-ui,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif
+  );
   font-size: 13px;
   overflow: hidden;
 }

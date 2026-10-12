@@ -186,6 +186,7 @@ function describeState(ctx: AppAgentContext) {
     fullscreen: ctx.fullscreen,
     activeWorkspace: ctx.activeWorkspace?.name ?? null,
     settings: {
+      uiFontFamily: settings.uiFontFamily,
       terminalFontFamily: settings.terminalFontFamily,
       terminalFontSize: settings.terminalFontSize,
       terminalFontBold: settings.terminalFontBold,
@@ -243,6 +244,7 @@ const BOOLEAN_KEYS = new Set([
 ]);
 
 const STRING_KEYS = new Set([
+  "uiFontFamily",
   "terminalShell",
   "terminalFontFamily",
   "terminalTheme",
