@@ -97,7 +97,11 @@ export interface Settings {
   agentPrimary: string;
   /** 全局层的智能体配置（所有工作区共享） */
   agentGlobal: AgentLayer;
-  /** 工作区层的智能体配置，按工作区绝对路径索引 */
+  /**
+   * @deprecated 工作区层的智能体配置已改以工作区根下 `.codedock/` 的文件为准，
+   * 这里只保留旧数据用于一次性迁移（见 lib/agent-config.ts 的 readWorkspaceLayer）
+   * 以及删除提供商时对遗留引用的粗略计数。新代码不要再读写它。
+   */
   agentWorkspaces: Record<string, AgentLayer>;
   /** 终端启动的 shell 候选 id；空串表示自动（后端按平台挑） */
   terminalShell: string;

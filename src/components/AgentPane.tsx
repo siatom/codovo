@@ -7,7 +7,7 @@ import {
   useState,
   type Ref,
 } from "react";
-import { useSettings } from "../lib/settings";
+import { emptyAgentLayer, useSettings, type AgentLayer } from "../lib/settings";
 import { samePath } from "../lib/fs";
 import { useEffectiveAiConfig } from "../lib/ai";
 import {
@@ -38,9 +38,10 @@ import { useAttention } from "../lib/attention";
 import {
   APP_AGENT_NAME,
   PREVIEW_AGENT_NAME,
+  mergeAgentLayer,
   primaryAgentOptions,
-  resolveAgentLayer,
 } from "../lib/agent-profiles";
+import { readWorkspaceLayer } from "../lib/agent-config";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
@@ -292,9 +293,37 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   // 默认模型那家提供商走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
-  // 生效层（全局 + 当前工作区已合并）与 primary agent 候选。选择器存的是名字，
+  // 项目层配置以仓库根的 `.codedock/` 为准，异步读进来；读到之前保持 null，
+  // boot 会等它就绪再启动，免得把半截配置喂给 opencode。
+  const [workspaceLayer, setWorkspaceLayer] = useState<AgentLayer | null>(null);
+  useEffect(() => {
+    if (!root) {
+      setWorkspaceLayer(emptyAgentLayer());
+      return;
+    }
+    let cancelled = false;
+    setWorkspaceLayer(null);
+    readWorkspaceLayer(root, settings.agentWorkspaces[root])
+      .then(({ layer: loaded, migrated }) => {
+        if (cancelled) return;
+        setWorkspaceLayer(loaded);
+        if (migrated) console.info("已把旧的项目层智能体配置迁移到 .codedock/");
+      })
+      .catch((reason) => {
+        console.error("读取项目层智能体配置失败", reason);
+        if (!cancelled) setWorkspaceLayer(emptyAgentLayer());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [root, settings.agentWorkspaces]);
+
+  // 生效层（全局 + 项目已合并）与 primary agent 候选。选择器存的是名字，
   // 可能已被删掉 / 改名，所以实际用的是「候选里还有没有它」的结果，没有就回落 build。
-  const layer = useMemo(() => resolveAgentLayer(settings, root), [settings, root]);
+  const layer = useMemo(
+    () => mergeAgentLayer(settings.agentGlobal, workspaceLayer ?? emptyAgentLayer()),
+    [settings.agentGlobal, workspaceLayer],
+  );
   const agentOptions = useMemo(() => primaryAgentOptions(layer), [layer]);
   const primary = agentOptions.some((option) => option.value === settings.agentPrimary)
     ? settings.agentPrimary
@@ -425,10 +454,11 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   ]);
 
   useEffect(() => {
-    if (!active || startedRef.current) return;
+    // 等项目层配置读到再启动：boot 会把 layer 喂给 opencode，读到之前启动会漏配置
+    if (!active || startedRef.current || workspaceLayer === null) return;
     startedRef.current = true;
     void boot();
-  }, [active, boot]);
+  }, [active, boot, workspaceLayer]);
 
   // 事件流只订阅一次。后端是全量转发的，用 ref 拿当前会话 id，
   // 免得每次开会话都要重订阅一遍

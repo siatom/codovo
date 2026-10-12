@@ -1,6 +1,7 @@
 #![allow(linker_messages)]
 
 mod agent;
+mod agent_config;
 mod ai;
 mod app_agent;
 mod cli_sessions;
@@ -200,6 +201,8 @@ pub fn run() {
             preview::preview_status,
             preview_agent::preview_agent_take_request,
             preview_agent::preview_agent_respond,
+            agent_config::agent_config_read,
+            agent_config::agent_config_write,
             tray::app_quit,
             tray::app_hide_to_tray,
         ])
