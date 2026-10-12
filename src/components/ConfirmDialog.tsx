@@ -7,7 +7,7 @@ interface ConfirmDialogProps {
   confirmLabel: string;
   /**
    * 取消按钮的文案，默认「取消」。当取消位上其实是个有意义的动作时改这里
-   * （关窗口那处，「取消」= 「最小化到托盘」），点遮罩和按 Esc 都算走这条
+   * （关窗口那处，「取消」= 「最小化到托盘」）
    */
   cancelLabel?: string;
   /** 有值时在正文下方多一个勾选框，勾没勾跟着确认 / 取消一起回传 */
@@ -15,6 +15,12 @@ interface ConfirmDialogProps {
   /** `checked` 只在给了 `checkboxLabel` 时才有意义，否则恒为 false */
   onConfirm: (checked: boolean) => void;
   onCancel: (checked: boolean) => void;
+  /**
+   * 点遮罩 / 按 Esc（即「反悔、什么都不做」）的行为，不给就回退到 `onCancel`。
+   * 取消位是个有意义的动作时必须单独给（关窗口那处取消 = 最小化到托盘），
+   * 否则用户想反悔时会被顺手最小化掉。
+   */
+  onDismiss?: (checked: boolean) => void;
 }
 
 const CANCEL_BUTTON =
@@ -26,7 +32,7 @@ const CONFIRM_BUTTON =
 
 /**
  * 破坏性操作的确认框。外壳照设置面板那一套（遮罩 + 圆角卡片），
- * 点遮罩或按 Esc 都算取消。
+ * 点遮罩或按 Esc 都算「反悔」（走 `onDismiss`，默认等同取消）。
  *
  * 刻意不用 `window.confirm`：WKWebView（macOS）不支持 `confirm` / `prompt`，
  * 调用会**静默失效**——不弹框、直接返回，用户根本不知道发生了什么。
@@ -39,16 +45,20 @@ export function ConfirmDialog({
   checkboxLabel,
   onConfirm,
   onCancel,
+  onDismiss,
 }: ConfirmDialogProps) {
   const [checked, setChecked] = useState(false);
 
+  // 点遮罩 / 按 Esc 走这条；没单独给就回退到取消（大多数场景两者等价）
+  const dismiss = onDismiss ?? onCancel;
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onCancel(checked);
+      if (event.key === "Escape") dismiss(checked);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel, checked]);
+  }, [dismiss, checked]);
 
   return (
     <div
@@ -56,7 +66,7 @@ export function ConfirmDialog({
       // 认「按下点就在遮罩上」而不是 click：click 会派发到 mousedown/mouseup 的共同
       // 祖先，从弹窗内按下、拖到遮罩上松开也会误判成点外部
       onMouseDown={(event) => {
-        if (event.button === 0 && event.target === event.currentTarget) onCancel(checked);
+        if (event.button === 0 && event.target === event.currentTarget) dismiss(checked);
       }}
     >
       <div
