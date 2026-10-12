@@ -2030,6 +2030,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
+    preview: settings.rightPreviewVisible,
   };
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
@@ -2468,6 +2469,14 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       options={VISIBLE_OPTIONS}
                       disabledValue={lastVisible === "database" ? false : undefined}
                       onChange={(rightDatabaseVisible) => update({ rightDatabaseVisible })}
+                    />
+                  </Field>
+                  <Field label="预览">
+                    <BoolToggle
+                      value={settings.rightPreviewVisible}
+                      options={VISIBLE_OPTIONS}
+                      disabledValue={lastVisible === "preview" ? false : undefined}
+                      onChange={(rightPreviewVisible) => update({ rightPreviewVisible })}
                     />
                   </Field>
                   <Field

@@ -12,5 +12,9 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("--mcp-app") {
         std::process::exit(codedock_lib::run_app_mcp());
     }
+    // 预览助手的 MCP 工具服务（启动/停止项目预览），同样在 Tauri 初始化之前分流
+    if std::env::args().nth(1).as_deref() == Some("--mcp-preview") {
+        std::process::exit(codedock_lib::run_preview_mcp());
+    }
     codedock_lib::run()
 }

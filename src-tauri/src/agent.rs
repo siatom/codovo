@@ -57,10 +57,10 @@ const AUTH_USER: &str = "opencode";
 /// 留多少行子进程输出。启动失败的原因（端口被占、插件装不上、配置读不了）
 /// 只会打在 stdout/stderr 上，v1 时代这两路被 Stdio::null() 丢掉了，
 /// 界面上只能看到一句"启动超时"，完全没法排查。
-const CHILD_LOG_LINES: usize = 40;
+pub(crate) const CHILD_LOG_LINES: usize = 40;
 
 /// 子进程输出的环形缓冲。启动失败时靠它把原因带回给用户。
-type ChildLog = Arc<Mutex<VecDeque<String>>>;
+pub(crate) type ChildLog = Arc<Mutex<VecDeque<String>>>;
 
 /// 数据库 Agent 的内置技能正文（frontmatter 由 `render_skill` 补）。
 /// 目的：把「先看表、再确认字段、最后只写 SELECT」这套工作流写死给模型。
@@ -116,7 +116,7 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 - 左侧栏：顶部是工作区列表，底部一排按钮依次是 **主题切换 / 意见反馈 / 设置 / 应用助手 / 收起侧边栏**。
 - 中间左侧一列：**终端（TUI）** 与 **智能体（GUI）** 两个视图，靠顶栏居中的分段控件切换。
-- 右侧栏：最左是模块图标条（文件 / 搜索 / 变更 / 浏览器 / 远程连接 / 数据库），
+- 右侧栏：最左是模块图标条（文件 / 搜索 / 变更 / 浏览器 / 远程连接 / 数据库 / 预览），
   图标条底部那个按钮收起/展开整条右栏；每个模块的标题栏右上角有全屏按钮。
 
 ## 常用设置在哪（回答「怎么改 X」时照这个说）
@@ -148,7 +148,7 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 ## 界面工具
 
-- `switch_panel`：panel 取 files / search / changes / browser / remote / database，
+- `switch_panel`：panel 取 files / search / changes / browser / remote / database / preview，
   会展开右栏并切到该模块。
 - `set_right_pane`：open=true 展开、false 收起整条右栏。
 - `set_fullscreen`：area 取 none / left / right
@@ -179,6 +179,57 @@ app_set_right_pane / app_set_fullscreen），它们改的是 CodeDock 自己的�
 const APP_AGENT_DISABLED_TOOLS: &[&str] = &[
     "bash", "edit", "write", "patch", "read", "grep", "glob", "list", "webfetch", "websearch",
     "task",
+];
+
+/// 预览助手内置技能的名字。它同时是配置目录里的文件夹名。
+const PREVIEW_AGENT_SKILL_NAME: &str = "preview-control";
+
+/// 预览助手专用 primary agent 的名字。前端 `lib/agent-profiles.ts` 的 `PREVIEW_AGENT_NAME` 与它对齐。
+const PREVIEW_AGENT_AGENT_NAME: &str = "preview";
+
+/// 预览助手的技能正文（frontmatter 由 `render_skill` 补）。
+/// 目的：把「先探测、再启动、后查状态」的流程与项目类型判断依据写死给模型。
+const PREVIEW_AGENT_SKILL_BODY: &str = "\
+# 项目预览
+
+你负责按当前工作区的项目类型启动 / 停止预览，方便调试和验证。
+
+## 工作流
+
+1. 先调 `preview_detect` 看探测结果（kind / command / port / reason / warnings）。
+2. 用户没指定就用探测到的命令直接 `preview_start`；要改命令 / 端口就传 `command` / `port`。
+3. 启动后调 `preview_status` 看是否就绪、地址或 CDP 端口是多少。
+4. 要停就 `preview_stop`。
+
+## 项目类型与预览方式（探测依据）
+
+| 标记 | 类型 | 预览方式 |
+|---|---|---|
+| `src-tauri/tauri.conf.json` 或依赖里有 `@tauri-apps/cli` | Tauri 桌面 | `tauri dev`，Windows 上带 CDP 调试端口 |
+| `package.json` 有 `scripts.dev` / `scripts.start` | Web | 起 dev server，用内嵌浏览器看 |
+| 都没有 | 未知 | 让用户提供启动命令 |
+
+## 注意
+
+- 探测出 warnings（例如「这是 CodeDock 自身」）时先如实转告用户，再决定要不要起。
+- 预览进程由 CodeDock 托管，日志显示在右栏「预览」模块里。
+- 你改不了项目代码；要让代码改动生效，先让用户改完再重启预览。";
+
+/// 预览助手专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
+const PREVIEW_AGENT_PROMPT: &str = "\
+你是 CodeDock 里的「预览助手」，负责按当前工作区的项目类型启动 / 停止预览，帮用户调试和验证。\
+你能看到的工具只有一组预览工具（preview_detect / preview_start / preview_stop / preview_status）。\n\
+规则：\n\
+1. 用户要「预览」「跑起来看看」「起个 dev」时，先 preview_detect，再 preview_start，\
+然后用 preview_status 汇报地址或 CDP 调试端口。\n\
+2. 探测出 warnings 时先转告用户，别默默起。\n\
+3. 用户要停就 preview_stop。\n\
+4. 你改不了项目代码、也跑不了任意命令；需要改代码请让用户切到「终端」或普通智能体。";
+
+/// 预览助手要关掉的工具：它只负责起 / 停预览，不该去改文件或跑 shell。
+/// 保留 read / grep / glob / list，好让它必要时看一眼项目结构。
+const PREVIEW_AGENT_DISABLED_TOOLS: &[&str] = &[
+    "bash", "edit", "write", "patch", "webfetch", "websearch", "task",
 ];
 
 /// 对接的是哪一带 opencode 的接口。
@@ -641,7 +692,7 @@ fn basic_auth(password: &str) -> String {
 }
 
 /// 把子进程一路输出的行推进环形缓冲。
-fn pump_child_log(stream: impl Read + Send + 'static, log: ChildLog) {
+pub(crate) fn pump_child_log(stream: impl Read + Send + 'static, log: ChildLog) {
     std::thread::spawn(move || {
         for line in BufReader::new(stream).lines().map_while(Result::ok) {
             let Ok(mut buffer) = log.lock() else { return };
@@ -842,7 +893,7 @@ pub(crate) fn needs_cmd_wrapper(_path: &Path) -> bool {
 
 /// 挑一个空闲端口：让系统分配，拿到号之后立刻放掉。中间那一小段窗口理论上会被
 /// 别人抢，但本地开发场景不值得为此再加一层握手。
-fn free_port() -> Result<u16, String> {
+pub(crate) fn free_port() -> Result<u16, String> {
     let listener =
         std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("分配端口失败: {e}"))?;
     listener
@@ -852,7 +903,7 @@ fn free_port() -> Result<u16, String> {
 }
 
 /// 用户指定了固定端口时先探一下，被占了要早点报错，别等健康检查超时。
-fn check_port(port: u16) -> Result<u16, String> {
+pub(crate) fn check_port(port: u16) -> Result<u16, String> {
     match std::net::TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
             drop(listener);
@@ -929,11 +980,15 @@ fn provider_hint() -> String {
 /// 界面操作的 MCP 工具（本 exe 的 `--mcp-app`）、内置技能与专用 primary agent。
 /// 它**总是**注入而不是按需——opencode 的 agent 与 MCP 都是启动时读配置定下的，
 /// 起完再切 primary agent 不会重读，按需注入就得在切换时重启整个服务。
+///
+/// `preview_mailbox` 为 `Some`（同样只给工作区智能体）时，额外注入「预览助手」：
+/// 预览工具（本 exe 的 `--mcp-preview`）、内置技能与专用 primary agent。
 fn write_config(
     dir: &Path,
     cfg: &AgentConfig,
     db_target: Option<&Path>,
     app_mailbox: Option<&Path>,
+    preview_mailbox: Option<&Path>,
 ) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
 
@@ -983,6 +1038,20 @@ fn write_config(
             description: "CodeDock 界面结构与设置字段速查：界面操作助手回答「怎么改某设置」时用"
                 .to_string(),
             content: APP_AGENT_SKILL_BODY.to_string(),
+        };
+        std::fs::write(target.join("SKILL.md"), render_skill(&skill))
+            .map_err(|e| format!("写入技能失败: {e}"))?;
+        wrote_skill = true;
+    }
+
+    // 预览助手也内置一份技能：把「先探测、再启动」的流程与项目类型判断依据写死给模型
+    if preview_mailbox.is_some() {
+        let target = skills_dir.join(PREVIEW_AGENT_SKILL_NAME);
+        std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
+        let skill = SkillSpec {
+            name: PREVIEW_AGENT_SKILL_NAME.to_string(),
+            description: "按项目类型启动 / 停止预览：先探测、再启动、后查状态".to_string(),
+            content: PREVIEW_AGENT_SKILL_BODY.to_string(),
         };
         std::fs::write(target.join("SKILL.md"), render_skill(&skill))
             .map_err(|e| format!("写入技能失败: {e}"))?;
@@ -1088,6 +1157,24 @@ fn write_config(
         );
     }
 
+    if preview_mailbox.is_some() {
+        // 预览助手：固定角色 + 固定边界。保留 read / grep / glob / list（必要时看项目结构），
+        // 关掉文件写 / 命令 / 联网类工具——它只该起停预览。
+        let tools = PREVIEW_AGENT_DISABLED_TOOLS
+            .iter()
+            .map(|name| (name.to_string(), serde_json::json!(false)))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        agents.insert(
+            PREVIEW_AGENT_AGENT_NAME.to_string(),
+            serde_json::json!({
+                "description": "CodeDock 预览助手：按项目类型启动 / 停止预览，方便调试验证",
+                "mode": "primary",
+                "prompt": PREVIEW_AGENT_PROMPT,
+                "tools": serde_json::Value::Object(tools),
+            }),
+        );
+    }
+
     let mut config = serde_json::json!({
         "provider": serde_json::Value::Object(providers),
         "model": default_model,
@@ -1152,6 +1239,25 @@ fn write_config(
                 map.insert("app".to_string(), entry);
             }
             _ => config["mcp"] = serde_json::json!({ "app": entry }),
+        }
+    }
+
+    if let Some(mailbox) = preview_mailbox {
+        // 预览工具走本 exe 的 `--mcp-preview` 子命令，邮箱目录用环境变量告诉子进程，
+        // 它只负责写请求 / 读响应，真正执行在前端（见 src-tauri/src/preview_agent.rs）。
+        // `timeout` 放到 2 分钟：起 dev server 要等，工具得一直等前端把结果写回来。
+        let exe = std::env::current_exe().map_err(|e| format!("拿不到程序路径: {e}"))?;
+        let entry = serde_json::json!({
+            "type": "local",
+            "command": [exe.to_string_lossy(), "--mcp-preview"],
+            "environment": { "CODEDOCK_PREVIEW_MAILBOX": mailbox.to_string_lossy() },
+            "timeout": 120000,
+        });
+        match config.get_mut("mcp") {
+            Some(serde_json::Value::Object(map)) => {
+                map.insert("preview".to_string(), entry);
+            }
+            _ => config["mcp"] = serde_json::json!({ "preview": entry }),
         }
     }
 
@@ -1267,7 +1373,7 @@ pub(crate) fn hide_console(command: &mut Command) {
 pub(crate) fn hide_console(_command: &mut Command) {}
 
 #[cfg(windows)]
-fn kill_child(child: &mut Child) {
+pub(crate) fn kill_child(child: &mut Child) {
     // opencode 跑 bash 工具时会派生子 shell，child.kill() 只杀得掉直接子进程，
     // 所以走 taskkill /T 连整棵树一起收
     let pid = child.id().to_string();
@@ -1280,7 +1386,7 @@ fn kill_child(child: &mut Child) {
 }
 
 #[cfg(not(windows))]
-fn kill_child(child: &mut Child) {
+pub(crate) fn kill_child(child: &mut Child) {
     // 启动时 process_group(0) 已让它自成一组，负号表示整组一起发信号
     let pid = child.id();
     let _ = Command::new("kill")
@@ -1738,7 +1844,19 @@ pub async fn agent_start(
         } else {
             Some(crate::app_agent::mailbox_dir(&app)?)
         };
-        write_config(&config_dir, &config, db_target.as_deref(), app_mailbox.as_deref())?;
+        // 预览助手的邮箱同理，也只给工作区智能体
+        let preview_mailbox = if config.database {
+            None
+        } else {
+            Some(crate::preview_agent::mailbox_dir(&app)?)
+        };
+        write_config(
+            &config_dir,
+            &config,
+            db_target.as_deref(),
+            app_mailbox.as_deref(),
+            preview_mailbox.as_deref(),
+        )?;
 
         let password = random_password();
         let (child, log) = spawn_opencode(
@@ -2178,7 +2296,7 @@ mod tests {
         }];
         cfg.primary = "reviewer".to_string();
 
-        write_config(&dir, &cfg, None, None).unwrap();
+        write_config(&dir, &cfg, None, None, None).unwrap();
 
         // 规则 / 记忆落成文件，并在 instructions 里用绝对路径引用
         assert!(dir.join("rules.md").exists());
@@ -2217,7 +2335,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codedock-agent-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg, None, None).unwrap();
+        write_config(&dir, &cfg, None, None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2238,7 +2356,7 @@ mod tests {
         let mut cfg = bare_config();
         cfg.database = true;
         let target = dir.join("target.json");
-        write_config(&dir, &cfg, Some(&target), None).unwrap();
+        write_config(&dir, &cfg, Some(&target), None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2270,7 +2388,7 @@ mod tests {
 
         let cfg = bare_config();
         let mailbox = dir.join("app-agent");
-        write_config(&dir, &cfg, None, Some(&mailbox)).unwrap();
+        write_config(&dir, &cfg, None, Some(&mailbox), None).unwrap();
 
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
@@ -2429,7 +2547,7 @@ mod tests {
         let dir = std::env::temp_dir().join("codedock-agent-test-config");
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
-        write_config(&dir, &cfg, None, None).unwrap();
+        write_config(&dir, &cfg, None, None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2478,7 +2596,7 @@ mod tests {
             },
         ];
         cfg.default_model = "deepseek/deepseek-reasoner".to_string();
-        write_config(&dir, &cfg, None, None).unwrap();
+        write_config(&dir, &cfg, None, None, None).unwrap();
 
         let text = std::fs::read_to_string(dir.join("opencode.json")).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -2502,7 +2620,7 @@ mod tests {
             default_model: "my-vendor/m".to_string(),
             ..cfg
         };
-        write_config(&dir, &cfg, None, None).unwrap();
+        write_config(&dir, &cfg, None, None, None).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
                 .unwrap();
@@ -2541,7 +2659,7 @@ mod tests {
                 prompt: String::new(),
             },
         ];
-        write_config(&dir, &cfg, None, None).unwrap();
+        write_config(&dir, &cfg, None, None, None).unwrap();
 
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())

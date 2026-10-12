@@ -15,6 +15,14 @@ const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const APP_AGENT_NAME = "app";
 export const APP_AGENT_LABEL = "应用助手";
 
+/**
+ * 内置「预览助手」primary agent 的名字与显示名。名字要和后端
+ * `src-tauri/src/agent.rs` 的 `PREVIEW_AGENT_AGENT_NAME` 对齐——那边把它写进 opencode 的
+ * agent map，这边只是选它。
+ */
+export const PREVIEW_AGENT_NAME = "preview";
+export const PREVIEW_AGENT_LABEL = "预览助手";
+
 export function isValidAgentName(name: string): boolean {
   return NAME_PATTERN.test(name.trim());
 }
@@ -68,9 +76,10 @@ export function primaryAgentOptions(layer: AgentLayer): { value: string; label: 
   return [
     { value: "build", label: "build" },
     { value: "plan", label: "plan" },
-    // 应用助手由后端无条件注入到工作区智能体的配置里（见 agent.rs 的 write_config），
-    // 所以它总在候选里；选中它只是把 primary 切成 app
+    // 应用助手 / 预览助手由后端无条件注入到工作区智能体的配置里（见 agent.rs 的 write_config），
+    // 所以它们总在候选里；选中只是把 primary 切成对应名字
     { value: APP_AGENT_NAME, label: APP_AGENT_LABEL },
+    { value: PREVIEW_AGENT_NAME, label: PREVIEW_AGENT_LABEL },
     ...custom,
   ];
 }

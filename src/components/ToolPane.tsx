@@ -11,11 +11,11 @@ import { SearchPane } from "./SearchPane";
 import { IconChevronDown, IconChevronRight, IconRefresh } from "./icons";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
-export type ToolId = "files" | "changes" | "search" | "browser" | "remote" | "database";
+export type ToolId = "files" | "changes" | "search" | "browser" | "remote" | "database" | "preview";
 
 const TOOL_KEY = "codedock.rightTool.";
 
-const TOOLS: ToolId[] = ["files", "changes", "search", "browser", "remote", "database"];
+const TOOLS: ToolId[] = ["files", "changes", "search", "browser", "remote", "database", "preview"];
 
 /** 标题栏图标按钮的样式，和「文件」模块标题栏那几个按钮一致 */
 const ICON_BUTTON =
@@ -138,7 +138,11 @@ export function ToolPane({
 }: ToolPaneProps) {
   const { settings } = useSettings();
   const filesHidden =
-    tool === "changes" || tool === "search" || tool === "remote" || tool === "database";
+    tool === "changes" ||
+    tool === "search" ||
+    tool === "remote" ||
+    tool === "database" ||
+    tool === "preview";
   /**
    * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
    * 初始只展开第一个根、其余收起：多根时几份改动加时间线全铺开，一屏根本看不完。

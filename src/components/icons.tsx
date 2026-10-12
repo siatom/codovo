@@ -500,6 +500,13 @@ export const IconGlobe = icon(
   </>,
 );
 
+/** 右栏的「预览」模块：播放三角 */
+export const IconPlay = icon(
+  <>
+    <path d="M6 3 20 12 6 21Z" />
+  </>,
+);
+
 /** 右栏的「远程连接」模块：机架服务器 */
 export const IconServer = icon(
   <>

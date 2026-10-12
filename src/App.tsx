@@ -26,6 +26,12 @@ import {
   takeAppAgentRequest,
   type AppAgentContext,
 } from "./lib/app-agent";
+import {
+  respondPreviewAgent,
+  runPreviewTool,
+  takePreviewAgentRequest,
+  type PreviewAgentContext,
+} from "./lib/preview-agent";
 import { APP_AGENT_NAME } from "./lib/agent-profiles";
 import { useTheme } from "./lib/theme";
 import {
@@ -447,6 +453,44 @@ function Shell() {
       } catch (reason) {
         // 这里失败意味着结果没能写回去，MCP 那边只能等到超时；留个日志方便排查
         console.error("应用助手工具调用失败", reason);
+      } finally {
+        busy = false;
+      }
+    };
+    const timer = window.setInterval(() => void tick(), APP_AGENT_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  /**
+   * 预览助手桥：和应用助手同一套（后端 MCP 子进程只能写请求文件），执行的是预览工具。
+   * ctx 每次渲染重建，读的是此刻的活动工作区与界面句柄，经 ref 传给只挂一次的轮询 effect。
+   */
+  const previewAgentCtxRef = useRef<PreviewAgentContext | null>(null);
+  previewAgentCtxRef.current = {
+    activeRoot: activeWorkspace?.activeRoot ?? null,
+    layout: {
+      openTool: (id) => handlesRef.current.get(activeIdRef.current ?? "")?.layout?.openTool(id),
+    },
+  };
+
+  useEffect(() => {
+    let stopped = false;
+    let busy = false;
+    void takePreviewAgentRequest().catch(() => {});
+    const tick = async () => {
+      if (stopped || busy) return;
+      busy = true;
+      try {
+        const request = await takePreviewAgentRequest();
+        const ctx = previewAgentCtxRef.current;
+        if (!request || !ctx || stopped) return;
+        const outcome = await runPreviewTool(request, ctx);
+        await respondPreviewAgent(request.id, outcome.ok, outcome.text);
+      } catch (reason) {
+        console.error("预览助手工具调用失败", reason);
       } finally {
         busy = false;
       }
