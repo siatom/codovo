@@ -26,7 +26,7 @@ import {
   writeFile,
 } from "../lib/fs";
 import type { GitMark } from "../lib/git";
-import { useSettings, resolveFont } from "../lib/settings";
+import { useSettings, resolveFont, type EditorIndent } from "../lib/settings";
 import { useTabReorder } from "../lib/use-tab-reorder";
 import { sameTab, tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
@@ -117,6 +117,18 @@ function sameViewInfo(a: ViewInfo, b: ViewInfo): boolean {
     a.insertSpaces === b.insertSpaces &&
     a.wordWrap === b.wordWrap
   );
+}
+
+/**
+ * 缩进是 model 级选项：选了具体宽度就固定下来；auto 时按内容再猜一次（默认 4 空格兜底）。
+ * Monaco 只在建 model 那一刻按内容探测，之后不再重猜，所以固定宽度只要覆盖 tabSize 即可
+ */
+function applyIndentToModel(model: monaco.editor.ITextModel, indent: EditorIndent) {
+  if (indent === "auto") {
+    model.detectIndentation(true, 4);
+  } else {
+    model.updateOptions({ tabSize: Number(indent), insertSpaces: true });
+  }
 }
 
 /** Monaco 语言 id 的显示名缓存：aliases 取第一个，取不到就用 id 本身 */
@@ -483,6 +495,11 @@ export function EditorPane({
   fontFamilyRef.current = settings.editorFontFamily;
   const fontBoldRef = useRef(settings.editorFontBold);
   fontBoldRef.current = settings.editorFontBold;
+  // 缩略图 / 缩进宽度同理：editor 与 model 只建一次，建的那一刻闭包里拿不到最新 state
+  const minimapRef = useRef(settings.editorMinimap);
+  minimapRef.current = settings.editorMinimap;
+  const indentRef = useRef(settings.editorIndent);
+  indentRef.current = settings.editorIndent;
   // 差异编辑器只在第一次要看差异时建，建实例那一刻闭包里拿不到最新 state，
   // 所以排布偏好也走 ref（和 fontSizeRef 同一套路）
   const diffSideBySideRef = useRef(diffSideBySide);
@@ -764,6 +781,7 @@ export function EditorPane({
         const language = languageOf(path);
         const existing = monaco.editor.getModel(uri);
         const model = existing ?? monaco.editor.createModel(content.text, language, uri);
+        if (!existing) applyIndentToModel(model, indentRef.current);
         modelsRef.current.set(key, {
           path,
           model,
@@ -1062,6 +1080,9 @@ export function EditorPane({
           monaco.editor.getModel(modifiedUri) ??
           monaco.editor.createModel(payload.modified, language, modifiedUri),
       };
+      // 差异是只读的，缩进只影响显示宽度，直接按当前设置对齐两侧
+      applyIndentToModel(pair.original, indentRef.current);
+      applyIndentToModel(pair.modified, indentRef.current);
       diffModelsRef.current.set(key, pair);
 
       ensureDiffEditor();
@@ -1086,7 +1107,7 @@ export function EditorPane({
       fontSize: fontSizeRef.current,
       fontFamily: resolveFont(fontFamilyRef.current),
       fontWeight: fontBoldRef.current ? "bold" : "normal",
-      minimap: { enabled: true, renderCharacters: false },
+      minimap: { enabled: minimapRef.current, renderCharacters: false },
       scrollBeyondLastLine: false,
       smoothScrolling: true,
       renderWhitespace: "selection",
@@ -1172,6 +1193,24 @@ export function EditorPane({
     settings.editorFontSize,
     settings.editorFontBold,
   ]);
+
+  // 缩略图是 editor 级选项，热更新即可（差异编辑器不显示缩略图，无需跟随）
+  useEffect(() => {
+    editorRef.current?.updateOptions({ minimap: { enabled: settings.editorMinimap } });
+  }, [settings.editorMinimap]);
+
+  // 缩进宽度是 model 级选项：改了要把缓存里的所有 model 一起更新（含差异两侧），
+  // 否则已打开的文件还是旧缩进，切回来才发现不一致
+  useEffect(() => {
+    for (const cached of modelsRef.current.values()) {
+      applyIndentToModel(cached.model, settings.editorIndent);
+    }
+    for (const pair of diffModelsRef.current.values()) {
+      applyIndentToModel(pair.original, settings.editorIndent);
+      applyIndentToModel(pair.modified, settings.editorIndent);
+    }
+    refreshViewInfo();
+  }, [settings.editorIndent, refreshViewInfo]);
 
   // 自动保存：时机照 VS Code 那套，落盘统一走 persist
   useEffect(() => {
@@ -1293,6 +1332,7 @@ export function EditorPane({
         const language = languageOf(path);
         const existing = monaco.editor.getModel(uri);
         const model = existing ?? monaco.editor.createModel(content.text, language, uri);
+        if (!existing) applyIndentToModel(model, indentRef.current);
         // savedVersionId 取「重排之前」的版本号：json5/jsonc 打开时会自动重排，
         // 于是重排完立刻算未保存改动（用户 Ctrl+Z 撤销回原缩进时，版本号回到这里又会变干净）
         modelsRef.current.set(key, {
