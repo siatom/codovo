@@ -4,6 +4,7 @@ mod agent;
 mod agent_config;
 mod ai;
 mod app_agent;
+mod cicd;
 mod cli_sessions;
 mod database;
 mod db_agent;
@@ -61,6 +62,7 @@ pub fn run() {
         .manage(remote::RemoteState::new())
         .manage(database::DbState::new())
         .manage(preview::PreviewState::new())
+        .manage(cicd::CicdState::new())
         .setup(|app| {
             // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
             tray::init(app.handle())?;
@@ -204,6 +206,12 @@ pub fn run() {
             preview::preview_status,
             preview_agent::preview_agent_take_request,
             preview_agent::preview_agent_respond,
+            cicd::cicd_read_config,
+            cicd::cicd_write_config,
+            cicd::cicd_detect_config,
+            cicd::cicd_run,
+            cicd::cicd_stop,
+            cicd::cicd_status,
             agent_config::agent_config_read,
             agent_config::agent_config_write,
             tray::app_quit,
@@ -238,6 +246,10 @@ pub fn run() {
                 }
                 // 预览 dev server 是常驻子进程，退出时带走（每个工作区一个）
                 if let Some(state) = app.try_state::<preview::PreviewState>() {
+                    state.kill_all();
+                }
+                // CICD 流水线可能正卡在某条命令上，退出时打断并 kill 当前子进程
+                if let Some(state) = app.try_state::<cicd::CicdState>() {
                     state.kill_all();
                 }
             }
