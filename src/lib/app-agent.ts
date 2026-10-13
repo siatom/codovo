@@ -194,6 +194,7 @@ function describeState(ctx: AppAgentContext) {
       terminalShell: settings.terminalShell,
       terminalWaitHint: settings.terminalWaitHint,
       editorFontFamily: settings.editorFontFamily,
+      uiMonoFontFamily: settings.uiMonoFontFamily,
       editorFontSize: settings.editorFontSize,
       editorFontBold: settings.editorFontBold,
       editorAutoSave: settings.editorAutoSave,
@@ -254,6 +255,7 @@ const STRING_KEYS = new Set([
   "terminalFontFamily",
   "terminalTheme",
   "editorFontFamily",
+  "uiMonoFontFamily",
   "agentCommand",
   "agentPrimary",
 ]);
