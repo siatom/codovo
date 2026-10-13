@@ -79,7 +79,8 @@ export function CliHistory({
   onChange,
   onResume,
 }: CliHistoryProps) {
-  const [open, setOpen] = useState(true);
+  /** 默认收起，避免历史记录占用左侧边栏的主要空间 */
+  const [open, setOpen] = useState(false);
   const [items, setItems] = useState<CliSessionInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
