@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   joinLocal,
   localCrumbs,
@@ -6,6 +7,9 @@ import {
   localMkdir,
   localRemove,
   localRename,
+  localUnwatchDir,
+  localWatchDir,
+  onLocalDirChanged,
   parentLocal,
 } from "../lib/local-fs";
 import { FilePanel, type PanelEntry, type PanelProgress } from "./FilePanel";
@@ -25,6 +29,8 @@ interface LocalFilesProps {
   onNavigate: (path: string) => void;
   onSelect: (entry: PanelEntry) => void;
   onTransfer: (entry: PanelEntry) => void;
+  /** 拖到本面板上时把条目交给容器，由容器传到对侧落点目录 */
+  onDropEntry: (entry: PanelEntry, targetDir: string, side: "left" | "right") => void;
   onDismissTransferError: () => void;
 }
 
@@ -42,6 +48,7 @@ export function LocalFiles({
   onNavigate,
   onSelect,
   onTransfer,
+  onDropEntry,
   onDismissTransferError,
 }: LocalFilesProps) {
   const [entries, setEntries] = useState<PanelEntry[]>([]);
@@ -74,6 +81,31 @@ export function LocalFiles({
   }, [path, refreshNonce, reloadNonce]);
 
   const reload = useCallback(() => setReloadNonce((value) => value + 1), []);
+
+  /**
+   * 当前目录发生外部变动（资源管理器 / 终端 / 别的程序）时自动重列。
+   *
+   * 「此电脑」那层 `path === ""` 没有真实目录可监听，跳过。后端按目录登记监听、
+   * 载荷就是那个目录自己（非递归，只关心列表这一层）；这里再比对一次是因为
+   * 同一窗口可能有多个面板各自听着不同目录。
+   */
+  useEffect(() => {
+    if (!path) return;
+    let unlisten: UnlistenFn | null = null;
+    let disposed = false;
+    void localWatchDir(path).catch(() => {});
+    void onLocalDirChanged((dir) => {
+      if (dir === path) reload();
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+      void localUnwatchDir(path).catch(() => {});
+    };
+  }, [path, reload]);
 
   const mkdir = useCallback(
     async (name: string) => {
@@ -125,6 +157,8 @@ export function LocalFiles({
       onRename={rename}
       onDelete={remove}
       onTransfer={onTransfer}
+      onDropEntry={onDropEntry}
+      dropDir={path}
       onDismissError={() => {
         setError("");
         onDismissTransferError();
