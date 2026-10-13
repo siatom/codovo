@@ -7,7 +7,12 @@ import {
 } from "react";
 import { formatTime } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
-import { agentTarget, useAttentionAll, type AttentionMap } from "../lib/attention";
+import {
+  agentTarget,
+  useAttentionAll,
+  type AttentionKind,
+  type AttentionMap,
+} from "../lib/attention";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import type { Workspace } from "../lib/workspaces";
@@ -86,14 +91,24 @@ interface SidebarProps {
   onOpenAppAgent: () => void;
 }
 
-/** 一个工作区里第一个「在等用户」的目标键（终端标签优先，其次智能体会话）；没有返回 null */
-function firstWaitingTarget(attention: AttentionMap, workspace: Workspace): string | null {
-  const found: string[] = [];
+/**
+ * 一个工作区里最该先跳过去的目标：优先「要用户回应」的（确认框 / 权限 / 提问），
+ * 其次才是「任务完成」的提醒——两件同时存在时，先把卡住的那件处理掉。
+ * 同一档里终端标签优先于智能体会话；没有返回 null
+ */
+function firstWaitingTarget(
+  attention: AttentionMap,
+  workspace: Workspace,
+): { target: string; kind: AttentionKind } | null {
+  const found: { target: string; kind: AttentionKind }[] = [];
   for (const root of workspace.roots) {
     const entry = attention[pathKey(root)];
-    if (entry) found.push(...Object.keys(entry));
+    if (!entry) continue;
+    for (const [target, kind] of Object.entries(entry)) found.push({ target, kind });
   }
-  return found.find((key) => key.startsWith("term:")) ?? found[0] ?? null;
+  const pick = (list: typeof found) =>
+    list.find((item) => item.target.startsWith("term:")) ?? list[0] ?? null;
+  return pick(found.filter((item) => item.kind !== "done")) ?? pick(found);
 }
 
 /** 窗口级偏好，存 sessionStorage：多窗口下各收各的侧边栏 */
@@ -652,6 +667,10 @@ export function Sidebar({
           const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
           // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
           const waiting = firstWaitingTarget(attentionByRoot, workspace);
+          const waitingTitle =
+            waiting?.kind === "done"
+              ? "有 AI 会话任务已完成，点击跳过去"
+              : "有 AI 会话在等你输入，点击跳过去";
           const dragging = dragOver?.id === workspace.id;
           // 落点线：插在第一项之前画在这行上面，插在最后一项之后画在最后一行下面
           const dropBefore = dragOver?.index === index;
@@ -696,18 +715,18 @@ export function Sidebar({
                         当前工作区已经能在终端标签上看到脉冲点，不必再加文字 */}
                     {waiting && (
                       <span
-                        title="有 AI 会话在等你输入，点击跳过去"
+                        title={waitingTitle}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          onFocusAttention(workspace, waiting);
+                          onFocusAttention(workspace, waiting.target);
                         }}
                         className="flex shrink-0 cursor-pointer items-center gap-1"
                       >
                         <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
                         {!isCurrent && (
                           <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
-                            等待输入
+                            {waiting.kind === "done" ? "已完成" : "等待输入"}
                           </span>
                         )}
                       </span>
@@ -812,8 +831,15 @@ export function Sidebar({
                     <ul className="flex flex-col pb-1">
                       {sessions.map((item) => {
                         const isActive = item.id === sessionId;
-                        // 这条对话是不是正等着用户输入（opencode 的权限询问 / 提问）
-                        const waitingSession = Boolean(sessionAttention[agentTarget(item.id)]);
+                        // 这条对话有没有待处理的状态（权限询问 / 提问 / 任务完成）
+                        const sessionKind = sessionAttention[agentTarget(item.id)];
+                        // 只有 done 是「已完成」；permission / question 都是在等回应
+                        const sessionHint =
+                          sessionKind === "done"
+                            ? "任务完成，等待你的下一步指令"
+                            : sessionKind
+                              ? "正在等你输入"
+                              : null;
                         return (
                           <li
                             key={item.id}
@@ -846,7 +872,7 @@ export function Sidebar({
                                 <button
                                   type="button"
                                   onClick={() => requestSession(item.id)}
-                                  title={waitingSession ? `${item.title}（正在等你输入）` : item.title}
+                                  title={sessionHint ? `${item.title}（${sessionHint}）` : item.title}
                                   className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-[34px] text-left text-[12px] ${
                                     isActive
                                       ? "text-fg"
@@ -854,8 +880,11 @@ export function Sidebar({
                                   }`}
                                 >
                                   <IconHistory className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
-                                  {waitingSession && (
-                                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />
+                                  {sessionHint && (
+                                    <span
+                                      title={sessionHint}
+                                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
+                                    />
                                   )}
                                   <span className="min-w-0 flex-1 truncate">{item.title}</span>
                                   {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」，两个都留会把标题挤没 */}

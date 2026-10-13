@@ -2697,7 +2697,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   </Field>
                   <Field
                     label="等待提示"
-                    hint="终端里 AI CLI 停在需要输入的提示上时，在标签和侧栏标出来；靠输出特征判断，可能误报"
+                    hint="终端里 AI CLI 停在需要输入的提示上、或一轮任务跑完回到空闲时，在标签和侧栏标出来；靠输出特征判断，可能误报"
                   >
                     <BoolToggle
                       value={settings.terminalWaitHint}

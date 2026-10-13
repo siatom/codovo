@@ -304,7 +304,11 @@ export function TerminalPane({
       if (!sessions.includes(id)) return;
       setMode("terminal");
       setActiveId(id);
-      handlesRef.current.get(id)?.focus();
+      const handle = handlesRef.current.get(id);
+      // 「切过去即已读」：要切的标签本来就是当前这个时 setActiveId 是空操作，
+      // 不会有 active 变化，没法靠会话自己的 effect 清掉 done 标记，直接走 handle
+      handle?.markSeen();
+      handle?.focus();
     },
     [sessions, setMode],
   );
@@ -384,8 +388,10 @@ export function TerminalPane({
               const title = custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
               // 悬停提示：启动过的会话报命令，普通会话报 shell 全名
               const hint = launchCommand ?? shell?.label ?? shellName;
-              // 这个标签是不是正停在等用户输入的提示上
-              const waiting = Boolean(attention[terminalTarget(id)]);
+              // 这个标签有没有「在等用户」的标记：等回应（prompt）或任务完成（done）
+              const kind = attention[terminalTarget(id)];
+              const attentionHint =
+                kind === "done" ? "任务完成，等待你的下一步指令" : kind ? "正在等待你的输入" : null;
               const dropBefore = dropIndex === index;
               const dropAfter = dropIndex === sessions.length && index === sessions.length - 1;
               return (
@@ -408,7 +414,7 @@ export function TerminalPane({
                   <button
                     type="button"
                     onClick={() => setActiveId(id)}
-                    title={waiting ? `${hint}（正在等待你的输入）` : hint}
+                    title={attentionHint ? `${hint}（${attentionHint}）` : hint}
                     className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
                   >
                     {launchCommand ? (
@@ -420,12 +426,12 @@ export function TerminalPane({
                     ) : (
                       <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
                     )}
-                    {/* 在等用户输入时标题也一起变色（同脉冲点的 warn 色），标签多时更好认 */}
-                    <span className={`truncate ${waiting ? "text-warn" : ""}`}>{title}</span>
-                    {/* 停在交互提示上时点一颗脉冲点，切到别的工作区也看得见 */}
-                    {waiting && (
+                    {/* 在等用户时标题也一起变色（同脉冲点的 warn 色），标签多时更好认 */}
+                    <span className={`truncate ${kind ? "text-warn" : ""}`}>{title}</span>
+                    {/* 有标记就点一颗脉冲点，切到别的工作区也看得见；等回应 / 已完成靠 title 区分 */}
+                    {attentionHint && (
                       <span
-                        title="正在等待你的输入"
+                        title={attentionHint}
                         className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
                       />
                     )}
@@ -543,10 +549,10 @@ export function TerminalPane({
                   onRequestNew={() => addSession()}
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
-                  // 启发式判出「停在等用户输入的提示上」时上抛，写进全局 store
-                  onAttentionChange={(waiting) => {
+                  // 启发式判出「在等用户」（等回应 / 任务完成）时上抛，写进全局 store
+                  onAttentionChange={(next) => {
                     const target = terminalTarget(id);
-                    if (waiting) setAttention(target, "prompt");
+                    if (next) setAttention(target, next);
                     else clearAttention(target);
                   }}
                   // 并列模式显示全部会话；标签模式只显示当前会话。active 仍只负责焦点和补尺寸。
