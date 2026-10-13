@@ -148,6 +148,8 @@ pub fn run() {
             ai::ai_generate_feedback_body,
             ai::ai_test_provider,
             ai::ai_list_provider_models,
+            ai::ai_suggest_cicd_config,
+            ai::ai_diagnose_cicd,
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,
