@@ -126,6 +126,21 @@ export function diagnoseCicd(
 }
 
 /**
+ * 让大模型根据预览的启动命令与日志给出诊断，返回 markdown 正文。
+ *
+ * 与 `diagnoseCicd` 同一套上下文，只是排障视角针对 dev server / 桌面开发实例起不来。
+ * 日志由前端截取尾部传入；后端会再做一次上限截断。
+ */
+export function diagnosePreview(
+  root: string,
+  config: AiConfig,
+  command: string,
+  log: string,
+): Promise<string> {
+  return invoke<string>("ai_diagnose_preview", { root, config, command, log });
+}
+
+/**
  * 开发调试版从 `src-tauri/.env` 读到的覆盖值；正式版恒为空。
  * 空串 / false 都表示「这一项没被覆盖」，用设置里的值。
  */

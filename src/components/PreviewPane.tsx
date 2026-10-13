@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   IconChevronDown,
   IconChevronRight,
   IconExternalLink,
+  IconPlay,
   IconRefresh,
+  IconStop,
 } from "./icons";
+import { diagnosePreview, useEffectiveAiConfig } from "../lib/ai";
 import {
   detectPreview,
   onPreviewExit,
@@ -36,6 +40,10 @@ const KIND_LABEL: Record<string, string> = {
  * - Tauri 桌面：起带 CDP 调试端口的 `tauri dev`，面板里显示端口，交给 CDP 工具驱动验证。
  *
  * 和「浏览器」模块的分工：浏览器是手动填地址的通用窗口，这里是按项目自动起进程。
+ *
+ * 结构对齐「部署」模块：头部主操作 + 可折叠常驻配置区 + 独立错误条（失败可 AI 诊断）+
+ * 日志区自动滚到底。差别在于中间留了一块 flex-1 的预览内容（iframe / 提示），
+ * 所以日志区不占满剩余、仍做成底部折叠。
  */
 export function PreviewPane({
   root,
@@ -55,9 +63,24 @@ export function PreviewPane({
   const [error, setError] = useState("");
   const [customCommand, setCustomCommand] = useState("");
   const [customPort, setCustomPort] = useState("");
+  const [configOpen, setConfigOpen] = useState(true);
   const [showLogs, setShowLogs] = useState(true);
   /** 变一次就重挂 iframe，等于刷新 */
   const [nonce, setNonce] = useState(0);
+  /** AI 辅助：生效的模型配置 + 是否正在诊断 */
+  const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
+  const [aiBusy, setAiBusy] = useState(false);
+  const [dialog, setDialog] = useState<{
+    title: string;
+    text: string | null;
+    error: string | null;
+  } | null>(null);
+  /**
+   * 进程退出后后端会清空槽位（日志一并没了），所以轮询时把最近一次非空输出留一份，
+   * 供「AI 诊断」用。
+   */
+  const lastLogRef = useRef<{ command: string; logs: string[] }>({ command: "", logs: [] });
+  const logRef = useRef<HTMLDivElement | null>(null);
 
   const runDetect = useCallback(async () => {
     try {
@@ -76,6 +99,7 @@ export function PreviewPane({
     setDetection(null);
     setStatus(null);
     setError("");
+    lastLogRef.current = { command: "", logs: [] };
     void runDetect();
   }, [runDetect]);
 
@@ -86,7 +110,15 @@ export function PreviewPane({
     const tick = async () => {
       try {
         const next = await previewStatus(root);
-        if (!stopped) setStatus(next);
+        if (stopped) return;
+        setStatus(next);
+        // 留一份最近的输出，进程退出后还能拿它做诊断
+        if (next.logs.length > 0) {
+          lastLogRef.current = {
+            command: next.command || lastLogRef.current.command,
+            logs: next.logs,
+          };
+        }
       } catch {
         // 轮询失败不打扰界面，下一次再试
       }
@@ -111,6 +143,12 @@ export function PreviewPane({
     });
     return () => unlisten?.();
   }, [root]);
+
+  // 日志自动滚到底（和部署模块一致）
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [status?.logs]);
 
   const start = useCallback(async () => {
     setBusy(true);
@@ -142,6 +180,24 @@ export function PreviewPane({
     }
   }, [root]);
 
+  /** 把启动命令与最近的日志交给大模型诊断，结果走居中弹窗 */
+  const diagnose = useCallback(async () => {
+    const command = lastLogRef.current.command || customCommand.trim();
+    const log = lastLogRef.current.logs.join("\n");
+    const title = command || "预览启动失败";
+
+    setDialog({ title, text: null, error: null });
+    setAiBusy(true);
+    try {
+      const text = await diagnosePreview(root, aiConfig, command, log);
+      setDialog({ title, text, error: null });
+    } catch (reason) {
+      setDialog({ title, text: null, error: String(reason) });
+    } finally {
+      setAiBusy(false);
+    }
+  }, [root, aiConfig, customCommand]);
+
   const running = status?.running === true;
   const url = status?.url ?? null;
   const cdpPort = status?.cdpPort ?? null;
@@ -151,7 +207,7 @@ export function PreviewPane({
   const warnings = detection?.warnings ?? [];
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
+    <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-content">
       <header className="flex h-8 shrink-0 items-center gap-1.5 border-b border-line px-2">
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${running ? "bg-accent" : "bg-line-strong"}`}
@@ -176,6 +232,11 @@ export function PreviewPane({
           title={running ? "停止预览" : "启动预览"}
           className="flex h-6 shrink-0 items-center gap-1 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
         >
+          {running ? (
+            <IconStop className="h-3.5 w-3.5" />
+          ) : (
+            <IconPlay className="h-3.5 w-3.5" />
+          )}
           {running ? "停止" : "启动"}
         </button>
         <button
@@ -205,6 +266,75 @@ export function PreviewPane({
         </div>
       )}
 
+      {error && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-danger-bg px-3 py-1.5 text-[11px] leading-relaxed text-danger">
+          <span className="min-w-0 flex-1">{error}</span>
+          <button
+            type="button"
+            onClick={() => void diagnose()}
+            disabled={!aiReady || aiBusy}
+            title={aiReady ? "让大模型分析启动失败原因" : "先在「设置 → 智能体 → 模型提供商」里配置"}
+            className="h-6 shrink-0 rounded border border-danger-line px-2 text-[11px] text-danger hover:bg-hover disabled:opacity-50"
+          >
+            {aiBusy ? "分析中…" : "AI 诊断"}
+          </button>
+        </div>
+      )}
+
+      {/* 配置区：可折叠常驻，运行中也能改（改完重新启动生效） */}
+      <div className="shrink-0 border-b border-line">
+        <button
+          type="button"
+          onClick={() => setConfigOpen((open) => !open)}
+          className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
+        >
+          {configOpen ? (
+            <IconChevronDown className="h-3 w-3" />
+          ) : (
+            <IconChevronRight className="h-3 w-3" />
+          )}
+          <span>配置</span>
+          <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
+            {detection?.reason ?? ""}
+          </span>
+        </button>
+        {configOpen && (
+          <div className="space-y-2 px-3 pb-2">
+            <label className="block">
+              <span className="text-fg-dim">启动命令</span>
+              <input
+                value={customCommand}
+                onChange={(event) => setCustomCommand(event.target.value)}
+                placeholder={detection ? "" : "探测中…"}
+                spellCheck={false}
+                className={INPUT}
+              />
+            </label>
+
+            {kind === "web" && (
+              <label className="block">
+                <span className="text-fg-dim">端口</span>
+                <input
+                  value={customPort}
+                  onChange={(event) => setCustomPort(event.target.value)}
+                  placeholder="留空则用探测到的端口"
+                  spellCheck={false}
+                  className={INPUT}
+                />
+              </label>
+            )}
+
+            <button
+              type="button"
+              onClick={() => void runDetect()}
+              className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
+            >
+              按项目重新探测
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="relative min-h-0 flex-1">
         {running && url ? (
           // 页面多半按白底设计，深色主题下不给白底会透出面板色
@@ -233,54 +363,10 @@ export function PreviewPane({
             </p>
           </div>
         ) : (
-          <div className="h-full overflow-auto px-4 py-4">
-            <div className="mx-auto max-w-[400px] space-y-3 text-[12px]">
-              {error && <p className="leading-relaxed text-warn">{error}</p>}
-              <div>
-                <p className="text-fg-dim">
-                  项目类型：
-                  <span className="ml-1 text-fg">{KIND_LABEL[kind] ?? kind}</span>
-                </p>
-                {detection?.reason && (
-                  <p className="mt-1 text-[11px] leading-relaxed text-fg-faint">
-                    {detection.reason}
-                  </p>
-                )}
-              </div>
-
-              <label className="block">
-                <span className="text-fg-dim">启动命令</span>
-                <input
-                  value={customCommand}
-                  onChange={(event) => setCustomCommand(event.target.value)}
-                  placeholder={detection ? "" : "探测中…"}
-                  spellCheck={false}
-                  className={INPUT}
-                />
-              </label>
-
-              {kind === "web" && (
-                <label className="block">
-                  <span className="text-fg-dim">端口</span>
-                  <input
-                    value={customPort}
-                    onChange={(event) => setCustomPort(event.target.value)}
-                    placeholder="留空则用探测到的端口"
-                    spellCheck={false}
-                    className={INPUT}
-                  />
-                </label>
-              )}
-
-              <button
-                type="button"
-                onClick={start}
-                disabled={busy || !customCommand.trim()}
-                className="h-7 w-full rounded bg-accent text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-50"
-              >
-                {busy ? "启动中…" : "启动预览"}
-              </button>
-            </div>
+          <div className="flex h-full items-center justify-center px-6">
+            <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
+              配置好启动命令后，点右上角「启动」运行预览。
+            </p>
           </div>
         )}
       </div>
@@ -299,11 +385,25 @@ export function PreviewPane({
           日志{logs.length > 0 ? `（${logs.length}）` : ""}
         </button>
         {showLogs && (
-          <pre className="max-h-40 overflow-auto bg-app px-3 py-2 text-[11px] leading-relaxed whitespace-pre-wrap text-fg-dim">
+          <div
+            ref={logRef}
+            className="max-h-48 overflow-auto bg-app px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg-dim"
+          >
             {logs.length > 0 ? logs.join("\n") : "（暂无输出）"}
-          </pre>
+          </div>
         )}
       </div>
+
+      {dialog && (
+        <ExplainChangeDialog
+          title={dialog.title}
+          text={dialog.text}
+          error={dialog.error}
+          onClose={() => setDialog(null)}
+          titlePrefix="预览诊断"
+          loadingText="正在分析启动日志…"
+        />
+      )}
     </section>
   );
 }

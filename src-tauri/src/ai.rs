@@ -1031,6 +1031,33 @@ pub async fn ai_diagnose_cicd(
     Ok(text)
 }
 
+/// 让大模型根据预览启动命令与日志给出诊断。
+///
+/// 与 `ai_diagnose_cicd` 共用同一套上下文（项目标记 + 日志尾部），只是换了排障视角：
+/// 这里问的是「dev server / 桌面开发实例为什么起不来」，交给预览面板的弹窗渲染。
+#[tauri::command]
+pub async fn ai_diagnose_preview(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    config: AiConfig,
+    command: String,
+    log: String,
+) -> Result<String, String> {
+    let mut config = config;
+    config.apply(&dev::read_overrides());
+    config.resolve()?;
+
+    let root = state.checked_root(&root)?;
+    let (system, user) = build_preview_diagnose_prompt(&root, &command, &log);
+    let raw = chat(&config, &system, &user, 0.2).await?;
+
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Err("大模型返回了空的诊断".to_string());
+    }
+    Ok(text)
+}
+
 const CICD_CONFIG_SYSTEM_PROMPT: &str = "\
 你是本地 CI/CD 配置助手。用户会给你一个项目的标记信息，你要产出一份 `.local-cicd.yaml`。
 
@@ -1096,6 +1123,34 @@ fn build_diagnose_prompt(root: &Path, stage: &str, command: &str, log: &str) -> 
         user.push_str("\n…（日志过大，只保留了末尾部分）");
     }
     (DIAGNOSE_SYSTEM_PROMPT.to_string(), user)
+}
+
+const PREVIEW_DIAGNOSE_SYSTEM_PROMPT: &str = "\
+你是本地开发预览排障助手。用户给你一次预览（dev server / 桌面开发实例）启动失败的信息（启动命令、日志尾部），你要给出最可能的原因与修复动作。
+
+按下面的结构输出 markdown，不要加额外的前言、结尾或代码围栏：
+1. 第一行一句话说清最可能的原因。
+2. 然后用无序列表给出具体、可执行的修复动作。提到命令、文件、字段时用反引号包起来。
+3. 如果日志不足以定位，第一行直接说「日志不足以定位原因」，再列出还需要哪些信息。
+
+规则：
+1. 用中文，只依据给出的日志事实，不要臆测。
+2. 常见原因是端口被占用、依赖没装、启动脚本不存在、环境变量缺失，优先往这些方向查。
+3. 整篇控制在 300 字以内，不写「本次失败」「我们」这类空话。";
+
+/// 拼预览诊断用的 system / user 两条消息。单独抽出来是为了能直接跑单测。
+fn build_preview_diagnose_prompt(root: &Path, command: &str, log: &str) -> (String, String) {
+    let project = collect_project_marks(root);
+    let mut user = format!(
+        "启动命令：{command}\n\n项目标记：\n{}\n\n日志（末尾部分）：\n",
+        truncate(&project, MAX_MARKS_CHARS)
+    );
+    // 起不来的原因通常在日志尾部，从后往前截、保留最近的内容
+    user.push_str(&truncate_tail(log, MAX_LOG_CHARS));
+    if log.chars().count() > MAX_LOG_CHARS {
+        user.push_str("\n…（日志过大，只保留了末尾部分）");
+    }
+    (PREVIEW_DIAGNOSE_SYSTEM_PROMPT.to_string(), user)
 }
 
 /// 收集项目标记：几个关键标记文件的存在性 + 顶层条目清单 + package.json 的 scripts
@@ -1621,6 +1676,18 @@ mod tests {
         assert!(user.contains("deploy"));
         assert!(user.contains("pnpm start"));
         assert!(user.contains("Error: boom"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_diagnose_prompt_includes_command_and_log() {
+        let dir = std::env::temp_dir().join(format!("codedock-ai-prevdiag-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (system, user) =
+            build_preview_diagnose_prompt(&dir, "pnpm dev", "Error: port 5173 in use");
+        assert!(system.contains("原因"), "系统提示要按固定结构输出");
+        assert!(user.contains("pnpm dev"));
+        assert!(user.contains("Error: port 5173 in use"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
