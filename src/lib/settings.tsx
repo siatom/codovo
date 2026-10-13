@@ -125,6 +125,8 @@ export interface Settings {
   terminalWaitHint: boolean;
   /** 编辑器字体（CSS font-family），留空用默认 */
   editorFontFamily: string;
+  /** 界面等宽字体（CSS font-family），作用于配置框等 font-mono 界面文本；留空跟随编辑器字体 */
+  uiMonoFontFamily: string;
   /** 编辑器字号（px） */
   editorFontSize: number;
   /** 编辑器字体是否加粗 */
@@ -179,6 +181,7 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "terminalFontSize",
     "terminalFontBold",
     "editorFontFamily",
+    "uiMonoFontFamily",
     "editorFontSize",
     "editorFontBold",
     "rightFilesVisible",
@@ -278,6 +281,7 @@ const DEFAULTS: Settings = {
   terminalTheme: "",
   terminalWaitHint: true,
   editorFontFamily: "",
+  uiMonoFontFamily: "",
   editorFontSize: 13,
   editorFontBold: true,
   editorMinimap: true,
@@ -523,6 +527,7 @@ function readSaved(): Settings {
     terminalTheme: asString(raw.terminalTheme, DEFAULTS.terminalTheme),
     terminalWaitHint: asBoolean(raw.terminalWaitHint, DEFAULTS.terminalWaitHint),
     editorFontFamily: asString(raw.editorFontFamily, DEFAULTS.editorFontFamily),
+    uiMonoFontFamily: asString(raw.uiMonoFontFamily, DEFAULTS.uiMonoFontFamily),
     editorFontSize: clampSize(raw.editorFontSize, DEFAULTS.editorFontSize),
     editorFontBold: asBoolean(raw.editorFontBold, DEFAULTS.editorFontBold),
     editorMinimap: asBoolean(raw.editorMinimap, DEFAULTS.editorMinimap),
@@ -618,6 +623,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       resolveUiFont(settings.uiFontFamily),
     );
   }, [settings.uiFontFamily]);
+
+  // 界面等宽字体挂到 --font-mono 上（配置框等 font-mono 界面文本用）；留空跟随编辑器字体
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--font-mono",
+      settings.uiMonoFontFamily.trim() || resolveFont(settings.editorFontFamily),
+    );
+  }, [settings.uiMonoFontFamily, settings.editorFontFamily]);
 
   // 另一个窗口改了设置就跟着走。storage 事件只在别的 document 触发，不会自回流
   useEffect(() => {

@@ -16,6 +16,7 @@ import {
   AUTOSAVE_DELAY_MAX,
   DEFAULT_MONO_FONT,
   DEFAULT_UI_FONT,
+  resolveFont,
   type AgentLayer,
   type AgentProfile,
   type AgentSkill,
@@ -2492,7 +2493,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   <Section
                     title="字体"
                     dense
-                    hint={`字体名写 CSS font-family，可写多个用逗号分隔。界面留空用默认无衬线栈；终端与编辑器留空用 ${DEFAULT_MONO_FONT}`}
+                    hint={`字体名写 CSS font-family，可写多个用逗号分隔。界面留空用默认无衬线栈；终端与编辑器留空用 ${DEFAULT_MONO_FONT}；界面等宽字体留空跟随编辑器字体`}
                   >
                     <Row label="界面字体">
                       <input
@@ -2537,6 +2538,18 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                         placeholder={DEFAULT_MONO_FONT}
                         onChange={(event) =>
                           update({ editorFontFamily: event.target.value })
+                        }
+                        className={TEXT_INPUT}
+                      />
+                    </Row>
+                    <Row label="界面等宽字体">
+                      <input
+                        type="text"
+                        value={settings.uiMonoFontFamily}
+                        spellCheck={false}
+                        placeholder={resolveFont(settings.editorFontFamily)}
+                        onChange={(event) =>
+                          update({ uiMonoFontFamily: event.target.value })
                         }
                         className={TEXT_INPUT}
                       />
