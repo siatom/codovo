@@ -2081,6 +2081,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
     preview: settings.rightPreviewVisible,
+    deploy: settings.rightDeployVisible,
   };
   const shownRightTools = RIGHT_TOOLS.filter((tool) => rightVisible[tool.id]);
   const lastVisible = shownRightTools.length === 1 ? shownRightTools[0].id : null;
@@ -2623,6 +2624,14 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                         options={VISIBLE_OPTIONS}
                         disabledValue={lastVisible === "preview" ? false : undefined}
                         onChange={(rightPreviewVisible) => update({ rightPreviewVisible })}
+                      />
+                    </Row>
+                    <Row label="部署">
+                      <BoolToggle
+                        value={settings.rightDeployVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "deploy" ? false : undefined}
+                        onChange={(rightDeployVisible) => update({ rightDeployVisible })}
                       />
                     </Row>
                   </Section>

@@ -8,6 +8,7 @@ import {
   IconPanelRight,
   IconPanelRightOpen,
   IconPlay,
+  IconRocket,
   IconSearch,
   IconServer,
 } from "./icons";
@@ -36,6 +37,7 @@ export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[]
   { id: "remote", label: "远程连接", Icon: IconServer },
   { id: "database", label: "数据库", Icon: IconDatabase },
   { id: "preview", label: "预览", Icon: IconPlay },
+  { id: "deploy", label: "部署", Icon: IconRocket },
 ];
 
 interface ToolRailProps {

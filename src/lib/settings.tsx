@@ -152,6 +152,7 @@ export interface Settings {
   rightRemoteVisible: boolean;
   rightDatabaseVisible: boolean;
   rightPreviewVisible: boolean;
+  rightDeployVisible: boolean;
   /** 应用命令的键位，按命令 id 索引；值的写法见 lib/shortcuts.ts */
   shortcuts: Record<string, string>;
 }
@@ -187,6 +188,7 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "rightRemoteVisible",
     "rightDatabaseVisible",
     "rightPreviewVisible",
+    "rightDeployVisible",
     "closeToTray",
     "restoreWorkspace",
   ],
@@ -294,6 +296,7 @@ const DEFAULTS: Settings = {
   rightRemoteVisible: true,
   rightDatabaseVisible: true,
   rightPreviewVisible: true,
+  rightDeployVisible: true,
   shortcuts: defaultShortcuts(),
 };
 
@@ -557,6 +560,10 @@ function readSaved(): Settings {
     rightPreviewVisible: asBoolean(
       raw.rightPreviewVisible,
       DEFAULTS.rightPreviewVisible,
+    ),
+    rightDeployVisible: asBoolean(
+      raw.rightDeployVisible,
+      DEFAULTS.rightDeployVisible,
     ),
     // 老版本的设置里没有这个字段，resolveShortcuts 会给出厂默认
     shortcuts: resolveShortcuts(raw.shortcuts),
