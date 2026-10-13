@@ -1,4 +1,11 @@
-import { useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { formatBytes, formatMtime } from "../lib/remote";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -25,6 +32,21 @@ const MENU_ITEM =
   "flex w-full items-center rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
 
 const MENU_W = 140;
+
+/**
+ * 正在拖拽的那一行。用模块级变量而不是只靠 `dataTransfer`：`dragover` 阶段读不到
+ * data（浏览器只在 `drop` 时才给），而落点判断与高亮必须在 dragover 里就做出来。
+ * 载荷本来就是同一个窗口内的拖拽，模块变量足够；它也顺便把外部拖进来的文件
+ * （资源管理器等）挡在外面——那些拖拽不会经过这里的 `onDragStart`。
+ */
+let dragging: { entry: PanelEntry; side: "left" | "right" } | null = null;
+
+/**
+ * 拖拽时给 `dataTransfer` 带的私有类型。用自定义 MIME 而不是 `text/plain`：
+ * 一是让 Chromium 认为载荷非空、不会取消这次拖拽；二是别把路径当成文本拖到
+ * 终端 / 编辑器里，那会变成一次意外的粘贴。
+ */
+const DRAG_MIME = "application/x-codedock-entry";
 
 /** 面板里的一行。远程是 SftpEntry、本地是 LocalEntry，两者同构 */
 export interface PanelEntry {
@@ -67,6 +89,13 @@ export interface FilePanelProps {
   onDelete: (entry: PanelEntry) => Promise<void>;
   onTransfer: (entry: PanelEntry) => void;
   onDismissError: () => void;
+  /**
+   * 把一行拖到对侧面板时调用。`targetDir` 是落点目录（落到目录行 = 该目录，
+   * 落到空白 = 对侧当前目录）；`side` 是**起点面板**在哪一侧。
+   */
+  onDropEntry: (entry: PanelEntry, targetDir: string, side: "left" | "right") => void;
+  /** 本面板当前目录的绝对路径；null 表示还没定位好，此时不接受拖入 */
+  dropDir: string | null;
 }
 
 /**
@@ -99,6 +128,8 @@ export function FilePanel({
   onDelete,
   onTransfer,
   onDismissError,
+  onDropEntry,
+  dropDir,
 }: FilePanelProps) {
   const [creating, setCreating] = useState(false);
   const [createDraft, setCreateDraft] = useState("");
@@ -107,6 +138,8 @@ export function FilePanel({
   const [pendingDelete, setPendingDelete] = useState<PanelEntry | null>(null);
   const [actionError, setActionError] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  /** 拖拽落点高亮：正在拖入的目录行（空串表示落在空白 = 当前目录） */
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const createRef = useRef<HTMLInputElement>(null);
   const renameRef = useRef<HTMLInputElement>(null);
 
@@ -166,6 +199,43 @@ export function FilePanel({
     setMenu({ x: rect.right, y: rect.bottom + 4 });
   };
 
+  const startDrag = (event: DragEvent, entry: PanelEntry) => {
+    dragging = { entry, side };
+    event.dataTransfer.effectAllowed = "copy";
+    // 带一点载荷：Chromium 对完全空的 dataTransfer 会直接取消这次拖拽
+    event.dataTransfer.setData(DRAG_MIME, entry.path);
+  };
+
+  const endDrag = () => {
+    dragging = null;
+    setDropTarget(null);
+  };
+
+  /**
+   * 拖到本面板上：只有「从对侧面板拖过来」才算数（同侧拖拽没有意义，
+   * 自己拖给自己会变成自我覆盖）。落点目录在 `drop` 里才真正用得上，
+   * 这里只负责判断能不能落 + 高亮。
+   */
+  const dragOver = (event: DragEvent, targetDir: string) => {
+    if (!dragging || dragging.side === side || !dropDir) return;
+    // 行上的处理器先跑，别让事件冒到列表区把落点从「该目录」改回「当前目录」
+    event.stopPropagation();
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropTarget(targetDir);
+  };
+
+  const drop = (event: DragEvent, targetDir: string) => {
+    event.stopPropagation();
+    setDropTarget(null);
+    const payload = dragging;
+    dragging = null;
+    if (!payload || payload.side === side || !dropDir) return;
+    event.preventDefault();
+    if (targetDir === payload.entry.path) return; // 拖到自己身上
+    onDropEntry(payload.entry, targetDir, payload.side);
+  };
+
   const percent =
     progress && progress.total > 0
       ? Math.min(100, Math.round((progress.transferred / progress.total) * 100))
@@ -181,6 +251,9 @@ export function FilePanel({
           <span className="shrink-0">{icon}</span>
           <span className="truncate text-[11px] font-medium tracking-wide">{label}</span>
         </span>
+        <button type="button" onClick={onRefresh} title="重新列目录" className={HEAD_BUTTON}>
+          <IconRefresh className="h-3.5 w-3.5" />
+        </button>
         <button
           type="button"
           onClick={() => selected && canTransfer && onTransfer(selected)}
@@ -251,7 +324,17 @@ export function FilePanel({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-auto">
+      {/* 落到空白 = 传到本面板当前目录；目录行在下面自己拦一层，优先作为落点 */}
+      <div
+        className={`min-h-0 flex-1 overflow-auto ${dropTarget === "" ? "bg-accent/10" : ""}`}
+        onDragOver={(event) => dragOver(event, dropDir ?? "")}
+        onDragLeave={(event) => {
+          // 只在真正离开列表区时清高亮：在行之间移动会连着触发 leave，
+          // 用 relatedTarget 是不是还在本区域内来判断。
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null);
+        }}
+        onDrop={(event) => drop(event, dropDir ?? "")}
+      >
         {creating && (
           <div className="flex items-center gap-2 px-2 py-1">
             <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
@@ -278,14 +361,25 @@ export function FilePanel({
         {entries.map((entry) => {
           const isRenaming = renaming?.path === entry.path;
           const isSelected = selected?.path === entry.path;
+          const isDropDir = entry.isDir && dropTarget === entry.path;
           return (
             <div
               key={entry.path}
               onClick={() => onSelect(entry)}
               onDoubleClick={() => onActivate(entry)}
+              draggable={!isRenaming}
+              onDragStart={(event) => startDrag(event, entry)}
+              onDragEnd={endDrag}
+              // 目录行是传输落点；文件行不拦，事件冒到列表区 = 落到当前目录
+              onDragOver={entry.isDir ? (event) => dragOver(event, entry.path) : undefined}
+              onDrop={entry.isDir ? (event) => drop(event, entry.path) : undefined}
               title={entry.path}
               className={`flex h-6 cursor-default items-center gap-2 px-2 text-[12px] ${
-                isSelected ? "bg-selected text-fg" : "text-fg-muted hover:bg-hover"
+                isDropDir
+                  ? "bg-selected text-fg ring-1 ring-inset ring-accent"
+                  : isSelected
+                    ? "bg-selected text-fg"
+                    : "text-fg-muted hover:bg-hover"
               }`}
             >
               {entry.isDir ? (

@@ -26,6 +26,8 @@ interface RemoteFilesProps {
   onNavigate: (path: string) => void;
   onSelect: (entry: PanelEntry) => void;
   onTransfer: (entry: PanelEntry) => void;
+  /** 拖到本面板上时把条目交给容器，由容器传到对侧落点目录 */
+  onDropEntry: (entry: PanelEntry, targetDir: string, side: "left" | "right") => void;
   onDismissTransferError: () => void;
 }
 
@@ -44,6 +46,7 @@ export function RemoteFiles({
   onNavigate,
   onSelect,
   onTransfer,
+  onDropEntry,
   onDismissTransferError,
 }: RemoteFilesProps) {
   const [entries, setEntries] = useState<PanelEntry[]>([]);
@@ -127,6 +130,8 @@ export function RemoteFiles({
       onRename={rename}
       onDelete={remove}
       onTransfer={onTransfer}
+      onDropEntry={onDropEntry}
+      dropDir={path}
       onDismissError={() => {
         setError("");
         onDismissTransferError();

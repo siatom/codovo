@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { joinLocal, localHome } from "../lib/local-fs";
-import { joinRemote, sftpDownload, sftpHome, sftpUpload } from "../lib/remote";
+import { joinLocal, localHome, localListDir, localMkdir } from "../lib/local-fs";
+import {
+  joinRemote,
+  sftpDownload,
+  sftpHome,
+  sftpList,
+  sftpMkdir,
+  sftpUpload,
+  type TransferEvent,
+} from "../lib/remote";
 import type { PanelEntry } from "./FilePanel";
 import { LocalFiles } from "./LocalFiles";
 import { RemoteFiles } from "./RemoteFiles";
@@ -63,12 +71,16 @@ export function RemoteBrowser({ sessionId, swapped }: { sessionId: number; swapp
     };
   }, [sessionId]);
 
-  /** 把 `from` 一侧选中的文件传到对侧当前目录。只传文件，目录不递归 */
+  /**
+   * 把 `from` 一侧的一个条目复制到对侧的 `targetDir`。**目录会连同内容递归复制**。
+   *
+   * 两侧路径都按「目标侧」的路径空间拼：上传走 `joinRemote`、下载走 `joinLocal`，
+   * 和原来的单文件传输一致。目标目录已存在时按合并处理（`mkdir` 失败就复用它）。
+   */
   const transfer = useCallback(
-    async (from: Role, entry: PanelEntry) => {
-      if (entry.isDir) return;
+    async (from: Role, entry: PanelEntry, targetDir: string) => {
       setTransferError(null);
-      const onProgress = (event: { transferred: number; total: number; done: boolean }) => {
+      const onProgress = (event: TransferEvent) => {
         setProgress(
           event.done
             ? null
@@ -76,22 +88,48 @@ export function RemoteBrowser({ sessionId, swapped }: { sessionId: number; swapp
         );
       };
       setProgress({ role: from, label: entry.name, transferred: 0, total: entry.size });
-      try {
+
+      /** 递归复制一项。`dir` 是目标侧**已经存在**的目录 */
+      const copy = async (item: PanelEntry, dir: string): Promise<void> => {
         if (from === "local") {
-          if (!remotePath) return;
-          await sftpUpload(sessionId, entry.path, joinRemote(remotePath, entry.name), onProgress);
-          setRemoteNonce((value) => value + 1);
+          const target = joinRemote(dir, item.name);
+          if (!item.isDir) {
+            await sftpUpload(sessionId, item.path, target, onProgress);
+            return;
+          }
+          // 目录已存在就复用它（把内容并进去），否则新建
+          try {
+            await sftpMkdir(sessionId, target);
+          } catch {
+            // 建目录失败只有在它确实不存在时才是真错误，交给下面的子项写入去报
+          }
+          for (const child of await localListDir(item.path)) await copy(child, target);
         } else {
-          if (!localPath) return;
-          await sftpDownload(sessionId, entry.path, joinLocal(localPath, entry.name), onProgress);
-          setLocalNonce((value) => value + 1);
+          const target = joinLocal(dir, item.name);
+          if (!item.isDir) {
+            await sftpDownload(sessionId, item.path, target, onProgress);
+            return;
+          }
+          try {
+            await localMkdir(target);
+          } catch {
+            // 同上：已有目录就复用
+          }
+          for (const child of await sftpList(sessionId, item.path)) await copy(child, target);
         }
+      };
+
+      try {
+        await copy(entry, targetDir);
+        setProgress(null);
+        if (from === "local") setRemoteNonce((value) => value + 1);
+        else setLocalNonce((value) => value + 1);
       } catch (reason) {
         setProgress(null);
         setTransferError({ role: from, message: String(reason) });
       }
     },
-    [sessionId, localPath, remotePath],
+    [sessionId],
   );
 
   const local = (
@@ -107,7 +145,11 @@ export function RemoteBrowser({ sessionId, swapped }: { sessionId: number; swapp
         setLocalSelected(null);
       }}
       onSelect={setLocalSelected}
-      onTransfer={(entry) => void transfer("local", entry)}
+      // 双击 / 工具栏箭头：传到对侧当前目录
+      onTransfer={(entry) => remotePath && void transfer("local", entry, remotePath)}
+      // 拖拽落到本面板上只可能来自远程面板（同侧已在 FilePanel 里挡掉），
+      // 所以方向固定是「远程 -> 本地」
+      onDropEntry={(entry, targetDir) => void transfer("remote", entry, targetDir)}
       onDismissTransferError={() => setTransferError(null)}
     />
   );
@@ -126,7 +168,10 @@ export function RemoteBrowser({ sessionId, swapped }: { sessionId: number; swapp
         setRemoteSelected(null);
       }}
       onSelect={setRemoteSelected}
-      onTransfer={(entry) => void transfer("remote", entry)}
+      onTransfer={(entry) => localPath && void transfer("remote", entry, localPath)}
+      // 拖拽落到本面板上只可能来自本地面板（同侧已在 FilePanel 里挡掉），
+      // 所以方向固定是「本地 -> 远程」
+      onDropEntry={(entry, targetDir) => void transfer("local", entry, targetDir)}
       onDismissTransferError={() => setTransferError(null)}
     />
   );
