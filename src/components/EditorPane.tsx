@@ -35,6 +35,7 @@ import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   IconArrowDown,
@@ -434,6 +435,11 @@ export function EditorPane({
   // togglePreview 是稳定回调（依赖为空），要用 ref 读预览集合的最新值来判断该进还是该退
   const previewPathsRef = useRef(previewPaths);
   previewPathsRef.current = previewPaths;
+  /**
+   * 正处在左右分屏预览的标签（存 tabKey）。只对 markdown 有效：html / svg 的预览要读磁盘，
+   * 不适合同屏边改边看。与 previewPaths 互斥（同一个标签不会既整屏预览又分屏）
+   */
+  const [splitPaths, setSplitPaths] = useState<ReadonlySet<string>>(new Set());
   const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
@@ -598,6 +604,7 @@ export function EditorPane({
     };
     setDirtyPaths(prune);
     setPreviewPaths(prune);
+    setSplitPaths(prune);
   }, []);
 
   /**
@@ -1406,7 +1413,16 @@ export function EditorPane({
       });
       return;
     }
-    const enter = () => setPreviewPaths((prev) => new Set(prev).add(key));
+    const enter = () => {
+      setPreviewPaths((prev) => new Set(prev).add(key));
+      // 分屏与整屏预览互斥：进整屏就把该标签从分屏里摘掉，否则两块预览会同时挂着
+      setSplitPaths((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    };
     if (!isHtmlPreviewPath(current.path)) {
       enter();
       return;
@@ -1416,6 +1432,28 @@ export function EditorPane({
       // 重新加载 iframe：磁盘内容可能刚被保存改过
       setPreviewNonce((count) => count + 1);
       enter();
+    });
+  }, []);
+
+  /**
+   * 切换当前文件的左右分屏预览（只对 markdown 有效）。与整屏预览互斥：进分屏就把该标签
+   * 从整屏预览里摘掉，免得同一份内容挂两层。内容变化后右侧的重渲染由下面的防抖 effect 驱动。
+   */
+  const toggleSplitPreview = useCallback(() => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file") return;
+    const key = tabKey(current);
+    setSplitPaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    setPreviewPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
     });
   }, []);
 
@@ -1547,6 +1585,15 @@ export function EditorPane({
   const isHtmlPreview =
     isPreview && active?.kind === "file" && isHtmlPreviewPath(active.path);
 
+  // 当前文件是不是 markdown——整屏预览与分屏预览都只有它走「从 model 现渲染」这条路
+  const isMarkdownFile = active?.kind === "file" && languageOf(active.path) === "markdown";
+  /**
+   * 左右分屏预览。只对 markdown 开：html / svg 的预览读磁盘、要整屏才够用。
+   * 和整屏预览互斥（两个 toggle 各自会把对方摘掉），这里再兜一层：整屏优先
+   */
+  const isSplitPreview =
+    canPreview && activeKey !== null && isMarkdownFile && splitPaths.has(activeKey) && !isPreview;
+
   // 进预览时同步渲染一次：放在渲染期算完，就不会先闪一帧空白。
   // 内容按 activeKey 从缓存里取，**不能**读编辑器当前挂着的 model：换 model 的
   // effect 在渲染之后才跑，切到另一个 md 标签的这一帧读到的还是上一个文件的
@@ -1559,15 +1606,47 @@ export function EditorPane({
     return model ? renderMarkdown(model.getValue()) : "";
   }, [isMarkdownPreview, activeKey, previewNonce]);
 
+  /**
+   * 分屏预览的 HTML。整屏那份是渲染期一次算完的，前提「预览期间编辑器改不了内容」
+   * 在分屏下不成立——左侧一直在打字。所以这里存 state，订阅当前 model 的
+   * onDidChangeContent，防抖后再重渲染右侧（大文件渲染有点成本，别每敲一下算一遍）。
+   */
+  const [splitHtml, setSplitHtml] = useState("");
+  useEffect(() => {
+    if (!isSplitPreview || activeKey === null) {
+      // 退出分屏 / 换标签时清掉，免得下次进入先闪一帧上一个文件的内容
+      setSplitHtml("");
+      return;
+    }
+    const model = modelsRef.current.get(activeKey)?.model;
+    if (!model) {
+      setSplitHtml("");
+      return;
+    }
+    // 进入分屏先同步渲染一次，右侧不留空白
+    setSplitHtml(renderMarkdown(model.getValue()));
+    let timer: number | undefined;
+    const sub = model.onDidChangeContent(() => {
+      // 手一直不停就一直往后推，停下来才重渲染
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setSplitHtml(renderMarkdown(model.getValue())), 200);
+    });
+    return () => {
+      sub.dispose();
+      window.clearTimeout(timer);
+    };
+  }, [isSplitPreview, activeKey]);
+
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
-  // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；工作区从后台切回来时同理
+  // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；工作区从后台切回来时同理。
+  // 分屏切换会改 Monaco 容器的可用宽度，也要补一次
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       editorRef.current?.layout();
       diffRef.current?.layout();
     });
     return () => cancelAnimationFrame(frame);
-  }, [isPreview, isDiffTab, isImageTab, visible]);
+  }, [isPreview, isSplitPreview, isDiffTab, isImageTab, visible]);
 
   // 标签过多、栏溢出时，激活标签可能落在可视区外，需要滚进来。
   // 用两边的 rect 差算滚动量、只挪横向，避免 scrollIntoView 连祖先的纵向滚动一起动。
@@ -1807,6 +1886,19 @@ export function EditorPane({
             )}
           </button>
         )}
+        {/* markdown 专属：左右分屏预览（左代码右渲染）。独立于上面的整屏预览按钮 */}
+        {isMarkdownFile && status.kind === "ready" && (
+          <button
+            type="button"
+            onClick={toggleSplitPreview}
+            title={isSplitPreview ? "关闭分屏预览" : "左右分屏预览"}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-hover hover:text-fg ${
+              isSplitPreview ? "text-accent-soft" : "text-fg-dim"
+            }`}
+          >
+            <IconLayoutColumns className="h-3.5 w-3.5" />
+          </button>
+        )}
         {activeDirty && (
           <button
             type="button"
@@ -1923,10 +2015,29 @@ export function EditorPane({
         </>
       )}
 
-      <div className="relative min-h-0 flex-1">
-        <div
-          ref={containerRef}
-          className={isPreview || isDiffTab || isImageTab ? "hidden" : "absolute inset-0"}
+      {/* relative 给下面的绝对定位预览层（图片 / 整屏预览 / 加载遮罩）当定位父级；
+          flex 让 SplitPane 的 flex-1 撑满 */}
+      <div className="relative flex min-h-0 flex-1">
+        {/* 分栏的壳一直在：直接把 Monaco 的容器从「绝对铺满」改成「有宽度参与分栏」，
+            切分屏时才会重新挂载（Monaco 实例只建一次，重挂载会让它挂到脱离的节点上）。
+            不分屏时收起第二块，第一块自动撑满，和以前一个样 */}
+        <SplitPane
+          initial={50}
+          min={20}
+          max={80}
+          secondCollapsed={!isSplitPreview}
+          first={
+            <div
+              ref={containerRef}
+              className={isPreview || isDiffTab || isImageTab ? "hidden" : "h-full w-full"}
+            />
+          }
+          second={
+            // 右侧渲染预览。MarkdownPreview 是 absolute inset-0，得给它一个定位父级
+            <div className="relative h-full w-full">
+              {isSplitPreview && <MarkdownPreview html={splitHtml} />}
+            </div>
+          }
         />
         <div
           ref={diffContainerRef}
