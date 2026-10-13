@@ -26,6 +26,8 @@ const BY_EXTENSION: Record<string, string> = {
   log: "plaintext",
   lua: "lua",
   md: "markdown",
+  // .mdc 是带 frontmatter 的 markdown 变体（CodeBuddy 规则文件），预览链路照 markdown 走
+  mdc: "markdown",
   mjs: "javascript",
   php: "php",
   ps1: "powershell",
