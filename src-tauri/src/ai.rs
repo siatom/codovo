@@ -972,6 +972,226 @@ pub async fn ai_list_provider_models(
     Ok(models)
 }
 
+// ---------- CICD 部署辅助 ----------
+
+/// 起草 `.local-cicd.yaml` 时，喂给模型的项目标记最多多少字符
+const MAX_MARKS_CHARS: usize = 8_000;
+/// 诊断失败时，喂给模型的日志最多多少字符
+const MAX_LOG_CHARS: usize = 8_000;
+
+/// 让大模型按项目标记起草一份 `.local-cicd.yaml` 建议配置。
+///
+/// 返回 YAML 正文（已去掉可能的代码围栏），交给部署面板填进编辑器，用户确认后保存。
+#[tauri::command]
+pub async fn ai_suggest_cicd_config(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    config: AiConfig,
+) -> Result<String, String> {
+    // 同 ai_explain_change：覆盖与钥匙串那次同步读都要赶在第一个 await 之前
+    let mut config = config;
+    config.apply(&dev::read_overrides());
+    config.resolve()?;
+
+    let root = state.checked_root(&root)?;
+    let (system, user) = build_cicd_config_prompt(&root);
+    let raw = chat(&config, &system, &user, 0.2).await?;
+
+    let text = clean_yaml_output(&raw);
+    if text.is_empty() {
+        return Err("大模型返回了空的配置".to_string());
+    }
+    Ok(text)
+}
+
+/// 让大模型根据失败阶段与日志给出诊断。
+///
+/// 返回 markdown 正文，交给部署面板的弹窗渲染。
+#[tauri::command]
+pub async fn ai_diagnose_cicd(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    config: AiConfig,
+    stage: String,
+    command: String,
+    log: String,
+) -> Result<String, String> {
+    let mut config = config;
+    config.apply(&dev::read_overrides());
+    config.resolve()?;
+
+    let root = state.checked_root(&root)?;
+    let (system, user) = build_diagnose_prompt(&root, &stage, &command, &log);
+    let raw = chat(&config, &system, &user, 0.2).await?;
+
+    let text = raw.trim().to_string();
+    if text.is_empty() {
+        return Err("大模型返回了空的诊断".to_string());
+    }
+    Ok(text)
+}
+
+const CICD_CONFIG_SYSTEM_PROMPT: &str = "\
+你是本地 CI/CD 配置助手。用户会给你一个项目的标记信息，你要产出一份 `.local-cicd.yaml`。
+
+配置格式（字段全部可选，不确定就留空字符串）：
+version: 1
+install: 依赖安装命令，例 \"pnpm install\"
+clean: Build 前清理命令（可留空）
+build: 构建命令，例 \"pnpm build\"
+deploy:
+  workdir: \".\"
+  stop: 停旧命令（服务型，可留空）
+  start: 启动命令（服务型，例 \"pnpm start\"）
+  install: 静默安装命令（桌面应用用这个，与 start 二选一）
+  install_kill: 安装前要关闭的进程名（可留空）
+  ready_timeout: 就绪等待秒数，默认 30
+verify:
+  url: 健康检查 URL（与 command 二选一）
+  command: 自定义验证命令
+  timeout: 探针超时秒数，默认 10
+env: 运行时环境变量（对象，可留空）
+keep_releases: 保留版本数，默认 3
+
+规则：
+1. 只输出 YAML 正文，不要任何解释、前言或代码围栏。
+2. 只依据给出的项目标记推断命令，不要臆造标记里看不出来的东西。
+3. 桌面应用（Tauri / Electron）用 deploy.install，不要用 deploy.start。
+4. 服务型项目按 package.json 的 scripts 填 start / build；探测不到就留空。";
+
+/// 拼起草配置用的 system / user 两条消息。单独抽出来是为了能直接跑单测。
+fn build_cicd_config_prompt(root: &Path) -> (String, String) {
+    let marks = collect_project_marks(root);
+    let mut user = String::from("项目标记：\n");
+    user.push_str(&truncate(&marks, MAX_MARKS_CHARS));
+    if marks.chars().count() > MAX_MARKS_CHARS {
+        // 告诉模型标记被截过，免得它以为项目就这么大
+        user.push_str("\n…（标记过大，此处已截断）");
+    }
+    (CICD_CONFIG_SYSTEM_PROMPT.to_string(), user)
+}
+
+const DIAGNOSE_SYSTEM_PROMPT: &str = "\
+你是本地部署排障助手。用户给你一次流水线失败的信息（阶段、命令、日志尾部），你要给出最可能的原因与修复动作。
+
+按下面的结构输出 markdown，不要加额外的前言、结尾或代码围栏：
+1. 第一行一句话说清最可能的原因。
+2. 然后用无序列表给出具体、可执行的修复动作。提到命令、文件、字段时用反引号包起来。
+3. 如果日志不足以定位，第一行直接说「日志不足以定位原因」，再列出还需要哪些信息。
+
+规则：
+1. 用中文，只依据给出的日志事实，不要臆测。
+2. 整篇控制在 300 字以内，不写「本次失败」「我们」这类空话。";
+
+/// 拼诊断用的 system / user 两条消息。单独抽出来是为了能直接跑单测。
+fn build_diagnose_prompt(root: &Path, stage: &str, command: &str, log: &str) -> (String, String) {
+    let project = collect_project_marks(root);
+    let mut user = format!(
+        "失败阶段：{stage}\n失败命令：{command}\n\n项目标记：\n{}\n\n日志（末尾部分）：\n",
+        truncate(&project, MAX_MARKS_CHARS)
+    );
+    // 失败原因通常在日志尾部，从后往前截、保留最近的内容
+    user.push_str(&truncate_tail(log, MAX_LOG_CHARS));
+    if log.chars().count() > MAX_LOG_CHARS {
+        user.push_str("\n…（日志过大，只保留了末尾部分）");
+    }
+    (DIAGNOSE_SYSTEM_PROMPT.to_string(), user)
+}
+
+/// 收集项目标记：几个关键标记文件的存在性 + 顶层条目清单 + package.json 的 scripts
+fn collect_project_marks(root: &Path) -> String {
+    let known = [
+        "package.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "bun.lockb",
+        "Cargo.toml",
+        "go.mod",
+        "pyproject.toml",
+        "requirements.txt",
+        "pom.xml",
+        "build.gradle",
+        "Dockerfile",
+        "compose.yaml",
+        "docker-compose.yml",
+        "Makefile",
+        "src-tauri/tauri.conf.json",
+    ];
+    let present: Vec<&str> = known
+        .iter()
+        .copied()
+        .filter(|name| root.join(name).is_file())
+        .collect();
+    let mut marks = String::from("存在的标记文件：");
+    if present.is_empty() {
+        marks.push_str("（无）");
+    } else {
+        marks.push_str(&present.join(", "));
+    }
+    marks.push('\n');
+
+    // 顶层条目清单：让模型知道这是什么形态的项目
+    if let Ok(entries) = std::fs::read_dir(root) {
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // 跳过体积大的依赖 / 产物目录，别把 token 烧在它们上面
+                if matches!(
+                    name.as_str(),
+                    "node_modules" | ".git" | "target" | "dist" | ".local-cicd"
+                ) {
+                    None
+                } else {
+                    Some(name)
+                }
+            })
+            .collect();
+        names.sort();
+        marks.push_str("顶层条目：");
+        marks.push_str(&names.join(", "));
+        marks.push('\n');
+    }
+
+    // package.json 的 scripts 是判断 build / start 命令的关键，单独摘出来
+    if let Ok(text) = std::fs::read_to_string(root.join("package.json")) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(scripts) = value.get("scripts").and_then(|value| value.as_object()) {
+                marks.push_str("package.json 的 scripts：\n");
+                for (key, body) in scripts {
+                    if let Some(body) = body.as_str() {
+                        marks.push_str(&format!("  {key}: {body}\n"));
+                    }
+                }
+            }
+        }
+    }
+
+    marks
+}
+
+/// 去掉模型可能加上的 ```yaml 围栏，只留 YAML 正文
+fn clean_yaml_output(raw: &str) -> String {
+    let text = raw.trim();
+    if let Some(rest) = text.strip_prefix("```") {
+        // 整段被围栏包着时剥掉首尾那两行
+        let rest = rest.split_once('\n').map(|(_, body)| body).unwrap_or(rest);
+        let body = rest.trim_end();
+        let body = body.strip_suffix("```").unwrap_or(body);
+        return body.trim().to_string();
+    }
+    text.to_string()
+}
+
+/// 从尾部截取最多 `max_chars` 个字符（失败原因通常在日志末尾）
+fn truncate_tail(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    text.chars().skip(count - max_chars).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1372,5 +1592,48 @@ mod tests {
         assert_eq!(files, vec!["README.md".to_string(), "src/a.ts".to_string()]);
         assert!(!truncated);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cicd_config_prompt_includes_marks_and_scripts() {
+        let dir = std::env::temp_dir().join(format!("codedock-ai-cicd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("package.json"),
+            r#"{"scripts":{"build":"vite build","start":"node server.js"}}"#,
+        )
+        .unwrap();
+
+        let (system, user) = build_cicd_config_prompt(&dir);
+        assert!(system.contains("deploy"), "系统提示要交代配置格式");
+        assert!(user.contains("package.json"), "标记里要列出标记文件");
+        assert!(user.contains("vite build"), "scripts 要摘进标记");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diagnose_prompt_includes_stage_command_and_log() {
+        let dir = std::env::temp_dir().join(format!("codedock-ai-diag-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let (system, user) = build_diagnose_prompt(&dir, "deploy", "pnpm start", "Error: boom");
+        assert!(system.contains("原因"), "系统提示要按固定结构输出");
+        assert!(user.contains("deploy"));
+        assert!(user.contains("pnpm start"));
+        assert!(user.contains("Error: boom"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_yaml_output_strips_code_fence() {
+        assert_eq!(clean_yaml_output("```yaml\nversion: 1\n```"), "version: 1");
+        assert_eq!(clean_yaml_output("```\nbuild: x\n```"), "build: x");
+        assert_eq!(clean_yaml_output("version: 1"), "version: 1");
+    }
+
+    #[test]
+    fn truncate_tail_keeps_the_end() {
+        assert_eq!(truncate_tail("abcdef", 3), "def");
+        assert_eq!(truncate_tail("abc", 5), "abc");
     }
 }

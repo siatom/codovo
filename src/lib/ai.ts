@@ -102,6 +102,30 @@ export function generateFeedbackBody(
 }
 
 /**
+ * 让大模型按项目标记起草一份 `.local-cicd.yaml` 建议配置。
+ *
+ * 返回 YAML 正文（已去掉代码围栏），交给部署面板填进编辑器，用户确认后再保存。
+ */
+export function suggestCicdConfig(root: string, config: AiConfig): Promise<string> {
+  return invoke<string>("ai_suggest_cicd_config", { root, config });
+}
+
+/**
+ * 让大模型根据失败的阶段、命令与日志给出诊断，返回 markdown 正文。
+ *
+ * 日志由前端截取尾部传入；后端会再做一次上限截断。
+ */
+export function diagnoseCicd(
+  root: string,
+  config: AiConfig,
+  stage: string,
+  command: string,
+  log: string,
+): Promise<string> {
+  return invoke<string>("ai_diagnose_cicd", { root, config, stage, command, log });
+}
+
+/**
  * 开发调试版从 `src-tauri/.env` 读到的覆盖值；正式版恒为空。
  * 空串 / false 都表示「这一项没被覆盖」，用设置里的值。
  */

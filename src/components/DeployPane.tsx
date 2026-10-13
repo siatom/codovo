@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   IconChevronDown,
@@ -6,6 +7,7 @@ import {
   IconRefresh,
   IconRocket,
 } from "./icons";
+import { diagnoseCicd, suggestCicdConfig, useEffectiveAiConfig } from "../lib/ai";
 import {
   cicdStatus,
   detectCicdConfig,
@@ -75,6 +77,14 @@ export function DeployPane({
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [error, setError] = useState("");
   const logRef = useRef<HTMLDivElement | null>(null);
+  /** AI 辅助：生效的模型配置 + 当前在跑哪一项（空串表示没跑） */
+  const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
+  const [aiBusy, setAiBusy] = useState<"" | "config" | "diagnose">("");
+  const [dialog, setDialog] = useState<{
+    title: string;
+    text: string | null;
+    error: string | null;
+  } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -211,6 +221,44 @@ export function DeployPane({
     }
   }, [root]);
 
+  /** 让大模型按项目标记起草一份配置，填进编辑器（不直接落盘，用户确认后再保存） */
+  const suggestConfig = useCallback(async () => {
+    setConfigMsg("");
+    setAiBusy("config");
+    try {
+      const suggestion = await suggestCicdConfig(root, aiConfig);
+      setYaml(suggestion);
+      setDirty(true);
+      setConfigMsg("AI 已生成配置草稿，请确认后保存");
+    } catch (reason) {
+      setConfigMsg(String(reason));
+    } finally {
+      setAiBusy("");
+    }
+  }, [root, aiConfig]);
+
+  /** 失败时把「阶段 + 命令 + 日志」交给大模型诊断，结果走居中弹窗 */
+  const diagnose = useCallback(async () => {
+    const failed = Object.entries(stages).find(([, state]) => state.status === "fail");
+    const stage = failed?.[0] ?? "";
+    const command = failed?.[1]?.command ?? "";
+    const stageLog = logs
+      .filter((line) => line.stage === stage)
+      .map((line) => line.line)
+      .join("\n");
+
+    setDialog({ title: stage || "部署失败", text: null, error: null });
+    setAiBusy("diagnose");
+    try {
+      const text = await diagnoseCicd(root, aiConfig, stage, command, stageLog);
+      setDialog({ title: stage || "部署失败", text, error: null });
+    } catch (reason) {
+      setDialog({ title: stage || "部署失败", text: null, error: String(reason) });
+    } finally {
+      setAiBusy("");
+    }
+  }, [root, aiConfig, stages, logs]);
+
   const running = busy || status?.running === true;
   const version = status?.currentVersion ?? null;
   const stageList = useMemo(
@@ -262,8 +310,17 @@ export function DeployPane({
       </header>
 
       {error && (
-        <div className="shrink-0 border-b border-line bg-danger-bg px-3 py-1.5 text-[11px] leading-relaxed text-danger">
-          {error}
+        <div className="flex shrink-0 items-center gap-2 border-b border-line bg-danger-bg px-3 py-1.5 text-[11px] leading-relaxed text-danger">
+          <span className="min-w-0 flex-1">{error}</span>
+          <button
+            type="button"
+            onClick={() => void diagnose()}
+            disabled={!aiReady || aiBusy !== ""}
+            title={aiReady ? "让大模型分析失败原因" : "先在「设置 → 智能体 → 模型提供商」里配置"}
+            className="h-6 shrink-0 rounded border border-danger-line px-2 text-[11px] text-danger hover:bg-hover disabled:opacity-50"
+          >
+            {aiBusy === "diagnose" ? "分析中…" : "AI 诊断"}
+          </button>
         </div>
       )}
 
@@ -314,6 +371,15 @@ export function DeployPane({
               >
                 按项目探测
               </button>
+              <button
+                type="button"
+                onClick={() => void suggestConfig()}
+                disabled={!aiReady || aiBusy !== ""}
+                title={aiReady ? "让大模型按项目标记起草配置" : "先在「设置 → 智能体 → 模型提供商」里配置"}
+                className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
+              >
+                {aiBusy === "config" ? "生成中…" : "AI 生成配置"}
+              </button>
               <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
                 {configMsg}
               </span>
@@ -363,6 +429,17 @@ export function DeployPane({
           ))
         )}
       </div>
+
+      {dialog && (
+        <ExplainChangeDialog
+          title={dialog.title}
+          text={dialog.text}
+          error={dialog.error}
+          onClose={() => setDialog(null)}
+          titlePrefix="部署诊断"
+          loadingText="正在分析失败日志…"
+        />
+      )}
     </section>
   );
 }
