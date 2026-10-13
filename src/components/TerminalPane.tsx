@@ -20,6 +20,7 @@ import type { EditorLocation } from "../lib/types";
 import { AgentPane, type AgentPaneHandle } from "./AgentPane";
 import { FullscreenButton } from "./FullscreenButton";
 import {
+  AgentLogo,
   IconBot,
   IconChevronDown,
   IconClose,
@@ -376,11 +377,13 @@ export function TerminalPane({
               // AI CLI / resume 会话用创建时传来的标题；普通 shell 会话按 shell 名，
               // 同名的从第二个起带固定序号（见 assignShellSeq）
               const custom = customTitleByIdRef.current.get(id);
+              // AI CLI / resume 会话的启动命令：有值说明这个标签是 AI CLI，图标用它的 logo
+              const launchCommand = hintByIdRef.current.get(id);
               const seq = shellSeqByIdRef.current.get(id) ?? 1;
               const shellName = shell?.name ?? `终端 ${index + 1}`;
               const title = custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
               // 悬停提示：启动过的会话报命令，普通会话报 shell 全名
-              const hint = hintByIdRef.current.get(id) ?? shell?.label ?? shellName;
+              const hint = launchCommand ?? shell?.label ?? shellName;
               // 这个标签是不是正停在等用户输入的提示上
               const waiting = Boolean(attention[terminalTarget(id)]);
               const dropBefore = dropIndex === index;
@@ -408,7 +411,15 @@ export function TerminalPane({
                     title={waiting ? `${hint}（正在等待你的输入）` : hint}
                     className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
                   >
-                    <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
+                    {launchCommand ? (
+                      <AgentLogo
+                        name={custom ?? ""}
+                        command={launchCommand}
+                        className="h-3 w-3"
+                      />
+                    ) : (
+                      <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
+                    )}
                     {/* 在等用户输入时标题也一起变色（同脉冲点的 warn 色），标签多时更好认 */}
                     <span className={`truncate ${waiting ? "text-warn" : ""}`}>{title}</span>
                     {/* 停在交互提示上时点一颗脉冲点，切到别的工作区也看得见 */}

@@ -915,6 +915,7 @@ const AGENT_LOGOS: Record<string, BrandIcon> = {
   codex: SI_OPENAI,
   opencode: siOpencode,
   gemini: siGooglegemini,
+  antigravity: siGooglegemini,
   cursor: siCursor,
   copilot: siGithubcopilot,
   deepseek: siDeepseek,
