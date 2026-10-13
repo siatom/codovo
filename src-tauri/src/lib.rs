@@ -56,6 +56,7 @@ pub fn run() {
         .manage(pty::PtyState::new())
         .manage(fs_api::FsState::new())
         .manage(watcher::WatchState::new())
+        .manage(local_fs::LocalWatchState::new())
         .manage(agent::AgentState::new())
         .manage(remote::RemoteState::new())
         .manage(database::DbState::new())
@@ -183,6 +184,8 @@ pub fn run() {
             local_fs::local_mkdir,
             local_fs::local_rename,
             local_fs::local_remove,
+            local_fs::local_watch_dir,
+            local_fs::local_unwatch_dir,
             database::db_connect,
             database::db_disconnect,
             database::db_test_connection,
@@ -219,6 +222,10 @@ pub fn run() {
                 }
                 // 目录监听的防抖线程也跟着收摊，别留游离线程
                 if let Some(state) = app.try_state::<watcher::WatchState>() {
+                    state.stop();
+                }
+                // 本地面板的按需监听同样收掉
+                if let Some(state) = app.try_state::<local_fs::LocalWatchState>() {
                     state.stop();
                 }
                 // 远程连接是常驻的 SSH 会话，退出时通知它们收摊
