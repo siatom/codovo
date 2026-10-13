@@ -561,14 +561,13 @@ body.codedock-dragging-list * {
   font-weight: 600;
 }
 
-/* 等宽栈跟 settings.tsx 里的 DEFAULT_MONO_FONT 保持一致 */
+/* 等宽栈复用 @theme 的 --font-mono，与界面 font-mono、终端/编辑器兜底保持一致 */
 .markdown-body code {
   padding: 0.15em 0.35em;
   border: 1px solid var(--c-line);
   border-radius: 4px;
   background: var(--c-raised);
-  font-family:
-    "FiraCode Nerd Font", "Microsoft YaHei", Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 0.9em;
 }
 
