@@ -21,13 +21,18 @@ import type { AgentEvent } from "./types";
  *
  * 两类来源：
  * - 智能体（opencode）：全局订阅 SSE，按 opencode 自己那套语义判定——`permission.asked` /
- *   `form.created` 置位，`permission.replied` / `form.replied` / `form.cancelled` /
- *   `session.execution.*` 清除（见 opencode.notifications 插件里的同款判断）。
+ *   `form.created` 置位，`permission.replied` / `form.replied` / `form.cancelled` 清除；
+ *   一轮跑完（`session.execution.succeeded` / `failed`）置 `done`，用户按停止或服务收摊
+ *   （`interrupted`）以及新一轮开始（`started`）清除。
+ *   （见 opencode.notifications 插件里的同款判断。）
  * - 终端 CLI：由 TerminalSession 对 PTY 输出做启发式判断后上抛（见那边）。
  */
 
-/** 在等用户的原因：要批准某个权限、要回答一个问题，或终端 CLI 停在交互提示上 */
-export type AttentionKind = "permission" | "question" | "prompt";
+/**
+ * 在等用户的原因：要批准某个权限、要回答一个问题、终端 CLI 停在交互提示上，
+ * 或一轮任务跑完、等用户下一步指令（`done`）。
+ */
+export type AttentionKind = "permission" | "question" | "prompt" | "done";
 
 /** 智能体会话的目标键 */
 export function agentTarget(sessionId: string): string {
@@ -48,8 +53,24 @@ interface Store {
   byRoot: ByRoot;
   set: (root: string, target: string, kind: AttentionKind) => void;
   clear: (root: string, target: string) => void;
+  /** 只清掉「恰好是这个原因」的标记（已读不该碰掉还要用户回应的 permission / question） */
+  clearIf: (root: string, target: string, kind: AttentionKind) => void;
   /** 工作区关掉了，把它的那份标记丢掉 */
   drop: (root: string) => void;
+}
+
+/** 从一份标记里删掉某个目标（连带清掉空掉的 root 条目）；没变化就原样返回 */
+function without(current: ByRoot, key: string, target: string): ByRoot {
+  const entry = current[key];
+  if (!entry || !(target in entry)) return current;
+  const rest = { ...entry };
+  delete rest[target];
+  if (Object.keys(rest).length === 0) {
+    const next = { ...current };
+    delete next[key];
+    return next;
+  }
+  return { ...current, [key]: rest };
 }
 
 const AttentionContext = createContext<Store | null>(null);
@@ -83,15 +104,20 @@ function attentionChange(
       return id ? { id, kind: "permission" } : null;
     case "form.created":
       return id ? { id, kind: "question" } : null;
-    // 用户答复 / 撤回了，或者这一轮跑完（含新的一轮开始）——都不再是「在等用户」
+    // 一轮跑完（成功或失败）都是「任务结束、等用户下一步指令」。失败也要提醒——
+    // 用户不来看就不知道它停了
+    case "session.execution.succeeded":
+    case "session.execution.failed":
+      return id ? { id, kind: "done" } : null;
+    // 用户答复 / 撤回了，或者新的一轮开始了——都不再是「在等用户」。
+    // interrupted 是用户自己按的停止（reason=user）或服务在收摊（reason=shutdown），
+    // 都不算「任务完成」，只清除
     case "permission.replied":
     case "permission.rejected":
     case "form.replied":
     case "form.cancelled":
     case "session.execution.started":
-    case "session.execution.succeeded":
     case "session.execution.interrupted":
-    case "session.execution.failed":
       return id ? { id, kind: null } : null;
     default:
       return null;
@@ -112,18 +138,14 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
 
   const clear = useCallback((root: string, target: string) => {
     const key = pathKey(root);
-    setByRoot((current) => {
-      const entry = current[key];
-      if (!entry || !(target in entry)) return current;
-      const rest = { ...entry };
-      delete rest[target];
-      if (Object.keys(rest).length === 0) {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      }
-      return { ...current, [key]: rest };
-    });
+    setByRoot((current) => without(current, key, target));
+  }, []);
+
+  const clearIf = useCallback((root: string, target: string, kind: AttentionKind) => {
+    const key = pathKey(root);
+    setByRoot((current) =>
+      current[key]?.[target] === kind ? without(current, key, target) : current,
+    );
   }, []);
 
   const drop = useCallback((root: string) => {
@@ -157,7 +179,10 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
     };
   }, [set, clear]);
 
-  const store = useMemo(() => ({ byRoot, set, clear, drop }), [byRoot, set, clear, drop]);
+  const store = useMemo(
+    () => ({ byRoot, set, clear, clearIf, drop }),
+    [byRoot, set, clear, clearIf, drop],
+  );
 
   return <AttentionContext.Provider value={store}>{children}</AttentionContext.Provider>;
 }
@@ -173,16 +198,17 @@ export function useAttention(root: string | null): {
   entries: Record<string, AttentionKind>;
   set: (target: string, kind: AttentionKind) => void;
   clear: (target: string) => void;
+  clearIf: (target: string, kind: AttentionKind) => void;
 } {
   const store = useStore();
   const key = root ? pathKey(root) : "";
   const entries = store.byRoot[key] ?? EMPTY_ENTRIES;
 
-  // root 放 ref 里，set / clear 只依赖 store 那两个稳定函数——它们要传给 TerminalSession
+  // root 放 ref 里，set / clear 只依赖 store 那几个稳定函数——它们要传给 TerminalSession
   // 的回调，每次标记变化都换身份的话会牵着 ref 回调重挂
   const rootRef = useRef(root);
   rootRef.current = root;
-  const { set: storeSet, clear: storeClear } = store;
+  const { set: storeSet, clear: storeClear, clearIf: storeClearIf } = store;
 
   const set = useCallback(
     (target: string, kind: AttentionKind) => {
@@ -198,8 +224,18 @@ export function useAttention(root: string | null): {
     },
     [storeClear],
   );
+  const clearIf = useCallback(
+    (target: string, kind: AttentionKind) => {
+      const current = rootRef.current;
+      if (current) storeClearIf(current, target, kind);
+    },
+    [storeClearIf],
+  );
 
-  return useMemo(() => ({ entries, set, clear }), [entries, set, clear]);
+  return useMemo(
+    () => ({ entries, set, clear, clearIf }),
+    [entries, set, clear, clearIf],
+  );
 }
 
 /** 全局那一份（侧栏要给所有工作区行做标记，够不着单个 root 的 hook） */

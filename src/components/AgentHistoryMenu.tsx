@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { formatTime } from "../lib/agent";
+import type { AttentionKind } from "../lib/attention";
 import type { AgentSessionSummary } from "../lib/types";
 import { IconHistory, IconMore, IconPlus } from "./icons";
 
@@ -23,7 +24,7 @@ export function AgentHistoryMenu({
   onNew,
   onRename,
   onDelete,
-  waitingIds,
+  waitingKinds,
 }: {
   sessions: AgentSessionSummary[];
   /** 当前打开的是哪条，用来高亮 */
@@ -34,8 +35,8 @@ export function AgentHistoryMenu({
   onRename: (id: string, title: string) => void;
   /** 删除：确认框由调用方弹（两个面板各有各的 ConfirmDialog） */
   onDelete: (session: AgentSessionSummary) => void;
-  /** 正等着用户输入的会话 id（在行上点一颗脉冲点） */
-  waitingIds?: ReadonlySet<string>;
+  /** 有待用户处理的会话 id -> 原因（在行上点一颗脉冲点，文案按原因出） */
+  waitingKinds?: ReadonlyMap<string, AttentionKind>;
 }) {
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
@@ -94,7 +95,14 @@ export function AgentHistoryMenu({
               <ul className="flex flex-col">
                 {sessions.map((item) => {
                   const isActive = item.id === currentId;
-                  const waiting = waitingIds?.has(item.id) ?? false;
+                  const kind = waitingKinds?.get(item.id);
+                  // 只有 done 是「已完成」；permission / question / prompt 都是在等回应
+                  const attentionHint =
+                    kind === "done"
+                      ? "任务完成，等待你的下一步指令"
+                      : kind
+                        ? "正在等你输入"
+                        : null;
                   return (
                     <li
                       key={item.id}
@@ -130,13 +138,16 @@ export function AgentHistoryMenu({
                               closeAll();
                               onOpen(item.id);
                             }}
-                            title={waiting ? `${item.title}（正在等你输入）` : item.title}
+                            title={attentionHint ? `${item.title}（${attentionHint}）` : item.title}
                             className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-2 text-left text-[12px] ${
                               isActive ? "text-fg" : "text-fg-muted group-hover/hist:text-fg"
                             }`}
                           >
-                            {waiting && (
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />
+                            {attentionHint && (
+                              <span
+                                title={attentionHint}
+                                className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
+                              />
                             )}
                             <span className="min-w-0 flex-1 truncate">{item.title}</span>
                             {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」 */}

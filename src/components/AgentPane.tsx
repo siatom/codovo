@@ -34,7 +34,7 @@ import {
   startAgent,
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
-import { useAttention } from "../lib/attention";
+import { agentTarget, useAttention, type AttentionKind } from "../lib/attention";
 import {
   APP_AGENT_NAME,
   PREVIEW_AGENT_NAME,
@@ -256,15 +256,16 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
     requestedRename,
     clearRenameRequest,
   } = useAgentSession(root);
-  // 正等着用户输入的会话（opencode 的权限询问 / 提问），在历史菜单里点一颗脉冲点。
-  // attention 里会话类目标键是 `agent:<id>`，这里把 id 抠出来
-  const { entries: attentionEntries } = useAttention(root);
-  const waitingSessionIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const key of Object.keys(attentionEntries)) {
-      if (key.startsWith("agent:")) ids.add(key.slice("agent:".length));
+  // 有待用户处理的会话（权限询问 / 提问 / 任务完成），在历史菜单里点一颗脉冲点；
+  // 等回应还是已完成靠 kind 出文案。attention 里会话类目标键是 `agent:<id>`
+  const { entries: attentionEntries, clear: clearAttention, clearIf: clearAttentionIf } =
+    useAttention(root);
+  const waitingKinds = useMemo(() => {
+    const map = new Map<string, AttentionKind>();
+    for (const [key, kind] of Object.entries(attentionEntries)) {
+      if (key.startsWith("agent:")) map.set(key.slice("agent:".length), kind);
     }
-    return ids;
+    return map;
   }, [attentionEntries]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [fatal, setFatal] = useState<string | null>(null);
@@ -370,6 +371,9 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   const openSession = useCallback(
     async (id: string) => {
       if (!root) return;
+      // 「打开即已读」：撤掉任务完成标记。等回应的 permission / question 不动，
+      // 那还得用户真的回应（opencode 答复后会自己发事件清除）
+      clearAttentionIf(agentTarget(id), "done");
       try {
         const history = await fetchAgentMessages(root, id);
         setCurrentId(id);
@@ -383,7 +387,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
         setPhase("error");
       }
     },
-    [root, setCurrentId, resetScroll],
+    [root, setCurrentId, resetScroll, clearAttentionIf],
   );
 
   /** 拉服务 → 接着上次的会话（没了就接最近的一条；一条都没有就停在空态，等用户发第一句再建） */
@@ -488,10 +492,13 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   useEffect(() => {
     if (!requestedId || phase !== "ready") return;
     clearRequest();
+    // 「打开即已读」要在这里也做一次：请求的正好是当前这条会话时下面提前返回、
+    // 不走 openSession，标记会清不掉
+    clearAttentionIf(agentTarget(requestedId), "done");
     if (requestedId === currentIdRef.current) return;
     setConversation(EMPTY_CONVERSATION);
     void openSession(requestedId);
-  }, [requestedId, phase, clearRequest, currentIdRef, openSession]);
+  }, [requestedId, phase, clearRequest, currentIdRef, openSession, clearAttentionIf]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -638,6 +645,8 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
         setConversation((current) => ({ ...current, error: String(reason) }));
         return;
       }
+      // 会话没了，它那份「在等用户」标记也一并丢掉，别留成点了没反应的死标记
+      clearAttention(agentTarget(id));
       const list = await refreshSessions();
       if (id !== currentIdRef.current) return;
       if (list[0]) {
@@ -648,7 +657,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
         newSession();
       }
     },
-    [refreshSessions, openSession, newSession, currentIdRef],
+    [refreshSessions, openSession, newSession, currentIdRef, clearAttention],
   );
 
   // 侧边栏确认删除后置上 id，真正删的动作在这儿做（和 requestedId 一个路子）。
@@ -791,7 +800,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
           onNew={newSession}
           onRename={requestRename}
           onDelete={setPendingDelete}
-          waitingIds={waitingSessionIds}
+          waitingKinds={waitingKinds}
         />
         <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
           <IconPlus className="h-3.5 w-3.5" />

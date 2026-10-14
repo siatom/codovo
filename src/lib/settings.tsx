@@ -119,8 +119,8 @@ export interface Settings {
   /** 终端配色主题，取 xterm-theme 的导出名；空串表示跟随界面深/浅色 */
   terminalTheme: string;
   /**
-   * 终端里 AI CLI 停在需要用户输入的提示上时，在标签与侧栏标出来。
-   * 判据是备用屏上的输出特征，属于启发式、可能误报，所以留个开关。
+   * 终端里 AI CLI 停在需要用户输入的提示上、或一轮任务跑完回到空闲等指令时，
+   * 在标签与侧栏标出来。判据是备用屏上的输出特征，属于启发式、可能误报，所以留个开关。
    */
   terminalWaitHint: boolean;
   /** 编辑器字体（CSS font-family），留空用默认 */

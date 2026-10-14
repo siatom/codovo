@@ -13,6 +13,7 @@ import {
   readText,
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
+import type { AttentionKind } from "../lib/attention";
 import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
@@ -61,6 +62,8 @@ export interface TerminalSessionHandle {
   /** 往这个会话的 shell 里写命令 */
   write(data: string): void;
   focus(): void;
+  /** 「用户看到了」：撤掉 done 标记。切到已经活动的标签时 prop 不变，只能走 handle */
+  markSeen(): void;
 }
 
 /**
@@ -110,6 +113,35 @@ const WAIT_BLOCK_PATTERNS: RegExp[] = [
 const WAIT_CHECK_MS = 700;
 
 /**
+ * AI CLI「运行中」与「空闲」的屏幕特征（看屏幕底部几行的状态行 / 活动行）。
+ *
+ * 两代特征都认（均为实测）：
+ * - 状态行版（老版 Claude Code / CodeBuddy CLI / Codex 同款）：干活时状态行挂
+ *   `esc to interrupt`，跑完回到输入框换成 `? for shortcuts`。
+ * - 活动行版（新版 Claude Code）：状态行两态不变（只换模式提示），但输入框上方的
+ *   活动行会翻——干活时是 spinner `✻ Sketching… (6s · ↓ 90 tokens)`（前缀图标是
+ *   动画帧、动词随机，只有「省略号 +（秒数 · 」的结构稳定），跑完换成结束行
+ *   `✻ Cogitated for 10s · done 18:24`；按 ESC 打断显示 `Interrupted · ...`，不算完成。
+ *
+ * 据此区分「任务完成在等指令」和「还在干活」。
+ */
+const BUSY_RE = /esc\s+to\s+interrupt/i;
+const BUSY_SPINNER_RE = /…\s*[（(]\s*\d+s\s*·/;
+const IDLE_RE = /\?\s*for\s*shortcuts/i;
+const IDLE_DONE_RE = /·\s*done\s/;
+/**
+ * 会话列表视图（新版 Claude Code 启动后的默认界面）的顶部统计行：
+ * `0 awaiting input · 1 working · 3 completed`——`N working` 非 0 就是有任务在跑；
+ * 统计行还在但 working 归零，就是都跑完回到等指令。统计行固定在屏幕顶部，不在底部。
+ */
+const LIST_WORKING_RE = /\b[1-9]\d*\s+working\b/;
+const LIST_STATS_RE = /\bawaiting input\b/;
+/** 底部取几行找状态行：活动行贴着输入框上沿，连状态区共十行之内兜得住 */
+const FOOTER_ROWS = 10;
+/** 输出期间采「运行中」特征的节流间隔：spinner 每秒重绘多次，不必每块输出都扫屏幕 */
+const BUSY_PROBE_MS = 250;
+
+/**
  * xterm 自己发出、并非用户按键的应答：焦点上报（`CSI I` / `CSI O`）与光标位置应答（`CSI r;c R`）。
  * 它们和用户输入走同一条 `onData`，但**不代表用户给了交互**——不能拿它们清掉「在等用户」的标记。
  * （实测踩过：切到别的工作区时终端失焦，xterm 上报 `ESC[O`，把标记误清了。）
@@ -125,6 +157,18 @@ function recentLines(term: Terminal, max: number): string[] {
   const top = Math.max(0, bottom - term.rows + 1);
   const lines: string[] = [];
   for (let y = bottom; y >= top && lines.length < max; y -= 1) {
+    const text = buffer.getLine(y)?.translateToString(true).trim() ?? "";
+    if (text) lines.push(text);
+  }
+  return lines;
+}
+
+/** 从屏幕顶部往下取几行非空文本（会话列表视图的统计行挂在顶部第 3 行，不在底部窗口里） */
+function topLines(term: Terminal, max: number): string[] {
+  const buffer = term.buffer.active;
+  const hi = Math.min(buffer.baseY + term.rows, buffer.length);
+  const lines: string[] = [];
+  for (let y = buffer.baseY; y < hi && lines.length < max; y += 1) {
     const text = buffer.getLine(y)?.translateToString(true).trim() ?? "";
     if (text) lines.push(text);
   }
@@ -150,21 +194,42 @@ function recentRows(term: Terminal, max: number): string[] {
 }
 
 /**
- * 判定终端此刻是否停在等用户输入的提示上。
- *
- * **只在备用屏里判**：全屏 TUI（AI CLI、vim、less）跑在备用屏，裸 shell 提示符在普通屏——
- * 这样普通 shell 永远不会被误标成「在等用户」，只有全屏程序才进这个判断。
- * （当前 CLI 的交互提示基本都出在全屏 TUI 里，所以没有为主屏另开一条宽松判定。）
+ * 判定终端此刻停在等用户输入的提示上（确认框 / 选择菜单）。
  *
  * 单行特征沿屏幕取若干「非空行」扫（屏幕上内容稀疏时也能扫到）；多行特征只看底部连续屏行，
  * 靠「紧挨着的两行编号选项」把菜单和正文里的编号列表区分开。
  */
 function looksLikeWaitingPrompt(term: Terminal): boolean {
-  if (term.buffer.active.type !== "alternate") return false;
   if (recentLines(term, 6).some((line) => WAIT_PATTERNS.some((pattern) => pattern.test(line)))) {
     return true;
   }
   return WAIT_BLOCK_PATTERNS.some((pattern) => pattern.test(recentRows(term, 12).join("\n")));
+}
+
+/** 全屏 TUI 此刻的状态：等用户回应 / 运行中 / 空闲等指令 */
+type CliActivity = "prompt" | "busy" | "idle";
+
+/**
+ * 看一眼终端的屏幕，判断全屏程序处于什么状态。
+ *
+ * **只在备用屏里判**：全屏 TUI（AI CLI、vim、less）跑在备用屏，裸 shell 提示符在普通屏——
+ * 这样普通 shell 永远不会被误标，只有全屏程序才进这个判断。
+ * （当前 CLI 的交互提示基本都出在全屏 TUI 里，所以没有为主屏另开一条宽松判定。）
+ *
+ * 顺序很重要：先判「在等回应」（确认框可能挂在运行中界面之上），再看底部的运行 / 空闲特征。
+ */
+function judgeActivity(term: Terminal): CliActivity | null {
+  if (term.buffer.active.type !== "alternate") return null;
+  if (looksLikeWaitingPrompt(term)) return "prompt";
+  // 会话列表视图的统计行在屏幕顶部，底部窗口看不到，单独判：working 非 0 = 有任务在跑；
+  // 统计行还在、working 归零 = 任务都跑完了，停在列表上等指令
+  const head = topLines(term, 6).join("\n");
+  if (LIST_WORKING_RE.test(head)) return "busy";
+  const foot = recentRows(term, FOOTER_ROWS).join("\n");
+  if (BUSY_RE.test(foot) || BUSY_SPINNER_RE.test(foot)) return "busy";
+  if (IDLE_RE.test(foot) || IDLE_DONE_RE.test(foot)) return "idle";
+  if (LIST_STATS_RE.test(head)) return "idle";
+  return null;
 }
 
 interface TerminalSessionProps {
@@ -191,10 +256,11 @@ interface TerminalSessionProps {
    */
   onRequestNew?: () => void;
   /**
-   * 这个会话是否停在「等用户输入」的提示上（启发式判断，见 looksLikeWaitingPrompt）。
-   * 由 TerminalPane 收集后写进 attention store，在标签栏与侧栏上标记出来。
+   * 这个会话的「在等用户」状态变化（启发式判断，见 judgeActivity）：停在交互提示上
+   * 是 `prompt`、任务跑完回到空闲输入框是 `done`、null 表示都没有。
+   * 由 TerminalPane 写进 attention store，在标签栏与侧栏上标记出来。
    */
-  onAttentionChange?: (waiting: boolean) => void;
+  onAttentionChange?: (kind: AttentionKind | null) => void;
 }
 
 /**
@@ -261,6 +327,8 @@ export const TerminalSession = forwardRef<
   // 等待提示的开关随时能关，而判定逻辑挂在建实例的 effect 里、只跑一次，所以也走 ref
   const waitHintRef = useRef(settings.terminalWaitHint);
   waitHintRef.current = settings.terminalWaitHint;
+  // 「用户已看到」的入口（切到该标签时调用）：实现在建实例的 effect 里，经 ref 转交
+  const seenRef = useRef<(() => void) | null>(null);
 
   // 要自动敲的那条命令只在"这个会话被创建"那一次算数，所以用 useState 的初始化
   // 把它定死、不跟着 prop 走（用户手动点「重开」或 cwd 变化重建 shell 时不该重放
@@ -276,6 +344,9 @@ export const TerminalSession = forwardRef<
       },
       focus() {
         termRef.current?.focus();
+      },
+      markSeen() {
+        seenRef.current?.();
       },
     }),
     [],
@@ -334,23 +405,65 @@ export const TerminalSession = forwardRef<
     let cancelled = false;
 
     /**
-     * 「在等用户」的判定：输出每来一块就重置计时器，停下来 WAIT_CHECK_MS 之后再看一眼屏幕。
-     * 只在实际翻转时上报，避免每次输出都惊动 React。用户一敲键立刻撤掉（他已经在交互了）。
+     * 「在等用户」的判定，两种：
+     * - prompt：停在确认框 / 菜单上，等用户回应；
+     * - done：任务跑完回到空闲输入框，等下一步指令。只有「见过运行中」之后才判
+     *   （workSeen）——刚启动、还没跑过任务的 CLI 也是空闲态，不能算「完成」。
+     *
+     * 输出每来一块就重置计时器，停下来 WAIT_CHECK_MS 之后扫一眼屏幕（静默判定）；
+     * 只在实际翻转时上报，避免每次输出都惊动 React。
+     *
+     * 但「运行中」特征不能只靠静默判定：CLI 干活时 spinner 每秒重绘多次，输出永远
+     * 停不下来，静态判定根本跑不到。得在输出到达时另开一路节流采样（probeBusy）。
      */
-    let waiting = false;
+    let shown: AttentionKind | null = null;
+    let workSeen = false;
+    let lastBusyProbe = 0;
     let waitTimer: number | undefined;
-    const reportWaiting = (next: boolean) => {
-      if (next === waiting) return;
-      waiting = next;
+    const report = (next: AttentionKind | null) => {
+      if (next === shown) return;
+      shown = next;
       onAttentionChangeRef.current?.(next);
+    };
+    const probeBusy = () => {
+      const now = Date.now();
+      if (now - lastBusyProbe < BUSY_PROBE_MS) return;
+      lastBusyProbe = now;
+      if (judgeActivity(term) !== "busy") return;
+      workSeen = true;
+      // 顺手撤掉陈旧标记（上一轮留下的 done / 已经消失的确认框）
+      report(null);
     };
     const scheduleWaitCheck = () => {
       window.clearTimeout(waitTimer);
       waitTimer = window.setTimeout(() => {
         if (cancelled) return;
-        reportWaiting(waitHintRef.current && looksLikeWaitingPrompt(term));
+        if (!waitHintRef.current) {
+          report(null);
+          return;
+        }
+        const activity = judgeActivity(term);
+        // 停在确认框/菜单上是在等回应，不许动 workSeen：别把「答完启动询问」
+        // 当成跑完了一轮任务
+        if (activity === "prompt") {
+          report("prompt");
+          return;
+        }
+        if (activity === "busy") workSeen = true;
+        report(activity === "idle" && workSeen ? "done" : null);
       }, WAIT_CHECK_MS);
     };
+    /**
+     * 「用户已经看到这个终端了」（切到该标签 / 从别的工作区、GUI 切回来）。
+     * 除了撤标记，还必须解除 workSeen：切过来那一帧会 fit + resize，CLI 必定重绘，
+     * 判定会重跑——武装未解除的话标记会当场复活。prompt 标记不动：那是在等回应，
+     * 看一眼不代表回应过了。
+     */
+    const seen = () => {
+      workSeen = false;
+      if (shown === "done") report(null);
+    };
+    seenRef.current = seen;
 
     // 句柄就绪前先攒着的输入，见 writeInput
     let pendingInput: string[] = [];
@@ -370,8 +483,12 @@ export const TerminalSession = forwardRef<
      */
     const writeInput = (data: string) => {
       // 用户已经在敲了，标记立刻撤掉；等他停下来、若还停在提示上会再判一次。
+      // 同时解除 workSeen——他打字停顿的间隙不能再被判成「任务完成」。
       // 但 xterm 自己的焦点 / 光标应答不算用户交互，别误清
-      if (!isTerminalReport(data)) reportWaiting(false);
+      if (!isTerminalReport(data)) {
+        workSeen = false;
+        report(null);
+      }
       const pty = ptyRef.current;
       if (pty) pty.write(data);
       else pendingInput.push(data);
@@ -405,9 +522,10 @@ export const TerminalSession = forwardRef<
         // 不挡住的话，已经作废的那次会话会把"shell 已退出"打到存活的界面上。
         onData: (bytes) => {
           if (cancelled) return;
-          // 还有输出就说明它没停在那儿等人，先撤标记，等输出停了再重新判
-          reportWaiting(false);
           term.write(bytes);
+          // 这里不再「有输出就撤标记」：空闲态 CLI 也会偶尔重绘（状态行刷新、窗口
+          // 变化），撤了再判会让 done 闪成呼吸灯。清陈旧标记交给 probeBusy 和静默判定
+          probeBusy();
           // 读 ptyRef 而不是直接用 handle：事件有可能先于 await 返回到达，
           // 那时 handle 还在 TDZ 里，碰它会直接抛 ReferenceError。
           // 那种情况下 ptyRef 还是 null，这一轮不消费，交给下面的补写。
@@ -417,6 +535,9 @@ export const TerminalSession = forwardRef<
         onExit: (code) => {
           if (cancelled) return;
           setExited(true);
+          // shell 都没了，挂在标签上的标记（在等回应 / 已完成）也一并撤掉
+          workSeen = false;
+          report(null);
           term.write(`\r\n\x1b[90m[shell 已退出，退出码 ${code}]\x1b[0m\r\n`);
         },
       });
@@ -539,8 +660,9 @@ export const TerminalSession = forwardRef<
       window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
       window.clearTimeout(waitTimer);
-      // 会话没了就别留着标记：StrictMode 的第一轮也会走到这儿，报一次 false 是无害的
-      reportWaiting(false);
+      // 会话没了就别留着标记：StrictMode 的第一轮也会走到这儿，报一次 null 是无害的
+      report(null);
+      seenRef.current = null;
       observer.disconnect();
       dataDisposable.dispose();
       scrollDisposable.dispose();
@@ -611,6 +733,13 @@ export const TerminalSession = forwardRef<
     });
     return () => cancelAnimationFrame(frame);
   }, [active, sessionKey]);
+
+  // 切到该标签（含从别的视图 / 工作区切回来）就算「看到了」：撤掉 done 标记。
+  // 不并进上面那个 effect：那个带 rAF（等布局稳定才 fit），这里要立刻生效，
+  // 免得 fit 触发的重绘把标记重新点亮
+  useEffect(() => {
+    if (active) seenRef.current?.();
+  }, [active]);
 
   // FitAddon 只按整数行列铺，容器高度是像素分数，底部会剩不到一行的空当。
   // 把它涂成终端自己的底色，否则会露出外面面板的底色——上下并列时那道空当
