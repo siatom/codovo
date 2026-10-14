@@ -24,6 +24,7 @@ cd src-tauri && cargo clippy
 ## 关键实现决定
 
 - 多工作区状态按 root 隔离；切换时保留会话与界面状态。
+- 工作区列表按「最近活动」排序：置顶组固定在前，组内按终端 / 智能体最近使用时间倒序（活动按 root 记、存 `codedock.workspaceActivity`，`src/lib/activity.tsx`）。列表不提供拖拽手动排序。
 - 所有文件访问必须校验工作区边界；凭据存系统凭据库。
 - 修改前阅读相关代码和注释，遵循现有行为与安全约束。
 - 智能体配置分两层：**全局层**存在 `codedock.settings`（不属于任何仓库），**工作区项目层**以 `<root>/.codedock/` 下的文件为准（`rules.md` / `memory.md` / `skills.json` / `agents.json`，随仓库走）。旧的 `settings.agentWorkspaces` 已弃用，只用于一次性迁移。

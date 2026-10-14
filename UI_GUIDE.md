@@ -86,10 +86,10 @@ React 17+ 的事件委托挂在 `#root`、比 document 先跑，所以**自己�
 
 - **分隔条 / 拖动把手**（1px 细线，不吃点击）→ 用 `setPointerCapture`。指针移出细线后
   照样收得到 `move` / `up`（`SplitPane.tsx:38`）。
-- **列表行拖拽重排** → **不要** `setPointerCapture`。捕获会把 `click` 重定向到行容器，
-  行内「⋯」「+」这些按钮就全点不动了。做法：按下只记起点，`pointermove` / `pointerup`
+- **列表行拖拽重排**（终端 / 编辑器标签、设置项）→ **不要** `setPointerCapture`。捕获会把 `click`
+  重定向到行容器，行内「⋯」「+」这些按钮就全点不动了。做法：按下只记起点，`pointermove` / `pointerup`
   挂 `window`（指针移出行外也收得到），纵向越过 4px 才算拖动，拖完靠 `onClickCapture`
-  吞掉浏览器补发的那次 click（`Sidebar.tsx:315`、`Sidebar.tsx:561`）。
+  吞掉浏览器补发的那次 click（`src/lib/use-tab-reorder.ts`、`SettingsDialog.tsx:177`）。
 
 **拖动期间给 `body` 挂光标 class**（`codedock-dragging` / `codedock-dragging-row`），
 别让指针在拖动中变回去。
