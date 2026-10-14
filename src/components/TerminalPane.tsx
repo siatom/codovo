@@ -13,6 +13,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { useAgentSession } from "../lib/agent-session";
 import { terminalTarget, useAttention } from "../lib/attention";
+import { useTouchActivity } from "../lib/activity";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import { useTabReorder } from "../lib/use-tab-reorder";
@@ -110,6 +111,8 @@ export function TerminalPane({
     set: setAttention,
     clear: clearAttention,
   } = useAttention(root);
+  // 终端有真实使用（用户输入 / 已在跑命令的输出）时上报一次，侧栏据此把最近用过的工作区排前面
+  const touchActivity = useTouchActivity();
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
   /** 智能体面板的句柄：编辑器浮窗要把文本塞进它的输入框 */
@@ -555,6 +558,8 @@ export function TerminalPane({
                     if (next) setAttention(target, next);
                     else clearAttention(target);
                   }}
+                  // 这个会话有真实使用（用户输入 / 已在跑命令的输出）时上报工作区活动
+                  onActivity={() => touchActivity(root)}
                   // 并列模式显示全部会话；标签模式只显示当前会话。active 仍只负责焦点和补尺寸。
                   visible={visible && view === "terminal" && (layout !== "tabs" || id === activeId)}
                   active={visible && view === "terminal" && id === activeId}

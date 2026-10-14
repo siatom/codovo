@@ -6,6 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { formatTime } from "../lib/agent";
+import { useActivityAll } from "../lib/activity";
 import { useAgentSession } from "../lib/agent-session";
 import {
   agentTarget,
@@ -56,7 +57,7 @@ import appLogoDev from "../../src-tauri/icons/dev/128x128.png";
 const appLogo = import.meta.env.DEV ? appLogoDev : appLogoRelease;
 
 interface SidebarProps {
-  /** 全部工作区，最近创建/打开的排在最前 */
+  /** 全部工作区，按存储顺序（新建的插在最前）；列表展示时另行按置顶 + 最近活动排序 */
   workspaces: Workspace[];
   /** 当前工作区的 id；null 表示还没选 */
   currentId: string | null;
@@ -78,8 +79,6 @@ interface SidebarProps {
   onClose: (workspace: Workspace) => void;
   /** 切换置顶：置顶的工作区排在列表最前 */
   onTogglePin: (workspace: Workspace) => void;
-  /** 拖拽重排：整份新顺序（含被拖动项的置顶标记）交给 App 落盘 */
-  onReorder: (ordered: Workspace[]) => void;
   /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端。
    *  title 是 CLI 名，作新标签的标题 */
   onRunAiCommand: (command: string, title: string) => void;
@@ -160,9 +159,6 @@ const WORKSPACE_MENU_W = 320;
 /** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
 const AI_MENU_W = 150;
 
-/** 工作区行拖动重排：纵向移过这么多像素才算「在拖」，免得手抖把点击变成重排 */
-const DRAG_THRESHOLD = 4;
-
 /** 路径末级名字（工作目录名），用于按目录名过滤工作区 */
 function baseName(path: string): string {
   return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
@@ -199,7 +195,6 @@ export function Sidebar({
   onRemove,
   onClose,
   onTogglePin,
-  onReorder,
   onRunAiCommand,
   onResumeSession,
   onFocusAttention,
@@ -211,23 +206,6 @@ export function Sidebar({
   /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
   const [resizing, setResizing] = useState(false);
-  /**
-   * 工作区行的拖动重排。会话放 ref：指针每动一下都要更新，不能每帧重建整棵列表。
-   * `started` 区分「按下」和「真的在拖」，没越过阈值时一切照旧（点击选中不受影响）。
-   */
-  const dragRef = useRef<{ id: string; startY: number; started: boolean } | null>(null);
-  /** 已按下、还没越过阈值；非空时才往 window 上挂监听 */
-  const [dragPending, setDragPending] = useState(false);
-  /** 拖动中的落点：插到第几项之前（0..行数），以及拖的是谁 */
-  const [dragOver, setDragOver] = useState<{ id: string; index: number } | null>(null);
-  /** 落点索引的同步副本：pointerup 时要读最新值，走 state 会拿到上一帧的 */
-  const dropIndexRef = useRef<number | null>(null);
-  /** 刚拖完要吞掉随后那一次 click（pointerup 之后浏览器还会补一个 click） */
-  const swallowClickRef = useRef(false);
-  /** 工作区列表容器：按各行的中线算落点 */
-  const listRef = useRef<HTMLUListElement>(null);
-  /** 当前渲染顺序的副本：拖动监听只挂一次，别每帧重挂 */
-  const orderedRef = useRef<Workspace[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -270,6 +248,8 @@ export function Sidebar({
   // 「在等用户」的标记（终端 CLI 与智能体会话都有）。侧栏要给所有工作区行做标记，
   // 够不着单个 root 的 hook，所以取全局那一份，按各工作区的 root 查
   const attentionByRoot = useAttentionAll();
+  // 「最近活动」时间（终端 / 智能体用过才算）。工作区行按它排序，取全局那一份
+  const activityByRoot = useActivityAll();
   // 当前工作区的那一份：对话历史行挂在当前工作区下面，标记只看它
   const sessionAttention = activeRoot ? (attentionByRoot[pathKey(activeRoot)] ?? {}) : {};
   // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
@@ -351,98 +331,6 @@ export function Sidebar({
       // 记不住就每次启动按默认宽度算，不影响使用
     }
   };
-
-  /** 按各行的中线算落点：返回「插到第几项之前」，范围 0..行数 */
-  const dropIndexAt = (clientY: number): number => {
-    const rows = listRef.current?.querySelectorAll<HTMLElement>("[data-ws-row]");
-    if (!rows || rows.length === 0) return 0;
-    for (let index = 0; index < rows.length; index += 1) {
-      const rect = rows[index].getBoundingClientRect();
-      if (clientY < rect.top + rect.height / 2) return index;
-    }
-    return rows.length;
-  };
-
-  /** 工作区行按下：只记起点，「到底在不在拖」交给 window 上的 pointermove 判 */
-  const onRowDown = (event: ReactPointerEvent<HTMLDivElement>, workspace: Workspace) => {
-    // 只认鼠标左键：触摸的纵向拖动要留给列表滚动，笔同理
-    if (event.button !== 0 || event.pointerType !== "mouse") return;
-    // 就地改名的输入框不参与拖动，否则选词会变成拖行
-    if ((event.target as HTMLElement).closest("input")) return;
-    // 过滤态下屏幕上的行只是子集，按它算落点会把隐藏项的顺序写坏，干脆不拖
-    if (wsQuery.trim()) return;
-    swallowClickRef.current = false;
-    dragRef.current = { id: workspace.id, startY: event.clientY, started: false };
-    setDragPending(true);
-  };
-
-  /*
-   * 拖动重排。pointermove / pointerup 挂 window 而不是行自己：指针一移出行外，行上的
-   * onPointerMove 就断了。行也刻意不 setPointerCapture——捕获会把 click 重定向到行容器，
-   * 行内「⋯」「+」这些按钮就都点不动了（分隔条那种不吃点击的地方才能这么用）。
-   */
-  useEffect(() => {
-    if (!dragPending) return;
-    const onMove = (event: PointerEvent) => {
-      const drag = dragRef.current;
-      if (!drag) return;
-      if (!drag.started) {
-        if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD) return;
-        drag.started = true;
-        // 按下到越界这几像素里可能已经选上了文本，清掉
-        window.getSelection()?.removeAllRanges();
-        document.body.classList.add("codedock-dragging-list");
-      }
-      const index = dropIndexAt(event.clientY);
-      dropIndexRef.current = index;
-      setDragOver({ id: drag.id, index });
-    };
-    const finish = (commit: boolean) => {
-      const drag = dragRef.current;
-      dragRef.current = null;
-      setDragPending(false);
-      setDragOver(null);
-      document.body.classList.remove("codedock-dragging-list");
-      const index = dropIndexRef.current;
-      dropIndexRef.current = null;
-      // 按下了但没动过，那就是普通点击，什么都不用做
-      if (!drag?.started) return;
-      // 拖完浏览器还会补一次 click，吞掉它，别顺手把工作区又切一遍
-      swallowClickRef.current = true;
-      if (!commit || index === null) return;
-
-      const list = orderedRef.current;
-      const from = list.findIndex((item) => item.id === drag.id);
-      const rest = list.filter((item) => item.id !== drag.id);
-      // 只有一个工作区时拖动没有意义，顺带免得把它的置顶标记抹掉
-      if (from < 0 || rest.length === 0) return;
-
-      // 置顶组排在最前，所以「插进置顶组」就置顶、插到普通区就取消。全列表都是置顶项时
-      // 拖到哪都还在组内（末尾也算）；否则拖过最后一个置顶项的中线就算出组
-      const insertAt = index > from ? index - 1 : index;
-      const pinnedCount = rest.filter((item) => item.pinned === true).length;
-      const pinned = pinnedCount === rest.length || insertAt < pinnedCount;
-      const moved = { ...list[from], pinned };
-      const next = [...rest.slice(0, insertAt), moved, ...rest.slice(insertAt)];
-      // 落点和原位一样就是没动过，不必落盘（pinned 缺省是 undefined，比之前先归一）
-      const unchanged = next.every(
-        (item, i) =>
-          item.id === list[i].id && (item.pinned === true) === (list[i].pinned === true),
-      );
-      if (unchanged) return;
-      onReorder(next);
-    };
-    const onUp = () => finish(true);
-    const onCancel = () => finish(false);
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onCancel);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onCancel);
-    };
-  }, [dragPending, onReorder]);
 
   /** 用系统的文件浏览器打开这个目录（Windows 资源管理器 / macOS 访达 / Linux 文件管理器） */
   const openInSystem = (path: string) => {
@@ -566,14 +454,23 @@ export function Sidebar({
     );
   }
 
-  // 置顶的工作区排最前；置顶组与普通组内部各自维持原有顺序（sort 自 ES2019 起稳定）。
-  // 显式 `=== true` 归一：新建 / 迁移出来的工作区没有 pinned 字段，直接 Number(undefined)
-  // 是 NaN，比较器返回 NaN 会被当 0，新工作区反而不让位、留在置顶项上面。
-  const ordered = [...workspaces].sort(
-    (a, b) => Number(b.pinned === true) - Number(a.pinned === true),
-  );
-  // 拖动的 window 监听只挂一次，所以顺序走 ref 传给它
-  orderedRef.current = ordered;
+  /*
+   * 排序：置顶组固定在前，组内按「最近活动」（终端 / 智能体用过才算）倒序。
+   * 一个工作区挂多个根时取其中最新的活动时间；没记录过的算 0。活动时间相同时靠
+   * sort 的稳定性（ES2019 起）保持列表原有顺序（= 新建插最前）。
+   *
+   * 显式 `=== true` 归一：新建 / 迁移出来的工作区没有 pinned 字段，直接 Number(undefined)
+   * 是 NaN，比较器返回 NaN 会被当 0，新工作区反而不让位、留在置顶项上面。
+   *
+   * 这里用普通表达式而不是 useMemo：上面的收起态分支会提前 return，把 hook 放到这之后
+   * 会触发「条件调用 hook」；列表也小，排序开销可忽略。
+   */
+  const activityOf = (workspace: Workspace): number =>
+    Math.max(0, ...workspace.roots.map((root) => activityByRoot[pathKey(root)] ?? 0));
+  const ordered = [...workspaces].sort((a, b) => {
+    const pin = Number(b.pinned === true) - Number(a.pinned === true);
+    return pin !== 0 ? pin : activityOf(b) - activityOf(a);
+  });
 
   // 过滤只是渲染层的子集：名字、或任一工作目录的末级目录名命中即可（统一小写比，
   // 与平台的大小写敏感性无关——这里筛的是给人看的名字，不是路径）
@@ -650,16 +547,14 @@ export function Sidebar({
             </button>
           ))}
       </div>
-      {/* 顶部留一点内边距：「拖到最前」的落点线画在第一行上方，没有它会被 overflow 裁掉，
-          用户就只看得见「插到第二项之前」那条线、以为最多只能拖到第 2 位 */}
-      <ul ref={listRef} className="min-h-0 flex-1 overflow-auto px-2 pt-1 pb-2">
+      <ul className="min-h-0 flex-1 overflow-auto px-2 py-1">
         {ordered.length === 0 && (
           <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
         )}
         {ordered.length > 0 && visible.length === 0 && (
           <li className="px-2 py-1 text-[12px] text-fg-faint">没有匹配的工作区</li>
         )}
-        {visible.map((workspace, index) => {
+        {visible.map((workspace) => {
           const isCurrent = workspace.id === currentId;
           // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
           const isOpen = opened.includes(workspace.id);
@@ -671,36 +566,11 @@ export function Sidebar({
             waiting?.kind === "done"
               ? "有 AI 会话任务已完成，点击跳过去"
               : "有 AI 会话在等你输入，点击跳过去";
-          const dragging = dragOver?.id === workspace.id;
-          // 落点线：插在第一项之前画在这行上面，插在最后一项之后画在最后一行下面
-          const dropBefore = dragOver?.index === index;
-          const dropAfter = dragOver?.index === visible.length && index === visible.length - 1;
           return (
             <li key={workspace.id} data-ws-row className="relative">
-              {(dropBefore || dropAfter) && (
-                <span
-                  className={`pointer-events-none absolute right-1 left-1 z-10 h-0.5 rounded bg-accent-strong ${
-                    dropBefore ? "-top-0.5" : "-bottom-0.5"
-                  }`}
-                />
-              )}
               {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
-              <div
-                className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}
-                // 拖完紧跟着的那次 click 在这里拦掉：行内主按钮、⋯、+ 都在这一层里
-                onClickCapture={(event) => {
-                  if (!swallowClickRef.current) return;
-                  swallowClickRef.current = false;
-                  event.preventDefault();
-                  event.stopPropagation();
-                }}
-              >
-                <div
-                  className={`${ROW} ${isCurrent ? "text-fg" : ""} ${
-                    dragging ? "opacity-40" : ""
-                  }`}
-                  onPointerDown={(event) => onRowDown(event, workspace)}
-                >
+              <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
+                <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
                   <button
                     type="button"
                     onClick={() => onSelect(workspace)}

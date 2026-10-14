@@ -18,6 +18,7 @@ import {
   useSetAgentModeAt,
 } from "./lib/agent-session";
 import { AttentionProvider, useDropAttention } from "./lib/attention";
+import { ActivityProvider, useDropActivity, useTouchActivity } from "./lib/activity";
 import { RemoteHostsProvider } from "./lib/remote-hosts";
 import { DbConnectionsProvider } from "./lib/db-connections";
 import {
@@ -51,7 +52,6 @@ import {
   newWorkspaceId,
   onWorkspacesChanged,
   readLastWorkspaceId,
-  reorderWorkspaces,
   saveLastWorkspaceId,
   saveWorkspace,
   type Workspace,
@@ -107,6 +107,10 @@ function Shell() {
   const dropAgentSession = useDropAgentSession();
   /** 同理，丢掉它那份「等用户」标记 */
   const dropAttention = useDropAttention();
+  /** 工作区从列表里移除时，丢掉它那份「最近活动」记录（侧栏排序依据） */
+  const dropActivity = useDropActivity();
+  /** 新建工作区时记一次活动，让它立刻排到非置顶组最前 */
+  const touchActivity = useTouchActivity();
   /** 给还没切过去的工作区「新建对话」用 */
   const newChatAt = useNewChatAt();
   /** 给还没切过去的工作区「打开某条会话」用（侧栏的「在等用户」标记） */
@@ -270,6 +274,8 @@ function Shell() {
   const createWorkspace = useCallback(
     async (value: { name: string; roots: string[] }) => {
       setDialog(null);
+      // 新建是有意动作，记一次活动，让它立刻排到非置顶组最前（否则活动为 0 会沉到末尾）
+      for (const root of value.roots) touchActivity(root);
       await openWorkspace({
         id: newWorkspaceId(),
         name: value.name,
@@ -277,7 +283,7 @@ function Shell() {
         activeRoot: value.roots[0],
       });
     },
-    [openWorkspace],
+    [openWorkspace, touchActivity],
   );
 
   /**
@@ -355,19 +361,16 @@ function Shell() {
   const removeWorkspace = useCallback(
     (workspace: Workspace) => {
       if (openedRef.current.includes(workspace.id)) closeWorkspace(workspace);
+      // 工作区没了，它那份「最近活动」记录也没用了（排序依据），一并清掉
+      for (const root of workspace.roots) dropActivity(root);
       setWorkspaces(dropWorkspace(workspace.id));
     },
-    [closeWorkspace],
+    [closeWorkspace, dropActivity],
   );
 
   /** 置顶 / 取消置顶。只改记录里的标记，「置顶的排最前」由侧边栏渲染时排序实现 */
   const togglePin = useCallback((workspace: Workspace) => {
     setWorkspaces(saveWorkspace({ ...workspace, pinned: !workspace.pinned }));
-  }, []);
-
-  /** 拖拽重排：侧栏算好新顺序（含被拖动项的置顶标记）后整份落盘 */
-  const reorder = useCallback((ordered: Workspace[]) => {
-    setWorkspaces(reorderWorkspaces(ordered));
   }, []);
 
   /** 右栏（编辑器 / 浏览器）全屏，按钮挂在这两个面板的标题栏上 */
@@ -661,7 +664,6 @@ function Shell() {
           onRemove={setPendingRemove}
           onClose={closeWorkspace}
           onTogglePin={togglePin}
-          onReorder={reorder}
           onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
           onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
@@ -771,11 +773,13 @@ export default function App() {
   return (
     <AgentSessionProvider>
       <AttentionProvider>
-        <RemoteHostsProvider>
-          <DbConnectionsProvider>
-            <Shell />
-          </DbConnectionsProvider>
-        </RemoteHostsProvider>
+        <ActivityProvider>
+          <RemoteHostsProvider>
+            <DbConnectionsProvider>
+              <Shell />
+            </DbConnectionsProvider>
+          </RemoteHostsProvider>
+        </ActivityProvider>
       </AttentionProvider>
     </AgentSessionProvider>
   );

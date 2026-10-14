@@ -261,6 +261,12 @@ interface TerminalSessionProps {
    * 由 TerminalPane 写进 attention store，在标签栏与侧栏上标记出来。
    */
   onAttentionChange?: (kind: AttentionKind | null) => void;
+  /**
+   * 这个会话有「真实使用」时上报一次：用户敲了输入，或该会话已在跑命令、有输出。
+   * 由 TerminalPane 写进 activity store，侧栏据此把最近用过的终端排在前面。
+   * 单纯打开 / 切换工作区不算——shell 启动的提示符不触发（见 engaged）。
+   */
+  onActivity?: () => void;
 }
 
 /**
@@ -280,6 +286,7 @@ export const TerminalSession = forwardRef<
     onRequestClose,
     onRequestNew,
     onAttentionChange,
+    onActivity,
   },
   ref,
 ) {
@@ -324,6 +331,9 @@ export const TerminalSession = forwardRef<
   // 同理：上抛「在等用户」的回调每次渲染都是新的，建实例的 effect 依赖里塞不下
   const onAttentionChangeRef = useRef(onAttentionChange);
   onAttentionChangeRef.current = onAttentionChange;
+  // 上报「有真实使用」的回调同理，也走 ref
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
   // 等待提示的开关随时能关，而判定逻辑挂在建实例的 effect 里、只跑一次，所以也走 ref
   const waitHintRef = useRef(settings.terminalWaitHint);
   waitHintRef.current = settings.terminalWaitHint;
@@ -473,6 +483,14 @@ export const TerminalSession = forwardRef<
     // 用户点「重开」时也是重新拉起同一个会话，顺带把 resume 再执行一次
     let bootPending = bootCommand;
 
+    /*
+     * 「这个会话已经被真实使用过了」的门控，只影响活动上报（侧栏排序），不碰 attention。
+     * shell 一启动就会吐提示符，若「有输出就上报活动」，那么单纯打开 / 切换工作区都会
+     * 被记成活动。所以：用户真的敲了输入才置位，之后（含长跑命令的输出）才继续上报。
+     * 带启动命令的会话（AI CLI / resume）一上来就算在用，初值直接给 true。
+     */
+    let engaged = Boolean(bootCommand);
+
     /**
      * 往 PTY 里写用户/终端产生的输入。句柄是异步拿到的，写可能比它先到——最典型的是
      * xterm 对 shell 启动时 `ESC[6n`（查光标位置，bash/readline 用它算提示符宽度）的
@@ -488,6 +506,9 @@ export const TerminalSession = forwardRef<
       if (!isTerminalReport(data)) {
         workSeen = false;
         report(null);
+        // 真实用户输入：这个会话从此算「在用」，并把这次记成工作区的一次活动
+        engaged = true;
+        onActivityRef.current?.();
       }
       const pty = ptyRef.current;
       if (pty) pty.write(data);
@@ -523,6 +544,9 @@ export const TerminalSession = forwardRef<
         onData: (bytes) => {
           if (cancelled) return;
           term.write(bytes);
+          // 只有「已经在用」的会话才把输出算作活动：新 shell 的启动提示符不算，
+          // 否则打开 / 切换工作区就会把顺序改掉
+          if (engaged) onActivityRef.current?.();
           // 这里不再「有输出就撤标记」：空闲态 CLI 也会偶尔重绘（状态行刷新、窗口
           // 变化），撤了再判会让 done 闪成呼吸灯。清陈旧标记交给 probeBusy 和静默判定
           probeBusy();
