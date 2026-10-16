@@ -1,19 +1,21 @@
 import type { AgentMessage, AgentPart } from "../lib/types";
-import { renderMarkdown } from "../lib/markdown";
+import { useHighlightedMarkdown } from "../lib/highlight";
 import { AgentToolCard } from "./AgentToolCard";
 import { IconBot } from "./icons";
 
 function TextPartView({ text, streaming }: { text: string; streaming: boolean }) {
   // 流式期间不跑 markdown：每个增量都过一遍 marked + DOMPurify 太浪费，
   // 而且半截的 ``` 会把整段渲染成代码块、来回跳。等这一轮结束再上排版。
+  // 代码高亮是异步的（Monaco 语言包懒加载），所以先给一版没上色的，算好之后它自己换上。
   // 字号和行高都要跟下面的 .agent-text 对齐，否则这一轮跑完切 markdown 时会跳一下
+  const html = useHighlightedMarkdown(text, !streaming);
   if (streaming) {
     return <div className="text-[14px] leading-[1.75] whitespace-pre-wrap">{text}</div>;
   }
   return (
     <div
       className="markdown-body agent-text text-[14px]"
-      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { resolveLanguage, useHighlightedCode } from "../lib/highlight";
+import { languageOf } from "../lib/languages";
 import type { AgentPart, AgentToolStatus } from "../lib/types";
 import {
   IconChevronDown,
@@ -11,6 +13,10 @@ import {
 } from "./icons";
 
 type ToolPart = Extract<AgentPart, { type: "tool" }>;
+
+/** 工具输出那一块的观感，高亮与纯文本两条路共用，免得改样式时漏掉一条 */
+const OUTPUT_CLASS =
+  "max-h-60 overflow-auto border-t border-line bg-app px-2.5 py-2 font-mono text-[11px] leading-relaxed text-fg-muted";
 
 /** 按工具名挑个图标。认不出的给通用的四角星，别让卡片没图标。 */
 function iconFor(tool: string) {
@@ -48,6 +54,23 @@ function summarize(input: unknown): string {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+/**
+ * 猜工具输出是什么语言，供高亮用；猜不出就返回 null（按纯文本渲染）。
+ * 读 / 写 / 改文件类工具的输出就是文件内容，语言取入参里的路径；
+ * bash 的输出严格说不是 shell 源码，但命令类输出里认得出来的多半也只是注释和路径，
+ * 按 shell 上色比整块灰着更容易扫。
+ */
+function outputLanguage(tool: string, input: unknown): string | null {
+  if (tool === "bash" || tool === "shell") return "shell";
+  if (tool === "read" || tool === "write" || tool === "edit" || tool === "patch") {
+    const record = asRecord(input);
+    const path = record?.filePath ?? record?.path;
+    if (typeof path !== "string") return null;
+    return resolveLanguage(languageOf(path));
+  }
+  return null;
 }
 
 const STATUS_TEXT: Record<AgentToolStatus, string> = {
@@ -144,6 +167,15 @@ function ResultGrid({ data }: { data: GridData }) {
 }
 
 /**
+ * 展开后的工具输出。语言认出来就上高亮，`language` 传 null（或高亮还没算好）时按纯文本渲染。
+ */
+function ToolOutput({ text, language }: { text: string; language: string | null }) {
+  const html = useHighlightedCode(text, language);
+  if (html === null) return <pre className={OUTPUT_CLASS}>{text}</pre>;
+  return <pre className={OUTPUT_CLASS} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/**
  * 一次工具调用的卡片：一行摘要 + 可展开的输出。
  *
  * 数据库 Agent 的查询结果（`{columns, rows}`）会**直接铺成表格**、默认可见，
@@ -157,8 +189,9 @@ export function AgentToolCard({ part }: { part: ToolPart }) {
   const title = state.title?.trim() || summarize(state.input) || tool;
   const detail = state.status === "error" ? state.error : state.output;
   const failed = state.status === "error";
-  // 错误输出不解析成表格（那多半是报错文本，不是结果集）
+  // 错误输出不解析成表格（那多半是报错文本，不是结果集）；同理也不按文件语言上色
   const grid = failed ? null : parseGrid(state.output);
+  const language = failed ? null : outputLanguage(tool, state.input);
   const canExpand = !grid && Boolean(detail);
 
   return (
@@ -201,11 +234,7 @@ export function AgentToolCard({ part }: { part: ToolPart }) {
 
       {grid && <ResultGrid data={grid} />}
 
-      {!grid && open && detail && (
-        <pre className="max-h-60 overflow-auto border-t border-line bg-app px-2.5 py-2 font-mono text-[11px] leading-relaxed text-fg-muted">
-          {detail}
-        </pre>
-      )}
+      {!grid && open && detail && <ToolOutput text={detail} language={language} />}
     </div>
   );
 }
