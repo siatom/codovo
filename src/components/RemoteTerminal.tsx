@@ -111,6 +111,9 @@ export function RemoteTerminal({
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+  // GPU 加速：建实例时读一次，改设置只影响之后新建的会话
+  const gpuAccelRef = useRef(settings.terminalGpuAcceleration);
+  gpuAccelRef.current = settings.terminalGpuAcceleration;
 
   // 回调每次渲染都可能换身份，而建实例的 effect 依赖里塞不进它们，用 ref 存最新值
   const onSessionRef = useRef(onSession);
@@ -154,9 +157,12 @@ export function RemoteTerminal({
     term.loadAddon(fit);
     term.open(container);
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
+      // 和本地终端同理：WebGL 渲染器在重输出下会花屏，关掉 GPU 加速退回 DOM 渲染器
+      if (gpuAccelRef.current) {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      }
     } catch {
       // WebGL 不可用时 xterm 会留在默认渲染器上
     }

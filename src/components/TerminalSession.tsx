@@ -315,6 +315,9 @@ export const TerminalSession = forwardRef<
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+  // GPU 加速同理：建实例时读一次，改设置只影响之后新建的会话
+  const gpuAccelRef = useRef(settings.terminalGpuAcceleration);
+  gpuAccelRef.current = settings.terminalGpuAcceleration;
   // 关标签的键位可配置，而下面的 keydown 监听挂一次就不重建（依赖只有 [sessionKey, root]），
   // 所以拿 ref 存最新值，改键位立刻生效
   const closeComboRef = useRef(settings.shortcuts["closeTab"]);
@@ -385,9 +388,13 @@ export const TerminalSession = forwardRef<
     term.open(container);
 
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
+      // WebGL 渲染器在重输出 + TUI（如 opencode）下会因字形纹理图集出错而花屏，
+      // 关掉 GPU 加速就退回 xterm 内置的 DOM 渲染器（慢些，但不受这个 bug 影响）
+      if (gpuAccelRef.current) {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      }
     } catch {
       // WebGL 不可用时 xterm 会留在默认渲染器上，不影响使用
     }

@@ -192,6 +192,7 @@ function describeState(ctx: AppAgentContext) {
       terminalFontBold: settings.terminalFontBold,
       terminalTheme: settings.terminalTheme,
       terminalShell: settings.terminalShell,
+      terminalGpuAcceleration: settings.terminalGpuAcceleration,
       terminalWaitHint: settings.terminalWaitHint,
       editorFontFamily: settings.editorFontFamily,
       uiMonoFontFamily: settings.uiMonoFontFamily,
@@ -234,6 +235,7 @@ const NUMERIC_LIMITS: Record<string, [number, number]> = {
 
 const BOOLEAN_KEYS = new Set([
   "terminalFontBold",
+  "terminalGpuAcceleration",
   "terminalWaitHint",
   "editorFontBold",
   "editorMinimap",

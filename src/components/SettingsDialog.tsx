@@ -2696,6 +2696,18 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     />
                   </Field>
                   <Field
+                    label="GPU 加速"
+                    hint="用 WebGL 渲染终端，重输出时更省 CPU；个别显卡 / 驱动上会出现花屏（输出过程中画面花掉、得调一下布局才恢复），关掉即退回内置渲染器。只对新建的终端生效"
+                  >
+                    <BoolToggle
+                      value={settings.terminalGpuAcceleration}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(terminalGpuAcceleration) =>
+                        update({ terminalGpuAcceleration })
+                      }
+                    />
+                  </Field>
+                  <Field
                     label="等待提示"
                     hint="终端里 AI CLI 停在需要输入的提示上、或一轮任务跑完回到空闲时，在标签和侧栏标出来；靠输出特征判断，可能误报"
                   >

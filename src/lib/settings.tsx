@@ -119,6 +119,12 @@ export interface Settings {
   /** 终端配色主题，取 xterm-theme 的导出名；空串表示跟随界面深/浅色 */
   terminalTheme: string;
   /**
+   * 终端是否用 WebGL 渲染（GPU 加速）。关掉退回 xterm 内置的 DOM 渲染器：重输出时
+   * 略费 CPU，但能避开 WebGL 渲染器的花屏——它的字形纹理图集在页合并时会让画面
+   * 整块花掉，得等一次布局变化（触发 resize）重画才恢复。只对新建的终端生效。
+   */
+  terminalGpuAcceleration: boolean;
+  /**
    * 终端里 AI CLI 停在需要用户输入的提示上、或一轮任务跑完回到空闲等指令时，
    * 在标签与侧栏标出来。判据是备用屏上的输出特征，属于启发式、可能误报，所以留个开关。
    */
@@ -198,6 +204,7 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   terminal: [
     "terminalShell",
     "terminalTheme",
+    "terminalGpuAcceleration",
     "terminalWaitHint",
     "aiCommands",
   ],
@@ -279,6 +286,8 @@ const DEFAULTS: Settings = {
   terminalFontSize: 13,
   terminalFontBold: true,
   terminalTheme: "",
+  // 默认开着：GPU 加速下重输出更省 CPU；遇到花屏再关掉退回 DOM 渲染器
+  terminalGpuAcceleration: true,
   terminalWaitHint: true,
   editorFontFamily: "",
   uiMonoFontFamily: "",
@@ -525,6 +534,11 @@ function readSaved(): Settings {
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
     terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),
     terminalTheme: asString(raw.terminalTheme, DEFAULTS.terminalTheme),
+    // 老版本的设置里没有这个字段，回落 true：默认行为不变（仍走 WebGL）
+    terminalGpuAcceleration: asBoolean(
+      raw.terminalGpuAcceleration,
+      DEFAULTS.terminalGpuAcceleration,
+    ),
     terminalWaitHint: asBoolean(raw.terminalWaitHint, DEFAULTS.terminalWaitHint),
     editorFontFamily: asString(raw.editorFontFamily, DEFAULTS.editorFontFamily),
     uiMonoFontFamily: asString(raw.uiMonoFontFamily, DEFAULTS.uiMonoFontFamily),

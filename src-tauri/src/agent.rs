@@ -121,7 +121,7 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 ## 常用设置在哪（回答「怎么改 X」时照这个说）
 
-- 终端程序 / 配色主题 / AI CLI 列表：**设置 → 终端**
+- 终端程序 / 配色主题 / GPU 加速 / AI CLI 列表：**设置 → 终端**
 - 编辑器自动保存、缩进宽度、缩略图（minimap）：**设置 → 编辑器**
 - 主题（深色 / 浅色 / 跟随系统 / 各种配色）、界面 / 终端 / 编辑器字体（字体 / 字号 / 字重）、右栏模块显隐、启动恢复上次工作区、关闭时收进托盘：**设置 → 外观**
 - 模型提供商、opencode 命令与端口、规则 / 记忆 / 技能 / Agents：**设置 → 智能体**
@@ -135,6 +135,8 @@ const APP_AGENT_SKILL_BODY: &str = "\
 - `terminalFontBold`：true / false
 - `terminalTheme`：字符串，xterm 配色名；留空表示跟随界面深/浅色
 - `terminalShell`：字符串，shell 的 id；留空表示自动
+- `terminalGpuAcceleration`：true / false，终端是否用 WebGL 渲染；关掉退回内置渲染器，
+  可避开个别显卡 / 驱动上的花屏
 - `terminalWaitHint`：true / false
 - `editorFontFamily` / `editorFontSize`（11-20）/ `editorFontBold`
 - `editorAutoSave`：\"off\" / \"afterDelay\" / \"onFocusChange\" / \"onWindowChange\"
