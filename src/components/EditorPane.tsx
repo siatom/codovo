@@ -362,6 +362,22 @@ function isHtmlPreviewPath(path: string): boolean {
   return dot >= 0 && HTML_PREVIEW_EXTENSIONS.has(name.slice(dot + 1));
 }
 
+const SVG_EXTENSIONS = new Set(["svg"]);
+
+function isSvgPath(path: string): boolean {
+  const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && SVG_EXTENSIONS.has(name.slice(dot + 1));
+}
+
+/**
+ * 打开即预览的文件：markdown 与 svg。这两种多半是拿来看的，进来先给渲染结果，
+ * 想改再点「回到编辑」。`html` / `htm` 不在此列——它们通常是要动手改的，保持打开即编辑。
+ */
+function previewsOnOpen(path: string): boolean {
+  return languageOf(path) === "markdown" || isSvgPath(path);
+}
+
 function baseName(path: string): string {
   return toDisplayPath(path).split("/").pop() ?? path;
 }
@@ -460,6 +476,12 @@ export function EditorPane({
   // togglePreview 是稳定回调（依赖为空），要用 ref 读预览集合的最新值来判断该进还是该退
   const previewPathsRef = useRef(previewPaths);
   previewPathsRef.current = previewPaths;
+  /**
+   * 已经定过「默认模式」的标签（存 tabKey）。每个标签只在第一次激活时按扩展名决定
+   * 预览还是编辑，之后一律尊重用户的手动切换——切走再切回来不会被拽回预览。
+   * 关标签时一并清掉（见 forgetKeys），重开还是默认预览。
+   */
+  const seededRef = useRef(new Set<string>());
   /**
    * 正处在左右分屏预览的标签（存 tabKey）。只对 markdown 有效：html / svg 的预览要读磁盘，
    * 不适合同屏边改边看。与 previewPaths 互斥（同一个标签不会既整屏预览又分屏）
@@ -630,6 +652,8 @@ export function EditorPane({
     setDirtyPaths(prune);
     setPreviewPaths(prune);
     setSplitPaths(prune);
+    // 顺手把「默认模式」的记账也清掉，重开这个文件时重新按扩展名决定
+    for (const key of keys) seededRef.current.delete(key);
   }, []);
 
   /**
@@ -1398,6 +1422,22 @@ export function EditorPane({
       cancelled = true;
     };
   }, [active, syncDirty, showDiff]);
+
+  /**
+   * markdown / svg 打开即预览：标签第一次被激活时按扩展名给它定默认模式。
+   *
+   * 必须排在下面「搜索定位」的 effect 之前：搜索点进来时 reveal 会把人拉回编辑，
+   * 先播种再撤销，最终停在编辑模式；反过来播种会把撤销覆盖掉。
+   * svg 的预览虽要读磁盘，但刚打开的文件没有未保存改动，直接进即可。
+   */
+  useEffect(() => {
+    if (!active || active.kind !== "file") return;
+    const key = tabKey(active);
+    if (seededRef.current.has(key)) return;
+    seededRef.current.add(key);
+    if (!previewsOnOpen(active.path)) return;
+    setPreviewPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  }, [active]);
 
   // 搜索结果的定位：等标签切过去、model 挂上之后再选中并滚过去
   useEffect(() => {
