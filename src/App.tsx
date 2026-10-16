@@ -31,7 +31,6 @@ import {
   respondPreviewAgent,
   runPreviewTool,
   takePreviewAgentRequest,
-  type PreviewAgentContext,
 } from "./lib/preview-agent";
 import { APP_AGENT_NAME } from "./lib/agent-profiles";
 import { useTheme } from "./lib/theme";
@@ -471,16 +470,9 @@ function Shell() {
 
   /**
    * 预览助手桥：和应用助手同一套（后端 MCP 子进程只能写请求文件），执行的是预览工具。
-   * ctx 每次渲染重建，读的是此刻的活动工作区与界面句柄，经 ref 传给只挂一次的轮询 effect。
+   * 每条请求自带它所属的工作区路径（后端经 `CODEDOCK_PREVIEW_ROOT` 注入），
+   * 所以这里不依赖「当前活动工作区」——后台工作区的预览助手也能正常执行。
    */
-  const previewAgentCtxRef = useRef<PreviewAgentContext | null>(null);
-  previewAgentCtxRef.current = {
-    activeRoot: activeWorkspace?.activeRoot ?? null,
-    layout: {
-      openTool: (id) => handlesRef.current.get(activeIdRef.current ?? "")?.layout?.openTool(id),
-    },
-  };
-
   useEffect(() => {
     let stopped = false;
     let busy = false;
@@ -490,9 +482,8 @@ function Shell() {
       busy = true;
       try {
         const request = await takePreviewAgentRequest();
-        const ctx = previewAgentCtxRef.current;
-        if (!request || !ctx || stopped) return;
-        const outcome = await runPreviewTool(request, ctx);
+        if (!request || stopped) return;
+        const outcome = await runPreviewTool(request);
         await respondPreviewAgent(request.id, outcome.ok, outcome.text);
       } catch (reason) {
         console.error("预览助手工具调用失败", reason);

@@ -49,6 +49,16 @@ export interface AgentLaunchConfig {
    * 并关掉文件类工具。终端区智能体不传。
    */
   database?: boolean;
+  /**
+   * 预览助手：后端会额外注入预览 MCP 工具、内置技能与专用 agent，并关掉文件写 / 命令类工具。
+   * 右栏「预览」面板里的助手传 `true`；终端区智能体不传。
+   */
+  preview?: boolean;
+  /**
+   * 预览助手要操作的工作区根目录。只有 `preview: true` 时用——
+   * `root` 传的是哨兵（每个工作区一个槽位），真正读哪个项目、起哪个项目的预览以它为准。
+   */
+  workspaceRoot?: string;
 }
 
 /**
