@@ -17,6 +17,8 @@ import {
  *
  * 预览助手是**每个工作区一个进程**：请求里带着该助手所属的工作区路径（后端经
  * `CODEDOCK_PREVIEW_ROOT` 注入），所以这里不依赖「当前活动工作区」，后台工作区的调用也照常执行。
+ *
+ * 面板上点「启动」就跑一轮预览助手，它调的工具经这里落到 `lib/preview.ts` 的预览命令上。
  */
 
 /** 一条待执行的预览操作请求，字段和后端 `AppAgentRequest` 对齐 */
@@ -44,28 +46,6 @@ export function respondPreviewAgent(id: string, ok: boolean, result: string): Pr
  */
 export function previewAgentRoot(workspaceRoot: string): string {
   return `__preview_agent__::${workspaceRoot}`;
-}
-
-/**
- * 当前会话 id 存 sessionStorage，**按工作区分开记**：一个窗口里同时开着多个工作区，
- * 每个的预览助手各有各的对话，切回来还能接上。
- */
-const SESSION_KEY_PREFIX = "codedock.previewAgentSession:";
-
-export function readPreviewAgentSession(workspaceRoot: string): string {
-  try {
-    return window.sessionStorage.getItem(SESSION_KEY_PREFIX + workspaceRoot) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-export function writePreviewAgentSession(workspaceRoot: string, sessionId: string) {
-  try {
-    window.sessionStorage.setItem(SESSION_KEY_PREFIX + workspaceRoot, sessionId);
-  } catch {
-    // 记不住只影响下次打开时的还原
-  }
 }
 
 export interface PreviewAgentOutcome {

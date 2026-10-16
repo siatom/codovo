@@ -626,7 +626,6 @@ export function WorkspacePane({
                 <PreviewPane
                   root={root}
                   visible={rightOpen && activeTool === "preview"}
-                  focused={visible}
                   fullscreen={rightFullscreen}
                   onToggleFullscreen={onToggleRightFullscreen}
                 />
