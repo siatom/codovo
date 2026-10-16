@@ -541,8 +541,12 @@ pub(crate) fn read_text_file(root: &Path, raw: &str) -> Result<String, String> {
     decode_text(&bytes).ok_or_else(|| "这不是文本文件，无法解析".to_string())
 }
 
-/// 能直接渲染的图片扩展名 → MIME。**`svg` 故意不在列**：它是文本，编辑器里已经当
-/// xml 打开、能编辑能高亮，挪去图片预览反而是倒退；`tif` 这类浏览器不认。
+/// 能直接渲染的图片扩展名 → MIME。**必须和前端 `IMAGE_EXTENSIONS`
+/// （`EditorPane.tsx`）逐项对齐**：前端判成图片、这里却认不出，就会「判成图片但读不出」。
+/// 只收 WebView 渲染引擎本身就能画的格式（Chromium / WKWebView 都支持 avif）。
+/// **`svg` 故意不在列**：它是文本，编辑器里已经当 xml 打开、能编辑能高亮，挪去图片预览
+/// 反而是倒退；`tif` / `tiff` 两边引擎都不认，`heic` 只有 macOS 侧能画——这几个要支持
+/// 得靠 Rust 侧解码转码，成本高，暂不纳入。
 fn image_mime(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
@@ -552,6 +556,7 @@ fn image_mime(path: &Path) -> Option<&'static str> {
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "ico" => "image/x-icon",
+        "avif" => "image/avif",
         _ => return None,
     })
 }
@@ -2680,6 +2685,16 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("不是可预览的图片格式"), "{error}");
+
+        // avif 是 WebView 原生能画的格式，白名单里得有它（否则会被误报成二进制）
+        let avif = workspace.join("pic.avif");
+        fs::write(&avif, raw).unwrap();
+        let image = read_image_at(&workspace_root(&state), avif.to_str().unwrap()).unwrap();
+        assert!(
+            image.data.starts_with("data:image/avif;base64,"),
+            "{}",
+            image.data
+        );
         fs::remove_dir_all(&root).ok();
     }
 

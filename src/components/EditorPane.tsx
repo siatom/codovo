@@ -35,6 +35,7 @@ import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { PdfPreview } from "./PdfPreview";
 import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -309,18 +310,42 @@ type Status =
   | { kind: "tooLarge" }
   | { kind: "emptyDiff" }
   | { kind: "image"; src: string }
+  | { kind: "pdf" }
   | { kind: "error"; message: string };
 
 /**
  * 当图片预览的扩展名，和后端 `image_mime` 一一对应。`svg` 不在列里——
  * 它是文本，编辑器里当 xml 打开能改能高亮，挪去预览是倒退。
+ * 只收 WebView 渲染引擎本身就能画的格式：`avif` 两边引擎都支持，直接当图片；
+ * `tif` / `tiff` 都不认、`heic` 只有 macOS 侧能画，要支持得靠 Rust 侧解码转码。
  */
-const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"]);
+const IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "ico",
+  "avif",
+]);
 
 function isImagePath(path: string): boolean {
   const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
   const dot = name.lastIndexOf(".");
   return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1));
+}
+
+/**
+ * PDF 走 WebView 内置阅读器预览（见 `PdfPreview`），是二进制、不进 Monaco，
+ * 打开即预览、没有「编辑 / 预览」开关——和图片同一套判据。
+ */
+const PDF_EXTENSIONS = new Set(["pdf"]);
+
+function isPdfPath(path: string): boolean {
+  const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && PDF_EXTENSIONS.has(name.slice(dot + 1));
 }
 
 /**
@@ -1311,6 +1336,14 @@ export function EditorPane({
       };
     }
 
+    // PDF 交给 WebView 内置阅读器渲染（见 PdfPreview），也不进 Monaco、没有 model。
+    // 和图片一样：打开即预览，判据只看扩展名，不必先把文件读进来
+    if (isPdfPath(active.path)) {
+      editor.setModel(null);
+      setStatus({ kind: "pdf" });
+      return;
+    }
+
     const cached = modelsRef.current.get(key);
     if (cached) {
       editor.setModel(cached.model);
@@ -1573,6 +1606,9 @@ export function EditorPane({
   // 加载中和加载失败时也得把 Monaco 那块藏住，否则会露出上一次的残留内容
   const isImageTab = active?.kind === "file" && isImagePath(active.path);
 
+  // PDF 同理：打开即预览，没有编辑模式
+  const isPdfTab = active?.kind === "file" && isPdfPath(active.path);
+
   // 有预览可切的文件：markdown 实时渲染，html / htm / svg 走 asset 协议读磁盘。
   // 判据是 status.kind === "ready"：加载中和加载失败时不给预览入口
   const canPreview =
@@ -1646,7 +1682,7 @@ export function EditorPane({
       diffRef.current?.layout();
     });
     return () => cancelAnimationFrame(frame);
-  }, [isPreview, isSplitPreview, isDiffTab, isImageTab, visible]);
+  }, [isPreview, isSplitPreview, isDiffTab, isImageTab, isPdfTab, visible]);
 
   // 标签过多、栏溢出时，激活标签可能落在可视区外，需要滚进来。
   // 用两边的 rect 差算滚动量、只挪横向，避免 scrollIntoView 连祖先的纵向滚动一起动。
@@ -1675,6 +1711,7 @@ export function EditorPane({
   const showEncodingBar =
     active?.kind === "file" &&
     !isImageTab &&
+    !isPdfTab &&
     status.kind !== "binary" &&
     status.kind !== "tooLarge" &&
     (activeEncoding !== null || status.kind === "error");
@@ -2029,7 +2066,7 @@ export function EditorPane({
           first={
             <div
               ref={containerRef}
-              className={isPreview || isDiffTab || isImageTab ? "hidden" : "h-full w-full"}
+              className={isPreview || isDiffTab || isImageTab || isPdfTab ? "hidden" : "h-full w-full"}
             />
           }
           second={
@@ -2050,6 +2087,11 @@ export function EditorPane({
           <HtmlPreview path={active.path} nonce={previewNonce} />
         )}
 
+        {/* PDF 预览：同样走 asset 协议，交给 WebView 内置阅读器翻页 / 缩放 */}
+        {isPdfTab && active && active.kind === "file" && (
+          <PdfPreview path={active.path} />
+        )}
+
         {/* 图片按原比例整体放进可视区，不放大也不让横竖滚动条出场 */}
         {status.kind === "image" && (
           <div className="absolute inset-0 flex items-center justify-center overflow-hidden p-4">
@@ -2061,7 +2103,7 @@ export function EditorPane({
           </div>
         )}
 
-        {overlay.kind !== "ready" && overlay.kind !== "image" && (
+        {overlay.kind !== "ready" && overlay.kind !== "image" && overlay.kind !== "pdf" && (
           <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
             {overlay.kind === "idle" && (
               <p className="text-[12px] text-fg-faint">

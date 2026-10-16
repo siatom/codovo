@@ -125,7 +125,7 @@ export function readFile(root: string, path: string, encoding?: string): Promise
 }
 
 /**
- * 读一张图片当预览用，后端返回 data URL。只认 png / jpg / gif / webp / bmp / ico，
+ * 读一张图片当预览用，后端返回 data URL。只认 png / jpg / gif / webp / bmp / ico / avif，
  * 其余扩展名后端直接报错（`svg` 是文本，仍旧走 `readFile` 在编辑器里编辑）。
  */
 export function readImage(root: string, path: string): Promise<ImageContent> {
