@@ -76,7 +76,8 @@ const BY_EXTENSION: Record<string, string> = {
   mdtext: "markdown",
   mdtxt: "markdown",
   mdwn: "markdown",
-  // .mdx 用 Monaco 自己的 mdx 语言（markdown + jsx），所以它没有 markdown 预览
+  // .mdx 用 Monaco 自己的 mdx 语言（markdown + jsx）；预览仍按 markdown 走，
+  // 判定见 EditorPane 的 isMarkdownPath
   mdx: "mdx",
   mkd: "markdown",
   mkdn: "markdown",

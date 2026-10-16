@@ -371,11 +371,21 @@ function isSvgPath(path: string): boolean {
 }
 
 /**
- * 打开即预览的文件：markdown 与 svg。这两种多半是拿来看的，进来先给渲染结果，
+ * 走 markdown 渲染预览的文件：markdown 系列（含按 `.mdc` 映射过来的规则文件），
+ * 以及 `.mdx`——Monaco 里 mdx 是独立语言（markdown + jsx），所以判定得连语言一起看，
+ * 只比 `"markdown"` 会把它漏掉。
+ */
+function isMarkdownPath(path: string): boolean {
+  const language = languageOf(path);
+  return language === "markdown" || language === "mdx";
+}
+
+/**
+ * 打开即预览的文件：markdown（含 mdx）与 svg。这两种多半是拿来看的，进来先给渲染结果，
  * 想改再点「回到编辑」。`html` / `htm` 不在此列——它们通常是要动手改的，保持打开即编辑。
  */
 function previewsOnOpen(path: string): boolean {
-  return languageOf(path) === "markdown" || isSvgPath(path);
+  return isMarkdownPath(path) || isSvgPath(path);
 }
 
 function baseName(path: string): string {
@@ -1654,15 +1664,14 @@ export function EditorPane({
   const canPreview =
     status.kind === "ready" &&
     active?.kind === "file" &&
-    (languageOf(active.path) === "markdown" || isHtmlPreviewPath(active.path));
+    (isMarkdownPath(active.path) || isHtmlPreviewPath(active.path));
   const isPreview = canPreview && activeKey !== null && previewPaths.has(activeKey);
-  const isMarkdownPreview =
-    isPreview && active?.kind === "file" && languageOf(active.path) === "markdown";
+  const isMarkdownPreview = isPreview && active?.kind === "file" && isMarkdownPath(active.path);
   const isHtmlPreview =
     isPreview && active?.kind === "file" && isHtmlPreviewPath(active.path);
 
   // 当前文件是不是 markdown——整屏预览与分屏预览都只有它走「从 model 现渲染」这条路
-  const isMarkdownFile = active?.kind === "file" && languageOf(active.path) === "markdown";
+  const isMarkdownFile = active?.kind === "file" && isMarkdownPath(active.path);
   /**
    * 左右分屏预览。只对 markdown 开：html / svg 的预览读磁盘、要整屏才够用。
    * 和整屏预览互斥（两个 toggle 各自会把对方摘掉），这里再兜一层：整屏优先
