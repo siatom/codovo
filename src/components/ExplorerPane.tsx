@@ -108,6 +108,11 @@ const MENU_W = 168;
 // 每条分隔线 ~9px 估。宁可估大，估小了贴底的菜单会被窗口下沿裁掉
 // （这个值只用于把菜单顶回可视区）。
 const MENU_H = 380;
+/**
+ * 根菜单（树里空白处 / 工作目录标题行）的高度：最多 6 项 + 2 条分隔线，按上面的估法
+ * 约 170px。同样宁可估大，贴底右键时把菜单顶回可视区。
+ */
+const ROOT_MENU_H = 208;
 /** 菜单项统一「图标 + 文字」两段；nowrap 免得长文案折行 */
 const MENU_ITEM =
   "flex items-center gap-2 whitespace-nowrap px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -564,6 +569,7 @@ export function ExplorerPane({
 
   const copyPath = useCallback(async (text: string) => {
     setMenu(null);
+    setRootMenu(null);
     if (!(await copyText(text))) setActionError("复制失败：系统剪贴板不可用");
   }, []);
 
@@ -571,11 +577,12 @@ export function ExplorerPane({
    * 交给系统处理这一行：在文件管理器里定位它、或用默认关联程序打开它。
    * 两件事失败都只是「打不开」（路径可能已被删或改名），不保留菜单、就地提示。
    */
-  const revealInSystem = useCallback(async (entry: FileEntry) => {
+  const revealInSystem = useCallback(async (path: string) => {
     setMenu(null);
+    setRootMenu(null);
     setActionError(null);
     try {
-      await revealItemInDir(entry.path);
+      await revealItemInDir(path);
     } catch (reason) {
       setActionError(`无法在文件管理器中显示：${String(reason)}`);
     }
@@ -1070,15 +1077,18 @@ export function ExplorerPane({
   }, [loadedEntries, rootsKey]);
 
   const beginCreate = useCallback(
-    async (kind: CreateKind) => {
+    async (kind: CreateKind, atDir?: string) => {
       if (filtering || creatingBusy) return;
-      // 目标 = 选中的那一行：目录就建在里面，文件就建在它旁边，没选中就建在主要根
-      const target = focusRow
-        ? loadedEntries.find((entry) => pathKey(entry.path) === pathKey(focusRow))
-        : undefined;
-      let parent = primaryRoot;
-      if (target?.isDir) parent = target.path;
-      else if (target) parent = parentOf(target.path);
+      // 目标目录：空白处 / 根行右键时由调用方指定（一定是根目录），否则看选中的那一行
+      // ——目录就建在里面，文件就建在它旁边，没选中就建在主要根
+      let parent = atDir ?? primaryRoot;
+      if (!atDir) {
+        const target = focusRow
+          ? loadedEntries.find((entry) => pathKey(entry.path) === pathKey(focusRow))
+          : undefined;
+        if (target?.isDir) parent = target.path;
+        else if (target) parent = parentOf(target.path);
+      }
       const owner = ownerRoot(roots, parent);
       if (!owner) return;
       setCreateError(null);
@@ -1102,6 +1112,25 @@ export function ExplorerPane({
       }
     },
     [children, creatingBusy, filtering, focusRow, loadedEntries, roots, isRootPath, primaryRoot],
+  );
+
+  /**
+   * 空白处 / 根行右键里的新建：目标固定是那个根目录。
+   * 根被整块收起时先展开——输入框挂在根的子层里，收起状态下面根本不渲染。
+   */
+  const startCreateAtRoot = useCallback(
+    (kind: CreateKind, root: string) => {
+      setRootMenu(null);
+      setCollapsedRoots((current) => {
+        const key = pathKey(root);
+        if (!current.has(key)) return current;
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+      void beginCreate(kind, root);
+    },
+    [beginCreate],
   );
 
   const submitCreate = useCallback(async () => {
@@ -1693,14 +1722,16 @@ export function ExplorerPane({
           setSelection(new Map());
           anchorRef.current = null;
         }}
-        // 空白处右键：把剪贴板里的东西粘到主要根（跟点空白收敛锚点、新建落点同一个口径）。
-        // 行是 button、目录标题也是 button，命中它们就让给各自的右键菜单，别抢——判断口径
-        // 同上面的 onClick；它们自己会 preventDefault，所以这里直接 return 也不会冒出原生菜单
+        // 空白处右键：对主要根开菜单（新建文件/文件夹、粘贴、刷新…），跟点空白收敛锚点、
+        // 新建落点同一个口径。行是 button、目录标题也是 button，命中它们就让给各自的右键
+        // 菜单，别抢——判断口径同上面的 onClick；它们自己会 preventDefault，所以这里直接
+        // return 也不会冒出原生菜单
         onContextMenu={(event) => {
           if ((event.target as HTMLElement).closest("button, input")) return;
           event.preventDefault();
-          if (!clipboard || !primaryRoot) return;
+          if (!primaryRoot) return;
           setMenu(null);
+          setActionError(null);
           setRootMenu({ root: primaryRoot, x: event.clientX, y: event.clientY });
         }}
         // 拖到树里的空白处 = 移动到主要根目录
@@ -1760,11 +1791,11 @@ export function ExplorerPane({
                   setDropDir((current) => (current === pathKey(group.root) ? null : current));
                 }}
                 onDrop={(event) => void handleDrop(group.root, event)}
-                // 根行也能右键：只放「粘贴」，好让空目录（没有子行可右键）也能粘进去
+                // 根行也能右键：开的是同一份根菜单，好让空目录（没有子行可右键）也能新建、粘贴
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  if (!clipboard) return;
                   setMenu(null);
+                  setActionError(null);
                   setRootMenu({ root: group.root, x: event.clientX, y: event.clientY });
                 }}
                 className={`flex w-full items-center gap-1 rounded px-1 pt-1.5 pb-0.5 text-left text-[11px] font-medium tracking-wide text-fg-dim hover:bg-hover hover:text-fg${
@@ -1948,7 +1979,7 @@ export function ExplorerPane({
             )}
             <button
               type="button"
-              onClick={() => void revealInSystem(menu.entry)}
+              onClick={() => void revealInSystem(menu.entry.path)}
               className={MENU_ITEM}
             >
               <IconFolderOpen className="h-3.5 w-3.5" />
@@ -1999,7 +2030,8 @@ export function ExplorerPane({
         </>
       )}
 
-      {/* 工作目录标题行上的右键菜单：只有「粘贴」一项，专门用来粘进空目录 */}
+      {/* 工作目录标题行 / 树里空白处的右键菜单：对「根目录」的常用操作。空目录没有子行可
+          右键，从这里也能新建、粘贴 */}
       {rootMenu && (
         <>
           <div
@@ -2015,21 +2047,66 @@ export function ExplorerPane({
             style={{
               width: MENU_W,
               left: Math.min(rootMenu.x, window.innerWidth - MENU_W - 4),
-              // 只有一项，高度按一行估
-              top: Math.min(rootMenu.y, window.innerHeight - 40 - 4),
+              top: Math.min(rootMenu.y, window.innerHeight - ROOT_MENU_H - 4),
             }}
           >
+            {/* 一、新建与粘贴。粘贴只在剪贴板有东西时给 */}
+            <button
+              type="button"
+              onClick={() => startCreateAtRoot("file", rootMenu.root)}
+              className={MENU_ITEM}
+            >
+              <IconPlus className="h-3.5 w-3.5" />
+              新建文件
+            </button>
+            <button
+              type="button"
+              onClick={() => startCreateAtRoot("directory", rootMenu.root)}
+              className={MENU_ITEM}
+            >
+              <IconFolderPlus className="h-3.5 w-3.5" />
+              新建文件夹
+            </button>
+            {clipboard && (
+              <button
+                type="button"
+                onClick={() => {
+                  const root = rootMenu.root;
+                  setRootMenu(null);
+                  void doPaste(root);
+                }}
+                className={MENU_ITEM}
+              >
+                <IconClipboard className="h-3.5 w-3.5" />
+                粘贴
+              </button>
+            )}
+            <div className={MENU_DIVIDER} />
+            {/* 二、刷新整棵树（目录监听漏掉的、或手动改完磁盘后的兜底） */}
             <button
               type="button"
               onClick={() => {
-                const root = rootMenu.root;
                 setRootMenu(null);
-                void doPaste(root);
+                setReloadKey((key) => key + 1);
               }}
               className={MENU_ITEM}
             >
-              <IconClipboard className="h-3.5 w-3.5" />
-              粘贴
+              <IconRefresh className="h-3.5 w-3.5" />
+              刷新
+            </button>
+            <div className={MENU_DIVIDER} />
+            {/* 三、路径 */}
+            <button type="button" onClick={() => void copyPath(rootMenu.root)} className={MENU_ITEM}>
+              <IconFile className="h-3.5 w-3.5" />
+              复制路径
+            </button>
+            <button
+              type="button"
+              onClick={() => void revealInSystem(rootMenu.root)}
+              className={MENU_ITEM}
+            >
+              <IconFolderOpen className="h-3.5 w-3.5" />
+              在文件管理器中显示
             </button>
           </div>
         </>
