@@ -11,6 +11,7 @@ import {
   IconStop,
 } from "./icons";
 import { diagnosePreview, useEffectiveAiConfig } from "../lib/ai";
+import { PreviewAgent } from "./PreviewAgent";
 import {
   detectPreview,
   onPreviewExit,
@@ -27,33 +28,45 @@ const HEAD_BUTTON =
 const INPUT =
   "mt-1 h-7 w-full rounded border border-line-strong bg-surface px-2 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent";
 
+/** 子视图切换按钮的样式，和数据库面板那边的子标签一致 */
+const SEGMENT = "rounded px-2 py-0.5 text-[11px]";
+
 const KIND_LABEL: Record<string, string> = {
   web: "Web",
   tauri: "Tauri 桌面",
   unknown: "未知",
 };
 
+/** 面板主体分三块：默认是助手对话（核心），另有预览画面与进程日志两个标签 */
+type SubTab = "assistant" | "view" | "logs";
+
 /**
- * 右栏的「预览」模块：探测当前工作区是什么项目，一键起/停预览进程。
+ * 右栏的「预览」模块：**核心是助手对话**，按当前工作区的实际情况把项目跑起来，
+ * 看日志、起不来时诊断纠错；顶栏按钮与「画面」标签是配套的手动操作入口。
  *
- * - web：起 dev server，拿到地址后用内嵌 iframe 看。
- * - Tauri 桌面：起带 CDP 调试端口的 `tauri dev`，面板里显示端口，交给 CDP 工具驱动验证。
+ * - 助手：一个绑定本工作区的预览助手（见 `PreviewAgent`），带一组预览 MCP 工具，
+ *   cwd 就是本工作区，所以能自己看项目、按项目特征决定怎么起。
+ * - 画面：web 项目起 dev server、内嵌 iframe 看；Tauri 桌面起带 CDP 调试端口的实例，
+ *   面板显示端口。命令 / 端口都能手改。
+ * - 日志：实时滚动子进程输出，进程自己退出也会收到事件刷新状态。
  *
  * 和「浏览器」模块的分工：浏览器是手动填地址的通用窗口，这里是按项目自动起进程。
  *
  * 结构对齐「部署」模块：头部主操作 + 可折叠常驻配置区 + 独立错误条（失败可 AI 诊断）+
- * 日志区自动滚到底。差别在于中间留了一块 flex-1 的预览内容（iframe / 提示），
- * 所以日志区不占满剩余、仍做成底部折叠。
+ * 日志区自动滚到底。差别在于主体是助手对话，画面与日志各占一个标签。
  */
 export function PreviewPane({
   root,
   visible,
+  focused,
   fullscreen,
   onToggleFullscreen,
 }: {
   root: string;
   /** 面板是不是真的露在用户眼前（右栏展开且当前看的正是它）。收起时轮询短路 */
   visible: boolean;
+  /** 这个工作区是不是当前显示的工作区。非当前时助手不拉服务（免得给隐藏工作区白起进程） */
+  focused: boolean;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
@@ -64,9 +77,10 @@ export function PreviewPane({
   const [customCommand, setCustomCommand] = useState("");
   const [customPort, setCustomPort] = useState("");
   const [configOpen, setConfigOpen] = useState(true);
-  const [showLogs, setShowLogs] = useState(true);
   /** 变一次就重挂 iframe，等于刷新 */
   const [nonce, setNonce] = useState(0);
+  /** 主体默认给助手对话——它才是这个面板的核心 */
+  const [tab, setTab] = useState<SubTab>("assistant");
   /** AI 辅助：生效的模型配置 + 是否正在诊断 */
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
   const [aiBusy, setAiBusy] = useState(false);
@@ -144,11 +158,11 @@ export function PreviewPane({
     return () => unlisten?.();
   }, [root]);
 
-  // 日志自动滚到底（和部署模块一致）
+  // 日志自动滚到底（和部署模块一致）；切到「日志」标签时也补一次，免得隐藏期间停在顶部
   useEffect(() => {
     const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [status?.logs]);
+  }, [status?.logs, tab]);
 
   const start = useCallback(async () => {
     setBusy(true);
@@ -281,117 +295,140 @@ export function PreviewPane({
         </div>
       )}
 
-      {/* 配置区：可折叠常驻，运行中也能改（改完重新启动生效） */}
-      <div className="shrink-0 border-b border-line">
-        <button
-          type="button"
-          onClick={() => setConfigOpen((open) => !open)}
-          className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
-        >
-          {configOpen ? (
-            <IconChevronDown className="h-3 w-3" />
-          ) : (
-            <IconChevronRight className="h-3 w-3" />
-          )}
-          <span>配置</span>
-          <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
-            {detection?.reason ?? ""}
-          </span>
-        </button>
-        {configOpen && (
-          <div className="space-y-2 px-3 pb-2">
-            <label className="block">
-              <span className="text-fg-dim">启动命令</span>
-              <input
-                value={customCommand}
-                onChange={(event) => setCustomCommand(event.target.value)}
-                placeholder={detection ? "" : "探测中…"}
-                spellCheck={false}
-                className={INPUT}
-              />
-            </label>
+      {/* 主体子标签：助手（核心）/ 画面 / 日志 */}
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
+        <div className="flex items-center gap-0.5 rounded-md border border-line-strong p-0.5">
+          <button
+            type="button"
+            onClick={() => setTab("assistant")}
+            className={`${SEGMENT} ${tab === "assistant" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+          >
+            助手
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("view")}
+            className={`${SEGMENT} ${tab === "view" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+          >
+            画面
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("logs")}
+            className={`${SEGMENT} ${tab === "logs" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+          >
+            日志{logs.length > 0 ? `（${logs.length}）` : ""}
+          </button>
+        </div>
+      </div>
 
-            {kind === "web" && (
+      {/* 助手：常挂载、只切可见性，来回切标签对话不丢。非当前工作区时不拉服务 */}
+      <div className={tab === "assistant" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+        <PreviewAgent root={root} active={visible && focused && tab === "assistant"} />
+      </div>
+
+      {/* 画面：配置 + 预览内容 */}
+      <div className={tab === "view" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+        {/* 配置区：可折叠常驻，运行中也能改（改完重新启动生效） */}
+        <div className="shrink-0 border-b border-line">
+          <button
+            type="button"
+            onClick={() => setConfigOpen((open) => !open)}
+            className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
+          >
+            {configOpen ? (
+              <IconChevronDown className="h-3 w-3" />
+            ) : (
+              <IconChevronRight className="h-3 w-3" />
+            )}
+            <span>配置</span>
+            <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
+              {detection?.reason ?? ""}
+            </span>
+          </button>
+          {configOpen && (
+            <div className="space-y-2 px-3 pb-2">
               <label className="block">
-                <span className="text-fg-dim">端口</span>
+                <span className="text-fg-dim">启动命令</span>
                 <input
-                  value={customPort}
-                  onChange={(event) => setCustomPort(event.target.value)}
-                  placeholder="留空则用探测到的端口"
+                  value={customCommand}
+                  onChange={(event) => setCustomCommand(event.target.value)}
+                  placeholder={detection ? "" : "探测中…"}
                   spellCheck={false}
                   className={INPUT}
                 />
               </label>
-            )}
 
-            <button
-              type="button"
-              onClick={() => void runDetect()}
-              className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
-            >
-              按项目重新探测
-            </button>
-          </div>
-        )}
-      </div>
+              {kind === "web" && (
+                <label className="block">
+                  <span className="text-fg-dim">端口</span>
+                  <input
+                    value={customPort}
+                    onChange={(event) => setCustomPort(event.target.value)}
+                    placeholder="留空则用探测到的端口"
+                    spellCheck={false}
+                    className={INPUT}
+                  />
+                </label>
+              )}
 
-      <div className="relative min-h-0 flex-1">
-        {running && url ? (
-          // 页面多半按白底设计，深色主题下不给白底会透出面板色
-          <iframe
-            key={nonce}
-            src={url}
-            title="预览"
-            className="absolute inset-0 h-full w-full border-0 bg-white"
-          />
-        ) : running && cdpPort ? (
-          <div className="flex h-full items-center justify-center px-6">
-            <div className="max-w-[380px] text-center text-[12px] leading-relaxed text-fg-dim">
-              <p>
-                已启动 Tauri 开发实例，CDP 调试端口{" "}
-                <span className="font-medium text-fg">{cdpPort}</span>。
-              </p>
-              <p className="mt-2 text-fg-faint">
-                用 CDP 工具连 127.0.0.1:{cdpPort} 做界面验证；输出见下方日志。
+              <button
+                type="button"
+                onClick={() => void runDetect()}
+                className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
+              >
+                按项目重新探测
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="relative min-h-0 flex-1">
+          {running && url ? (
+            // 页面多半按白底设计，深色主题下不给白底会透出面板色
+            <iframe
+              key={nonce}
+              src={url}
+              title="预览"
+              className="absolute inset-0 h-full w-full border-0 bg-white"
+            />
+          ) : running && cdpPort ? (
+            <div className="flex h-full items-center justify-center px-6">
+              <div className="max-w-[380px] text-center text-[12px] leading-relaxed text-fg-dim">
+                <p>
+                  已启动 Tauri 开发实例，CDP 调试端口{" "}
+                  <span className="font-medium text-fg">{cdpPort}</span>。
+                </p>
+                <p className="mt-2 text-fg-faint">
+                  用 CDP 工具连 127.0.0.1:{cdpPort} 做界面验证；输出见「日志」标签。
+                </p>
+              </div>
+            </div>
+          ) : running ? (
+            <div className="flex h-full items-center justify-center px-6">
+              <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
+                已启动，正在等待 dev server 就绪。地址会从输出里自动识别，见「日志」标签。
               </p>
             </div>
-          </div>
-        ) : running ? (
-          <div className="flex h-full items-center justify-center px-6">
-            <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
-              已启动，正在等待 dev server 就绪。地址会从输出里自动识别，见下方日志。
-            </p>
-          </div>
-        ) : (
-          <div className="flex h-full items-center justify-center px-6">
-            <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
-              配置好启动命令后，点右上角「启动」运行预览。
-            </p>
-          </div>
-        )}
+          ) : (
+            <div className="flex h-full items-center justify-center px-6">
+              <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
+                配置好启动命令后，点右上角「启动」运行预览。
+              </p>
+            </div>
+          )}
+        </div>
+
       </div>
 
-      <div className="shrink-0 border-t border-line">
-        <button
-          type="button"
-          onClick={() => setShowLogs((show) => !show)}
-          className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
+      {/* 日志：占据整个主体，实时滚动 */}
+      <div className={tab === "logs" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+        <div
+          ref={logRef}
+          className="min-h-0 flex-1 overflow-auto bg-app px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg-dim"
         >
-          {showLogs ? (
-            <IconChevronDown className="h-3 w-3" />
-          ) : (
-            <IconChevronRight className="h-3 w-3" />
-          )}
-          日志{logs.length > 0 ? `（${logs.length}）` : ""}
-        </button>
-        {showLogs && (
-          <div
-            ref={logRef}
-            className="max-h-48 overflow-auto bg-app px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg-dim"
-          >
-            {logs.length > 0 ? logs.join("\n") : "（暂无输出）"}
-          </div>
-        )}
+          {logs.length > 0 ? logs.join("\n") : "（暂无输出）"}
+        </div>
       </div>
 
       {dialog && (

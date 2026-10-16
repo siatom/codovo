@@ -194,18 +194,22 @@ const PREVIEW_AGENT_SKILL_NAME: &str = "preview-control";
 const PREVIEW_AGENT_AGENT_NAME: &str = "preview";
 
 /// 预览助手的技能正文（frontmatter 由 `render_skill` 补）。
-/// 目的：把「先探测、再启动、后查状态」的流程与项目类型判断依据写死给模型。
+/// 目的：把「先探测、再启动、后查状态、出错读日志」的流程与项目类型判断依据写死给模型。
 const PREVIEW_AGENT_SKILL_BODY: &str = "\
 # 项目预览
 
-你负责按当前工作区的项目类型启动 / 停止预览，方便调试和验证。
+你在 CodeDock 右栏「预览」面板里，负责按当前工作区的项目类型启动 / 停止预览，
+并在起不来时读日志、调整启动方式重试，或给出诊断建议。
 
 ## 工作流
 
 1. 先调 `preview_detect` 看探测结果（kind / command / port / reason / warnings）。
 2. 用户没指定就用探测到的命令直接 `preview_start`；要改命令 / 端口就传 `command` / `port`。
-3. 启动后调 `preview_status` 看是否就绪、地址或 CDP 端口是多少。
-4. 要停就 `preview_stop`。
+3. 启动后用 `preview_status` 看是否就绪、地址或 CDP 端口是多少，以及最近日志。
+4. 起不来（进程退出、报错、端口被占、缺依赖等）时：先看 `preview_status` 的日志，
+   必要时用 read / grep / glob / list 看项目的脚本与配置判断原因；能靠改命令 / 端口 /
+   环境解决的就带新参数重试 `preview_start`，其余给出明确的诊断与改动建议。
+5. 要停就 `preview_stop`。
 
 ## 项目类型与预览方式（探测依据）
 
@@ -218,19 +222,22 @@ const PREVIEW_AGENT_SKILL_BODY: &str = "\
 ## 注意
 
 - 探测出 warnings（例如「这是 CodeDock 自身」）时先如实转告用户，再决定要不要起。
-- 预览进程由 CodeDock 托管，日志显示在右栏「预览」模块里。
+- 预览进程由 CodeDock 托管，日志显示在右栏「预览」面板里。
 - 你改不了项目代码；要让代码改动生效，先让用户改完再重启预览。";
 
 /// 预览助手专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
 const PREVIEW_AGENT_PROMPT: &str = "\
-你是 CodeDock 里的「预览助手」，负责按当前工作区的项目类型启动 / 停止预览，帮用户调试和验证。\
-你能看到的工具只有一组预览工具（preview_detect / preview_start / preview_stop / preview_status）。\n\
+你是 CodeDock 右栏「预览」面板里的「预览助手」，负责按当前工作区的项目类型启动 / 停止预览，\
+并在出错时读日志、调整启动方式重试或给出诊断。你能看到的工具只有一组预览工具\
+（preview_detect / preview_start / preview_stop / preview_status），加上看项目用的 read / grep / glob / list。\n\
 规则：\n\
 1. 用户要「预览」「跑起来看看」「起个 dev」时，先 preview_detect，再 preview_start，\
 然后用 preview_status 汇报地址或 CDP 调试端口。\n\
 2. 探测出 warnings 时先转告用户，别默默起。\n\
-3. 用户要停就 preview_stop。\n\
-4. 你改不了项目代码、也跑不了任意命令；需要改代码请让用户切到「终端」或普通智能体。";
+3. 起不来时先看 preview_status 的日志定位原因；能靠改命令 / 端口重试就重试，\
+否则给出明确的诊断与改动建议。\n\
+4. 用户要停就 preview_stop。\n\
+5. 你改不了项目代码、也跑不了任意命令；需要改代码请讲清该怎么改。";
 
 /// 预览助手要关掉的工具：它只负责起 / 停预览，不该去改文件或跑 shell。
 /// 保留 read / grep / glob / list，好让它必要时看一眼项目结构。
@@ -419,6 +426,15 @@ pub struct AgentConfig {
     /// 由数据库面板传 true；终端区智能体不传（默认 false）。
     #[serde(default)]
     database: bool,
+    /// 预览助手：额外注入预览 MCP 工具、内置技能与专用 agent，并关掉文件写 / 命令类工具。
+    /// 由右栏「预览」面板里的助手传 true；终端区智能体不传（默认 false）。
+    #[serde(default)]
+    preview: bool,
+    /// 预览助手要预览的工作区根目录。它是唯一的——`root` 传的是哨兵（每个工作区一个槽位），
+    /// 真正该读哪个项目、起哪个项目的预览，以这个字段为准（见 `agent_start` 的 cwd 计算）。
+    /// 其余模式忽略。
+    #[serde(default)]
+    workspace_root: String,
 }
 
 impl AgentConfig {
@@ -982,12 +998,12 @@ fn provider_hint() -> String {
 /// `db_target` 为 `Some` 表示这次起的是数据库 Agent：除常规配置外，再注入只读的数据库
 /// MCP 工具（本 exe 的 `--mcp-db` 子命令）、内置技能与专用 primary agent。
 ///
-/// `app_mailbox` 为 `Some`（所有**工作区**智能体都是）时，额外注入「应用助手」：
+/// `app_mailbox` 为 `Some`（终端区智能体）时，额外注入「应用助手」：
 /// 界面操作的 MCP 工具（本 exe 的 `--mcp-app`）、内置技能与专用 primary agent。
 /// 它**总是**注入而不是按需——opencode 的 agent 与 MCP 都是启动时读配置定下的，
 /// 起完再切 primary agent 不会重读，按需注入就得在切换时重启整个服务。
 ///
-/// `preview_mailbox` 为 `Some`（同样只给工作区智能体）时，额外注入「预览助手」：
+/// `preview_mailbox` 为 `Some`（右栏「预览」面板里的预览助手）时，额外注入「预览助手」：
 /// 预览工具（本 exe 的 `--mcp-preview`）、内置技能与专用 primary agent。
 fn write_config(
     dir: &Path,
@@ -1227,6 +1243,11 @@ fn write_config(
         config["default_agent"] = serde_json::json!(DB_AGENT_AGENT_NAME);
     }
 
+    if cfg.preview {
+        // 预览助手同样固定用内置的 preview agent：角色与边界要盖在面板传上来的 primary 之上
+        config["default_agent"] = serde_json::json!(PREVIEW_AGENT_AGENT_NAME);
+    }
+
     if let Some(mailbox) = app_mailbox {
         // 界面操作工具走本 exe 的 `--mcp-app` 子命令。邮箱目录用环境变量告诉子进程，
         // 它只负责写请求 / 读响应，真正执行在前端（见 src-tauri/src/app_agent.rs）。
@@ -1251,12 +1272,17 @@ fn write_config(
     if let Some(mailbox) = preview_mailbox {
         // 预览工具走本 exe 的 `--mcp-preview` 子命令，邮箱目录用环境变量告诉子进程，
         // 它只负责写请求 / 读响应，真正执行在前端（见 src-tauri/src/preview_agent.rs）。
+        // 同时把本助手要操作的工作区根传进去——预览助手一个工作区一个进程，
+        // 前端靠它决定该操作哪个项目（后端命令的 root 认的是工作区根，不是这个哨兵）。
         // `timeout` 放到 2 分钟：起 dev server 要等，工具得一直等前端把结果写回来。
         let exe = std::env::current_exe().map_err(|e| format!("拿不到程序路径: {e}"))?;
         let entry = serde_json::json!({
             "type": "local",
             "command": [exe.to_string_lossy(), "--mcp-preview"],
-            "environment": { "CODEDOCK_PREVIEW_MAILBOX": mailbox.to_string_lossy() },
+            "environment": {
+                "CODEDOCK_PREVIEW_MAILBOX": mailbox.to_string_lossy(),
+                "CODEDOCK_PREVIEW_ROOT": cfg.workspace_root.trim(),
+            },
             "timeout": 120000,
         });
         match config.get_mut("mcp") {
@@ -1281,6 +1307,9 @@ fn spawn_opencode(
     config_dir: &Path,
     secrets: &[(String, String)],
     password: &str,
+    // 预览助手专用的 opencode 会话库路径。`Some` 时用 `OPENCODE_DB` 指过去：
+    // 预览助手的 cwd 也是工作区根，共用一份库会让两个助手的对话互相出现在对方历史里。
+    db_path: Option<&Path>,
 ) -> Result<(Child, ChildLog), String> {
     let port_text = port.to_string();
     let args = [
@@ -1305,6 +1334,10 @@ fn spawn_opencode(
         cmd.env("PATH", path);
     }
     cmd.current_dir(cwd).env("OPENCODE_CONFIG_DIR", config_dir);
+    if let Some(db) = db_path {
+        // 会话按 sqlite 库落盘，换个库 = 换个独立的会话空间；cwd 不变，读项目照旧
+        cmd.env("OPENCODE_DB", db);
+    }
     // 密钥只走环境变量：配置文件里只有 `{env:...}` 占位符
     for (name, value) in secrets {
         cmd.env(name, value);
@@ -1797,6 +1830,14 @@ pub async fn agent_start(
             .join("cwd");
         std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
         dir
+    } else if config.preview {
+        // 预览助手的工作目录是它要预览的那个项目根：read / grep / glob 都得落在项目里，
+        // 而传进来的 root 是哨兵（每个工作区一个槽位），不能当目录用
+        let workspace_root = config.workspace_root.trim();
+        if workspace_root.is_empty() {
+            return Err("预览助手缺少工作区路径".to_string());
+        }
+        fs_state.checked_root(workspace_root)?
     } else {
         fs_state.checked_root(&root)?
     };
@@ -1831,30 +1872,36 @@ pub async fn agent_start(
         };
 
         // 配置目录按工作区分开：共用一份会让两个 opencode 进程争用同一批文件，
-        // 而且收掉某个工作区时的 remove_dir_all 会把另一个还在用的目录一起删掉
+        // 而且收掉某个工作区时的 remove_dir_all 会把另一个还在用的目录一起删掉。
+        // 预览助手的 cwd 就是工作区根、会和终端区智能体撞名，再缀一段区分标记。
+        let dir_name = if config.preview {
+            format!("{}-preview", workspace_dir_name(&cwd))
+        } else {
+            workspace_dir_name(&cwd)
+        };
         let config_dir = app
             .path()
             .app_config_dir()
             .map_err(|e| format!("拿不到配置目录: {e}"))?
             .join("opencode")
-            .join(workspace_dir_name(&cwd));
+            .join(dir_name);
         // 数据库 Agent 的目标连接文件由主进程维护（前端切连接时更新），这里只把路径写进配置
         let db_target = if config.database {
             Some(crate::db_agent::target_path(&app)?)
         } else {
             None
         };
-        // 应用助手的界面操作邮箱同理，只给工作区智能体（数据库 Agent 用不到界面工具）
-        let app_mailbox = if config.database {
+        // 应用助手的界面操作邮箱只给终端区智能体：数据库 Agent 与预览助手都用不到界面工具
+        let app_mailbox = if config.database || config.preview {
             None
         } else {
             Some(crate::app_agent::mailbox_dir(&app)?)
         };
-        // 预览助手的邮箱同理，也只给工作区智能体
-        let preview_mailbox = if config.database {
-            None
-        } else {
+        // 预览助手的邮箱只给预览助手（右栏「预览」面板里的那个）；终端区智能体不再注入预览工具
+        let preview_mailbox = if config.preview {
             Some(crate::preview_agent::mailbox_dir(&app)?)
+        } else {
+            None
         };
         write_config(
             &config_dir,
@@ -1864,6 +1911,22 @@ pub async fn agent_start(
             preview_mailbox.as_deref(),
         )?;
 
+        // 预览助手的 cwd 也是工作区根，若和终端区智能体共用 opencode 的会话库，
+        // 两边的对话会互相出现在对方的历史列表里。给它单独指一个库：按工作区落盘、
+        // 可持久（关掉工作区再打开，历史还在），cwd 不变，读项目不受影响。
+        let preview_db = if config.preview {
+            let dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| format!("拿不到配置目录: {e}"))?
+                .join("preview-agent")
+                .join("db");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+            Some(dir.join(format!("{}.db", workspace_dir_name(&cwd))))
+        } else {
+            None
+        };
+
         let password = random_password();
         let (child, log) = spawn_opencode(
             &config.command,
@@ -1872,6 +1935,7 @@ pub async fn agent_start(
             &config_dir,
             &secrets,
             &password,
+            preview_db.as_deref(),
         )?;
         let generation = slot.generation.load(Ordering::SeqCst);
 
@@ -2277,6 +2341,8 @@ mod tests {
             agents: Vec::new(),
             primary: String::new(),
             database: false,
+            preview: false,
+            workspace_root: String::new(),
         }
     }
 
@@ -2419,6 +2485,51 @@ mod tests {
         // 内置技能落盘，并登记进 skills.paths
         assert!(dir.join("skills").join("app-control").join("SKILL.md").exists());
         assert!(value.get("skills").is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_agent_config_injects_the_preview_assistant() {
+        let dir =
+            std::env::temp_dir().join(format!("codedock-agent-preview-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut cfg = bare_config();
+        cfg.preview = true;
+        cfg.workspace_root = "/tmp/proj".to_string();
+        let mailbox = dir.join("preview-agent");
+        write_config(&dir, &cfg, None, None, Some(&mailbox)).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        // MCP：本地 stdio，命令是本 exe 的 --mcp-preview，环境变量指向邮箱目录 + 本助手的工作区
+        assert_eq!(value["mcp"]["preview"]["command"][1], "--mcp-preview");
+        assert_eq!(
+            value["mcp"]["preview"]["environment"]["CODEDOCK_PREVIEW_MAILBOX"]
+                .as_str()
+                .unwrap(),
+            mailbox.to_string_lossy()
+        );
+        assert_eq!(
+            value["mcp"]["preview"]["environment"]["CODEDOCK_PREVIEW_ROOT"],
+            "/tmp/proj"
+        );
+        assert!(value["mcp"]["preview"]["timeout"].as_u64().unwrap() >= 60000);
+        // 固定用内置的 preview agent（盖掉面板传上来的 primary），并关掉文件写 / 命令类工具
+        assert_eq!(value["default_agent"], "preview");
+        assert_eq!(value["agent"]["preview"]["mode"], "primary");
+        assert_eq!(value["agent"]["preview"]["tools"]["bash"], false);
+        assert_eq!(value["agent"]["preview"]["tools"]["write"], false);
+        // 保留 read / grep / glob：它要看项目结构
+        assert!(value["agent"]["preview"]["tools"].get("read").is_none());
+        // 内置技能落盘
+        assert!(dir
+            .join("skills")
+            .join("preview-control")
+            .join("SKILL.md")
+            .exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

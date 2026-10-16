@@ -271,6 +271,9 @@ pub fn workspace_close(
 ) {
     for root in &roots {
         agent.kill_workspace(root);
+        // 预览助手挂在每个工作区自己的哨兵 root 下（见 preview_agent::agent_root），
+        // 关工作区时也要把它一并收掉，别留个游离的 opencode 进程
+        agent.kill_workspace(&crate::preview_agent::agent_root(root));
         let _ = pty.kill_workspace(root);
         watch.stop_if(Path::new(root));
         state.forget(root);

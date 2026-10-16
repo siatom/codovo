@@ -37,7 +37,6 @@ import { useAgentSession } from "../lib/agent-session";
 import { agentTarget, useAttention, type AttentionKind } from "../lib/attention";
 import {
   APP_AGENT_NAME,
-  PREVIEW_AGENT_NAME,
   mergeAgentLayer,
   primaryAgentOptions,
 } from "../lib/agent-profiles";
@@ -826,7 +825,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
               <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
                 <IconBot className="h-5 w-5" />
               </span>
-              {/* 内置助手（应用助手 / 预览助手）面向的不是工作区代码，空态文案得跟着换 */}
+              {/* 内置助手（应用助手）面向的不是工作区代码，空态文案得跟着换 */}
               {primary === APP_AGENT_NAME ? (
                 <>
                   <div className="text-[13px] font-medium text-fg-muted">
@@ -834,15 +833,6 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
                   </div>
                   <div className="text-[12px] leading-relaxed text-fg-faint">
                     改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框
-                  </div>
-                </>
-              ) : primary === PREVIEW_AGENT_NAME ? (
-                <>
-                  <div className="text-[13px] font-medium text-fg-muted">
-                    启动 / 停止项目预览，看日志与页面
-                  </div>
-                  <div className="text-[12px] leading-relaxed text-fg-faint">
-                    按项目标记自动推断 dev 命令；起不来时可以问它怎么跑
                   </div>
                 </>
               ) : (
