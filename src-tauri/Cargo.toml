@@ -37,6 +37,11 @@ tauri-plugin-opener = "2.5.5"
 tauri-plugin-clipboard-manager = "2"
 regex = "1.13.1"
 notify = "8.2"
+# 内容搜索要跳过 .gitignore 忽略掉的文件：ignore 是 ripgrep 的遍历库，负责
+# .gitignore / .ignore / .git/info/exclude 的匹配与目录剪枝。忽略文件的语义很绕
+# （`!` 否定、嵌套 .gitignore、只忽略目录的规则、父目录被忽略后子文件救不回来……），
+# 自己实现一遍必然对不齐，用被 ripgrep / VS Code 搜索长期验证过的实现。
+ignore = "0.4"
 # 文本文件按原编码读写（见 `encoding.rs`）：GBK / Big5 / UTF-16 的老工程
 # 不能被 UTF-8 覆盖。encoding_rs 是 WHATWG 编码标准的实现，chardetng 是
 # Firefox 的编码探测器，两者同作者、依赖同一版 encoding_rs。
