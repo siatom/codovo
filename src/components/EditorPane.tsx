@@ -58,6 +58,14 @@ const FLOAT_BAR_W = 76;
 
 /** 标签「⋯」菜单：宽度和条目样式，跟 Sidebar 的同类菜单保持一致 */
 const TABS_MENU_W = 112;
+
+/** markdown 的三种查看方式，顺序也是标题栏按钮的顺序 */
+const MARKDOWN_MODES = [
+  { id: "preview", label: "预览" },
+  { id: "edit", label: "编辑" },
+  { id: "split", label: "对照" },
+] as const;
+type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
 const TABS_MENU_ITEM =
   "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
 
@@ -105,7 +113,6 @@ interface ViewInfo {
   eol: "LF" | "CRLF";
   tabSize: number;
   insertSpaces: boolean;
-  wordWrap: boolean;
 }
 
 /** 两个视图信息是否完全一样，用来省掉光标没动时的无谓 setState */
@@ -116,8 +123,7 @@ function sameViewInfo(a: ViewInfo, b: ViewInfo): boolean {
     a.language === b.language &&
     a.eol === b.eol &&
     a.tabSize === b.tabSize &&
-    a.insertSpaces === b.insertSpaces &&
-    a.wordWrap === b.wordWrap
+    a.insertSpaces === b.insertSpaces
   );
 }
 
@@ -561,6 +567,9 @@ export function EditorPane({
   // 缩略图 / 缩进宽度同理：editor 与 model 只建一次，建的那一刻闭包里拿不到最新 state
   const minimapRef = useRef(settings.editorMinimap);
   minimapRef.current = settings.editorMinimap;
+  // 自动换行同理：建 editor 的那一刻要拿到最新设置
+  const wordWrapRef = useRef(settings.editorWordWrap);
+  wordWrapRef.current = settings.editorWordWrap;
   const indentRef = useRef(settings.editorIndent);
   indentRef.current = settings.editorIndent;
   // 差异编辑器只在第一次要看差异时建，建实例那一刻闭包里拿不到最新 state，
@@ -613,7 +622,6 @@ export function EditorPane({
       eol: model.getEOL() === "\r\n" ? "CRLF" : "LF",
       tabSize: modelOptions.tabSize,
       insertSpaces: modelOptions.insertSpaces,
-      wordWrap: editor.getOption(monaco.editor.EditorOption.wordWrap) !== "off",
     };
     setViewInfo((prev) => (prev && sameViewInfo(prev, next) ? prev : next));
   }, []);
@@ -1174,6 +1182,7 @@ export function EditorPane({
       fontFamily: resolveFont(fontFamilyRef.current),
       fontWeight: fontBoldRef.current ? "bold" : "normal",
       minimap: { enabled: minimapRef.current, renderCharacters: false },
+      wordWrap: wordWrapRef.current ? "on" : "off",
       scrollBeyondLastLine: false,
       smoothScrolling: true,
       renderWhitespace: "selection",
@@ -1264,6 +1273,13 @@ export function EditorPane({
   useEffect(() => {
     editorRef.current?.updateOptions({ minimap: { enabled: settings.editorMinimap } });
   }, [settings.editorMinimap]);
+
+  // 自动换行也是 editor 级选项；改设置立刻生效，不用重开文件
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      wordWrap: settings.editorWordWrap ? "on" : "off",
+    });
+  }, [settings.editorWordWrap]);
 
   // 缩进宽度是 model 级选项：改了要把缓存里的所有 model 一起更新（含差异两侧），
   // 否则已打开的文件还是旧缩进，切回来才发现不一致
@@ -1519,25 +1535,32 @@ export function EditorPane({
   }, []);
 
   /**
-   * 切换当前文件的左右分屏预览（只对 markdown 有效）。与整屏预览互斥：进分屏就把该标签
-   * 从整屏预览里摘掉，免得同一份内容挂两层。内容变化后右侧的重渲染由下面的防抖 effect 驱动。
+   * 切换 markdown 的三种查看方式：预览 / 编辑 / 对照。
+   * 「预览」与「对照」互斥，「编辑」会把两者都摘掉——同一份内容只在一处显示。
+   * 内容变化后右侧的重渲染由下面的防抖 effect 驱动。
    */
-  const toggleSplitPreview = useCallback(() => {
+  const setMarkdownMode = useCallback((mode: MarkdownMode) => {
     const current = activeRef.current;
     if (!current || current.kind !== "file") return;
     const key = tabKey(current);
-    setSplitPaths((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-    setPreviewPaths((prev) => {
+    const without = (prev: ReadonlySet<string>) => {
       if (!prev.has(key)) return prev;
       const next = new Set(prev);
       next.delete(key);
       return next;
-    });
+    };
+    if (mode === "edit") {
+      setPreviewPaths(without);
+      setSplitPaths(without);
+      return;
+    }
+    if (mode === "preview") {
+      setPreviewPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+      setSplitPaths(without);
+      return;
+    }
+    setSplitPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    setPreviewPaths(without);
   }, []);
 
   /**
@@ -1678,6 +1701,18 @@ export function EditorPane({
    */
   const isSplitPreview =
     canPreview && activeKey !== null && isMarkdownFile && splitPaths.has(activeKey) && !isPreview;
+
+  /**
+   * 当前 markdown 标签的查看方式。默认由 previewsOnOpen 播种成「预览」；
+   * 之后只认用户点的那三个按钮，切走再切回来保持原样。
+   */
+  const markdownMode: MarkdownMode | null = !isMarkdownFile
+    ? null
+    : isPreview
+      ? "preview"
+      : isSplitPreview
+        ? "split"
+        : "edit";
 
   // 进预览时同步渲染一次：放在渲染期算完，就不会先闪一帧空白。
   // 内容按 activeKey 从缓存里取，**不能**读编辑器当前挂着的 model：换 model 的
@@ -1825,15 +1860,6 @@ export function EditorPane({
     refreshViewInfo();
   };
 
-  /** 自动换行开关：作用在 editor 实例上，不写进 model */
-  const toggleWordWrap = () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const on = editor.getOption(monaco.editor.EditorOption.wordWrap) !== "off";
-    editor.updateOptions({ wordWrap: on ? "off" : "on" });
-    refreshViewInfo();
-  };
-
   /** 语言菜单项：Monaco 已注册的全部语言，按显示名排序 */
   const languageItems = (): StatusMenuItem[] =>
     monaco.languages
@@ -1958,7 +1984,8 @@ export function EditorPane({
             <IconMore className="h-3.5 w-3.5" />
           </button>
         )}
-        {canPreview && (
+        {/* html / svg 仍是「编辑 ↔ 预览」两态，markdown 用下面那组三态按钮 */}
+        {canPreview && !isMarkdownFile && (
           <button
             type="button"
             onClick={togglePreview}
@@ -1972,18 +1999,36 @@ export function EditorPane({
             )}
           </button>
         )}
-        {/* markdown 专属：左右分屏预览（左代码右渲染）。独立于上面的整屏预览按钮 */}
-        {isMarkdownFile && status.kind === "ready" && (
-          <button
-            type="button"
-            onClick={toggleSplitPreview}
-            title={isSplitPreview ? "关闭分屏预览" : "左右分屏预览"}
-            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-hover hover:text-fg ${
-              isSplitPreview ? "text-accent-soft" : "text-fg-dim"
-            }`}
+        {/* markdown：预览 / 编辑 / 对照。默认预览，三种方式同一时间只开一个 */}
+        {isMarkdownFile && status.kind === "ready" && markdownMode !== null && (
+          <div
+            role="group"
+            aria-label="markdown 查看方式"
+            className="flex shrink-0 items-center gap-0.5 rounded-md border border-line-strong p-0.5"
           >
-            <IconLayoutColumns className="h-3.5 w-3.5" />
-          </button>
+            {MARKDOWN_MODES.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setMarkdownMode(id)}
+                aria-pressed={markdownMode === id}
+                title={
+                  id === "preview"
+                    ? "预览渲染后的效果"
+                    : id === "edit"
+                      ? "编辑 Markdown 源码"
+                      : "左边源码，右边渲染"
+                }
+                className={`rounded px-2 py-0.5 text-[11px] ${
+                  markdownMode === id
+                    ? "bg-selected text-fg"
+                    : "text-fg-dim hover:bg-hover hover:text-fg"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         )}
         {activeDirty && (
           <button
@@ -2188,7 +2233,7 @@ export function EditorPane({
         )}
       </div>
 
-      {/* 状态栏。普通文件左侧是光标位置与视图选项（语言 / 缩进 / 换行符 / 自动换行），
+      {/* 状态栏。普通文件左侧是光标位置与视图选项（语言 / 缩进 / 换行符），
           差异标签左侧换成排布切换与改动跳转；右侧仍只放文件编码入口（行为不变）。
           图片 / 加载中没有 viewInfo，左侧整块收起 */}
       {(showEncodingBar || viewInfo !== null || showDiffBar) && (
@@ -2265,14 +2310,6 @@ export function EditorPane({
                   className={STATUS_BUTTON}
                 >
                   {viewInfo.eol}
-                </button>
-                <button
-                  type="button"
-                  onClick={toggleWordWrap}
-                  title="自动换行"
-                  className={STATUS_BUTTON}
-                >
-                  {viewInfo.wordWrap ? "自动换行" : "不换行"}
                 </button>
               </>
             )}

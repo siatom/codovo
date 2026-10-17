@@ -87,7 +87,7 @@ type TabId = (typeof TABS)[number]["id"];
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、智能体入口、启动恢复和关闭窗口行为",
   terminal: "终端程序、配色，以及 AI CLI 列表",
-  editor: "缩进宽度、缩略图和自动保存",
+  editor: "缩进宽度、缩略图、自动换行和自动保存",
   shortcuts: "全部快捷键键位",
   agent: "模型提供商、密钥和智能体配置",
 };
@@ -2754,6 +2754,13 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                       value={settings.editorMinimap}
                       options={ON_OFF_OPTIONS}
                       onChange={(editorMinimap) => update({ editorMinimap })}
+                    />
+                  </Field>
+                  <Field label="自动换行" hint="长行在编辑器里自动折行；关掉后按原样横向滚动">
+                    <BoolToggle
+                      value={settings.editorWordWrap}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorWordWrap) => update({ editorWordWrap })}
                     />
                   </Field>
                   <Field

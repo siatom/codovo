@@ -139,6 +139,8 @@ export interface Settings {
   editorFontBold: boolean;
   /** 编辑器是否显示右侧缩略图（minimap） */
   editorMinimap: boolean;
+  /** 编辑器里的长行是否自动折行；默认开，读长注释和文档时不用来回横向滚 */
+  editorWordWrap: boolean;
   /** 编辑器缩进宽度；auto 按文件内容探测，否则固定用该数量的空格 */
   editorIndent: EditorIndent;
   /** 编辑器自动保存时机 */
@@ -206,7 +208,13 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "terminalWaitHint",
     "aiCommands",
   ],
-  editor: ["editorAutoSave", "editorAutoSaveDelay", "editorMinimap", "editorIndent"],
+  editor: [
+    "editorAutoSave",
+    "editorAutoSaveDelay",
+    "editorMinimap",
+    "editorWordWrap",
+    "editorIndent",
+  ],
   shortcuts: ["shortcuts"],
   agent: [
     "aiProviders",
@@ -292,6 +300,8 @@ const DEFAULTS: Settings = {
   editorFontSize: 13,
   editorFontBold: true,
   editorMinimap: true,
+  // 默认开着：长注释和文档不用横向滚动，窄面板里读起来更顺
+  editorWordWrap: true,
   // 默认按文件内容探测（Monaco 原行为），别一上来就强行统一缩进
   editorIndent: "auto",
   editorAutoSave: "afterDelay",
@@ -542,6 +552,8 @@ function readSaved(): Settings {
     editorFontSize: clampSize(raw.editorFontSize, DEFAULTS.editorFontSize),
     editorFontBold: asBoolean(raw.editorFontBold, DEFAULTS.editorFontBold),
     editorMinimap: asBoolean(raw.editorMinimap, DEFAULTS.editorMinimap),
+    // 老版本的设置里没有这个字段，回落 true：长行默认折行
+    editorWordWrap: asBoolean(raw.editorWordWrap, DEFAULTS.editorWordWrap),
     editorIndent: asEditorIndent(raw.editorIndent),
     editorAutoSave: asAutoSave(raw.editorAutoSave),
     editorAutoSaveDelay: clampDelay(

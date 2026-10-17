@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "@xterm/xterm/css/xterm.css";
+// KaTeX 的排版样式与字体随包一起打进前端，离线预览数学公式不依赖 CDN
+import "katex/dist/katex.min.css";
 import "./styles.css";
 import App from "./App";
 import { SettingsProvider } from "./lib/settings";

@@ -621,6 +621,52 @@ body.codedock-dragging-list * {
   border-radius: 4px;
 }
 
+/* KaTeX：行间公式可能比正文宽，横向滚动而不是把预览撑破。
+   行内公式跟着正文走，不动。 */
+.markdown-body .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+
+/* markdown 里的常见 HTML 标签。Tailwind preflight 清掉了浏览器默认样式，
+   这里把最常用的几种补回来，免得写 <kbd> / <mark> / <details> 时像没生效。 */
+.markdown-body details {
+  margin: 0.9em 0;
+}
+
+.markdown-body summary {
+  cursor: pointer;
+  color: var(--c-fg-muted);
+}
+
+.markdown-body summary:hover {
+  color: var(--c-fg);
+}
+
+.markdown-body kbd {
+  padding: 0.1em 0.4em;
+  border: 1px solid var(--c-line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--c-raised);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.markdown-body mark {
+  padding: 0 0.2em;
+  border-radius: 2px;
+  background: var(--c-warn-bg);
+  color: var(--c-fg);
+}
+
+.markdown-body video,
+.markdown-body audio {
+  max-width: 100%;
+}
+
 /* markdown 文件头部的 YAML frontmatter。挂 .markdown-body 命名空间下，
    只影响预览 / 气泡 / 弹窗，不碰其它界面。key-value 两栏、左侧竖线跟引用块呼应。 */
 .markdown-body .md-frontmatter {

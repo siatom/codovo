@@ -1,12 +1,35 @@
 import DOMPurify from "dompurify";
 import { Marked } from "marked";
+import markedKatex from "marked-katex-extension";
 
 /**
  * 预览用的 markdown 渲染器。
  * async 必须显式关掉：异步模式下 parse 返回 Promise，这里要的是同步拿字符串。
  * gfm 本来就是默认值，写出来是为了说明表格、任务列表、删除线都支持。
+ *
+ * 数学公式走 KaTeX。`nonStandard` 让 `$x^2$` 这种不加空格的写法也能认出来——
+ * 技术文档里几乎没人会在公式两侧刻意留空格；代价是 `$5` 这类金额偶尔会被当成公式，
+ * 但 `throwOnError: false` 会把它原样留下来，不至于把整篇预览搞崩。
  */
 const md = new Marked({ async: false, gfm: true });
+md.use(markedKatex({ throwOnError: false, nonStandard: true }));
+
+/**
+ * 正文的净化规则。markdown 里允许写 HTML，但内容可能来自 clone 下来的仓库，
+ * 不能把脚本能力一起放进来：
+ * - 保留常规 HTML / SVG / MathML（KaTeX 会同时输出 MathML 与 HTML 两套结构）；
+ * - 禁掉 `<style>`、`<iframe>`、`<object>`、`<embed>`、`<form>` 这类能加载外部资源
+ *   或提交数据的容器；任务列表的 `<input type="checkbox">` 是 marked 生成的，保留；
+ * - `style` 属性要留着：KaTeX 的排版全靠行内样式，删了公式就会散架。
+ */
+const SANITIZE_OPTIONS = {
+  USE_PROFILES: { html: true, svg: true, mathMl: true },
+  FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "link", "meta", "base"],
+};
+
+function sanitize(html: string): string {
+  return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
+}
 
 /** frontmatter 的开 / 闭分隔行：独占一行的 `---`（允许行尾空白） */
 const FM_FENCE = /^---[ \t]*$/;
@@ -264,8 +287,8 @@ function extractFrontmatter(text: string): { nodes: FmNode[]; body: string } | n
  */
 export function renderMarkdown(text: string): string {
   const fm = extractFrontmatter(text);
-  if (!fm) return DOMPurify.sanitize(md.parse(text) as string);
+  if (!fm) return sanitize(md.parse(text) as string);
   const block = `<div class="md-frontmatter">${fm.nodes.map(renderNode).join("")}</div>`;
   const bodyHtml = md.parse(fm.body) as string;
-  return DOMPurify.sanitize(block + bodyHtml);
+  return sanitize(block + bodyHtml);
 }
