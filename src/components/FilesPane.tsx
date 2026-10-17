@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { GitMark } from "../lib/git";
 import type { SearchOptions } from "../lib/types";
 import type { MovePair } from "../lib/fs";
@@ -91,12 +91,13 @@ interface FilesPaneProps {
 /**
  * 右栏的「文件」模块：文件树和内容搜索合成一个模块。
  *
- * 上面是模块标题栏（新建 / 刷新 / 重新搜索），下面是统一的搜索栏：
- * 一个关键词输入框，右侧切换「名称 / 内容」——
+ * 平时只显示文件树，搜索栏默认收起，点标题栏右上角的放大镜才展开。
+ * 展开后是一个关键词输入框，右侧切换「名称 / 内容」——
  *   - 名称：按文件名过滤下面的文件树（沿用原来的文件名搜索）；
  *   - 内容：在整个工作区里搜文件内容，支持大小写 / 全字 / 正则、包含排除与替换。
  * 两个模式共用同一个关键词，来回切不用重敲；两套结果都常挂载、只切可见性，
  * 树的展开态、搜索结果与替换输入框在切换时都留得住。
+ * 收起搜索会顺手清空关键词：输入框都看不见了，再拿旧条件过滤树只会让人以为文件丢了。
  */
 export function FilesPane({
   roots,
@@ -115,6 +116,8 @@ export function FilesPane({
 }: FilesPaneProps) {
   const [mode, setMode] = useState<SearchMode>("name");
   const [query, setQuery] = useState("");
+  /** 搜索栏默认收起，点标题栏右上角的放大镜才展开 */
+  const [searchOpen, setSearchOpen] = useState(false);
   /** 内容搜索的选项：两个模式共用关键词，但这些开关只在内容模式有意义 */
   const [options, setOptions] = useState<SearchOptions>({
     caseSensitive: false,
@@ -131,6 +134,12 @@ export function FilesPane({
   const [contentReloadKey, setContentReloadKey] = useState(0);
   /** 文件树的新建 / 刷新按钮长在标题栏里，通过 ref 打回树上 */
   const explorerRef = useRef<ExplorerPaneHandle>(null);
+  /** 展开搜索后自动聚焦，省得再点一下输入框 */
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
   const activeQuery = query.trim();
   /** 树和内容搜索各自只在对应模式下接关键词，另一个模式不跑后端 */
@@ -142,19 +151,29 @@ export function FilesPane({
     setReplacement("");
   }, []);
 
+  /** 收起搜索栏：条件一并清掉、模式回到文件树，免得看不见输入框却还过滤着文件 */
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery("");
+    setReplacement("");
+    setShowReplace(false);
+    setShowFilters(false);
+    setMode("name");
+  }, []);
+
   /** 树里的改名 / 删除 / 移动之后过滤结果已失效，请它把关键词清掉 */
   const clearQuery = useCallback(() => {
     setQuery("");
   }, []);
 
   const refresh = () => {
-    if (mode === "name") explorerRef.current?.refresh();
-    else setContentReloadKey((key) => key + 1);
+    if (searchOpen && mode === "content") setContentReloadKey((key) => key + 1);
+    else explorerRef.current?.refresh();
   };
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-content">
-      {/* 标题栏：名称模式管文件树（新建 / 刷新），内容模式只有重新搜索 */}
+      {/* 标题栏：名称模式管文件树（新建 / 刷新），内容模式只有重新搜索；最右边是搜索开关 */}
       <header className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
         <span
           className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim"
@@ -162,7 +181,7 @@ export function FilesPane({
         >
           {roots.length > 1 ? `文件 · ${roots.length} 个工作目录` : "文件"}
         </span>
-        {mode === "name" ? (
+        {(!searchOpen || mode === "name") && (
           <>
             <button
               type="button"
@@ -183,164 +202,176 @@ export function FilesPane({
               <IconFolderPlus className="h-3.5 w-3.5" />
             </button>
           </>
-        ) : null}
+        )}
         <button
           type="button"
           onClick={refresh}
-          disabled={mode === "content" && !activeQuery}
-          title={mode === "name" ? "刷新文件树" : "重新搜索"}
+          disabled={searchOpen && mode === "content" && !activeQuery}
+          title={searchOpen && mode === "content" ? "重新搜索" : "刷新文件树"}
           className={`${HEADER_BUTTON} disabled:opacity-40`}
         >
           <IconRefresh className="h-3.5 w-3.5" />
         </button>
+        <button
+          type="button"
+          onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+          title={searchOpen ? "收起搜索" : "搜索文件"}
+          aria-pressed={searchOpen}
+          className={`${HEADER_BUTTON} ${searchOpen ? "bg-active text-fg" : ""}`}
+        >
+          <IconSearch className="h-3.5 w-3.5" />
+        </button>
       </header>
 
-      {/* 统一搜索栏：关键词 + 模式，内容模式再多一排选项 */}
-      <div className="shrink-0 border-b border-line px-2 py-1.5">
-        <div className={FIELD}>
-          <IconSearch className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
-          <input
-            type="text"
-            value={query}
-            spellCheck={false}
-            placeholder={mode === "name" ? "搜索文件" : "搜索文件内容"}
-            onChange={(event) => setQuery(event.target.value)}
-            onKeyDown={(event) => {
-              // 不 stopPropagation 的话，Esc 会继续往上冒，被别处的关闭逻辑接走
-              if (event.key === "Escape") {
-                event.stopPropagation();
-                clearSearch();
-              }
-            }}
-            className={FIELD_INPUT}
-          />
-          {query && (
-            <button type="button" onClick={clearSearch} title="清空" className={FIELD_BUTTON}>
-              <IconClose className="h-3 w-3" />
-            </button>
-          )}
-          {/* 模式切换：两颗按钮贴在一起，当前模式亮起来。放在框内右端，不额外占一行 */}
-          <div className="flex shrink-0 items-center rounded bg-content p-0.5">
-            {(
-              [
-                ["name", "名称", "按文件名过滤文件树"],
-                ["content", "内容", "在整个工作区里搜索文件内容"],
-              ] as const
-            ).map(([value, label, hint]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setMode(value)}
-                title={hint}
-                className={`h-5 rounded px-1.5 text-[11px] leading-none ${
-                  mode === value ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
-              >
-                {label}
+      {/* 统一搜索栏：点放大镜才展开；关键词 + 模式，内容模式再多一排选项 */}
+      {searchOpen && (
+        <div className="shrink-0 border-b border-line px-2 py-1.5">
+          <div className={FIELD}>
+            <IconSearch className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={query}
+              spellCheck={false}
+              placeholder={mode === "name" ? "搜索文件" : "搜索文件内容"}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                // 不 stopPropagation 的话，Esc 会继续往上冒，被别处的关闭逻辑接走
+                if (event.key === "Escape") {
+                  event.stopPropagation();
+                  closeSearch();
+                }
+              }}
+              className={FIELD_INPUT}
+            />
+            {query && (
+              <button type="button" onClick={clearSearch} title="清空" className={FIELD_BUTTON}>
+                <IconClose className="h-3 w-3" />
               </button>
-            ))}
-          </div>
-        </div>
-
-        {mode === "content" && (
-          <>
-            <div className="mt-1 flex flex-wrap items-center gap-0.5">
-              {SWITCHES.map((item) => (
+            )}
+            {/* 模式切换：两颗按钮贴在一起，当前模式亮起来。放在框内右端，不额外占一行 */}
+            <div className="flex shrink-0 items-center rounded bg-content p-0.5">
+              {(
+                [
+                  ["name", "名称", "按文件名过滤文件树"],
+                  ["content", "内容", "在整个工作区里搜索文件内容"],
+                ] as const
+              ).map(([value, label, hint]) => (
                 <button
-                  key={item.key}
+                  key={value}
                   type="button"
-                  onClick={() =>
-                    setOptions((current) => ({ ...current, [item.key]: !current[item.key] }))
-                  }
-                  title={item.title}
-                  className={`flex h-5 shrink-0 items-center justify-center rounded px-1 text-[11px] leading-none ${
-                    options[item.key] ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
+                  onClick={() => setMode(value)}
+                  title={hint}
+                  className={`h-5 rounded px-1.5 text-[11px] leading-none ${
+                    mode === value ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
                   }`}
                 >
-                  {item.label}
+                  {label}
                 </button>
               ))}
-              <button
-                type="button"
-                onClick={() => setShowFilters((open) => !open)}
-                title="文件过滤（包含 / 排除）"
-                className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
-                  showFilters || options.include || options.exclude
-                    ? SWITCH_ON
-                    : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
-              >
-                <IconFilter className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowReplace((open) => !open)}
-                title={showReplace ? "收起替换" : "展开替换"}
-                className={`flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[11px] leading-none ${
-                  showReplace ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
-              >
-                {showReplace ? (
-                  <IconChevronDown className="h-3 w-3" />
-                ) : (
-                  <IconChevronRight className="h-3 w-3" />
-                )}
-                <IconReplaceAll className="h-3.5 w-3.5" />
-                替换
-              </button>
-              <button
-                type="button"
-                onClick={clearSearch}
-                disabled={!query && !replacement}
-                title="清空搜索"
-                className={`${FIELD_BUTTON} ml-auto disabled:opacity-40`}
-              >
-                <IconClearResults className="h-3.5 w-3.5" />
-              </button>
             </div>
+          </div>
 
-            {showReplace && (
-              <div className={`${FIELD} mt-1`}>
-                <input
-                  type="text"
-                  value={replacement}
-                  spellCheck={false}
-                  placeholder="替换为"
-                  onChange={(event) => setReplacement(event.target.value)}
-                  className={FIELD_INPUT}
-                />
-              </div>
-            )}
-
-            {showFilters && (
-              <div className="mt-1 flex flex-col gap-1">
-                {(
-                  [
-                    ["include", "包含", "文件 glob，逗号分隔，例如 *.ts, src/**"],
-                    ["exclude", "排除", "文件 glob，逗号分隔，例如 *.min.js, dist/**"],
-                  ] as const
-                ).map(([key, label, placeholder]) => (
-                  <div key={key} className={FIELD}>
-                    <span className="shrink-0 pl-0.5 pr-0.5 text-[11px] text-fg-faint">
-                      {label}
-                    </span>
-                    <input
-                      type="text"
-                      value={options[key]}
-                      spellCheck={false}
-                      placeholder={placeholder}
-                      onChange={(event) =>
-                        setOptions((current) => ({ ...current, [key]: event.target.value }))
-                      }
-                      className={FIELD_INPUT}
-                    />
-                  </div>
+          {mode === "content" && (
+            <>
+              <div className="mt-1 flex flex-wrap items-center gap-0.5">
+                {SWITCHES.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() =>
+                      setOptions((current) => ({ ...current, [item.key]: !current[item.key] }))
+                    }
+                    title={item.title}
+                    className={`flex h-5 shrink-0 items-center justify-center rounded px-1 text-[11px] leading-none ${
+                      options[item.key] ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => setShowFilters((open) => !open)}
+                  title="文件过滤（包含 / 排除）"
+                  className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
+                    showFilters || options.include || options.exclude
+                      ? SWITCH_ON
+                      : "text-fg-dim hover:bg-hover hover:text-fg"
+                  }`}
+                >
+                  <IconFilter className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowReplace((open) => !open)}
+                  title={showReplace ? "收起替换" : "展开替换"}
+                  className={`flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[11px] leading-none ${
+                    showReplace ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
+                  }`}
+                >
+                  {showReplace ? (
+                    <IconChevronDown className="h-3 w-3" />
+                  ) : (
+                    <IconChevronRight className="h-3 w-3" />
+                  )}
+                  <IconReplaceAll className="h-3.5 w-3.5" />
+                  替换
+                </button>
+                <button
+                  type="button"
+                  onClick={clearSearch}
+                  disabled={!query && !replacement}
+                  title="清空搜索"
+                  className={`${FIELD_BUTTON} ml-auto disabled:opacity-40`}
+                >
+                  <IconClearResults className="h-3.5 w-3.5" />
+                </button>
               </div>
-            )}
-          </>
-        )}
-      </div>
+
+              {showReplace && (
+                <div className={`${FIELD} mt-1`}>
+                  <input
+                    type="text"
+                    value={replacement}
+                    spellCheck={false}
+                    placeholder="替换为"
+                    onChange={(event) => setReplacement(event.target.value)}
+                    className={FIELD_INPUT}
+                  />
+                </div>
+              )}
+
+              {showFilters && (
+                <div className="mt-1 flex flex-col gap-1">
+                  {(
+                    [
+                      ["include", "包含", "文件 glob，逗号分隔，例如 *.ts, src/**"],
+                      ["exclude", "排除", "文件 glob，逗号分隔，例如 *.min.js, dist/**"],
+                    ] as const
+                  ).map(([key, label, placeholder]) => (
+                    <div key={key} className={FIELD}>
+                      <span className="shrink-0 pl-0.5 pr-0.5 text-[11px] text-fg-faint">
+                        {label}
+                      </span>
+                      <input
+                        type="text"
+                        value={options[key]}
+                        spellCheck={false}
+                        placeholder={placeholder}
+                        onChange={(event) =>
+                          setOptions((current) => ({ ...current, [key]: event.target.value }))
+                        }
+                        className={FIELD_INPUT}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* 两个模式都常挂载，只切可见性：树的展开态、搜索结果与替换输入都留得住 */}
       <div className={mode === "name" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
@@ -363,7 +394,7 @@ export function FilesPane({
       <div className={mode === "content" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
         <SearchPane
           roots={roots}
-          visible={visible && mode === "content"}
+          visible={visible && searchOpen && mode === "content"}
           query={query}
           options={options}
           replacement={replacement}
