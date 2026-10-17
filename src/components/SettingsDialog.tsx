@@ -2077,7 +2077,6 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   const rightVisible: Record<ToolId, boolean> = {
     files: settings.rightFilesVisible,
     changes: settings.rightChangesVisible,
-    search: settings.rightSearchVisible,
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
@@ -2597,14 +2596,6 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                         options={VISIBLE_OPTIONS}
                         disabledValue={lastVisible === "changes" ? false : undefined}
                         onChange={(rightChangesVisible) => update({ rightChangesVisible })}
-                      />
-                    </Row>
-                    <Row label="搜索">
-                      <BoolToggle
-                        value={settings.rightSearchVisible}
-                        options={VISIBLE_OPTIONS}
-                        disabledValue={lastVisible === "search" ? false : undefined}
-                        onChange={(rightSearchVisible) => update({ rightSearchVisible })}
                       />
                     </Row>
                     <Row label="浏览器">

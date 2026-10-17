@@ -145,8 +145,9 @@ const APP_AGENT_SKILL_BODY: &str = "\
 - `editorIndent`：\"auto\"（按文件内容探测）/ \"2\" / \"4\" / \"8\"
 - `agentEnabled`：true / false，左侧是否出现「终端 / 智能体」切换
 - `agentCommand` / `agentPort` / `agentPrimary`
-- `rightFilesVisible` / `rightChangesVisible` / `rightSearchVisible` / `rightBrowserVisible` /
-  `rightRemoteVisible` / `rightDatabaseVisible`：true / false
+- `rightFilesVisible` / `rightChangesVisible` / `rightBrowserVisible` /
+  `rightRemoteVisible` / `rightDatabaseVisible`：true / false（搜索已并入「文件」模块，
+  不再有单独开关）
 - `closeToTray`：true / false
 - `restoreWorkspace`：true / false，启动时是否自动打开上次的工作区
 - `theme`：**特殊键**，不写进设置文件而是直接切主题；取 \"dark\" / \"light\" / \"system\"
@@ -154,8 +155,8 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 ## 界面工具
 
-- `switch_panel`：panel 取 files / search / changes / browser / remote / database / preview，
-  会展开右栏并切到该模块。
+- `switch_panel`：panel 取 files / changes / browser / remote / database / preview / deploy，
+  会展开右栏并切到该模块。文件内容搜索已并入 files（按名称搜索与按内容搜索在同一个模块）。
 - `set_right_pane`：open=true 展开、false 收起整条右栏。
 - `set_fullscreen`：area 取 none / left / right
   （left=终端与智能体那一列铺满窗口，right=整个右边栏铺满窗口）。

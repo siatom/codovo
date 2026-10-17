@@ -9,7 +9,6 @@ import {
   IconPanelRightOpen,
   IconPlay,
   IconRocket,
-  IconSearch,
   IconServer,
 } from "./icons";
 
@@ -31,7 +30,6 @@ const BUTTON_ON = "bg-selected text-fg";
  */
 export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[] = [
   { id: "files", label: "文件", Icon: IconFile },
-  { id: "search", label: "搜索", Icon: IconSearch },
   { id: "changes", label: "变更", Icon: IconBranch },
   { id: "browser", label: "浏览器", Icon: IconGlobe },
   { id: "remote", label: "远程连接", Icon: IconServer },

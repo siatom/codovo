@@ -5,17 +5,16 @@ import { pathKey, toDisplayPath, type MovePair } from "../lib/fs";
 import { folderName } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut } from "../lib/shortcuts";
-import { ExplorerPane } from "./ExplorerPane";
+import { FilesPane } from "./FilesPane";
 import { GitChangesPane } from "./GitChangesPane";
-import { SearchPane } from "./SearchPane";
 import { IconChevronDown, IconChevronRight, IconRefresh } from "./icons";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
-export type ToolId = "files" | "changes" | "search" | "browser" | "remote" | "database" | "preview" | "deploy";
+export type ToolId = "files" | "changes" | "browser" | "remote" | "database" | "preview" | "deploy";
 
 const TOOL_KEY = "codedock.rightTool.";
 
-const TOOLS: ToolId[] = ["files", "changes", "search", "browser", "remote", "database", "preview", "deploy"];
+const TOOLS: ToolId[] = ["files", "changes", "browser", "remote", "database", "preview", "deploy"];
 
 /** 标题栏图标按钮的样式，和「文件」模块标题栏那几个按钮一致 */
 const ICON_BUTTON =
@@ -31,6 +30,7 @@ const ICON_BUTTON =
 export function readTool(root: string): ToolId {
   try {
     const saved = window.sessionStorage.getItem(TOOL_KEY + root);
+    // 「搜索」模块已并入「文件」：旧会话里存的 search 找不到就回落到 files
     return TOOLS.find((tool) => tool === saved) ?? "files";
   } catch {
     return "files";
@@ -51,6 +51,12 @@ interface ToolPaneProps {
   roots: string[];
   /** 这个工作区是不是当前显示的。隐藏时不做任何后端交互 */
   visible: boolean;
+  /**
+   * 「文件」模块是不是真的露在用户眼前（工作区可见、右栏展开、且当前看的正是它）。
+   * 收起右栏 / 停在别的模块时文件树和内容搜索都只是被 `hidden` 藏着、组件还活着，
+   * 得靠它短路掉重列与内容搜索，否则不可见时还在白跑目录遍历
+   */
+  filesVisible: boolean;
   /**
    * 「变更」模块是不是真的露在用户眼前（右栏展开、且当前看的正是它）。
    * 收起右栏 / 停在别的模块时，下面的变更块只是被 `hidden` 藏着、组件还活着，
@@ -116,6 +122,7 @@ export function ToolPane({
   tool,
   roots,
   visible,
+  filesVisible,
   changesVisible,
   selected,
   gitByRoot,
@@ -137,13 +144,6 @@ export function ToolPane({
   onRequestCloseTab,
 }: ToolPaneProps) {
   const { settings } = useSettings();
-  const filesHidden =
-    tool === "changes" ||
-    tool === "search" ||
-    tool === "remote" ||
-    tool === "database" ||
-    tool === "preview" ||
-    tool === "deploy";
   /**
    * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
    * 初始只展开第一个根、其余收起：多根时几份改动加时间线全铺开，一屏根本看不完。
@@ -194,18 +194,21 @@ export function ToolPane({
       className="flex h-full min-h-0 flex-col bg-content"
       onKeyDownCapture={onPanelKeyDown}
     >
-      <div className={filesHidden ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
-        <ExplorerPane
+      <div className={tool === "files" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        <FilesPane
           roots={roots}
-          visible={visible}
+          visible={visible && filesVisible}
           selected={selected}
           gitMarks={gitMarks}
-          isRepo={gitReady}
-          onSelect={onSelectFile}
+          gitReady={gitReady}
+          onSelectFile={onSelectFile}
           onOpenInBrowser={onOpenInBrowser}
+          onOpenMatch={onOpenMatch}
           onBeforeRename={onBeforeRename}
-          onRenamed={onEntryRenamed}
-          onDeleted={onEntryDeleted}
+          onEntryRenamed={onEntryRenamed}
+          onEntryDeleted={onEntryDeleted}
+          onBeforeReplace={onBeforeReplace}
+          onAfterReplace={onAfterReplace}
         />
       </div>
       {/* 变更：每个工作目录一块，各挂一个完整的变更面板。多根时每块能整块收起、只留
@@ -213,7 +216,7 @@ export function ToolPane({
           面板本身是 h-full 的整高布局（内部自己滚），所以展开的块按份数分高度、
           开了折叠就只占一行，块多了整体滚 */}
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        {/* 模块自己的标题行，和「文件」「搜索」两个模块的头对齐（同为 h-8 + 下边框）。
+        {/* 模块自己的标题行，和「文件」模块的头对齐（同为 h-8 + 下边框）。
             右侧「刷新」重载这一模块下所有根的面板（状态 / 历史 / worktree / 储藏） */}
         <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
@@ -293,15 +296,6 @@ export function ToolPane({
           );
         })}
         </div>
-      </div>
-      <div className={tool === "search" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <SearchPane
-          roots={roots}
-          visible={visible}
-          onOpenMatch={onOpenMatch}
-          onBeforeReplace={onBeforeReplace}
-          onAfterReplace={onAfterReplace}
-        />
       </div>
     </section>
   );

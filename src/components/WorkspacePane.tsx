@@ -172,7 +172,6 @@ export function WorkspacePane({
   const toolVisible: Record<ToolId, boolean> = {
     files: settings.rightFilesVisible,
     changes: settings.rightChangesVisible,
-    search: settings.rightSearchVisible,
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
@@ -185,6 +184,10 @@ export function WorkspacePane({
   const firstVisible: ToolId =
     RIGHT_TOOLS.map((item) => item.id).find((id) => toolVisible[id]) ?? "files";
   const activeTool: ToolId = toolVisible[tool] ? tool : firstVisible;
+  // 「文件」模块是不是真的露在用户眼前：右栏展开、且当前显示的正是它。
+  // 用 activeTool 而不是原始 tool——模块被设置关掉时会回落到别的模块，
+  // 那时文件树和内容搜索都不该在后台白跑（树会重列、内容搜索会整仓遍历）
+  const filesVisible = rightOpen && activeTool === "files";
   const rightCollapsed = !rightOpen;
   // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
   const rightFullscreen = fullscreen === "right";
@@ -535,6 +538,7 @@ export function WorkspacePane({
                       tool={activeTool}
                       roots={workspace.roots}
                       visible={visible}
+                      filesVisible={filesVisible}
                       changesVisible={changesVisible}
                       selected={activeTab?.kind === "file" ? activeTab.path : null}
                       gitByRoot={gitByRoot}

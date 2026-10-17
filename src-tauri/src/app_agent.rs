@@ -318,13 +318,13 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "switch_panel",
-            "description": "切到右边栏的某个模块（并展开右栏）。panel 取 files / search / changes / browser / remote / database / preview。",
+            "description": "切到右边栏的某个模块（并展开右栏）。panel 取 files / changes / browser / remote / database / preview / deploy。文件搜索已并入 files（files 里可切换按名称 / 按内容搜索）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "panel": {
                         "type": "string",
-                        "description": "files / search / changes / browser / remote / database"
+                        "description": "files / changes / browser / remote / database / preview / deploy"
                     }
                 },
                 "required": ["panel"],

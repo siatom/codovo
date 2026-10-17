@@ -1,12 +1,14 @@
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useMemo,
   useRef,
   useState,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type Ref,
 } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -47,7 +49,6 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconClipboard,
-  IconClose,
   IconCopy,
   IconExternalLink,
   IconEyeOff,
@@ -59,11 +60,18 @@ import {
   IconPlus,
   IconRefresh,
   IconScissors,
-  IconSearch,
   IconSparkle,
   IconTrash,
   IconTree,
 } from "./icons";
+
+/** 文件模块标题栏通过 ref 指挥树做两件事：新建与重列。树自己不知道标题栏长什么样 */
+export interface ExplorerPaneHandle {
+  /** 新建文件 / 文件夹：落在当前选中的目录里（文件则落在它旁边），都没选就建在主要根 */
+  create: (kind: CreateKind) => void;
+  /** 重新列所有已展开的目录（含各个工作目录） */
+  refresh: () => void;
+}
 
 interface ExplorerPaneProps {
   /** 工作区的全部工作目录：每一根在树里各成一棵子树，并列显示 */
@@ -87,6 +95,15 @@ interface ExplorerPaneProps {
   onRenamed: (moves: MovePair[]) => void;
   /** 删除成功：编辑器里落在这些路径下的标签要关掉（批量一次性提交） */
   onDeleted: (paths: string[]) => void;
+  /**
+   * 文件名过滤关键词，由文件模块统一的搜索框控制。非空时树只显示命中的文件
+   * （空串 = 正常树）。搜内容和搜文件名共用这一个关键词，切模式时不用重敲
+   */
+  query: string;
+  /** 清掉过滤关键词（改名 / 删除 / 移动后过滤结果里的路径已经失效） */
+  onClearQuery: () => void;
+  /** 模块标题栏要指挥树新建 / 重列；React 19 起 ref 可以直接当普通 prop 传 */
+  ref?: Ref<ExplorerPaneHandle>;
 }
 
 /** 输入停下来多久才去搜，省得每敲一个字都跑一趟目录遍历 */
@@ -95,9 +112,6 @@ const SEARCH_DEBOUNCE_MS = 200;
 /** 过滤模式下这两个集合没有意义，共用同一份引用免得 useMemo 每次都失效 */
 const EMPTY_SET: ReadonlySet<string> = new Set();
 const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
-
-const ICON_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
 /**
  * 右键菜单宽度：按最长的「在文件管理器中显示」估出来（图标 + 间距 + 8 个中文字 +
@@ -252,6 +266,9 @@ export function ExplorerPane({
   onBeforeRename,
   onRenamed,
   onDeleted,
+  query,
+  onClearQuery,
+  ref,
 }: ExplorerPaneProps) {
   /** 每个工作目录的顶层条目，按根分组 */
   const [entries, setEntries] = useState<Map<string, FileEntry[]>>(new Map());
@@ -320,9 +337,7 @@ export function ExplorerPane({
   const { settings } = useSettings();
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
-  // 搜索：输入框开着 + 有关键词才进入过滤模式
-  const [searching, setSearching] = useState(false);
-  const [query, setQuery] = useState("");
+  // 文件名过滤：关键词由文件模块的搜索框给，非空即进入过滤模式
   /** null = 还没拿到结果 */
   const [hits, setHits] = useState<string[] | null>(null);
   /** 过滤模式下被用户单独收起的目录 */
@@ -331,9 +346,11 @@ export function ExplorerPane({
   const [collapsedRoots, setCollapsedRoots] = useState<Set<string>>(new Set());
 
   const activeQuery = query.trim();
-  const filtering = searching && activeQuery.length > 0;
+  const filtering = activeQuery.length > 0;
 
   const rootsKey = rootsKeyOf(roots);
+  /** 上一次渲染的工作目录键：用来区分「换了工作目录」和「点了刷新」 */
+  const lastRootsKey = useRef(rootsKey);
   /** 主要根：点空白、没选题时新建都落在这里 */
   const primaryRoot = roots[0] ?? "";
 
@@ -376,8 +393,12 @@ export function ExplorerPane({
     setErrors(new Map());
     setRootError(null);
     setIgnored(new Set());
-    // 搜索命中的是上一个工作区的路径，一并清掉
-    setQuery("");
+    // 换了工作目录时，搜索命中的是上一个工作区的路径，关键词一并清掉；
+    // 只是点「刷新」（reloadKey 变）时保留关键词，别让过滤状态莫名退出
+    if (lastRootsKey.current !== rootsKey) {
+      lastRootsKey.current = rootsKey;
+      onClearQuery();
+    }
     setHits(null);
     setFilterCollapsed(new Set());
     // 工作目录可能整个换掉了，收起的键跟着作废；默认只展开第一个根，其余收起
@@ -427,7 +448,7 @@ export function ExplorerPane({
     return () => {
       cancelled = true;
     };
-  }, [rootsKey, reloadKey]);
+  }, [rootsKey, reloadKey, onClearQuery]);
 
   // 搜索：防抖 + 丢弃过期结果（查询一变，上一趟回来时已经被取消）
   useEffect(() => {
@@ -457,12 +478,12 @@ export function ExplorerPane({
     };
   }, [filtering, activeQuery, rootsKey]);
 
-  const closeSearch = useCallback(() => {
-    setSearching(false);
-    setQuery("");
+  /** 过滤结果失效时清掉关键词（关键词归文件模块的搜索框管，这里只能请求它清空） */
+  const dropFilter = useCallback(() => {
+    onClearQuery();
     setHits(null);
     setFilterCollapsed(new Set());
-  }, []);
+  }, [onClearQuery]);
 
   const toggle = useCallback(
     async (entry: FileEntry) => {
@@ -724,13 +745,13 @@ export function ExplorerPane({
       });
       await refreshDir(parentOf(path));
       // 过滤模式下的结果是按旧路径拼的，改完名字就作废了
-      if (filtering) closeSearch();
+      if (filtering) dropFilter();
     } catch (reason) {
       setRenameError(String(reason));
     } finally {
       setBusy(false);
     }
-  }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch]);
+  }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter]);
 
   /** 请求删除：这一行在选中集合里就删整批（VS Code 语义），否则只删它自己 */
   const requestDelete = useCallback(
@@ -778,11 +799,11 @@ export function ExplorerPane({
       setSelection(new Map());
       anchorRef.current = null;
       for (const dir of new Set(removed.map(parentOf))) await refreshDir(dir);
-      if (filtering) closeSearch();
+      if (filtering) dropFilter();
     }
     if (failures.length > 0) setActionError(failures.join("\n"));
     setBusy(false);
-  }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, closeSearch]);
+  }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, dropFilter]);
 
   /** 这批操作要处理哪些路径：点在选中集合里的行就取整批（VS Code 语义），否则只它自己 */
   const collectPaths = useCallback(
@@ -887,7 +908,7 @@ export function ExplorerPane({
           for (const dir of new Set<string>([targetDir, ...done.map(parentOf)])) {
             await refreshDir(dir);
           }
-          if (filtering) closeSearch();
+          if (filtering) dropFilter();
         }
 
         // 剪切后成功的项要从剪贴板摘掉，失败的留着——否则下次粘贴会重放已经搬走的源。
@@ -902,7 +923,7 @@ export function ExplorerPane({
         setBusy(false);
       }
     },
-    [clipboard, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch],
+    [clipboard, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter],
   );
 
   /**
@@ -1166,6 +1187,19 @@ export function ExplorerPane({
       setCreatingBusy(false);
     }
   }, [creating, creatingBusy, roots, isRootPath]);
+
+  /**
+   * 标题栏在文件模块（FilesPane）里，新建 / 刷新按钮通过 ref 打回树上。
+   * 新建沿用 BeginCreate 那套落点规则；刷新就是让上面那个 effect 重列所有根。
+   */
+  useImperativeHandle(
+    ref,
+    () => ({
+      create: (kind) => void beginCreate(kind),
+      refresh: () => setReloadKey((key) => key + 1),
+    }),
+    [beginCreate],
+  );
 
   const filtered = useMemo(
     () => (filtering && hits ? buildFilter(roots, hits) : null),
@@ -1506,14 +1540,14 @@ export function ExplorerPane({
         for (const dir of new Set<string>([destDir, ...paths.map(parentOf)])) {
           await refreshDir(dir);
         }
-        if (filtering) closeSearch();
+        if (filtering) dropFilter();
       } catch (reason) {
         setActionError(String(reason));
       } finally {
         setBusy(false);
       }
     },
-    [dragging, canDropOn, roots, onBeforeRename, onRenamed, refreshDir, filtering, closeSearch],
+    [dragging, canDropOn, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter],
   );
 
   /** 拖到某一行上：目录行就是它，文件行落到它所在目录（照 VS Code） */
@@ -1635,82 +1669,8 @@ export function ExplorerPane({
     return roots.map((root) => ({ root, items: entries.get(root) ?? [] }));
   }, [filtering, filtered, roots, entries]);
 
-  // 根名在树里各自有一行，header 不再重复；只有多根时才给一个总览
-  const headerTitle = roots.length > 1 ? `${roots.length} 个工作目录` : "";
-  const headerHint = roots.map((root) => toDisplayPath(root)).join("\n");
-
   return (
     <section className="flex h-full min-h-0 flex-col bg-content">
-      {/* 右上角并排 4 个图标按钮，间距压到 2px：24px 的按钮本身已经留了 5px 内边距，
-          gap 再给 4px 就散开了 */}
-      <header className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
-        {searching ? (
-          <>
-            <IconSearch className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
-            <input
-              autoFocus
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  // 别让 Esc 冒到窗口上：那里接着「退出全屏」，搜索时按一下不该退出全屏
-                  event.stopPropagation();
-                  closeSearch();
-                }
-              }}
-              placeholder="按文件名搜索"
-              className="min-w-0 flex-1 bg-transparent text-[12px] text-fg outline-none placeholder:text-fg-faint"
-            />
-            <button type="button" onClick={closeSearch} title="关闭搜索" className={ICON_BUTTON}>
-              <IconClose className="h-3 w-3" />
-            </button>
-          </>
-        ) : (
-          <>
-            <span
-              className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim"
-              title={headerHint}
-            >
-              {headerTitle}
-            </span>
-            <button
-              type="button"
-              onClick={() => void beginCreate("file")}
-              title="新建文件"
-              disabled={creatingBusy}
-              className={ICON_BUTTON}
-            >
-              <IconPlus className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => void beginCreate("directory")}
-              title="新建文件夹"
-              disabled={creatingBusy}
-              className={ICON_BUTTON}
-            >
-              <IconFolderPlus className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setSearching(true)}
-              title="搜索文件"
-              className={ICON_BUTTON}
-            >
-              <IconSearch className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setReloadKey((key) => key + 1)}
-              title="刷新"
-              className={ICON_BUTTON}
-            >
-              <IconRefresh className="h-3.5 w-3.5" />
-            </button>
-          </>
-        )}
-      </header>
-
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-auto px-1 py-1"

@@ -155,7 +155,6 @@ export interface Settings {
   /** 右边栏的各个模块：关掉哪个，图标条上就不出哪个入口 */
   rightFilesVisible: boolean;
   rightChangesVisible: boolean;
-  rightSearchVisible: boolean;
   rightBrowserVisible: boolean;
   rightRemoteVisible: boolean;
   rightDatabaseVisible: boolean;
@@ -192,7 +191,6 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "editorFontBold",
     "rightFilesVisible",
     "rightChangesVisible",
-    "rightSearchVisible",
     "rightBrowserVisible",
     "rightRemoteVisible",
     "rightDatabaseVisible",
@@ -304,7 +302,6 @@ const DEFAULTS: Settings = {
   restoreWorkspace: true,
   rightFilesVisible: true,
   rightChangesVisible: true,
-  rightSearchVisible: true,
   rightBrowserVisible: true,
   rightRemoteVisible: true,
   rightDatabaseVisible: true,
@@ -559,10 +556,6 @@ function readSaved(): Settings {
     rightChangesVisible: asBoolean(
       raw.rightChangesVisible,
       DEFAULTS.rightChangesVisible,
-    ),
-    rightSearchVisible: asBoolean(
-      raw.rightSearchVisible,
-      DEFAULTS.rightSearchVisible,
     ),
     rightBrowserVisible: asBoolean(
       raw.rightBrowserVisible,

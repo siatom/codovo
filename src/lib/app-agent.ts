@@ -146,7 +146,9 @@ async function execute(
       return section ? `已把「${SECTION_LABELS[section]}」这一类设置恢复默认` : "已把全部设置恢复默认";
     }
     case "switch_panel": {
-      const panel = requireString(args.panel, "panel");
+      const requested = requireString(args.panel, "panel");
+      // 「搜索」已经并进「文件」模块：老提示词 / 会话里还可能传 search，顺着落到 files
+      const panel = requested === "search" ? "files" : requested;
       const ids = RIGHT_TOOLS.map((item) => item.id);
       if (!ids.includes(panel as ToolId)) {
         throw new Error(`panel 只能取 ${ids.join(" / ")}`);
@@ -208,7 +210,6 @@ function describeState(ctx: AppAgentContext) {
       agentPrimary: settings.agentPrimary,
       rightFilesVisible: settings.rightFilesVisible,
       rightChangesVisible: settings.rightChangesVisible,
-      rightSearchVisible: settings.rightSearchVisible,
       rightBrowserVisible: settings.rightBrowserVisible,
       rightRemoteVisible: settings.rightRemoteVisible,
       rightDatabaseVisible: settings.rightDatabaseVisible,
@@ -244,7 +245,6 @@ const BOOLEAN_KEYS = new Set([
   "restoreWorkspace",
   "rightFilesVisible",
   "rightChangesVisible",
-  "rightSearchVisible",
   "rightBrowserVisible",
   "rightRemoteVisible",
   "rightDatabaseVisible",
