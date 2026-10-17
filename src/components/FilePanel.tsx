@@ -8,12 +8,12 @@ import {
 } from "react";
 import { formatBytes, formatMtime } from "../lib/remote";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { FileTypeIcon, FolderTypeIcon } from "./fileIcons";
 import {
   IconArrowLeftToLine,
   IconArrowRightToLine,
   IconArrowUp,
   IconChevronRight,
-  IconFile,
   IconFolder,
   IconFolderPlus,
   IconMore,
@@ -383,9 +383,9 @@ export function FilePanel({
               }`}
             >
               {entry.isDir ? (
-                <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
+                <FolderTypeIcon name={entry.name} className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
               ) : (
-                <IconFile className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
+                <FileTypeIcon name={entry.name} className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
               )}
               {isRenaming ? (
                 <input

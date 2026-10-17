@@ -5,6 +5,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# 文件树图标：由 scripts/gen-file-icons.mjs 从 material-icon-theme 生成（约 3MB svg），
+# dev / build / install 时自动重跑，不进仓库
+public/material-icons/
+
 # 日志
 logs/
 *.log

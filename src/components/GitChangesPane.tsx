@@ -90,8 +90,8 @@ import { CommitGraph } from "./GitGraph";
 import { CommitTooltip } from "./CommitTooltip";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
+import { FileTypeIcon, FolderTypeIcon } from "./fileIcons";
 import {
-  FileTypeIcon,
   IconArrowDownToLine,
   IconArrowLeftToLine,
   IconArrowRightToLine,
@@ -106,7 +106,6 @@ import {
   IconEyeOff,
   IconFile,
   IconFilter,
-  IconFolder,
   IconList,
   IconMerge,
   IconMinus,
@@ -952,7 +951,8 @@ function ChangeRow({
         {depth !== null && <span className="w-3 shrink-0" />}
         <span className="flex shrink-0 items-center text-fg-icon">
           {isDir ? (
-            <IconFolder className="h-3.5 w-3.5" />
+            // 列表视图里的目录行（树视图的目录行是 ChangeDirRow），没有展开态，用闭合图标
+            <FolderTypeIcon name={name} className="h-3.5 w-3.5" />
           ) : (
             <FileTypeIcon name={name} className="h-3.5 w-3.5" />
           )}
@@ -1074,6 +1074,8 @@ function ChangeDirRow({
   /** 整棵子树里最重的状态；null = 底下没有任何改动 */
   mark: GitMark | null;
 }) {
+  // 单链目录行显示的是 `a/b/c` 这样一整段，图标按最后一段（也就是真正的目录名）挑
+  const name = node.name.split("/").pop() ?? node.name;
   return (
     <button
       type="button"
@@ -1090,7 +1092,7 @@ function ChangeDirRow({
         )}
       </span>
       <span className="flex shrink-0 items-center text-fg-icon">
-        <IconFolder className="h-3.5 w-3.5" />
+        <FolderTypeIcon name={name} isOpen={!collapsed} className="h-3.5 w-3.5" />
       </span>
       {/* 单链已经合并过，这里可能是 `a/b/c` 这样一整段路径；分隔符按平台显示（见 DIR_SEP） */}
       <span className="min-w-0 flex-1 truncate">{node.name.split("/").join(DIR_SEP)}</span>
