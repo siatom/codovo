@@ -3,6 +3,9 @@
 //! 三端行为有差异，别按一个平台的经验改：Linux 走 appindicator，**左键单击通常
 //! 不派发事件**，那边只能靠右键菜单的「显示主窗口」；macOS 上理想是单色模板图，
 //! 这里先复用应用图标（彩色），要不要换模板图再说。
+//!
+//! 悬停提示（tooltip）取自 `productName`，Windows / macOS 有效；Linux 的
+//! appindicator 不提供 tooltip 接口，那边看不到属正常。
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -26,6 +29,8 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
 
     let mut builder = TrayIconBuilder::with_id("main")
         .menu(&menu)
+        // 鼠标悬停在托盘图标上时显示应用名（Windows / macOS 生效）
+        .tooltip(app.package_info().name.clone())
         // 左键留给「唤回窗口」，菜单只走右键
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
