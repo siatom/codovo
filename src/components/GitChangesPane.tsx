@@ -2138,16 +2138,12 @@ export function GitChangesPane({
   }, [run, root, commits, snapshot.head]);
 
   /**
-   * 打开分支下拉时现拉一次列表。
+   * 拉分支列表**数据本身**，不碰菜单里的临时状态（新建输入框 / 被占用提示）：
+   * 后台轮询也走它，否则每轮轮询都会把用户正在敲的分支名清掉。
    *
-   * 下拉打开期间会随 status 轮询（2 秒）自动重拉：终端里切换分支 / fetch 之后，
-   * 不用关掉菜单再开一次就能看到最新列表。
-   * 失败就当空列表，把原因摆在菜单里——不值得弹全局错误。
+   * 失败当空列表，把原因摆在菜单里——不值得弹全局错误。
    */
   const loadBranches = useCallback(() => {
-    setBranchError(null);
-    setNewBranch(null);
-    setBlocked(null);
     void gitBranches(root)
       .then(setBranches)
       .catch((reason) => {
@@ -2156,17 +2152,30 @@ export function GitChangesPane({
       });
   }, [root]);
 
-  // 分支下拉打开期间，HEAD 或分支名变了就重拉一次列表
+  /**
+   * 分支下拉打开期间跟着 status 轮询（2 秒）重拉列表。
+   *
+   * 依赖整个 `snapshot` 是故意的：每轮 status 轮询它都会换成新对象，菜单开着时就等于
+   * 每 2 秒刷一次——终端里切换 / 新建分支、fetch 出远程分支之后，不用关掉菜单再开一次
+   * 就能看到。只盯 head / branch 的话，那些不动 HEAD 的变化（新建分支、fetch）会漏掉。
+   * 藏起来时（切走工作区 / 右栏收起 / 看别的模块）不起——菜单不可见，白拉列表没意义。
+   */
   useEffect(() => {
-    if (!branchMenu) return;
+    if (!branchMenu || !visible || !moduleVisible) return;
     loadBranches();
-  }, [branchMenu, snapshot.head, snapshot.branch, loadBranches]);
+  }, [branchMenu, visible, moduleVisible, snapshot, loadBranches]);
 
+  /**
+   * 打开分支下拉：清掉上回的残留（报错 / 新建输入框 / 被占用提示），免得切走再回来
+   * 还挂着上一次的输入。列表数据交给上面的 effect 拉——打开即拉，之后随轮询刷新。
+   */
   const openBranchMenu = useCallback(() => {
-    loadBranches();
+    setBranchError(null);
+    setNewBranch(null);
+    setBlocked(null);
     setWtMenu(false);
     setBranchMenu(true);
-  }, [loadBranches]);
+  }, []);
 
   /**
    * 切分支。切之前先把编辑器里没保存的改动落盘（理由见 onBeforeBranchSwitch），
@@ -2255,8 +2264,9 @@ export function GitChangesPane({
    * 只在面板可见（当前工作区 + 模块露在眼前）时拉。失败当空列表
    * ——拿不到就把入口藏起来，不值得弹全局错误。后端顺带把存在的工作树登记进白名单，
    * 所以返回的 path 之后能直接当 root 用。
-   * `snapshot.head` 变化（提交/切分支）时也重拉：各工作树检出的分支 / HEAD 会跟着变，
-   * 不更新的话显示的还是旧信息。
+   * 面板可见期间跟着 status 轮询（2 秒）重拉：终端里 `git worktree add/remove`、
+   * 在别的工作树里切分支之后，列表和各条检出的分支能自己跟上，不必手动刷新。
+   * 依赖整个 `snapshot` 是故意的（理由同分支列表那个 effect：每轮轮询换新对象）。
    */
   useEffect(() => {
     if (!visible || !moduleVisible) return;
@@ -2279,7 +2289,7 @@ export function GitChangesPane({
     return () => {
       cancelled = true;
     };
-  }, [workspaceRoot, root, visible, moduleVisible, reloadSignal, snapshot.head]);
+  }, [workspaceRoot, root, visible, moduleVisible, reloadSignal, snapshot]);
 
   /** 切到某个工作树。选当前这条等于恢复默认（也兜住列表里 current 被标错的情形） */
   const pickWorktree = useCallback(
