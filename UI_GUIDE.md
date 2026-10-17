@@ -134,9 +134,10 @@ dev 保留方便调试。
 **不加没有实际功能的元素。** 宁留空也不放装饰性提示 / 假快捷键 / 占位状态——这是刻意的取向，
 提方案时不要主动塞「顺带做」的东西。
 
-**图标统一走 `components/icons.tsx`**，具名导出。**唯一例外是文件类型图标**：用彩色品牌图标
-（依赖 `simple-icons` 只取路径数据、靠 tree-shaking 控体积）。品牌色偏暗的（markdown / json /
-rust 官方色是纯黑）回落 `currentColor`，否则深色主题下看不见。
+**图标统一走 `components/icons.tsx`**，具名导出。**唯一例外是文件类型 / 文件夹图标**：它们在
+`components/fileIcons.tsx`，资源和映射来自 `material-icon-theme`——由 `scripts/gen-file-icons.mjs`
+生成到 `public/material-icons/`，不进仓库、也不进 bundle，运行期取一次并缓存，没生成时回落内置
+线条图标。这些 svg 的颜色烤在 `fill` 里、不跟语义色走（浅色主题靠 material 自带的 light 覆盖项纠偏）。
 
 **就地编辑优于弹输入框**（重命名这类）：`Enter` 确认、`Esc` 取消、`onBlur` 也算确认，
 清空 = 取消。

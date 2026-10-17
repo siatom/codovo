@@ -3,12 +3,8 @@ import type { FileEntry } from "../lib/types";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import type { GitMark } from "../lib/git";
 import { GitMarkBadge } from "./GitMarkBadge";
-import {
-  FileTypeIcon,
-  IconChevronDown,
-  IconChevronRight,
-  IconFolder,
-} from "./icons";
+import { FileTypeIcon, FolderTypeIcon } from "./fileIcons";
+import { IconChevronDown, IconChevronRight } from "./icons";
 
 export type CreateKind = "file" | "directory";
 
@@ -191,7 +187,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           {/* 品牌色的文件图标也要跟着降不透明度：只把文字调淡、图标还鲜亮会很割裂 */}
           <span className={`flex shrink-0 items-center text-fg-icon${dim}`}>
             {entry.isDir ? (
-              <IconFolder className="h-3.5 w-3.5" />
+              <FolderTypeIcon name={entry.name} isOpen={isOpen} className="h-3.5 w-3.5" />
             ) : (
               <FileTypeIcon name={entry.name} className="h-3.5 w-3.5" />
             )}

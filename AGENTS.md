@@ -19,6 +19,7 @@ cd src-tauri && cargo clippy
 - 考虑 Windows、macOS、Linux 差异。注释用中文，说明原因或容易误解之处。
 - 使用项目现有的语义颜色、组件导出、Context 和图标约定；新增颜色时同步维护 `styles.css` 的主题变量。
 - 设置项需同步类型/默认值、设置表单和消费方。Tauri 命令需在 Rust 定义、`lib.rs` 注册，并由前端 `lib/*.ts` 封装；组件不直接 `invoke`。
+- 文件树 / Git 改动树 / 文件面板的图标来自 `material-icon-theme`（devDependency）：`dev` / `build` / `install` 会先跑 `scripts/gen-file-icons.mjs`，把映射和用得到的 svg 生成到 `public/material-icons/`（不进仓库）。换版本改 devDependency 再跑 `pnpm gen:file-icons`；查表逻辑在 `src/components/fileIcons.tsx`。
 - 版本号以 `package.json` 为准，只用 `pnpm version patch|minor|major` 修改。未获明确授权，不推送、不建 PR、不推分支。
 
 ## 关键实现决定
