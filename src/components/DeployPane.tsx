@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import { FullscreenButton } from "./FullscreenButton";
+import { LogResizeHandle, readStoredLogHeight, writeStoredLogHeight } from "./LogResizeHandle";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -22,6 +23,14 @@ import {
 
 const HEAD_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
+
+/** 日志区高度按工作目录记；上下限在拖动时再受面板高度约束 */
+const LOG_HEIGHT_KEY = "codedock.deployLogHeight.";
+const DEFAULT_LOG_HEIGHT = 280;
+const MIN_LOG_HEIGHT = 80;
+const MAX_LOG_HEIGHT = 600;
+/** 拖到最高时，上面的配置 / 阶段区至少留这么高 */
+const TOP_MIN_HEIGHT = 120;
 
 /** 主阶段顺序。Rollback 只在失败时出现，单独附加 */
 const STAGES: { id: string; label: string }[] = [
@@ -53,6 +62,7 @@ const emptyStages = (): Record<string, StageState> => ({});
  * Preflight → Build → Deploy → Verify 在本机跑一条流水线，实时看阶段进度与日志。
  *
  * 对齐本机的 local-cicd 技能：配置驱动、单机单环境、失败即停。产出落 `.local-cicd/`。
+ * 日志区高度可拖动，配置 / 阶段区随之上移或让出空间（高度按工作目录记住）。
  */
 export function DeployPane({
   root,
@@ -77,6 +87,21 @@ export function DeployPane({
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [error, setError] = useState("");
   const logRef = useRef<HTMLDivElement | null>(null);
+  /** 配置 + 阶段这一整块：拖日志高度时靠它算上限，保证上面不被挤没 */
+  const topRef = useRef<HTMLDivElement | null>(null);
+  /** 日志区高度，可按工作目录记住 */
+  const [logHeight, setLogHeight] = useState(() =>
+    readStoredLogHeight(LOG_HEIGHT_KEY + root, MIN_LOG_HEIGHT, MAX_LOG_HEIGHT, DEFAULT_LOG_HEIGHT),
+  );
+
+  /** 拖动上限：日志长高的同时上面那块变矮，所以按两者当前高度现算 */
+  const maxLogHeight = () => {
+    const top = topRef.current?.clientHeight ?? 0;
+    return Math.min(
+      MAX_LOG_HEIGHT,
+      logHeight + Math.max(0, top - TOP_MIN_HEIGHT),
+    );
+  };
   /** AI 辅助：生效的模型配置 + 当前在跑哪一项（空串表示没跑） */
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
   const [aiBusy, setAiBusy] = useState<"" | "config" | "diagnose">("");
@@ -113,6 +138,9 @@ export function DeployPane({
     setLogs([]);
     setError("");
     setConfigMsg("");
+    setLogHeight(
+      readStoredLogHeight(LOG_HEIGHT_KEY + root, MIN_LOG_HEIGHT, MAX_LOG_HEIGHT, DEFAULT_LOG_HEIGHT),
+    );
     void load();
   }, [load]);
 
@@ -324,95 +352,112 @@ export function DeployPane({
         </div>
       )}
 
-      {/* 配置区：直接编辑 YAML 源，保存回项目根 .local-cicd.yaml */}
-      <div className="shrink-0 border-b border-line">
-        <button
-          type="button"
-          onClick={() => setConfigOpen((open) => !open)}
-          className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
-        >
-          {configOpen ? (
-            <IconChevronDown className="h-3 w-3" />
-          ) : (
-            <IconChevronRight className="h-3 w-3" />
-          )}
-          <span>配置</span>
-          {dirty && <span className="text-warn">·未保存</span>}
-          <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
-            {config?.exists === false ? "（尚未创建）" : ""}
-          </span>
-        </button>
-        {configOpen && (
-          <div className="px-3 pb-2">
-            <textarea
-              value={yaml}
-              onChange={(event) => {
-                setYaml(event.target.value);
-                setDirty(true);
-                setConfigMsg("");
-              }}
-              spellCheck={false}
-              placeholder=".local-cicd.yaml 内容"
-              className="h-52 w-full resize-y rounded border border-line-strong bg-surface p-2 font-mono text-[11px] leading-relaxed text-fg outline-none placeholder:text-fg-faint focus:border-accent"
-            />
-            <div className="mt-2 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => void save()}
-                disabled={!dirty}
-                className="h-6 rounded bg-accent px-2 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-50"
-              >
-                保存
-              </button>
-              <button
-                type="button"
-                onClick={() => void detect()}
-                className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
-              >
-                按项目探测
-              </button>
-              <button
-                type="button"
-                onClick={() => void suggestConfig()}
-                disabled={!aiReady || aiBusy !== ""}
-                title={aiReady ? "让大模型按项目标记起草配置" : "先在「设置 → 智能体 → 模型提供商」里配置"}
-                className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
-              >
-                {aiBusy === "config" ? "生成中…" : "AI 生成配置"}
-              </button>
-              <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                {configMsg}
-              </span>
+      {/* 配置 + 阶段：日志拖高时这块让出空间，内容多了自己滚 */}
+      <div ref={topRef} className="min-h-0 flex-1 overflow-auto">
+        {/* 配置区：直接编辑 YAML 源，保存回项目根 .local-cicd.yaml */}
+        <div className="shrink-0 border-b border-line">
+          <button
+            type="button"
+            onClick={() => setConfigOpen((open) => !open)}
+            className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
+          >
+            {configOpen ? (
+              <IconChevronDown className="h-3 w-3" />
+            ) : (
+              <IconChevronRight className="h-3 w-3" />
+            )}
+            <span>配置</span>
+            {dirty && <span className="text-warn">·未保存</span>}
+            <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
+              {config?.exists === false ? "（尚未创建）" : ""}
+            </span>
+          </button>
+          {configOpen && (
+            <div className="px-3 pb-2">
+              <textarea
+                value={yaml}
+                onChange={(event) => {
+                  setYaml(event.target.value);
+                  setDirty(true);
+                  setConfigMsg("");
+                }}
+                spellCheck={false}
+                placeholder=".local-cicd.yaml 内容"
+                className="h-52 w-full resize-y rounded border border-line-strong bg-surface p-2 font-mono text-[11px] leading-relaxed text-fg outline-none placeholder:text-fg-faint focus:border-accent"
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void save()}
+                  disabled={!dirty}
+                  className="h-6 rounded bg-accent px-2 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-50"
+                >
+                  保存
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void detect()}
+                  className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
+                >
+                  按项目探测
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void suggestConfig()}
+                  disabled={!aiReady || aiBusy !== ""}
+                  title={aiReady ? "让大模型按项目标记起草配置" : "先在「设置 → 智能体 → 模型提供商」里配置"}
+                  className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
+                >
+                  {aiBusy === "config" ? "生成中…" : "AI 生成配置"}
+                </button>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
+                  {configMsg}
+                </span>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* 阶段进度 */}
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
+          {stageList.map((stage) => {
+            const state = stages[stage.id];
+            const stageStatus = state?.status ?? "pending";
+            return (
+              <div
+                key={stage.id}
+                className={`flex items-center gap-1.5 rounded px-2 py-1 text-[11px] ${stageBox(stageStatus)}`}
+                title={state?.command ?? ""}
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${stageDot(stageStatus)}`} />
+                <span>{stage.label}</span>
+                {stageStatus === "ok" && state?.durationMs != null && (
+                  <span className="text-fg-faint">{state.durationMs}ms</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
-      {/* 阶段进度 */}
-      <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
-        {stageList.map((stage) => {
-          const state = stages[stage.id];
-          const stageStatus = state?.status ?? "pending";
-          return (
-            <div
-              key={stage.id}
-              className={`flex items-center gap-1.5 rounded px-2 py-1 text-[11px] ${stageBox(stageStatus)}`}
-              title={state?.command ?? ""}
-            >
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${stageDot(stageStatus)}`} />
-              <span>{stage.label}</span>
-              {stageStatus === "ok" && state?.durationMs != null && (
-                <span className="text-fg-faint">{state.durationMs}ms</span>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      {/* 日志区高度可拖：条在日志上方，往上拖就是把日志拉高 */}
+      <LogResizeHandle
+        height={logHeight}
+        min={MIN_LOG_HEIGHT}
+        max={maxLogHeight}
+        onChange={setLogHeight}
+        onCommit={(height) => writeStoredLogHeight(LOG_HEIGHT_KEY + root, height)}
+        onReset={() => {
+          setLogHeight(DEFAULT_LOG_HEIGHT);
+          writeStoredLogHeight(LOG_HEIGHT_KEY + root, DEFAULT_LOG_HEIGHT);
+        }}
+      />
 
       {/* 日志 */}
       <div
         ref={logRef}
-        className="min-h-0 flex-1 overflow-auto bg-app px-3 py-2 font-mono text-[11px] leading-relaxed"
+        className="min-h-0 shrink-0 overflow-auto bg-app px-3 py-2 font-mono text-[11px] leading-relaxed"
+        style={{ height: logHeight }}
       >
         {logs.length === 0 ? (
           <p className="text-fg-faint">

@@ -26,6 +26,7 @@ import {
 import { enabledModels, enabledProviders, resolveDefaultModel } from "../lib/providers";
 import { useSettings } from "../lib/settings";
 import type { AgentConversation } from "../lib/types";
+import { LogResizeHandle, readStoredLogHeight, writeStoredLogHeight } from "./LogResizeHandle";
 import {
   detectPreview,
   onPreviewExit,
@@ -47,6 +48,14 @@ const KIND_LABEL: Record<string, string> = {
   tauri: "Tauri 桌面",
   unknown: "未知",
 };
+
+/** 日志区高度按工作目录记；上下限在拖动时再受面板高度约束 */
+const LOG_HEIGHT_KEY = "codedock.previewLogHeight.";
+const DEFAULT_LOG_HEIGHT = 224;
+const MIN_LOG_HEIGHT = 80;
+const MAX_LOG_HEIGHT = 600;
+/** 拖到最高时，上面的预览内容至少留这么高 */
+const PREVIEW_MIN_HEIGHT = 120;
 
 /**
  * 把一轮对话压成日志行：助手正文原样铺开，工具调用收成一行 `▸ 名字 · 摘要`。
@@ -82,8 +91,8 @@ function transcriptLines(conversation: AgentConversation): string[] {
  * 和「浏览器」模块的分工：浏览器是手动填地址的通用窗口，这里是按项目自动起进程。
  *
  * 结构对齐「部署」模块：头部主操作 + 可折叠常驻配置区 + 独立错误条（失败可 AI 诊断）+
- * 日志区自动滚到底。差别在于中间留了一块 flex-1 的预览内容（iframe / 提示），
- * 所以日志区不占满剩余、仍做成底部折叠。
+ * 日志区自动滚到底。中间留了一块 flex-1 的预览内容（iframe / 提示），
+ * 所以日志区做成底部折叠、高度可拖动（上限受面板高度和预览区最小高度约束）。
  */
 export function PreviewPane({
   root,
@@ -127,6 +136,21 @@ export function PreviewPane({
    */
   const lastLogRef = useRef<{ command: string; logs: string[] }>({ command: "", logs: [] });
   const logRef = useRef<HTMLDivElement | null>(null);
+  /** 预览内容区：拖日志高度时靠它算「还能长多高」，保证上面不被挤没 */
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  /** 日志区（含标题行）高度，可按工作目录记住 */
+  const [logHeight, setLogHeight] = useState(() =>
+    readStoredLogHeight(LOG_HEIGHT_KEY + root, MIN_LOG_HEIGHT, MAX_LOG_HEIGHT, DEFAULT_LOG_HEIGHT),
+  );
+
+  /** 拖动上限：日志长高的同时预览区变矮，所以按两者当前高度现算 */
+  const maxLogHeight = () => {
+    const preview = previewRef.current?.clientHeight ?? 0;
+    return Math.min(
+      MAX_LOG_HEIGHT,
+      logHeight + Math.max(0, preview - PREVIEW_MIN_HEIGHT),
+    );
+  };
 
   /** 喂给 opencode 的提供商，和终端区智能体共用「设置 → 智能体」那一份 */
   const providers = useMemo(
@@ -164,6 +188,9 @@ export function PreviewPane({
     setConversation(EMPTY_CONVERSATION);
     sessionIdRef.current = null;
     lastLogRef.current = { command: "", logs: [] };
+    setLogHeight(
+      readStoredLogHeight(LOG_HEIGHT_KEY + root, MIN_LOG_HEIGHT, MAX_LOG_HEIGHT, DEFAULT_LOG_HEIGHT),
+    );
     void runDetect();
   }, [runDetect]);
 
@@ -499,7 +526,7 @@ export function PreviewPane({
         )}
       </div>
 
-      <div className="relative min-h-0 flex-1">
+      <div ref={previewRef} className="relative min-h-0 flex-1">
         {running && url ? (
           // 页面多半按白底设计，深色主题下不给白底会透出面板色
           <iframe
@@ -541,11 +568,29 @@ export function PreviewPane({
         )}
       </div>
 
-      <div className="shrink-0 border-t border-line">
+      {/* 日志区高度可拖：条在日志上方，往上拖就是把日志拉高；收起日志时不画 */}
+      {showLogs && (
+        <LogResizeHandle
+          height={logHeight}
+          min={MIN_LOG_HEIGHT}
+          max={maxLogHeight}
+          onChange={setLogHeight}
+          onCommit={(height) => writeStoredLogHeight(LOG_HEIGHT_KEY + root, height)}
+          onReset={() => {
+            setLogHeight(DEFAULT_LOG_HEIGHT);
+            writeStoredLogHeight(LOG_HEIGHT_KEY + root, DEFAULT_LOG_HEIGHT);
+          }}
+        />
+      )}
+
+      <div
+        className="flex min-h-0 shrink-0 flex-col border-t border-line"
+        style={showLogs ? { height: logHeight } : undefined}
+      >
         <button
           type="button"
           onClick={() => setShowLogs((show) => !show)}
-          className="flex h-7 w-full items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
+          className="flex h-7 w-full shrink-0 items-center gap-1 px-3 text-[11px] text-fg-dim hover:bg-hover"
         >
           {showLogs ? (
             <IconChevronDown className="h-3 w-3" />
@@ -555,7 +600,10 @@ export function PreviewPane({
           日志{logs.length > 0 ? `（${logs.length}）` : ""}
         </button>
         {showLogs && (
-          <div ref={logRef} className="max-h-56 overflow-auto bg-app px-3 py-2 text-[11px] leading-relaxed">
+          <div
+            ref={logRef}
+            className="min-h-0 flex-1 overflow-auto bg-app px-3 py-2 text-[11px] leading-relaxed"
+          >
             {agentLines.length > 0 && (
               <div className="mb-2">
                 <div className="mb-0.5 font-mono text-[10px] tracking-wide text-fg-faint">
