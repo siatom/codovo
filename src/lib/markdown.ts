@@ -1,5 +1,11 @@
 import DOMPurify from "dompurify";
-import { Marked } from "marked";
+import {
+  Marked,
+  Renderer,
+  type RendererThis,
+  type Token,
+  type Tokens,
+} from "marked";
 import markedKatex from "marked-katex-extension";
 
 /**
@@ -12,7 +18,31 @@ import markedKatex from "marked-katex-extension";
  * 但 `throwOnError: false` 会把它原样留下来，不至于把整篇预览搞崩。
  */
 const md = new Marked({ async: false, gfm: true });
-md.use(markedKatex({ throwOnError: false, nonStandard: true }));
+
+/**
+ * 行号锚点要覆盖 KaTeX 的块级公式：它走 marked 的扩展渲染器，不经过 SourceLineRenderer。
+ * 这里包一层扩展渲染器，从本次渲染的活动行号表里取公式块自己的起始行。
+ * 渲染是同步的，activeSourceLines 不会在两个 parse 之间交错；普通预览时它是 null，等于不处理。
+ */
+let activeSourceLines: SourceLineMap | null = null;
+const katexExtension = markedKatex({ throwOnError: false, nonStandard: true });
+md.use({
+  ...katexExtension,
+  extensions: katexExtension.extensions?.map((extension) => {
+    const render = "renderer" in extension ? extension.renderer : null;
+    if (!render) return extension;
+    return {
+      ...extension,
+      renderer(this: RendererThis, token: Tokens.Generic) {
+        const html = render.call(this, token);
+        // 扩展渲染器允许返回 false / undefined 表示「交回默认渲染」，只处理真正的 HTML
+        return typeof html === "string"
+          ? withLine(html, activeSourceLines?.get(token))
+          : html;
+      },
+    };
+  }),
+});
 
 /**
  * 正文的净化规则。markdown 里允许写 HTML，但内容可能来自 clone 下来的仓库，
@@ -29,6 +59,107 @@ const SANITIZE_OPTIONS = {
 
 function sanitize(html: string): string {
   return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
+}
+
+/** 顶层块 token -> 源码里的起始行号；只给 markdown 对照滚动同步用 */
+type SourceLineMap = WeakMap<object, number>;
+
+interface RenderOptions {
+  /**
+   * 给每个顶层块打上 `data-src-line`，供对照模式按内容块同步滚动。
+   * 默认不开：智能体气泡、解读弹窗这些地方用不上，省一次 token 遍历。
+   */
+  sourceLines?: boolean;
+}
+
+function newlineCount(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text.charCodeAt(i) === 10) count += 1;
+  }
+  return count;
+}
+
+/**
+ * 给顶层 token 标源码行号。marked 的 token 不带位置，但顶层 token 的 `raw`
+ * 按顺序拼起来就是原文，所以从上一个 token 的结尾往后找 `raw`，顺便累计换行数。
+ * 找不到（极少见的自定义 token）就不推进游标，宁可少一个锚点，也不把行号算飞。
+ */
+function annotateTokens(tokens: Token[], text: string, baseLine: number): SourceLineMap {
+  const map: SourceLineMap = new WeakMap();
+  let cursor = 0;
+  let line = baseLine;
+  for (const token of tokens) {
+    const raw = typeof token.raw === "string" ? token.raw : "";
+    if (raw) {
+      const found = text.indexOf(raw, cursor);
+      if (found > cursor) {
+        line += newlineCount(text.slice(cursor, found));
+        cursor = found;
+      }
+    }
+    map.set(token, line);
+    line += newlineCount(raw);
+    cursor += raw.length;
+  }
+  return map;
+}
+
+/** 把 data-src-line 插进渲染出的第一个开始标签里，保留 Renderer 原有的结构 */
+function withLine(html: string, line: number | undefined): string {
+  if (!line) return html;
+  const match = /^(\s*<[A-Za-z][^\s/>]*)/.exec(html);
+  if (!match) return html;
+  return `${html.slice(0, match[0].length)} data-src-line="${line}"${html.slice(match[0].length)}`;
+}
+
+/**
+ * 只在对照预览里用的 Renderer：给顶层块补行号锚点。
+ * 嵌套块（引用 / 列表里的段落）不在 lineMap 里，走父级锚点，避免锚点过密。
+ */
+class SourceLineRenderer extends Renderer {
+  private readonly lines: SourceLineMap;
+
+  constructor(lines: SourceLineMap) {
+    super();
+    this.lines = lines;
+  }
+
+  private mark(token: object, html: string): string {
+    return withLine(html, this.lines.get(token));
+  }
+
+  heading(token: Tokens.Heading) {
+    return this.mark(token, super.heading(token));
+  }
+
+  paragraph(token: Tokens.Paragraph) {
+    return this.mark(token, super.paragraph(token));
+  }
+
+  blockquote(token: Tokens.Blockquote) {
+    return this.mark(token, super.blockquote(token));
+  }
+
+  list(token: Tokens.List) {
+    return this.mark(token, super.list(token));
+  }
+
+  table(token: Tokens.Table) {
+    return this.mark(token, super.table(token));
+  }
+
+  code(token: Tokens.Code) {
+    return this.mark(token, super.code(token));
+  }
+
+  hr(token: Tokens.Hr) {
+    return this.mark(token, super.hr(token));
+  }
+
+  html(token: Tokens.HTML | Tokens.Tag) {
+    return this.mark(token, super.html(token));
+  }
 }
 
 /** frontmatter 的开 / 闭分隔行：独占一行的 `---`（允许行尾空白） */
@@ -260,7 +391,9 @@ function renderNode(node: FmNode): string {
  * 否则整篇按普通 markdown 处理——绝不吃掉正文，也避免把「两条水平线夹一段话」
  * 误判成 frontmatter（智能体回复、普通文本都可能长这样）。
  */
-function extractFrontmatter(text: string): { nodes: FmNode[]; body: string } | null {
+function extractFrontmatter(
+  text: string,
+): { nodes: FmNode[]; body: string; bodyLine: number } | null {
   const lines = text.split(/\r?\n/);
   if (lines.length === 0 || !FM_FENCE.test(lines[0])) return null;
   let close = -1;
@@ -273,7 +406,8 @@ function extractFrontmatter(text: string): { nodes: FmNode[]; body: string } | n
   if (close === -1) return null;
   const nodes = parseYamlBlock(lines.slice(1, close));
   if (!nodes || nodes.length === 0) return null;
-  return { nodes, body: lines.slice(close + 1).join("\n") };
+  // body 从闭合 `---` 的下一行开始；行号是 1-based，所以是下标 close + 2
+  return { nodes, body: lines.slice(close + 1).join("\n"), bodyLine: close + 2 };
 }
 
 /**
@@ -285,10 +419,27 @@ function extractFrontmatter(text: string): { nodes: FmNode[]; body: string } | n
  * <hr>、YAML 行被当成段落，糊成一大片裸文本。这里自己解析、自己转义，最后整块再
  * 过一遍 sanitize（前端不再有第二次净化机会，所以不能省）。
  */
-export function renderMarkdown(text: string): string {
+export function renderMarkdown(text: string, options: RenderOptions = {}): string {
   const fm = extractFrontmatter(text);
-  if (!fm) return sanitize(md.parse(text) as string);
-  const block = `<div class="md-frontmatter">${fm.nodes.map(renderNode).join("")}</div>`;
-  const bodyHtml = md.parse(fm.body) as string;
+  const body = fm ? fm.body : text;
+  const baseLine = fm ? fm.bodyLine : 1;
+
+  let bodyHtml: string;
+  if (options.sourceLines) {
+    const tokens = md.lexer(body);
+    const lineOf = annotateTokens(tokens, body, baseLine);
+    activeSourceLines = lineOf;
+    try {
+      bodyHtml = md.parser(tokens, { ...md.defaults, renderer: new SourceLineRenderer(lineOf) });
+    } finally {
+      activeSourceLines = null;
+    }
+  } else {
+    bodyHtml = md.parse(body) as string;
+  }
+
+  if (!fm) return sanitize(bodyHtml);
+  const attr = options.sourceLines ? ' data-src-line="1"' : "";
+  const block = `<div class="md-frontmatter"${attr}>${fm.nodes.map(renderNode).join("")}</div>`;
   return sanitize(block + bodyHtml);
 }

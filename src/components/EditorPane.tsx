@@ -66,6 +66,64 @@ const MARKDOWN_MODES = [
   { id: "split", label: "对照" },
 ] as const;
 type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
+
+/** 预览里的内容块锚点：源码行号 + 在滚动内容里的纵向位置 */
+interface PreviewAnchor {
+  line: number;
+  top: number;
+}
+
+/** 读预览里带 data-src-line 的顶层块。只认直接子节点，避免用户手写 HTML 里的同名属性搅局 */
+function readPreviewAnchors(scroller: HTMLElement): PreviewAnchor[] {
+  const base = scroller.getBoundingClientRect().top - scroller.scrollTop;
+  const anchors: PreviewAnchor[] = [];
+  for (const node of scroller.children) {
+    if (!(node instanceof HTMLElement)) continue;
+    const line = Number(node.dataset.srcLine);
+    if (!Number.isFinite(line) || line <= 0) continue;
+    anchors.push({ line, top: node.getBoundingClientRect().top - base });
+  }
+  return anchors;
+}
+
+/** 0..1 的进度，除数为 0 时按块首处理 */
+function progress(value: number, from: number, to: number): number {
+  if (to <= from) return 0;
+  return Math.min(1, Math.max(0, (value - from) / (to - from)));
+}
+
+/** 编辑器顶行 -> 预览里对应块的位置 */
+function scrollPreviewToEditor(
+  scroller: HTMLElement,
+  anchors: PreviewAnchor[],
+  line: number,
+): void {
+  if (anchors.length === 0) return;
+  let index = 0;
+  while (index + 1 < anchors.length && anchors[index + 1].line <= line) index += 1;
+  const anchor = anchors[index];
+  const next = anchors[index + 1];
+  // 块内按行数插值，长段落滚动时不会一直卡在块首
+  const t = next ? progress(line, anchor.line, next.line) : 0;
+  const top = next ? anchor.top + (next.top - anchor.top) * t : anchor.top;
+  scroller.scrollTop = Math.max(0, top - 8);
+}
+
+/** 预览滚动位置 -> 编辑器对应行 */
+function scrollEditorToPreview(
+  editor: monaco.editor.IStandaloneCodeEditor,
+  anchors: PreviewAnchor[],
+  scrollTop: number,
+): void {
+  if (anchors.length === 0) return;
+  let index = 0;
+  while (index + 1 < anchors.length && anchors[index + 1].top <= scrollTop) index += 1;
+  const anchor = anchors[index];
+  const next = anchors[index + 1];
+  const t = next ? progress(scrollTop, anchor.top, next.top) : 0;
+  const line = Math.round(anchor.line + (next ? (next.line - anchor.line) * t : 0));
+  editor.setScrollTop(Math.max(0, editor.getTopForLineNumber(Math.max(1, line)) - 8));
+}
 const TABS_MENU_ITEM =
   "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
 
@@ -1732,6 +1790,14 @@ export function EditorPane({
    * onDidChangeContent，防抖后再重渲染右侧（大文件渲染有点成本，别每敲一下算一遍）。
    */
   const [splitHtml, setSplitHtml] = useState("");
+  /** 对照模式右侧的滚动容器外壳，同步滚动时从这里找 .markdown-body */
+  const splitPreviewRef = useRef<HTMLDivElement>(null);
+  /** 预览里的块锚点；每次同步前重读，图片 / 字体加载后的高度变化也能跟上 */
+  const splitAnchorsRef = useRef<PreviewAnchor[]>([]);
+  /** 防止「同步预览 -> 预览滚动 -> 又同步编辑器」的回环 */
+  const syncGuardRef = useRef<"editor" | "preview" | null>(null);
+  const syncGuardTimerRef = useRef<number | undefined>(undefined);
+
   useEffect(() => {
     if (!isSplitPreview || activeKey === null) {
       // 退出分屏 / 换标签时清掉，免得下次进入先闪一帧上一个文件的内容
@@ -1744,18 +1810,82 @@ export function EditorPane({
       return;
     }
     // 进入分屏先同步渲染一次，右侧不留空白
-    setSplitHtml(renderMarkdown(model.getValue()));
+    setSplitHtml(renderMarkdown(model.getValue(), { sourceLines: true }));
     let timer: number | undefined;
     const sub = model.onDidChangeContent(() => {
       // 手一直不停就一直往后推，停下来才重渲染
       window.clearTimeout(timer);
-      timer = window.setTimeout(() => setSplitHtml(renderMarkdown(model.getValue())), 200);
+      timer = window.setTimeout(
+        () => setSplitHtml(renderMarkdown(model.getValue(), { sourceLines: true })),
+        200,
+      );
     });
     return () => {
       sub.dispose();
       window.clearTimeout(timer);
     };
   }, [isSplitPreview, activeKey]);
+
+  /**
+   * 对照模式的滚动同步：顶部先按块锚点对齐，块内再按行数插值。
+   * 只监听真正可见的那一侧的用户滚动，程序化滚动用 syncGuard 吃掉回声。
+   */
+  useEffect(() => {
+    if (!isSplitPreview) {
+      splitAnchorsRef.current = [];
+      return;
+    }
+    const editor = editorRef.current;
+    const scroller =
+      splitPreviewRef.current?.querySelector<HTMLElement>(".markdown-body") ?? null;
+    if (!editor || !scroller) return;
+
+    let frame = 0;
+    const readAnchors = () => {
+      splitAnchorsRef.current = readPreviewAnchors(scroller);
+    };
+    const holdGuard = (side: "editor" | "preview") => {
+      syncGuardRef.current = side;
+      window.clearTimeout(syncGuardTimerRef.current);
+      syncGuardTimerRef.current = window.setTimeout(() => {
+        syncGuardRef.current = null;
+      }, 120);
+    };
+    const fromEditor = () => {
+      if (syncGuardRef.current === "preview") return;
+      readAnchors();
+      holdGuard("editor");
+      const line = editor.getVisibleRanges()[0]?.startLineNumber ?? 1;
+      scrollPreviewToEditor(scroller, splitAnchorsRef.current, line);
+    };
+    const fromPreview = () => {
+      if (syncGuardRef.current === "editor") return;
+      // 图片 / 字体加载后块高度会变，滚动时重读一次，别拿过期位置对齐
+      readAnchors();
+      holdGuard("preview");
+      scrollEditorToPreview(editor, splitAnchorsRef.current, scroller.scrollTop);
+    };
+    const schedule = (run: () => void) => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(run);
+    };
+
+    readAnchors();
+    // 刚进对照 / 内容刚重渲染：先把预览对齐到编辑器当前位置
+    fromEditor();
+
+    const editorSub = editor.onDidScrollChange(() => schedule(fromEditor));
+    const onScroll = () => schedule(fromPreview);
+    scroller.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      editorSub.dispose();
+      scroller.removeEventListener("scroll", onScroll);
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(syncGuardTimerRef.current);
+      syncGuardRef.current = null;
+    };
+  }, [isSplitPreview, splitHtml]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
   // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；工作区从后台切回来时同理。
@@ -2164,8 +2294,9 @@ export function EditorPane({
             />
           }
           second={
-            // 右侧渲染预览。MarkdownPreview 是 absolute inset-0，得给它一个定位父级
-            <div className="relative h-full w-full">
+            // 右侧渲染预览。MarkdownPreview 是 absolute inset-0，得给它一个定位父级；
+            // 滚动同步通过这个外壳找到里面真正的滚动容器
+            <div ref={splitPreviewRef} className="relative h-full w-full">
               {isSplitPreview && <MarkdownPreview html={splitHtml} />}
             </div>
           }
