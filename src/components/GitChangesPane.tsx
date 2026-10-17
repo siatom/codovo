@@ -46,6 +46,7 @@ import {
   gitUnpushed,
   gitWorktreeList,
   gitWorktreePrune,
+  gitWorktreeStatus,
   pathKey,
   toDisplayPath,
 } from "../lib/fs";
@@ -83,6 +84,7 @@ import type {
   GitStatusPayload,
   HunkAction,
   WorktreeInfo,
+  WorktreeStatus,
 } from "../lib/types";
 import { graphTextInset, LANE_W, layoutGraph, type GraphRow } from "../lib/gitGraph";
 import { GitMarkBadge, GitMarkDot } from "./GitMarkBadge";
@@ -268,6 +270,30 @@ function readLogHeight(root: string): number {
     // 读不到就用默认值
   }
   return DEFAULT_LOG_HEIGHT;
+}
+
+/**
+ * 工作树概览的折叠状态，同样按 root 存 sessionStorage。默认展开——多工作树仓库里它是
+ * 这块面板的主导航，收起来才需要用户主动点。
+ */
+const WT_COLLAPSED_KEY = "codedock.worktreeOverviewCollapsed.";
+
+/**
+ * 工作树概览的后台重拉间隔。
+ *
+ * 明显慢于 status 轮询（2 秒）：这个命令要**逐棵**跑一次 git status，成本随工作树数翻倍，
+ * 跟着 2 秒跑等于把每个工作树都按主工作区的频率轮询。10 秒足够让「别的 worktree 有没有
+ * 新改动」跟得上，又不会把 CPU 白烧在后台。
+ */
+const WT_POLL_MS = 10000;
+
+function readWtCollapsed(root: string): boolean {
+  try {
+    return window.sessionStorage.getItem(WT_COLLAPSED_KEY + root) === "1";
+  } catch {
+    // 读不到就用默认（展开），不影响使用
+    return false;
+  }
 }
 
 const VIEW_KEY = "codedock.gitChangesView.";
@@ -1588,6 +1614,154 @@ function TagDialog({
 }
 
 /**
+ * 工作树概览里的一行：工作树名 + 它检出的分支 + 状态。
+ *
+ * 两行排布而不是挤一行：右栏通常只有两三百像素宽，工作树名、分支、状态三样塞一行会
+ * 各自被截得很短，反而看不出哪个脏、在哪个分支上。名称那一行右侧只放**要立刻看到**
+ * 的状态（变更数 / 合并中 / 失效），分支与领先落后放第二行的淡色小字。
+ */
+function WorktreeRow({
+  worktree,
+  status,
+  onPick,
+}: {
+  worktree: WorktreeInfo;
+  /** 这棵工作树的动态状态；null = 还没拉到（或这棵算不出状态） */
+  status: WorktreeStatus | null;
+  onPick: (target: WorktreeInfo) => void;
+}) {
+  const broken = worktree.prunable || !worktree.exists;
+  const branch = worktree.bare
+    ? "bare"
+    : worktree.detached
+      ? "游离 HEAD"
+      : (worktree.branch ?? "游离 HEAD");
+  const changed = status?.changed ?? null;
+  const merging = status?.merging ?? false;
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(worktree)}
+      // 失效记录切不过去（目录都没了），点了只会白跑一次命令
+      disabled={broken}
+      title={toDisplayPath(worktree.path)}
+      className={`flex w-full flex-col gap-0.5 rounded px-2 py-1 text-left ${
+        worktree.current ? "bg-selected" : "hover:bg-hover"
+      } disabled:opacity-60 disabled:hover:bg-transparent`}
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        {/* 当前这棵用一个实心点标出来：底色之外再给个不依赖颜色的记号 */}
+        <span
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            worktree.current ? "bg-accent" : "bg-line-strong"
+          }`}
+        />
+        <span className="min-w-0 flex-1 truncate text-[12px] text-fg-muted">{worktree.name}</span>
+        {broken ? (
+          <span className="shrink-0 text-[10px] text-danger">已失效</span>
+        ) : merging ? (
+          <span className="shrink-0 text-[10px] text-warn">合并中</span>
+        ) : changed !== null && changed > 0 ? (
+          <span className="shrink-0 text-[10px] text-fg-muted">{changed} 变更</span>
+        ) : changed === 0 ? (
+          <span className="shrink-0 text-[10px] text-fg-faint">干净</span>
+        ) : null}
+        {worktree.locked && <span className="shrink-0 text-[10px] text-warn">已锁定</span>}
+      </span>
+      <span className="flex min-w-0 items-center gap-1.5 pl-3 text-[10px] text-fg-faint">
+        <span className="min-w-0 truncate">{branch}</span>
+        {/* 领先 / 落后上游：和头部那对 ↑↓ 一个口径，方便一眼找出「有未推送提交」的工作树 */}
+        {status && status.ahead > 0 && <span className="shrink-0 text-accent">↑{status.ahead}</span>}
+        {status && status.behind > 0 && <span className="shrink-0">↓{status.behind}</span>}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * 「工作树概览」：变更面板顶部的一段常驻导航。
+ *
+ * 以**工作树为工作空间**：一眼看清仓库有哪几个并行任务（每个工作树一棵）、各自检出在
+ * 哪个分支、有没有未提交 / 未推送的改动、哪棵失效了。点一行就把面板切过去看那棵——只换
+ * 变更面板的数据源，终端 / 编辑器 / 文件树都不动（见 WorkspacePane 的 wtMap）。
+ *
+ * 只在有多个工作树（或面板切到了别的、需要切回来）时才渲染，单工作树仓库完全不占位置。
+ */
+function WorktreeOverview({
+  worktrees,
+  statuses,
+  currentName,
+  busy,
+  collapsed,
+  onToggleCollapsed,
+  onPick,
+  onPrune,
+}: {
+  worktrees: readonly WorktreeInfo[];
+  statuses: ReadonlyMap<string, WorktreeStatus> | null;
+  /** 当前面板所在工作树的名字；收起时也要看得见自己在哪 */
+  currentName: string | null;
+  busy: boolean;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  onPick: (target: WorktreeInfo) => void;
+  onPrune: () => void;
+}) {
+  const hasPrunable = worktrees.some((item) => item.prunable || !item.exists);
+  return (
+    <div className="flex shrink-0 flex-col border-b border-line">
+      {/* 标题行：左边收起 / 展开，右边清理失效记录（照时间线标题栏那一套）。
+          不能再整行做成一个 button——里面套 button 是非法的 */}
+      <div className="flex h-7 w-full shrink-0 items-center gap-1 px-3 text-[11px] font-medium tracking-wide text-fg-dim">
+        <button
+          type="button"
+          onClick={onToggleCollapsed}
+          title={collapsed ? "展开工作树概览" : "收起工作树概览"}
+          className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-fg"
+        >
+          {collapsed ? (
+            <IconChevronRight className="h-3 w-3 shrink-0" />
+          ) : (
+            <IconChevronDown className="h-3 w-3 shrink-0" />
+          )}
+          <span className="shrink-0 whitespace-nowrap">工作树</span>
+          <span className="shrink-0 text-fg-faint">{worktrees.length}</span>
+          {/* 收起时把当前工作树名带出来，否则收起后就不知道自己在哪棵树上了 */}
+          {collapsed && currentName && (
+            <span className="min-w-0 truncate text-fg-faint">· {currentName}</span>
+          )}
+        </button>
+        {hasPrunable && (
+          <button
+            type="button"
+            onClick={onPrune}
+            disabled={busy}
+            title="清理目录已不存在的 worktree 记录（git worktree prune）"
+            className={GROUP_ICON}
+          >
+            <IconTrash className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+      {!collapsed && (
+        // 限高 + 自己滚动：工作树多的时候别把下面的提交框 / 更改列表挤没
+        <ul className="flex max-h-72 flex-col gap-0.5 overflow-auto px-1 pb-1">
+          {worktrees.map((item) => (
+            <li key={item.path}>
+              <WorktreeRow
+                worktree={item}
+                status={statuses?.get(pathKey(item.path)) ?? null}
+                onPick={onPick}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
  * 改动列表 + 提交框 + 时间线，右栏「变更」模块的整屏内容。
  * 目录不是仓库时渲染空状态 + 「初始化 Git 仓库」按钮（见下面 `!snapshot.isRepo` 那段），
  * 不再整个不渲染——工具列表那边也不把这行置灰了。
@@ -1780,9 +1954,25 @@ export function GitChangesPane({
   /** 点了被别的 worktree 占用的分支：菜单里就地提示 + 给「切到该工作树」入口 */
   const [blocked, setBlocked] = useState<{ name: string; worktree: string } | null>(null);
 
-  // worktree 下拉：null = 还没拉到。列表只在仓库有这个仓库的多个工作树时才有意义
+  // worktree 概览：null = 还没拉到。列表只在仓库有多个工作树（或面板切到了别的
+  // 工作树、需要切回来）时才有意义
   const [worktrees, setWorktrees] = useState<WorktreeInfo[] | null>(null);
-  const [wtMenu, setWtMenu] = useState(false);
+  /**
+   * 概览的折叠状态，按**工作区根**存 sessionStorage（不是面板当前看的 root）。概览列的是
+   * 整个仓库的工作树，切换被查看的那棵不该跟着换折叠偏好——否则切到某棵曾在收起状态的
+   * 工作树时，概览会莫名其妙地收起来。
+   */
+  const [wtCollapsed, setWtCollapsed] = useState(() => readWtCollapsed(workspaceRoot));
+  /**
+   * 各工作树的轻量动态状态（脏 / 领先落后 / 进行中），按 pathKey 对齐。null = 还没拉到
+   * 或拉失败了。
+   *
+   * 和 `worktrees`（结构）分开：这份要逐棵跑 git status，成本高、拉得慢，用它自己的
+   * 慢节奏独立于 2 秒的状态轮询。
+   */
+  const [wtStatuses, setWtStatuses] = useState<ReadonlyMap<string, WorktreeStatus> | null>(null);
+  /** 每次动完 worktree（prune / 手动刷新）+1，用来重拉上面那份动态状态 */
+  const [worktreeRevision, setWorktreeRevision] = useState(0);
 
   /** 「更多」下拉：装不常用的改写历史 / 储藏操作，默认收成工具行末尾一个图标按钮 */
   const [moreMenu, setMoreMenu] = useState(false);
@@ -2173,7 +2363,6 @@ export function GitChangesPane({
     setBranchError(null);
     setNewBranch(null);
     setBlocked(null);
-    setWtMenu(false);
     setBranchMenu(true);
   }, []);
 
@@ -2233,8 +2422,8 @@ export function GitChangesPane({
    * 标题栏「刷新」：把整个面板重载一遍。
    *
    * 状态用 `refresh()` 立刻重拉（否则要等 2 秒轮询）；历史 / 储藏各自 +1，触发
-   * 它们下面的 effect 重拉；worktree 列表把它加进依赖里。用 ref 跳过首次挂载——
-   * 各 effect 挂载时本就会自己拉一次，不必重复。
+   * 它们下面的 effect 重拉；worktree 列表把它加进依赖里、动态状态靠 worktreeRevision
+   * 重拉。用 ref 跳过首次挂载——各 effect 挂载时本就会自己拉一次，不必重复。
    */
   const lastReload = useRef(reloadSignal);
   useEffect(() => {
@@ -2243,6 +2432,7 @@ export function GitChangesPane({
     refresh();
     setLogRevision((revision) => revision + 1);
     setStashRevision((revision) => revision + 1);
+    setWorktreeRevision((revision) => revision + 1);
   }, [reloadSignal, refresh]);
 
   /**
@@ -2291,10 +2481,41 @@ export function GitChangesPane({
     };
   }, [workspaceRoot, root, visible, moduleVisible, reloadSignal, snapshot]);
 
+  /**
+   * 拉各工作树的轻量动态状态（脏 / 领先落后 / 进行中）。
+   *
+   * 只在概览真的露在眼前、且仓库确实有多个工作树时才拉：这个命令要**逐棵**跑一次
+   * git status，成本随工作树数翻倍，比单根轮询重得多。节奏也慢（见 WT_POLL_MS），且
+   * **不依赖整个 `snapshot`**——它每 2 秒换对象，跟着跑就等于把每个工作树都按 2 秒
+   * 轮询一遍。这里只跟工作树数量、概览折叠、手动刷新和 prune 走。
+   *
+   * 失败当没有（`null`）：概览退化成只有结构信息（分支 / 失效），不弹全局错误。
+   */
+  const wtCount = worktrees?.length ?? 0;
+  useEffect(() => {
+    if (!visible || !moduleVisible || wtCollapsed || wtCount <= 1) return;
+    let cancelled = false;
+    const load = () => {
+      void gitWorktreeStatus(workspaceRoot)
+        .then((list) => {
+          if (cancelled) return;
+          setWtStatuses(new Map(list.map((item) => [pathKey(item.path), item])));
+        })
+        .catch(() => {
+          if (!cancelled) setWtStatuses(null);
+        });
+    };
+    load();
+    const timer = window.setInterval(load, WT_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [visible, moduleVisible, wtCollapsed, wtCount, workspaceRoot, reloadSignal, worktreeRevision]);
+
   /** 切到某个工作树。选当前这条等于恢复默认（也兜住列表里 current 被标错的情形） */
   const pickWorktree = useCallback(
     (target: WorktreeInfo) => {
-      setWtMenu(false);
       // 比较面板实际看的 root，而不是列表里那个 current：被外部删掉的 worktree 会因
       // 词法前缀被标成 current，拿它判断会直接 return、反而切不回去
       if (pathKey(target.path) === pathKey(root)) return;
@@ -2307,14 +2528,15 @@ export function GitChangesPane({
    * 清理失效的 worktree 记录（`git worktree prune`）。
    *
    * 目录被外部删掉又没 prune 时，那条记录会一直占着它检出的分支，主工作树和别的
-   * worktree 都切不过去。prune 跑完把新列表落地，顺带重拉分支（占用信息跟着更新）。
+   * worktree 都切不过去。prune 跑完把新列表落地，顺带重拉分支（占用信息跟着更新）
+   * 和工作树动态状态（失效那棵从概览里消失）。
    */
   const pruneWorktrees = useCallback(() => {
-    setWtMenu(false);
     void run("prune", async () => {
       const list = await gitWorktreePrune(workspaceRoot);
       setWorktrees(list);
       loadBranches();
+      setWorktreeRevision((revision) => revision + 1);
     });
   }, [run, workspaceRoot, loadBranches]);
 
@@ -2828,6 +3050,15 @@ export function GitChangesPane({
     setLogCollapsed(next);
     try {
       window.sessionStorage.setItem(LOG_COLLAPSED_KEY + root, next ? "1" : "0");
+    } catch {
+      // 记不住就按展开算，不影响使用
+    }
+  };
+
+  const setWtCollapsedPersisted = (next: boolean) => {
+    setWtCollapsed(next);
+    try {
+      window.sessionStorage.setItem(WT_COLLAPSED_KEY + workspaceRoot, next ? "1" : "0");
     } catch {
       // 记不住就按展开算，不影响使用
     }
@@ -3655,79 +3886,6 @@ export function GitChangesPane({
               </div>
             </>
           )}
-
-          {/* worktree 选择：只在仓库有多个工作树时出现，紧挨着分支名。
-              切它只换「变更」面板看的是哪个工作树，终端 / 编辑器 / 文件树都不动 */}
-          {wtList && currentWt && (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setBranchMenu(false);
-                  setWtMenu((open) => !open);
-                }}
-                disabled={busy !== null}
-                title={`当前工作树：${toDisplayPath(currentWt.path)}（点击切换）`}
-                className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40"
-              >
-                <IconWorktree className="h-3 w-3 shrink-0" />
-                <span className="min-w-0 truncate">{currentWt.name}</span>
-                <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
-              </button>
-
-              {wtMenu && (
-                <>
-                  <div className="fixed inset-0 z-30" onClick={() => setWtMenu(false)} />
-                  <div className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-64 max-w-full flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
-                    {wtList.map((item) => (
-                      <button
-                        key={item.path}
-                        type="button"
-                        onClick={() => pickWorktree(item)}
-                        disabled={item.current || !item.exists}
-                        title={
-                          item.prunable
-                            ? `${toDisplayPath(item.path)}（目录已不存在${item.pruneReason ? `：${item.pruneReason}` : ""}）`
-                            : item.locked
-                              ? `${toDisplayPath(item.path)}（已锁定${item.lockReason ? `：${item.lockReason}` : ""}）`
-                              : toDisplayPath(item.path)
-                        }
-                        className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
-                      >
-                        <span className="flex w-3 shrink-0 justify-center">
-                          {item.current && <IconCheck className="h-3 w-3 text-ok" />}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                        <span className="flex shrink-0 items-center gap-1 text-[10px] text-fg-faint">
-                          {item.prunable ? (
-                            <span className="text-danger">已失效</span>
-                          ) : item.bare ? (
-                            <span>bare</span>
-                          ) : (
-                            <span className="truncate">{item.branch ?? "游离 HEAD"}</span>
-                          )}
-                          {item.locked && <span className="text-warn">已锁定</span>}
-                        </span>
-                      </button>
-                    ))}
-                    {/* 失效记录占着分支、让别的 worktree 切不过去：给个清理入口 */}
-                    {hasPrunable && (
-                      <button
-                        type="button"
-                        onClick={pruneWorktrees}
-                        disabled={busy !== null}
-                        title="清理目录已不存在的 worktree 记录（git worktree prune）"
-                        className="mt-1 flex items-center gap-1.5 border-t border-line px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
-                      >
-                        <IconTrash className="h-3 w-3 shrink-0" />
-                        {busy === "prune" ? "正在清理…" : "清理失效记录"}
-                      </button>
-                    )}
-                  </div>
-                </>
-              )}
-            </>
-          )}
         </div>
 
         {/* 第二行：左边领先/落后，右边远程/视图按钮。
@@ -3988,6 +4146,21 @@ export function GitChangesPane({
         </div>
         </div>
       </header>
+
+      {/* 工作树概览：变更面板顶部的常驻导航（工作树 = 工作空间）。只在多工作树仓库、
+          或面板切到了别的工作树时出现，单工作树仓库完全不占位置 */}
+      {wtList && (
+        <WorktreeOverview
+          worktrees={wtList}
+          statuses={wtStatuses}
+          currentName={currentWt?.name ?? null}
+          busy={busy !== null}
+          collapsed={wtCollapsed}
+          onToggleCollapsed={() => setWtCollapsedPersisted(!wtCollapsed)}
+          onPick={pickWorktree}
+          onPrune={pruneWorktrees}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-1.5 px-2 py-2">
         {/* 生成按钮放进输入框内部右侧，外面那排整条让给主操作（提交 / 同步）。

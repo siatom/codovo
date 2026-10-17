@@ -22,6 +22,7 @@ import type {
   SearchResult,
   TagInfo,
   WorktreeInfo,
+  WorktreeStatus,
 } from "./types";
 
 /**
@@ -297,6 +298,17 @@ export function gitWorktreeList(root: string): Promise<WorktreeInfo[]> {
  */
 export function gitWorktreePrune(root: string): Promise<WorktreeInfo[]> {
   return invoke<WorktreeInfo[]>("git_worktree_prune", { root });
+}
+
+/**
+ * 仓库下每个 worktree 的轻量状态（脏改动数 / 领先落后 / 进行中）。
+ *
+ * 成本是「工作树数 × 一次 git status」，比 `gitStatus` 重得多：调用方别跟着 2 秒的状态
+ * 轮询一起拉，用更慢的独立节奏、且只在这份列表真的露在用户眼前时才拉。返回的 `path`
+ * 和 `gitWorktreeList` 的 `path` 是同一写法，按它对齐。
+ */
+export function gitWorktreeStatus(root: string): Promise<WorktreeStatus[]> {
+  return invoke<WorktreeStatus[]>("git_worktree_status", { root });
 }
 
 /**
