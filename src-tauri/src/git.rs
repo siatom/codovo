@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -2621,6 +2621,919 @@ pub fn git_worktree_status(
 ) -> Result<Vec<WorktreeStatus>, String> {
     let root = state.checked_root(&root)?;
     worktree_statuses_of(&root, &state)
+}
+
+// ---- 变更中心（workstream） ----
+//
+// 「变更中心」不再以单个工作区的文件暂存为中心，而是以「一条工作线」为单位：
+// 一个 worktree（或一条没被检出的本地分支）+ 它相对基准分支的提交。这里只做
+// 只读汇总和少量生命周期操作，不改变任何工作区的编辑上下文。
+
+/// 变更中心里的一条工作线：一个 worktree，或一条没被检出的本地分支。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstreamInfo {
+    /// worktree 绝对路径；未检出分支为空串
+    path: String,
+    /// 显示名：worktree 用目录名，未检出分支用分支名
+    name: String,
+    /// main = 工作区根所在检出；worktree = 其他工作树；branch = 未检出分支
+    kind: String,
+    branch: Option<String>,
+    /// 对照的基准分支
+    base: Option<String>,
+    /// base 与 head 的 merge-base
+    base_sha: Option<String>,
+    /// 基准分支当前的提交号；和 head 相同说明这条工作线还没有独有提交
+    base_head: Option<String>,
+    head: Option<String>,
+    detached: bool,
+    bare: bool,
+    locked: bool,
+    lock_reason: Option<String>,
+    prunable: bool,
+    prune_reason: Option<String>,
+    exists: bool,
+    current: bool,
+    /// 未提交文件数
+    changed: u32,
+    conflicts: u32,
+    merging: bool,
+    merge_kind: Option<String>,
+    /// 相对 base 领先 / 落后
+    ahead: u32,
+    behind: u32,
+    /// 相对上游分支的领先 / 落后（当前检出卡片用；没配上游时为 0）
+    upstream_ahead: u32,
+    upstream_behind: u32,
+    last_commit_time: i64,
+    last_commit_subject: String,
+    /// base...head（已提交部分）的改动规模
+    diff_files: u32,
+    additions: u32,
+    deletions: u32,
+    /// 分支已经完全合进 base
+    merged: bool,
+}
+
+/// 审阅工作台里的一个文件。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewFile {
+    /// 绝对路径；未检出分支的文件没有工作区路径，退回仓库根下的拼接路径
+    path: String,
+    /// 相对仓库根的正斜杠路径
+    relative: String,
+    /// A / M / D / R / C / ?（未跟踪）
+    status: String,
+    /// 未提交文件里，改动是否在暂存区
+    staged: bool,
+    /// 是不是未提交改动
+    dirty: bool,
+    additions: u32,
+    deletions: u32,
+}
+
+/// 审阅工作台里的一条提交。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewCommit {
+    hash: String,
+    short: String,
+    author: String,
+    /// Unix 秒
+    time: i64,
+    subject: String,
+}
+
+/// 一条工作线的审阅数据。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstreamReview {
+    branch: String,
+    base: String,
+    base_sha: Option<String>,
+    head: Option<String>,
+    detached: bool,
+    commits: Vec<ReviewCommit>,
+    /// 已提交部分的文件
+    files: Vec<ReviewFile>,
+    /// 工作树里还没提交的文件
+    dirty_files: Vec<ReviewFile>,
+    changed: u32,
+    conflicts: u32,
+    additions: u32,
+    deletions: u32,
+}
+
+/// 工作线的基准分支：优先 origin/HEAD 指向的分支，其次本地 main / master。
+/// 仓库既没有远程默认分支、也没有 main / master 时退回当前分支。
+fn default_base(root: &Path) -> Option<String> {
+    if let Ok(Some(raw)) = run_git(
+        root,
+        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    ) {
+        let text = String::from_utf8_lossy(&raw).trim().to_string();
+        if let Some((_, name)) = text.split_once('/') {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    for name in ["main", "master"] {
+        let spec = format!("refs/heads/{name}");
+        if matches!(
+            run_git(root, &["rev-parse", "--verify", "--quiet", &spec]),
+            Ok(Some(_))
+        ) {
+            return Some(name.to_string());
+        }
+    }
+    current_branch(root).ok().flatten()
+}
+
+/// `for-each-ref` 的一行：分支名、提交号、提交时间、主题。
+struct RawBranchRef {
+    name: String,
+    head: String,
+    time: i64,
+    subject: String,
+}
+
+fn branch_refs(root: &Path) -> Vec<RawBranchRef> {
+    const FORMAT: &str =
+        "--format=%(refname:short)%1f%(objectname)%1f%(committerdate:unix)%1f%(subject)%00";
+    let Some(raw) = run_git(
+        root,
+        &["for-each-ref", "--sort=-committerdate", FORMAT, "refs/heads"],
+    )
+    .ok()
+    .flatten()
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for record in raw.split(|byte| *byte == 0) {
+        let text = String::from_utf8_lossy(record);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let mut fields = text.splitn(4, '\u{1f}');
+        let name = fields.next().unwrap_or("").trim();
+        let head = fields.next().unwrap_or("").trim();
+        let time = fields.next().unwrap_or("").trim().parse().unwrap_or(0);
+        let subject = fields.next().unwrap_or("").trim();
+        if name.is_empty() || head.is_empty() {
+            continue;
+        }
+        out.push(RawBranchRef {
+            name: name.to_string(),
+            head: head.to_string(),
+            time,
+            subject: subject.to_string(),
+        });
+    }
+    out
+}
+
+fn merge_base_of(root: &Path, a: &str, b: &str) -> Option<String> {
+    run_git(root, &["merge-base", a, b])
+        .ok()
+        .flatten()
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|text| !text.is_empty())
+}
+
+/// a 是不是 b 的祖先。`merge-base --is-ancestor` 成功时没有输出，只能看退出码。
+fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {
+    matches!(
+        run_git(root, &["merge-base", "--is-ancestor", a, b]),
+        Ok(Some(_))
+    )
+}
+
+/// 相对 base 的领先 / 落后条数。
+fn divergence_of(root: &Path, base: &str, head: &str) -> (u32, u32) {
+    let Some(raw) = run_git(
+        root,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("{base}...{head}"),
+        ],
+    )
+    .ok()
+    .flatten()
+    else {
+        return (0, 0);
+    };
+    let text = String::from_utf8_lossy(&raw);
+    let mut parts = text.split_whitespace();
+    // base...head 的左侧是 base 独有（落后），右侧是 head 独有（领先）
+    let behind = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
+fn last_commit_of(root: &Path) -> Option<(i64, String)> {
+    let raw = run_git(root, &["log", "-1", "--format=%ct%x1f%s"])
+        .ok()
+        .flatten()?;
+    let text = String::from_utf8_lossy(&raw);
+    let (time, subject) = text.trim().split_once('\u{1f}')?;
+    Some((time.trim().parse().unwrap_or(0), subject.trim().to_string()))
+}
+
+/// 两个提交之间的改动规模（文件数 / 新增行 / 删除行）。
+fn diff_stat_between(root: &Path, from: &str, to: &str) -> (u32, u32, u32) {
+    let Some(raw) = run_git(root, &["diff", "--numstat", &format!("{from}..{to}")])
+        .ok()
+        .flatten()
+    else {
+        return (0, 0, 0);
+    };
+    let text = String::from_utf8_lossy(&raw);
+    let mut files = 0;
+    let mut additions = 0;
+    let mut deletions = 0;
+    for line in text.lines() {
+        let mut columns = line.split('\t');
+        let (Some(added), Some(removed)) = (columns.next(), columns.next()) else {
+            continue;
+        };
+        files += 1;
+        additions += added.parse::<u32>().unwrap_or(0);
+        deletions += removed.parse::<u32>().unwrap_or(0);
+    }
+    (files, additions, deletions)
+}
+
+/// 按路径取两个提交之间的增删行数，给审阅文件列表标注。
+fn diff_counts_by_path(root: &Path, from: &str, to: &str) -> HashMap<String, (u32, u32)> {
+    let mut out = HashMap::new();
+    let Some(raw) = run_git(root, &["diff", "--numstat", &format!("{from}..{to}")])
+        .ok()
+        .flatten()
+    else {
+        return out;
+    };
+    let text = String::from_utf8_lossy(&raw);
+    for line in text.lines() {
+        let mut columns = line.split('\t');
+        let (Some(added), Some(removed), Some(path)) =
+            (columns.next(), columns.next(), columns.next())
+        else {
+            continue;
+        };
+        // 重命名时 numstat 的路径形如 `old => new`，这里不强行映射，交给整行统计
+        out.insert(
+            path.to_string(),
+            (
+                added.parse().unwrap_or(0),
+                removed.parse().unwrap_or(0),
+            ),
+        );
+    }
+    out
+}
+
+/// 不启动 4 个 `rev-parse` 的合并状态探测：直接看 gitdir 里的标记文件。
+/// 只用于变更中心的批量概览；单根状态仍走 `merge_state`，保留原有语义。
+fn merge_state_quick(root: &Path) -> Option<&'static str> {
+    let raw = run_git(root, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .flatten()?;
+    let dir = PathBuf::from(String::from_utf8_lossy(&raw).trim().to_string());
+    if dir.join("MERGE_HEAD").is_file() {
+        return Some("merge");
+    }
+    if dir.join("REBASE_HEAD").is_file()
+        || dir.join("rebase-merge").is_dir()
+        || dir.join("rebase-apply").is_dir()
+    {
+        return Some("rebase");
+    }
+    if dir.join("REVERT_HEAD").is_file() {
+        return Some("revert");
+    }
+    if dir.join("CHERRY_PICK_HEAD").is_file() {
+        return Some("cherryPick");
+    }
+    None
+}
+
+/// 一条工作线的基础字段。worktree 和 branch-only 两路各自填动态部分。
+fn empty_workstream(
+    path: String,
+    name: String,
+    kind: &str,
+    base: Option<String>,
+) -> WorkstreamInfo {
+    WorkstreamInfo {
+        path,
+        name,
+        kind: kind.to_string(),
+        branch: None,
+        base,
+        base_sha: None,
+        base_head: None,
+        head: None,
+        detached: false,
+        bare: false,
+        locked: false,
+        lock_reason: None,
+        prunable: false,
+        prune_reason: None,
+        exists: false,
+        current: false,
+        changed: 0,
+        conflicts: 0,
+        merging: false,
+        merge_kind: None,
+        ahead: 0,
+        behind: 0,
+        upstream_ahead: 0,
+        upstream_behind: 0,
+        last_commit_time: 0,
+        last_commit_subject: String::new(),
+        diff_files: 0,
+        additions: 0,
+        deletions: 0,
+        merged: false,
+    }
+}
+
+/// 汇总仓库下所有工作树 + 有独有提交的未检出分支。
+///
+/// 动态部分只跑一次 `status`（不带 numstat）、一次 log -1、一次 merge-base、
+/// 一次 rev-list 和一次 numstat；比原来的「每根一次 2 秒 status」便宜得多，
+/// 且只在变更中心可见时由前端按较慢节奏拉取。
+fn workstreams_of(root: &Path, state: &FsState) -> Result<Vec<WorkstreamInfo>, String> {
+    let worktrees = worktrees_of(root, state)?;
+    let base = default_base(root);
+    // 基准分支的当前提交：用来区分「刚建出来、还没有独有提交」和「真的合并过」。
+    // 两者都是 `merged = true`，但前者不该显示成「已合并」、也不该进清理建议。
+    let base_head = base
+        .as_deref()
+        .and_then(|name| resolve_commit(root, name).ok());
+    let mut out = Vec::with_capacity(worktrees.len());
+    let mut checked_out: HashSet<String> = HashSet::new();
+
+    for item in worktrees {
+        if let Some(branch) = &item.branch {
+            checked_out.insert(branch.clone());
+        }
+        let kind = if item.current { "main" } else { "worktree" };
+        let mut info = empty_workstream(
+            item.path.clone(),
+            item.name.clone(),
+            kind,
+            base.clone(),
+        );
+        info.branch = item.branch.clone();
+        info.base_head = base_head.clone();
+        info.detached = item.detached;
+        info.bare = item.bare;
+        info.locked = item.locked;
+        info.lock_reason = item.lock_reason.clone();
+        info.prunable = item.prunable;
+        info.prune_reason = item.prune_reason.clone();
+        info.exists = item.exists;
+        info.current = item.current;
+
+        if item.exists && !item.bare {
+            let dir = Path::new(&item.path);
+            if let Ok(status) = status_of_with_counts(dir, false) {
+                info.branch = status.branch.clone().or(info.branch);
+                info.head = status.head.clone();
+                info.changed = status.changed;
+                info.conflicts = status.conflicts;
+                info.upstream_ahead = status.ahead;
+                info.upstream_behind = status.behind;
+                info.merge_kind = merge_state_quick(dir)
+                    .map(str::to_string)
+                    .or(status.merge_kind.clone());
+                info.merging = info.merge_kind.is_some();
+                let base_name = info.base.clone();
+                let head = info.head.clone();
+                if let (Some(base_name), Some(head)) =
+                    (base_name.as_deref(), head.as_deref())
+                {
+                    let (ahead, behind) = divergence_of(dir, base_name, head);
+                    info.ahead = ahead;
+                    info.behind = behind;
+                    info.base_sha = merge_base_of(dir, base_name, head);
+                    info.merged = is_ancestor(dir, head, base_name);
+                    if let Some(sha) = info.base_sha.clone() {
+                        let (files, additions, deletions) =
+                            diff_stat_between(dir, &sha, head);
+                        info.diff_files = files;
+                        info.additions = additions;
+                        info.deletions = deletions;
+                    }
+                }
+            }
+            if let Some((time, subject)) = last_commit_of(dir) {
+                info.last_commit_time = time;
+                info.last_commit_subject = subject;
+            }
+        }
+        out.push(info);
+    }
+
+    // 只建了分支、没建 worktree 的 agent 产物也要能被看到。
+    if let Some(base_name) = base.as_deref() {
+        // branch_refs 已按 committerdate 倒序，这里直接取最近的一批
+        let branches = branch_refs(root);
+        let mut count = 0;
+        for branch in branches {
+            if count >= 12 {
+                break;
+            }
+            if branch.name == base_name || checked_out.contains(&branch.name) {
+                continue;
+            }
+            let (ahead, behind) = divergence_of(root, base_name, &branch.head);
+            // 没有独有提交的分支只是基准分支的副本，列出来全是噪音
+            if ahead == 0 {
+                continue;
+            }
+            let base_sha = merge_base_of(root, base_name, &branch.head);
+            let (files, additions, deletions) = match base_sha.as_deref() {
+                Some(sha) => diff_stat_between(root, sha, &branch.head),
+                None => (0, 0, 0),
+            };
+            let mut info = empty_workstream(
+                String::new(),
+                branch.name.clone(),
+                "branch",
+                Some(base_name.to_string()),
+            );
+            info.branch = Some(branch.name);
+            info.base_sha = base_sha;
+            info.base_head = base_head.clone();
+            info.head = Some(branch.head);
+            info.ahead = ahead;
+            info.behind = behind;
+            info.last_commit_time = branch.time;
+            info.last_commit_subject = branch.subject;
+            info.diff_files = files;
+            info.additions = additions;
+            info.deletions = deletions;
+            out.push(info);
+            count += 1;
+        }
+    }
+
+    Ok(out)
+}
+
+/// 校验前端传来的 worktree 路径确实是这个仓库的工作树，并返回 canonical 路径。
+/// 不传 / 传空串表示「不是 worktree」（未检出分支），走仓库根。
+fn checked_worktree(
+    root: &Path,
+    state: &FsState,
+    path: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(raw) = path.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let worktrees = worktrees_of(root, state)?;
+    let target = worktrees
+        .into_iter()
+        .find(|item| same_dir(&item.path, raw))
+        .ok_or_else(|| format!("找不到这个工作树：{raw}"))?;
+    if !target.exists || target.bare {
+        return Err("这个工作树目录不存在或不可用".to_string());
+    }
+    Ok(Some(PathBuf::from(target.path)))
+}
+
+fn review_of(
+    root: &Path,
+    worktree: Option<&Path>,
+    branch: Option<&str>,
+    base: Option<&str>,
+) -> Result<WorkstreamReview, String> {
+    let dir = worktree.unwrap_or(root);
+    let base_name = base
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| default_base(root))
+        .ok_or("找不到基准分支，无法审阅")?;
+    let head = match branch.map(str::trim).filter(|value| !value.is_empty()) {
+        // 未检出分支没有工作区，只能在仓库根上解析分支名
+        Some(name) if worktree.is_none() => resolve_commit(root, name)?,
+        _ => resolve_commit(dir, "HEAD")?,
+    };
+    let base_sha = merge_base_of(dir, &base_name, &head);
+
+    let mut commits = Vec::new();
+    let mut files = Vec::new();
+    let mut additions = 0;
+    let mut deletions = 0;
+
+    if let Some(sha) = base_sha.as_deref() {
+        if sha != head {
+            let raw = run_git(
+                dir,
+                &[
+                    "log",
+                    "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%00",
+                    &format!("{sha}..{head}"),
+                ],
+            )?
+            .unwrap_or_default();
+            for record in raw.split(|byte| *byte == 0) {
+                let text = String::from_utf8_lossy(record);
+                let text = text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let mut fields = text.splitn(5, '\u{1f}');
+                let hash = fields.next().unwrap_or("").trim();
+                let short = fields.next().unwrap_or("").trim();
+                let author = fields.next().unwrap_or("").trim();
+                let time = fields.next().unwrap_or("").trim().parse().unwrap_or(0);
+                let subject = fields.next().unwrap_or("").trim();
+                if hash.is_empty() {
+                    continue;
+                }
+                commits.push(ReviewCommit {
+                    hash: hash.to_string(),
+                    short: short.to_string(),
+                    author: author.to_string(),
+                    time,
+                    subject: subject.to_string(),
+                });
+            }
+
+            let raw = run_git(
+                dir,
+                &[
+                    "diff",
+                    "--name-status",
+                    "-z",
+                    &format!("{sha}..{head}"),
+                ],
+            )?
+            .unwrap_or_default();
+            let counts = diff_counts_by_path(dir, sha, &head);
+            for file in parse_name_status(&raw, "", dir) {
+                let (added, removed) = counts
+                    .get(&file.relative)
+                    .copied()
+                    .unwrap_or((0, 0));
+                files.push(ReviewFile {
+                    path: file.path,
+                    relative: file.relative,
+                    status: file.status.to_string(),
+                    staged: false,
+                    dirty: false,
+                    additions: added,
+                    deletions: removed,
+                });
+            }
+            let (_, stat_additions, stat_deletions) = diff_stat_between(dir, sha, &head);
+            additions = stat_additions;
+            deletions = stat_deletions;
+        }
+    }
+
+    let mut dirty_files = Vec::new();
+    let mut changed = 0;
+    let mut conflicts = 0;
+    if let Some(path) = worktree {
+        // 审阅列表要显示每个未提交文件的 +/−，这里必须带 numstat；
+        // 清单概览那边才用 `false` 省掉两次 git 进程。
+        if let Ok(status) = status_of_with_counts(path, true) {
+            changed = status.changed;
+            conflicts = status.conflicts;
+            for file in status.files {
+                if file.is_dir {
+                    continue;
+                }
+                // 两边都有改动时优先看工作区（agent 更可能留下未暂存的后续修改）；
+                // 只有「暂存了、工作区没再改」才走暂存区那一侧。
+                let staged =
+                    file.index != '.' && file.index != '?' && file.worktree == '.';
+                let status_char = if file.index == '?' {
+                    '?'
+                } else if file.index != '.' {
+                    file.index
+                } else {
+                    file.worktree
+                };
+                let added = file.staged_added.unwrap_or(0) + file.unstaged_added.unwrap_or(0);
+                let removed =
+                    file.staged_removed.unwrap_or(0) + file.unstaged_removed.unwrap_or(0);
+                additions += added;
+                deletions += removed;
+                dirty_files.push(ReviewFile {
+                    path: file.path,
+                    relative: file.relative,
+                    status: status_char.to_string(),
+                    staged,
+                    dirty: true,
+                    additions: added,
+                    deletions: removed,
+                });
+            }
+        }
+    }
+
+    let branch_name = branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| current_branch(dir).ok().flatten())
+        .unwrap_or_else(|| head.clone());
+
+    Ok(WorkstreamReview {
+        branch: branch_name,
+        base: base_name,
+        base_sha,
+        head: Some(head),
+        detached: worktree.is_some_and(|path| current_branch(path).ok().flatten().is_none()),
+        commits,
+        files,
+        dirty_files,
+        changed,
+        conflicts,
+        additions,
+        deletions,
+    })
+}
+
+/// 变更中心的只读汇总。
+#[tauri::command(async)]
+pub fn workstream_list(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<WorkstreamInfo>, String> {
+    let root = state.checked_root(&root)?;
+    workstreams_of(&root, &state)
+}
+
+/// 一条工作线的审阅数据。`path` 为空时按 `branch` 解析未检出分支。
+#[tauri::command(async)]
+pub fn workstream_review(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    path: Option<String>,
+    branch: Option<String>,
+    base: Option<String>,
+) -> Result<WorkstreamReview, String> {
+    let root = state.checked_root(&root)?;
+    let worktree = checked_worktree(&root, &state, path.as_deref())?;
+    review_of(
+        &root,
+        worktree.as_deref(),
+        branch.as_deref(),
+        base.as_deref(),
+    )
+}
+
+/// 已提交文件在审阅工作台里的逐块 diff。`relative` 是仓库根相对路径。
+#[tauri::command(async)]
+pub fn workstream_file_hunks(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    path: Option<String>,
+    relative: String,
+    from: String,
+    to: String,
+) -> Result<FileHunks, String> {
+    let root = state.checked_root(&root)?;
+    let worktree = checked_worktree(&root, &state, path.as_deref())?;
+    let dir = worktree.as_deref().unwrap_or(&root);
+    let from = checked_rev(&from)?;
+    let to = checked_rev(&to)?;
+    let relative = relative.replace('\\', "/");
+    if relative.is_empty()
+        || relative.starts_with('/')
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!("路径不合法：{relative}"));
+    }
+    let raw = run_git_literal(
+        dir,
+        &[
+            "diff",
+            "--no-color",
+            "-U3",
+            &format!("{from}..{to}"),
+            "--",
+            &relative,
+        ],
+    )?
+    .ok_or("git diff 执行失败")?;
+    let text = String::from_utf8_lossy(&raw).to_string();
+    let (header, hunks) = split_patch(&text);
+    Ok(FileHunks { header, hunks })
+}
+
+fn merge_workstream(
+    root: &Path,
+    branch: &str,
+    base: Option<&str>,
+) -> Result<GitStatus, String> {
+    let branch = branch.trim();
+    check_branch_name(root, branch)?;
+    let current = current_branch(root)?.ok_or("当前不在分支上，不能合并")?;
+    if let Some(base) = base.map(str::trim).filter(|v| !v.is_empty()) {
+        if base != current {
+            return Err(format!(
+                "当前在 {current}，不是基准分支 {base}。先切换回基准分支再合并。"
+            ));
+        }
+    }
+    if branch == current {
+        return Err("不能把当前分支合并到它自己".to_string());
+    }
+    let status = status_of(root)?;
+    if status.merging {
+        return Err("仓库正处在未完成的合并 / 变基中，先收尾再合并".to_string());
+    }
+    if status.changed > 0 {
+        return Err(format!(
+            "主工作区还有 {} 处未提交改动，先提交或暂存后再合并",
+            status.changed
+        ));
+    }
+    run_git_checked(root, &["merge", "--no-ff", "--no-edit", branch])?;
+    status_of(root)
+}
+
+/// 把一条工作线合并进当前基准分支。要求主工作区干净、当前就在基准分支上。
+#[tauri::command(async)]
+pub fn workstream_merge(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    branch: String,
+    base: Option<String>,
+) -> Result<GitStatus, String> {
+    let root = state.checked_root(&root)?;
+    merge_workstream(&root, &branch, base.as_deref())
+}
+
+/// 移除一个已合并 / 干净的工作树。默认保留分支（之后还能用 `worktree add` 找回）。
+/// 有未提交改动时**拒绝**，不提供静默 force 的入口。
+#[tauri::command(async)]
+pub fn workstream_remove(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    path: String,
+) -> Result<Vec<WorkstreamInfo>, String> {
+    let root = state.checked_root(&root)?;
+    let worktrees = worktrees_of(&root, &state)?;
+    let target = worktrees
+        .into_iter()
+        .find(|item| same_dir(&item.path, &path))
+        .ok_or_else(|| format!("找不到这个工作树：{path}"))?;
+    if target.current {
+        return Err("不能移除工作区当前所在的检出".to_string());
+    }
+    if target.bare {
+        return Err("不能移除 bare 仓库".to_string());
+    }
+    if target.locked {
+        return Err(format!(
+            "工作树被锁定{}，先解锁再移除",
+            target
+                .lock_reason
+                .as_deref()
+                .filter(|reason| !reason.is_empty())
+                .map(|reason| format!("（{reason}）"))
+                .unwrap_or_default()
+        ));
+    }
+    if target.prunable || !target.exists {
+        run_git_checked(&root, &["worktree", "prune"])?;
+        return workstreams_of(&root, &state);
+    }
+    let status = status_of_with_counts(Path::new(&target.path), false)?;
+    if status.merging {
+        return Err("工作树正处在未完成的合并 / 变基中，先收尾再移除".to_string());
+    }
+    if status.changed > 0 {
+        return Err(format!(
+            "工作树还有 {} 处未提交改动，不能直接移除",
+            status.changed
+        ));
+    }
+    run_git_checked(&root, &["worktree", "remove", target.path.as_str()])?;
+    workstreams_of(&root, &state)
+}
+
+/// 把 `.worktrees/` 写进本地 `.git/info/exclude`（只在本机生效，不进版本库）。
+/// 只追加、不改已有内容；失败不影响创建，最多让主工作区多一条未跟踪目录。
+fn ensure_worktrees_excluded(top: &Path) {
+    let raw = match run_git(
+        top,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        Ok(Some(bytes)) => Some(bytes),
+        _ => run_git(top, &["rev-parse", "--git-common-dir"])
+            .ok()
+            .flatten(),
+    };
+    let Some(raw) = raw else { return };
+    let text = String::from_utf8_lossy(&raw).trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let mut common = PathBuf::from(&text);
+    if common.is_relative() {
+        let joined = top.join(&common);
+        common = joined.canonicalize().unwrap_or(joined);
+    }
+    let exclude = common.join("info").join("exclude");
+    let existing = fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|line| {
+        let line = line.trim();
+        line == ".worktrees/" || line == ".worktrees"
+    }) {
+        return;
+    }
+    if let Some(parent) = exclude.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(".worktrees/\n");
+    let _ = fs::write(&exclude, next);
+}
+
+fn create_workstream(
+    root: &Path,
+    state: &FsState,
+    name: &str,
+    base: Option<String>,
+) -> Result<Vec<WorkstreamInfo>, String> {
+    let name = name.trim();
+    check_branch_name(root, name)?;
+    let base = base
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| current_branch(root).ok().flatten())
+        .ok_or("找不到基准分支")?;
+    let top = run_git(root, &["rev-parse", "--show-toplevel"])?
+        .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or("这个目录不是 git 仓库")?;
+    let top = PathBuf::from(top);
+    let slug: String = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    if slug.is_empty() {
+        return Err("分支名里没有可用的目录名".to_string());
+    }
+    // 统一放在仓库内的 .worktrees/ 下，和 worktree 技能的布局一致。
+    // 同时把它写进本地 .git/info/exclude：这个目录只属于本机，不该出现在
+    // 主工作区的 status 里，也不该改仓库里受版本管理的 .gitignore。
+    let container = top.join(".worktrees");
+    let dir = container.join(slug);
+    if dir.exists() {
+        return Err(format!("目标目录已经存在：{}", dir.display()));
+    }
+    fs::create_dir_all(&container).map_err(|reason| format!("创建目录失败: {reason}"))?;
+    ensure_worktrees_excluded(&top);
+    let dir_text = dir.to_string_lossy().to_string();
+    run_git_checked(
+        root,
+        &["worktree", "add", "-b", name, dir_text.as_str(), base.as_str()],
+    )?;
+    workstreams_of(root, state)
+}
+
+/// 新建一条工作线：在仓库同级目录建 worktree + 分支。
+#[tauri::command(async)]
+pub fn workstream_create(
+    state: tauri::State<'_, FsState>,
+    root: String,
+    name: String,
+    base: Option<String>,
+) -> Result<Vec<WorkstreamInfo>, String> {
+    let root = state.checked_root(&root)?;
+    create_workstream(&root, &state, &name, base)
 }
 
 #[tauri::command(async)]
@@ -6435,6 +7348,137 @@ mod tests {
 
         // from 与 to 相同时没有差异，返回空列表而不是报错
         assert!(compare_files(&repo, &first, &first).unwrap().is_empty());
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn workstream_list_sees_worktree_and_branch_only() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("base.txt"), "base\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "base").unwrap();
+
+        // 工作树里再提交一次，模拟 agent 的产物
+        let wt = top.join("wt-demo");
+        let wt_text = wt.to_string_lossy().to_string();
+        assert!(git(
+            &repo,
+            &["worktree", "add", "-q", "-b", "agent/demo", &wt_text, "main"]
+        ));
+        fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+        assert!(git(&wt, &["add", "-A"]));
+        assert!(git(&wt, &["commit", "-q", "-m", "agent change"]));
+
+        // 只建分支、不建工作树的那一类
+        assert!(git(&repo, &["branch", "agent/orphan", "main"]));
+        assert!(git(&repo, &["switch", "-q", "agent/orphan"]));
+        fs::write(repo.join("orphan.txt"), "orphan\n").unwrap();
+        assert!(git(&repo, &["add", "-A"]));
+        assert!(git(&repo, &["commit", "-q", "-m", "orphan change"]));
+        assert!(git(&repo, &["switch", "-q", "main"]));
+
+        let items = workstreams_of(&repo, &state).unwrap();
+        let demo = items
+            .iter()
+            .find(|item| item.branch.as_deref() == Some("agent/demo"))
+            .expect("工作树应该出现在清单里");
+        assert_eq!(demo.kind, "worktree");
+        assert_eq!(demo.base.as_deref(), Some("main"));
+        assert_eq!(demo.ahead, 1);
+        assert!(!demo.merged);
+        assert_eq!(demo.diff_files, 1);
+        assert_eq!(demo.additions, 1);
+        assert_eq!(demo.changed, 0);
+
+        let orphan = items
+            .iter()
+            .find(|item| item.branch.as_deref() == Some("agent/orphan"))
+            .expect("未检出分支应该出现在清单里");
+        assert_eq!(orphan.kind, "branch");
+        assert_eq!(orphan.ahead, 1);
+        assert!(orphan.path.is_empty());
+
+        // 审阅数据：基准到 head 的提交和文件都要能拿到
+        let review = review_of(&repo, Some(&wt), Some("agent/demo"), Some("main")).unwrap();
+        assert_eq!(review.branch, "agent/demo");
+        assert_eq!(review.commits.len(), 1);
+        assert_eq!(review.files.len(), 1);
+        assert_eq!(review.files[0].relative, "feature.txt");
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn workstream_merge_merges_agent_branch_into_clean_main() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("base.txt"), "base\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "base").unwrap();
+
+        let wt = top.join("wt-merge");
+        let wt_text = wt.to_string_lossy().to_string();
+        assert!(git(
+            &repo,
+            &["worktree", "add", "-q", "-b", "agent/merge", &wt_text, "main"]
+        ));
+        fs::write(wt.join("feature.txt"), "feature\n").unwrap();
+        assert!(git(&wt, &["add", "-A"]));
+        assert!(git(&wt, &["commit", "-q", "-m", "agent change"]));
+        let head = run_git(&repo, &["rev-parse", "agent/merge"])
+            .unwrap()
+            .unwrap();
+        let head = String::from_utf8_lossy(&head).trim().to_string();
+
+        let status = merge_workstream(&repo, "agent/merge", Some("main")).unwrap();
+        assert_eq!(status.changed, 0);
+        assert!(is_ancestor(&repo, &head, "main"));
+
+        let items = workstreams_of(&repo, &state).unwrap();
+        let merged = items
+            .iter()
+            .find(|item| item.branch.as_deref() == Some("agent/merge"))
+            .expect("合并后的工作树仍在清单里");
+        assert!(merged.merged);
+
+        cleanup(&top);
+    }
+
+    #[test]
+    fn workstream_create_makes_worktree_under_dot_worktrees() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("base.txt"), "base\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "base").unwrap();
+
+        let items = create_workstream(&repo, &state, "agent/new", Some("main".to_string())).unwrap();
+        let created = items
+            .iter()
+            .find(|item| item.branch.as_deref() == Some("agent/new"))
+            .expect("新建分支应该出现在清单里");
+        assert_eq!(created.kind, "worktree");
+        assert!(created.exists);
+        assert!(Path::new(&created.path).is_dir());
+        // 统一建在仓库内的 .worktrees/ 下
+        assert!(created
+            .path
+            .replace('\\', "/")
+            .contains("/repo/.worktrees/agent-new"));
+        // 并且写进本地 exclude，主工作区不该多出未跟踪目录
+        let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default();
+        assert!(exclude.lines().any(|line| line.trim() == ".worktrees/"));
 
         cleanup(&top);
     }

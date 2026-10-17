@@ -1,20 +1,43 @@
-import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { GitController, GitMark } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
 import { pathKey, toDisplayPath, type MovePair } from "../lib/fs";
 import { folderName } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { matchesShortcut } from "../lib/shortcuts";
+import { ChangeCenterPane } from "./ChangeCenterPane";
 import { FilesPane } from "./FilesPane";
 import { GitChangesPane } from "./GitChangesPane";
 import { IconChevronDown, IconChevronRight, IconRefresh } from "./icons";
+import type { ReviewTarget } from "../lib/workstreams";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
 export type ToolId = "files" | "changes" | "browser" | "remote" | "database" | "preview" | "deploy";
 
 const TOOL_KEY = "codedock.rightTool.";
 
+/** 「变更」模块上次用的是总览还是完整 Git 面板，按活动根记。 */
+const CHANGES_MODE_KEY = "codedock.changesMode.";
+
 const TOOLS: ToolId[] = ["files", "changes", "browser", "remote", "database", "preview", "deploy"];
+
+function readChangesMode(root: string): "overview" | "advanced" {
+  try {
+    return window.sessionStorage.getItem(CHANGES_MODE_KEY + root) === "advanced"
+      ? "advanced"
+      : "overview";
+  } catch {
+    return "overview";
+  }
+}
+
+function saveChangesMode(root: string, mode: "overview" | "advanced") {
+  try {
+    window.sessionStorage.setItem(CHANGES_MODE_KEY + root, mode);
+  } catch {
+    // 记不住就每次回到总览，不影响使用
+  }
+}
 
 /** 标题栏图标按钮的样式，和「文件」模块标题栏那几个按钮一致 */
 const ICON_BUTTON =
@@ -49,6 +72,8 @@ interface ToolPaneProps {
   tool: ToolId;
   /** 工作区的全部工作目录：文件树并列显示，变更面板按根分组，搜索挨个根搜 */
   roots: string[];
+  /** 当前活动根：变更中心总览以它为仓库边界 */
+  activeRoot: string;
   /** 这个工作区是不是当前显示的。隐藏时不做任何后端交互 */
   visible: boolean;
   /**
@@ -93,6 +118,8 @@ interface ToolPaneProps {
    * 传回原根（选中它自己）表示恢复默认。
    */
   onPickWorktree: (root: string, target: string) => void;
+  /** 变更中心里点「审阅」：打开全宽审阅工作台 */
+  onReview: (target: ReviewTarget) => void;
   /** 切分支前的落盘；返回 false 表示有文件没存成功，切换要中止 */
   onBeforeBranchSwitch: () => Promise<boolean>;
   /** 搜索结果里点一条：打开文件并定位到那一行那一列 */
@@ -121,6 +148,7 @@ interface ToolPaneProps {
 export function ToolPane({
   tool,
   roots,
+  activeRoot,
   visible,
   filesVisible,
   changesVisible,
@@ -135,6 +163,7 @@ export function ToolPane({
   onOpenMatch,
   onBranchChanged,
   onPickWorktree,
+  onReview,
   onBeforeBranchSwitch,
   onBeforeReplace,
   onAfterReplace,
@@ -144,6 +173,17 @@ export function ToolPane({
   onRequestCloseTab,
 }: ToolPaneProps) {
   const { settings } = useSettings();
+  /** 变更模块的两个视图：总览（默认）/ 完整 Git 面板 */
+  const [changesMode, setChangesMode] = useState<"overview" | "advanced">(() =>
+    readChangesMode(activeRoot),
+  );
+  useEffect(() => {
+    setChangesMode(readChangesMode(activeRoot));
+  }, [activeRoot]);
+  const chooseChangesMode = (mode: "overview" | "advanced") => {
+    setChangesMode(mode);
+    saveChangesMode(activeRoot, mode);
+  };
   /**
    * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
    * 初始只展开第一个根、其余收起：多根时几份改动加时间线全铺开，一屏根本看不完。
@@ -216,22 +256,58 @@ export function ToolPane({
           面板本身是 h-full 的整高布局（内部自己滚），所以展开的块按份数分高度、
           开了折叠就只占一行，块多了整体滚 */}
       <div className={tool === "changes" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        {/* 模块自己的标题行，和「文件」模块的头对齐（同为 h-8 + 下边框）。
-            右侧「刷新」重载这一模块下所有根的面板（状态 / 历史 / worktree / 储藏） */}
-        <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-3">
-          <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
+        {/* 模块标题行：左边切「总览 / 高级 Git」，右边刷新。
+            总览是新主路径；完整 Git 面板保留下来，处理暂存、提交、stash、时间线这些旧流程。 */}
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
+          <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
             变更
           </span>
+          <div className="ml-1 flex min-w-0 items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => chooseChangesMode("overview")}
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                changesMode === "overview"
+                  ? "bg-selected text-fg"
+                  : "text-fg-dim hover:bg-hover hover:text-fg"
+              }`}
+            >
+              总览
+            </button>
+            <button
+              type="button"
+              onClick={() => chooseChangesMode("advanced")}
+              className={`rounded px-1.5 py-0.5 text-[10px] ${
+                changesMode === "advanced"
+                  ? "bg-selected text-fg"
+                  : "text-fg-dim hover:bg-hover hover:text-fg"
+              }`}
+            >
+              高级 Git
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => setReloadKey((key) => key + 1)}
             title="刷新"
-            className={ICON_BUTTON}
+            className={`${ICON_BUTTON} ml-auto`}
           >
             <IconRefresh className="h-3.5 w-3.5" />
           </button>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+        {changesMode === "overview" ? (
+          <ChangeCenterPane
+            root={activeRoot}
+            roots={roots}
+            visible={visible}
+            moduleVisible={changesVisible}
+            reloadSignal={reloadKey}
+            gitReady={gitReady}
+            onReview={onReview}
+            onOpenAdvanced={() => chooseChangesMode("advanced")}
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto">
         {roots.map((item) => {
           const collapsed = collapsedRoots.has(pathKey(item));
           // 这一根的面板实际看的 git 目标：默认是它自己，选了别的 worktree 时是那个路径
@@ -282,7 +358,7 @@ export function ToolPane({
                   root={target}
                   workspaceRoot={item}
                   visible={visible}
-                  moduleVisible={changesVisible}
+                  moduleVisible={changesVisible && changesMode === "advanced"}
                   reloadSignal={reloadKey}
                   git={gitByRoot[target]}
                   onOpen={onOpenDiff}
@@ -295,7 +371,8 @@ export function ToolPane({
             </div>
           );
         })}
-        </div>
+          </div>
+        )}
       </div>
     </section>
   );
