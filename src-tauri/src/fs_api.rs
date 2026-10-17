@@ -369,46 +369,60 @@ const MAX_HITS: usize = 300;
 /// 不能让这个线程一直跑下去。
 const MAX_VISITS: usize = 100_000;
 
-/// 递归遍历工作区里的文件：跳过 SKIP_DIRS，用显式栈避免深目录压爆调用栈。
+/// 递归遍历工作区里的文件：跳过 SKIP_DIRS 与（可选）忽略文件，用 `ignore` 的迭代器
+/// 避免深目录压爆调用栈。
 /// `on_file` 返回 false 表示不必再往下走了（比如结果已经收满）。
 /// 返回值是「是否走完了」—— false 说明是提前收手，不是真的没有更多。
 ///
-/// `pub(crate)`：生成反馈正文时也要列一遍工作区文件（见 `ai.rs`），
-/// 跳目录 / 防爆栈的规则只能有一份。
-pub(crate) fn walk_files(root: &Path, on_file: &mut dyn FnMut(&Path) -> bool) -> bool {
-    // 显式栈而不是递归：目录嵌套很深时不会把调用栈压爆
-    let mut stack = vec![root.to_path_buf()];
-    let mut visits = 0usize;
+/// `respect_gitignore` 决定要不要连同工作区里的 `.gitignore` / `.ignore` /
+/// `.git/info/exclude` 一起过滤：
+/// - 内容搜索传 true：被 git 忽略的文件（构建产物、本地密钥……）本来就不该出现在结果里，
+///   剪掉这些目录还能省掉大量无谓的读盘与解码。
+/// - 文件名搜索 / 生成反馈正文（见 `ai.rs`）传 false：按名字找文件常常是冲着一个被忽略的
+///   文件去的（`.env`、本地配置），少列出来反而碍事。
+///
+/// `pub(crate)`：生成反馈正文时也要列一遍工作区文件（见 `ai.rs`），跳目录 / 防爆栈的规则只能有一份。
+pub(crate) fn walk_files(
+    root: &Path,
+    respect_gitignore: bool,
+    on_file: &mut dyn FnMut(&Path) -> bool,
+) -> bool {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
+        // 隐藏文件（`.env`、`.github/`……）照旧参与遍历，原来的实现只看 SKIP_DIRS
+        .hidden(false)
+        // 不跟随软链接：指向外面的软链接目录走不进去，顺带挡掉循环链接
+        .follow_links(false)
+        // 只认工作区自己的忽略文件，不往父目录看：搜 A 项目时不该被外层仓库的规则牵连
+        .parents(false)
+        // 没有 .git 的普通目录也照常认 .gitignore——用户写了规则就是想让它生效
+        .require_git(false)
+        .git_ignore(respect_gitignore)
+        .git_global(respect_gitignore)
+        .git_exclude(respect_gitignore)
+        .ignore(respect_gitignore)
+        // 根目录自身不能被 SKIP_DIRS 拦下：工作区恰好叫 build / dist 也得能搜
+        .filter_entry(|entry| {
+            entry.depth() == 0 || !is_skipped_dir(&entry.file_name().to_string_lossy())
+        });
 
-    while let Some(dir) = stack.pop() {
-        let Ok(read) = fs::read_dir(&dir) else {
+    let mut visits = 0usize;
+    for entry in builder.build() {
+        visits += 1;
+        if visits > MAX_VISITS {
+            return false;
+        }
+
+        // 读不了的目录/文件由 WalkBuilder 交回一个 Err，跳过就是（原来是 read_dir 失败 continue）
+        let Ok(entry) = entry else {
             continue;
         };
-        for item in read.flatten() {
-            visits += 1;
-            if visits > MAX_VISITS {
-                return false;
-            }
-
-            // file_type() 是 lstat 语义，不跟随软链接：指向外面的软链接目录
-            // 不会被当成目录走下去，顺带挡掉循环链接
-            let Ok(kind) = item.file_type() else {
-                continue;
-            };
-
-            if kind.is_dir() {
-                let name = item.file_name().to_string_lossy().to_string();
-                if !is_skipped_dir(&name) {
-                    stack.push(item.path());
-                }
-                continue;
-            }
-            if !kind.is_file() {
-                continue;
-            }
-            if !on_file(&item.path()) {
-                return false;
-            }
+        // 目录不需要回调：下探由 WalkBuilder 自己负责（它已经跳过被忽略的目录）
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        if !on_file(entry.path()) {
+            return false;
         }
     }
     true
@@ -434,7 +448,7 @@ fn search_files(root: &Path, query: &str) -> Vec<String> {
     }
 
     let mut hits: Vec<String> = Vec::new();
-    walk_files(root, &mut |path| {
+    walk_files(root, false, &mut |path| {
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
@@ -1384,7 +1398,9 @@ fn search_content(
     let mut truncated = false;
     let mut skipped_large = 0usize;
 
-    walk_files(root, &mut |path| {
+    // 被 .gitignore 忽略的文件（构建产物、本地密钥、生成代码……）不参与内容搜索：
+    // 既符合「搜的是这个项目的源码」的预期，又省掉最贵的一段——对它们的读盘 + 编码解码
+    walk_files(root, true, &mut |path| {
         if files.len() >= MAX_FILES || total >= MAX_MATCHES {
             truncated = true;
             return false;
@@ -2561,6 +2577,40 @@ mod tests {
         let multi =
             search_content(&workspace, "target", &opts_with(false, "keep.ts, skip.ts", "")).unwrap();
         assert_eq!(multi.files.len(), 2);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn content_search_skips_files_ignored_by_gitignore() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        fs::write(workspace.join("tracked.txt"), "needle\n").unwrap();
+        fs::write(workspace.join("ignored.txt"), "needle\n").unwrap();
+        // 否定规则救回来的文件要能搜到（`*.log` 之后 `!keep.log`）
+        fs::write(workspace.join("keep.log"), "needle\n").unwrap();
+        fs::write(workspace.join("debug.log"), "needle\n").unwrap();
+        // 子目录自己的 .gitignore 也得生效
+        fs::create_dir_all(workspace.join("sub")).unwrap();
+        fs::write(workspace.join("sub").join("dropped.tmp"), "needle\n").unwrap();
+        fs::write(workspace.join("sub").join("kept.txt"), "needle\n").unwrap();
+        fs::write(
+            workspace.join(".gitignore"),
+            "ignored.txt\n*.log\n!keep.log\n",
+        )
+        .unwrap();
+        fs::write(workspace.join("sub").join(".gitignore"), "*.tmp\n").unwrap();
+
+        let result = search_content(&workspace, "needle", &opts(false, false, false)).unwrap();
+        let names: Vec<&str> = result.files.iter().map(|file| file.relative.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["keep.log", "sub/kept.txt", "tracked.txt"],
+            "被 .gitignore 忽略的文件不该出现在内容搜索里"
+        );
+
+        // 文件名搜索维持原样：按名字找文件常常就是冲着被忽略的文件去的
+        assert_eq!(search_files(&workspace, "ignored").len(), 1);
 
         fs::remove_dir_all(&root).ok();
     }

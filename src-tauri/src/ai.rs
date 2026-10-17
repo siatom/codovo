@@ -349,7 +349,7 @@ fn category_label(category: &str) -> &str {
 /// 返回 (清单, 是否被上限截断)。
 fn repo_files(root: &Path) -> (Vec<String>, bool) {
     let mut files: Vec<String> = Vec::new();
-    let complete = crate::fs_api::walk_files(root, &mut |path| {
+    let complete = crate::fs_api::walk_files(root, false, &mut |path| {
         if files.len() >= MAX_TREE_ENTRIES {
             return false;
         }
