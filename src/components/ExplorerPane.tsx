@@ -1319,6 +1319,20 @@ export function ExplorerPane({
     [flatEntries, activateDir, onSelect],
   );
 
+  /**
+   * 一行被双击：文件直接交给系统默认关联程序打开（和右键「用默认程序打开」同一入口）。
+   * 双击必然先触发两次单击，编辑器那边照旧打开它；这里只额外多开一个系统窗口。
+   * 目录仍由单击负责展开 / 收起，不重复处理；按住修饰键时是在多选，别误开。
+   */
+  const handleRowDoubleClick = useCallback(
+    (entry: FileEntry, event: MouseEvent) => {
+      if (entry.isDir) return;
+      if (event.ctrlKey || event.metaKey || event.shiftKey) return;
+      void openWithSystem(entry);
+    },
+    [openWithSystem],
+  );
+
   /** 一行的键盘操作：方向键在树内移动焦点，左右展开/收起，Enter 打开，F2 改名，Delete 删除 */
   const handleRowKeyDown = useCallback(
     (entry: FileEntry, event: KeyboardEvent) => {
@@ -1576,6 +1590,7 @@ export function ExplorerPane({
       cutKeys,
       dropDir,
       onRowClick: handleRowClick,
+      onRowDoubleClick: handleRowDoubleClick,
       onRowKeyDown: handleRowKeyDown,
       onDragStart: handleDragStart,
       onDragOver: handleDragOver,
@@ -1640,6 +1655,7 @@ export function ExplorerPane({
     dropDir,
     flatEntries,
     handleRowClick,
+    handleRowDoubleClick,
     handleRowKeyDown,
     handleDragStart,
     handleDragOver,

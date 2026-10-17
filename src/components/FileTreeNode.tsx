@@ -46,6 +46,8 @@ export interface TreeController {
   select: (entry: FileEntry) => void;
   /** 一行被点击：处理 Ctrl / Shift 多选与普通打开 */
   onRowClick: (entry: FileEntry, event: MouseEvent) => void;
+  /** 一行被双击：文件直接交给系统默认关联程序打开（目录不参与） */
+  onRowDoubleClick: (entry: FileEntry, event: MouseEvent) => void;
   /** 一行的键盘操作：方向键 / Enter / F2 / Delete */
   onRowKeyDown: (entry: FileEntry, event: KeyboardEvent) => void;
   creating: CreatingState | null;
@@ -166,6 +168,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           draggable
           title={`${toDisplayPath(entry.path)}\n最近修改：${formatModified(entry.modified)}`}
           onClick={(event) => tree.onRowClick(entry, event)}
+          onDoubleClick={(event) => tree.onRowDoubleClick(entry, event)}
           onContextMenu={(event) => tree.openMenu(entry, event)}
           onKeyDown={(event) => tree.onRowKeyDown(entry, event)}
           onDragStart={(event) => tree.onDragStart(entry, event)}
