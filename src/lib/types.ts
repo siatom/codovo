@@ -143,6 +143,101 @@ export interface WorktreeStatus {
   behind: number;
 }
 
+/**
+ * 变更中心里的一条「工作线」：一个 worktree，或一条没被检出的本地分支。
+ *
+ * 和 `WorktreeInfo` 的分工：那个只描述结构（有哪些工作树、检出了什么），
+ * 这个把结构 + 相对基准分支的提交/脏改动/合并状态汇总到一起，是总览列表的数据源。
+ */
+export interface WorkstreamInfo {
+  /** worktree 绝对路径；未检出分支为空串 */
+  path: string;
+  /** 显示名：worktree 用目录名，未检出分支用分支名 */
+  name: string;
+  /** main = 工作区根所在检出；worktree = 其他工作树；branch = 未检出分支 */
+  kind: "main" | "worktree" | "branch";
+  branch: string | null;
+  /** 对照的基准分支 */
+  base: string | null;
+  /** base 与 head 的 merge-base */
+  baseSha: string | null;
+  /** 基准分支当前的提交号；和 head 相同说明还没有独有提交 */
+  baseHead: string | null;
+  head: string | null;
+  detached: boolean;
+  bare: boolean;
+  locked: boolean;
+  lockReason: string | null;
+  prunable: boolean;
+  pruneReason: string | null;
+  exists: boolean;
+  current: boolean;
+  /** 未提交文件数 */
+  changed: number;
+  conflicts: number;
+  merging: boolean;
+  mergeKind: "merge" | "rebase" | "cherryPick" | "revert" | null;
+  /** 相对 base 领先 / 落后 */
+  ahead: number;
+  behind: number;
+  /** 相对上游分支的领先 / 落后（当前检出卡片用） */
+  upstreamAhead: number;
+  upstreamBehind: number;
+  /** 最后一条提交的时间（Unix 秒），空仓库为 0 */
+  lastCommitTime: number;
+  lastCommitSubject: string;
+  /** base...head（已提交部分）的改动规模 */
+  diffFiles: number;
+  additions: number;
+  deletions: number;
+  /** 分支已经完全合进 base */
+  merged: boolean;
+}
+
+/** 审阅工作台里的一个文件 */
+export interface ReviewFile {
+  /** 绝对路径；未检出分支的文件是仓库根下的拼接路径 */
+  path: string;
+  /** 相对仓库根的正斜杠路径 */
+  relative: string;
+  /** A / M / D / R / C / ?（未跟踪） */
+  status: string;
+  /** 未提交文件里，改动是否在暂存区 */
+  staged: boolean;
+  /** 是不是未提交改动 */
+  dirty: boolean;
+  additions: number;
+  deletions: number;
+}
+
+/** 审阅工作台里的一条提交 */
+export interface ReviewCommit {
+  hash: string;
+  short: string;
+  author: string;
+  /** Unix 秒 */
+  time: number;
+  subject: string;
+}
+
+/** 一条工作线的审阅数据 */
+export interface WorkstreamReview {
+  branch: string;
+  base: string;
+  baseSha: string | null;
+  head: string | null;
+  detached: boolean;
+  commits: ReviewCommit[];
+  /** 已提交部分的文件 */
+  files: ReviewFile[];
+  /** 工作树里还没提交的文件 */
+  dirtyFiles: ReviewFile[];
+  changed: number;
+  conflicts: number;
+  additions: number;
+  deletions: number;
+}
+
 /** 一条 stash 记录 */
 export interface GitStash {
   /** `stash@{n}` 里的那个 n，恢复 / 丢弃时要原样带回去 */
