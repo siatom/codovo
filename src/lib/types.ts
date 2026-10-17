@@ -117,6 +117,32 @@ export interface WorktreeInfo {
   current: boolean;
 }
 
+/**
+ * 一个 worktree 的轻量动态状态（概览逐条标注用，`git_worktree_status` 返回）。
+ *
+ * 与 `WorktreeInfo` 分开两份：那份是**结构**（有哪些工作树、检出了什么、是否失效），
+ * 跟着 `git_worktree_list` 走；这份是**动态**（脏不脏、领先落后、进行中），成本高、
+ * 拉得慢，按 path 对齐。分开之后概览的轮询节奏不用迁就结构列表。
+ */
+export interface WorktreeStatus {
+  /** 工作树目录的绝对路径；和 `WorktreeInfo.path` 同一写法，按它对齐 */
+  path: string;
+  /** 检出的分支短名；游离 HEAD 时为 null */
+  branch: string | null;
+  /** HEAD 的提交号；空仓库时为 null */
+  head: string | null;
+  /** 未提交的文件数（未跟踪目录已按文件展开计） */
+  changed: number;
+  /** 未合并（冲突）条目数 */
+  conflicts: number;
+  /** 卡在一次没结束的多步操作里（合并 / 变基 / 拣选 / 还原） */
+  merging: boolean;
+  /** 进行中的具体操作类型；没有时是 null */
+  mergeKind: "merge" | "rebase" | "cherryPick" | "revert" | null;
+  ahead: number;
+  behind: number;
+}
+
 /** 一条 stash 记录 */
 export interface GitStash {
   /** `stash@{n}` 里的那个 n，恢复 / 丢弃时要原样带回去 */

@@ -2549,6 +2549,80 @@ pub fn git_worktree_prune(
     worktrees_of(&root, &state)
 }
 
+/// 一个 worktree 的**轻量动态状态**，供「工作树概览」逐条标注。
+///
+/// 只带概览要用的几项：未提交改动数、领先 / 落后、进行中的多步操作与冲突数。
+/// 文件明细不带——概览只看「有没有、有几个」，逐条列出只会白白撑大 IPC。
+/// 字段口径与 `git_status` **完全一致**（同一套 `status_of_with_counts` 算出来的），
+/// 免得概览和面板当前工作树两处数字打架。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeStatus {
+    /// 工作树目录的绝对路径；和 `WorktreeInfo.path` 同一写法（canonical），前端按它对齐
+    path: String,
+    /// 检出的分支短名；游离 HEAD 时为 None
+    branch: Option<String>,
+    /// HEAD 的提交号；空仓库时为 None
+    head: Option<String>,
+    /// 未提交的**文件**数（未跟踪目录已按文件展开计）
+    changed: u32,
+    /// 未合并（冲突）条目数，含 AA/DD 这种 XY 里没有 U 的
+    conflicts: u32,
+    /// 卡在一次没结束的多步操作里（合并 / 变基 / 拣选 / 还原）
+    merging: bool,
+    /// 进行中的具体操作类型；没有时是 None
+    merge_kind: Option<String>,
+    ahead: u32,
+    behind: u32,
+}
+
+/// 逐个工作树汇总轻量状态。
+///
+/// 先复用 `worktrees_of` 拿 canonical 路径（顺带把存在的工作树登记进白名单），再对每个
+/// **目录存在、非 bare** 的工作树跑一次不带 numstat 的 status（行数概览用不上，省两个
+/// git 进程）。bare 没有工作区文件、prunable 的目录都没了，一律跳过——给它们算状态没
+/// 有意义。
+///
+/// 成本是「工作树数 × 一次 git status」，比单根轮询重，调用方必须按可见性和更慢的节奏
+/// 去拉（前端只在概览露在眼前时、约 10 秒一次）。
+fn worktree_statuses_of(root: &Path, state: &FsState) -> Result<Vec<WorktreeStatus>, String> {
+    let worktrees = worktrees_of(root, state)?;
+    let mut out = Vec::with_capacity(worktrees.len());
+    for item in worktrees {
+        // bare 没有工作区文件；目录不存在（prunable）连 cd 都进不去，都没法算状态
+        if !item.exists || item.bare {
+            continue;
+        }
+        let status = match status_of_with_counts(Path::new(&item.path), false) {
+            Ok(status) => status,
+            // 单棵工作树读失败（比如目录刚好被外部删掉）不该拖垮整个列表：跳过它
+            Err(_) => continue,
+        };
+        out.push(WorktreeStatus {
+            path: item.path,
+            branch: status.branch,
+            head: status.head,
+            changed: status.changed,
+            conflicts: status.conflicts,
+            merging: status.merging,
+            merge_kind: status.merge_kind,
+            ahead: status.ahead,
+            behind: status.behind,
+        });
+    }
+    Ok(out)
+}
+
+/// 仓库下每个工作树的轻量状态。目录不是仓库 / 没有工作树时返回空数组，不是错误。
+#[tauri::command(async)]
+pub fn git_worktree_status(
+    state: tauri::State<'_, FsState>,
+    root: String,
+) -> Result<Vec<WorktreeStatus>, String> {
+    let root = state.checked_root(&root)?;
+    worktree_statuses_of(&root, &state)
+}
+
 #[tauri::command(async)]
 pub fn git_status(
     state: tauri::State<'_, FsState>,
@@ -5846,6 +5920,49 @@ mod tests {
                 .all(|item| !same_dir(&item.path, wt.to_str().unwrap())),
             "prune 后不该再有这条记录"
         );
+
+        cleanup(&top);
+    }
+
+    /// 概览要逐条标注每个工作树脏不脏、在哪个分支上。这里造一个「干净的主工作树 +
+    /// 有未提交改动的工作树」，断言汇总能分别标出来，且口径和 status 一致。
+    #[test]
+    fn worktree_statuses_summarize_each_worktree() {
+        if !git_available() {
+            return;
+        }
+        let (state, repo, top) = temp_repo();
+        init_repo_on_main(&repo);
+        fs::write(repo.join("a.txt"), "1\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        commit_staged(&repo, "init").unwrap();
+        assert!(git(&repo, &["branch", "feat/x"]));
+
+        let wt = top.join("repo-wt");
+        assert!(
+            git(&repo, &["worktree", "add", wt.to_str().unwrap(), "feat/x"]),
+            "git worktree add 失败"
+        );
+        // 在别的工作树里留一处未提交改动
+        fs::write(wt.join("dirty.txt"), "wip\n").unwrap();
+
+        let list = worktree_statuses_of(&repo, &state).unwrap();
+        let main = list
+            .iter()
+            .find(|item| same_dir(&item.path, repo.to_str().unwrap()))
+            .expect("主工作树应在列表里");
+        assert_eq!(main.branch.as_deref(), Some("main"));
+        assert_eq!(main.changed, 0, "主工作树是干净的");
+        assert!(!main.merging);
+
+        let other = list
+            .iter()
+            .find(|item| same_dir(&item.path, wt.to_str().unwrap()))
+            .expect("另一个工作树应在列表里");
+        assert_eq!(other.branch.as_deref(), Some("feat/x"));
+        assert_eq!(other.changed, 1, "未跟踪的新文件要算进改动数");
+        assert_eq!(other.conflicts, 0);
+        assert!(!other.merging);
 
         cleanup(&top);
     }
