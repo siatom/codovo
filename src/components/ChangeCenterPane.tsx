@@ -468,7 +468,7 @@ export function ChangeCenterPane({
                     className="h-7 w-full rounded border border-line-strong bg-surface px-2 font-mono text-[11px] text-fg outline-none placeholder:text-fg-faint focus:border-accent"
                   />
                   <p className="mt-1 text-[10px] text-fg-faint">
-                    在仓库同级创建 worktree，基准 {base}
+                    在仓库的 .worktrees 目录创建，基准 {base}
                   </p>
                   <div className="mt-1.5 flex justify-end gap-1.5">
                     <button

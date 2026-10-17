@@ -3431,6 +3431,47 @@ pub fn workstream_remove(
     workstreams_of(&root, &state)
 }
 
+/// 把 `.worktrees/` 写进本地 `.git/info/exclude`（只在本机生效，不进版本库）。
+/// 只追加、不改已有内容；失败不影响创建，最多让主工作区多一条未跟踪目录。
+fn ensure_worktrees_excluded(top: &Path) {
+    let raw = match run_git(
+        top,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ) {
+        Ok(Some(bytes)) => Some(bytes),
+        _ => run_git(top, &["rev-parse", "--git-common-dir"])
+            .ok()
+            .flatten(),
+    };
+    let Some(raw) = raw else { return };
+    let text = String::from_utf8_lossy(&raw).trim().to_string();
+    if text.is_empty() {
+        return;
+    }
+    let mut common = PathBuf::from(&text);
+    if common.is_relative() {
+        let joined = top.join(&common);
+        common = joined.canonicalize().unwrap_or(joined);
+    }
+    let exclude = common.join("info").join("exclude");
+    let existing = fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|line| {
+        let line = line.trim();
+        line == ".worktrees/" || line == ".worktrees"
+    }) {
+        return;
+    }
+    if let Some(parent) = exclude.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str(".worktrees/\n");
+    let _ = fs::write(&exclude, next);
+}
+
 fn create_workstream(
     root: &Path,
     state: &FsState,
@@ -3451,10 +3492,6 @@ fn create_workstream(
         .filter(|value| !value.is_empty())
         .ok_or("这个目录不是 git 仓库")?;
     let top = PathBuf::from(top);
-    let repo_name = top
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| "repo".to_string());
     let slug: String = name
         .chars()
         .map(|ch| {
@@ -3469,13 +3506,16 @@ fn create_workstream(
     if slug.is_empty() {
         return Err("分支名里没有可用的目录名".to_string());
     }
-    let parent = top.parent().ok_or("找不到仓库的上级目录")?;
-    let container = parent.join(format!("{repo_name}-worktrees"));
+    // 统一放在仓库内的 .worktrees/ 下，和 worktree 技能的布局一致。
+    // 同时把它写进本地 .git/info/exclude：这个目录只属于本机，不该出现在
+    // 主工作区的 status 里，也不该改仓库里受版本管理的 .gitignore。
+    let container = top.join(".worktrees");
     let dir = container.join(slug);
     if dir.exists() {
         return Err(format!("目标目录已经存在：{}", dir.display()));
     }
     fs::create_dir_all(&container).map_err(|reason| format!("创建目录失败: {reason}"))?;
+    ensure_worktrees_excluded(&top);
     let dir_text = dir.to_string_lossy().to_string();
     run_git_checked(
         root,
@@ -7413,7 +7453,7 @@ mod tests {
     }
 
     #[test]
-    fn workstream_create_makes_worktree_outside_the_repo() {
+    fn workstream_create_makes_worktree_under_dot_worktrees() {
         if !git_available() {
             return;
         }
@@ -7431,8 +7471,14 @@ mod tests {
         assert_eq!(created.kind, "worktree");
         assert!(created.exists);
         assert!(Path::new(&created.path).is_dir());
-        // 目录建在仓库同级，而不是仓库内部，避免污染工作区
-        assert!(!created.path.replace('\\', "/").contains("/repo/"));
+        // 统一建在仓库内的 .worktrees/ 下
+        assert!(created
+            .path
+            .replace('\\', "/")
+            .contains("/repo/.worktrees/agent-new"));
+        // 并且写进本地 exclude，主工作区不该多出未跟踪目录
+        let exclude = fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default();
+        assert!(exclude.lines().any(|line| line.trim() == ".worktrees/"));
 
         cleanup(&top);
     }
