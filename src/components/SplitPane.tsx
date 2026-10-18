@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 interface SplitPaneProps {
   first: ReactNode;
@@ -24,6 +24,12 @@ interface SplitPaneProps {
    * 均分在那里落不下去。
    */
   resetOnDoubleClick?: boolean;
+  /**
+   * 第一块按**像素宽度**记，而不是容器百分比。容器变宽 / 变窄（右栏全屏、拖窗口边缘、
+   * 拖外层分隔条）时第一块宽度保持不动，增减的宽度全落到第二块；只有拖动本条分隔条
+   * 才会改第一块的宽度。右栏里的「文件/变更 : 编辑器」走这个，全屏时侧栏不会跟着翻倍。
+   */
+  keepFirstWidth?: boolean;
 }
 
 export function SplitPane({
@@ -35,10 +41,31 @@ export function SplitPane({
   secondCollapsed = false,
   firstCollapsed = false,
   resetOnDoubleClick = false,
+  keepFirstWidth = false,
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(initial);
+  /**
+   * 第一块的像素宽度，只在 keepFirstWidth 时用。先按 initial 折算一次，之后不再跟着
+   * 容器缩放——百分比写法下容器一宽，侧栏就跟着变宽，全屏时尤其明显。
+   */
+  const [firstWidth, setFirstWidth] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
+
+  // 右栏收起 / 停在浏览器等模块时容器宽度是 0，只能等它真正有宽度了再折算像素值。
+  // 折算只做一次：之后容器再怎么变都由第二块吃掉，第一块的宽度归用户拖。
+  useEffect(() => {
+    if (!keepFirstWidth) return;
+    const element = containerRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      const width = element.getBoundingClientRect().width;
+      if (width <= 0) return;
+      setFirstWidth((current) => current ?? (width * initial) / 100);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [keepFirstWidth, initial]);
 
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -52,16 +79,29 @@ export function SplitPane({
       if (!dragging) return;
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect || rect.width <= 0) return;
-      const next = ((event.clientX - rect.left) / rect.width) * 100;
-      setRatio(Math.min(max, Math.max(min, next)));
+      // 两套写法共用同一份 min/max（容器百分比），只是落点一个是像素、一个是比例
+      const next = Math.min(
+        (rect.width * max) / 100,
+        Math.max((rect.width * min) / 100, event.clientX - rect.left),
+      );
+      if (keepFirstWidth) {
+        setFirstWidth(next);
+        return;
+      }
+      setRatio((next / rect.width) * 100);
     },
-    [dragging, max, min],
+    [dragging, keepFirstWidth, max, min],
   );
 
   /** 双击复位：均分，但仍在 min/max 允许的区间内 */
   const resetRatio = useCallback(() => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (keepFirstWidth && rect && rect.width > 0) {
+      setFirstWidth((rect.width * Math.min(max, Math.max(min, 50))) / 100);
+      return;
+    }
     setRatio(Math.min(max, Math.max(min, 50)));
-  }, [max, min]);
+  }, [keepFirstWidth, max, min]);
 
   const stop = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -81,7 +121,17 @@ export function SplitPane({
             ? { flexBasis: 0, flexGrow: 0, flexShrink: 0 }
             : secondCollapsed
               ? { flexBasis: 0, flexGrow: 1, flexShrink: 1 }
-              : { flexBasis: `${ratio}%`, flexGrow: 0, flexShrink: 0 }
+              : keepFirstWidth
+                ? {
+                    // 还没量到宽度时先用百分比顶一下，避免首帧闪一下
+                    flexBasis: firstWidth === null ? `${ratio}%` : `${firstWidth}px`,
+                    flexGrow: 0,
+                    flexShrink: 0,
+                    // 容器被拖得很窄时用 max 兜底，别让侧栏把编辑器挤没。
+                    // 容器重新变宽后上限跟着变大，侧栏自动回到用户拖出来的宽度
+                    maxWidth: `${max}%`,
+                  }
+                : { flexBasis: `${ratio}%`, flexGrow: 0, flexShrink: 0 }
         }
       >
         {first}
