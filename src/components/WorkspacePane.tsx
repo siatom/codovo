@@ -540,6 +540,9 @@ export function WorkspacePane({
                   initial={32}
                   min={12}
                   max={45}
+                  // 侧栏（文件 / 变更）保持像素宽度：右栏全屏、拖窗口边缘、拖外层分隔条时
+                  // 只有编辑器那一列变宽，侧栏不会跟着按比例放大
+                  keepFirstWidth
                   first={
                     <ToolPane
                       tool={activeTool}
