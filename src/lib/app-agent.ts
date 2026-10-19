@@ -171,7 +171,7 @@ async function execute(
       }
       ctx.setFullscreen(area);
       if (area === "none") return "已退出全屏";
-      return `已切换到${area === "left" ? "左侧（终端与智能体）" : "右侧（右边栏）"}全屏`;
+      return `已切换到${area === "left" ? "左侧（终端）" : "右侧（右边栏）"}全屏`;
     }
     default:
       throw new Error(`不支持的界面操作：${tool}`);
@@ -205,10 +205,8 @@ function describeState(ctx: AppAgentContext) {
       editorMinimap: settings.editorMinimap,
       editorWordWrap: settings.editorWordWrap,
       editorIndent: settings.editorIndent,
-      agentEnabled: settings.agentEnabled,
       agentCommand: settings.agentCommand,
       agentPort: settings.agentPort,
-      agentPrimary: settings.agentPrimary,
       rightFilesVisible: settings.rightFilesVisible,
       rightChangesVisible: settings.rightChangesVisible,
       rightBrowserVisible: settings.rightBrowserVisible,
@@ -242,7 +240,6 @@ const BOOLEAN_KEYS = new Set([
   "editorFontBold",
   "editorMinimap",
   "editorWordWrap",
-  "agentEnabled",
   "closeToTray",
   "restoreWorkspace",
   "rightFilesVisible",
@@ -261,7 +258,6 @@ const STRING_KEYS = new Set([
   "editorFontFamily",
   "uiMonoFontFamily",
   "agentCommand",
-  "agentPrimary",
 ]);
 
 const ENUM_KEYS: Record<string, string[]> = {
@@ -274,7 +270,7 @@ const SECTION_LABELS: Record<SettingsSection, string> = {
   terminal: "终端",
   editor: "编辑器",
   shortcuts: "快捷键",
-  agent: "智能体",
+  agent: "AI",
 };
 
 const SECTIONS = Object.keys(SECTION_LABELS) as SettingsSection[];
@@ -282,7 +278,7 @@ const SECTIONS = Object.keys(SECTION_LABELS) as SettingsSection[];
 /**
  * 应用 `update_settings` 的 patch。
  *
- * 逐键校验而不是整块写进 settings：设置里混着 aiProviders / agentGlobal 这类复杂结构，
+ * 逐键校验而不是整块写进 settings：设置里混着 aiProviders 这类复杂结构，
  * 让模型直接覆盖它们太危险；只放行「扁平、能一眼校验」的那些字段，其余报错让模型改口。
  */
 function applySettingsPatch(patch: Record<string, unknown>, ctx: AppAgentContext): string {

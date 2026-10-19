@@ -25,11 +25,11 @@ cd src-tauri && cargo clippy
 ## 关键实现决定
 
 - 多工作区状态按 root 隔离；切换时保留会话与界面状态。
-- 工作区列表按「最近活动」排序：置顶组固定在前，组内按终端 / 智能体最近使用时间倒序（活动按 root 记、存 `codedock.workspaceActivity`，`src/lib/activity.tsx`）。列表不提供拖拽手动排序。
+- 工作区列表按「最近活动」排序：置顶组固定在前，组内按终端 / 助手最近使用时间倒序（活动按 root 记、存 `codedock.workspaceActivity`，`src/lib/activity.tsx`）。列表不提供拖拽手动排序。
 - 所有文件访问必须校验工作区边界；凭据存系统凭据库。
 - 修改前阅读相关代码和注释，遵循现有行为与安全约束。
-- 智能体配置分两层：**全局层**存在 `codedock.settings`（不属于任何仓库），**工作区项目层**以 `<root>/.codedock/` 下的文件为准（`rules.md` / `memory.md` / `skills.json` / `agents.json`，随仓库走）。旧的 `settings.agentWorkspaces` 已弃用，只用于一次性迁移。
-- 预览（`preview.rs`）与智能体服务（`agent.rs`）的进程池都按工作区 root 分片、是独立子进程，切走工作区不杀、退出应用统一清理；Tauri 预览在 Windows 上带 CDP 调试端口。
+- 中间区只跑真正的 AI CLI（顶栏切换、已有标签则切过去、没有则新开），不再有 TUI / GUI 双入口。应用助手是右栏抽屉，仍由 opencode 驱动；项目级规则 / 记忆 / 技能 / agent 只读 `<root>/.codedock/` 下的文件（`rules.md` / `memory.md` / `skills.json` / `agents.json`），设置面板不再提供可视化编辑。旧的 `settings.agentWorkspaces` 只用于一次性迁移。
+- 预览（`preview.rs`）与助手服务（`agent.rs`）的进程池都按工作区 root 分片、是独立子进程，切走工作区不杀、退出应用统一清理；Tauri 预览在 Windows 上带 CDP 调试端口。
 - 「操作对象在前端」的 MCP 工具（应用助手、预览助手）走**文件邮箱桥**：MCP 子进程写请求文件 → 前端轮询执行 → 写回结果（见 `app_agent.rs` / `preview_agent.rs`）。
 ## 发布
 

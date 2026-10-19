@@ -61,6 +61,8 @@ interface WorkspacePaneProps {
   onExitFullscreen: () => void;
   /** handle 挂上 / 卸载时上报，App 按**工作区 id** 存起来 */
   onHandles: (workspaceId: string, handles: WorkspaceHandles) => void;
+  /** 编辑器浮窗「送给助手」：由 App 展开助手抽屉并插入位置引用 */
+  onSendToAssistant: (location: EditorLocation) => void;
 }
 
 /**
@@ -80,6 +82,7 @@ export function WorkspacePane({
   onToggleLeftFullscreen,
   onExitFullscreen,
   onHandles,
+  onSendToAssistant,
 }: WorkspacePaneProps) {
   /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
   const root = workspace.activeRoot;
@@ -289,14 +292,18 @@ export function WorkspacePane({
     [reportHandles],
   );
 
-  /** 编辑器浮窗：把位置引用送到终端会话 / 智能体输入框，两者都在 TerminalPane 里 */
+  /** 编辑器浮窗：把位置引用送到当前终端会话 */
   const insertToTerminal = useCallback((location: EditorLocation) => {
     terminalRef.current?.insertToTerminal(location);
   }, []);
 
-  const insertToAgent = useCallback((location: EditorLocation) => {
-    terminalRef.current?.insertToAgent(location);
-  }, []);
+  /** 编辑器浮窗：送给应用助手——展开抽屉并把位置引用插进它的输入框（由 App 实现） */
+  const insertToAssistant = useCallback(
+    (location: EditorLocation) => {
+      onSendToAssistant(location);
+    },
+    [onSendToAssistant],
+  );
 
   /** 已经开着的标签只切过去，不重复开——连点同一个改动项就是这个路径 */
   const openTab = useCallback((tab: Tab) => {
@@ -557,7 +564,7 @@ export function WorkspacePane({
                       fullscreen={rightFullscreen}
                       onToggleFullscreen={onToggleRightFullscreen}
                       onSendToTerminal={insertToTerminal}
-                      onSendToAgent={insertToAgent}
+                      onSendToAssistant={insertToAssistant}
                     />
                   }
                 />

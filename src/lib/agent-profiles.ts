@@ -6,7 +6,7 @@ const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 /**
  * 内置「应用助手」primary agent 的名字与显示名。名字要和后端
  * `src-tauri/src/agent.rs` 的 `APP_AGENT_AGENT_NAME` 对齐——那边把它写进 opencode 的
- * agent map，这边只是选它。
+ * agent map，右侧助手抽屉固定选它。
  */
 export const APP_AGENT_NAME = "app";
 export const APP_AGENT_LABEL = "应用助手";
@@ -14,8 +14,8 @@ export const APP_AGENT_LABEL = "应用助手";
 /**
  * 内置「预览助手」primary agent 的名字与显示名。名字要和后端
  * `src-tauri/src/agent.rs` 的 `PREVIEW_AGENT_AGENT_NAME` 对齐——那边只有预览助手进程会把它
- * 写进 opencode 的 agent map 并强制成默认 agent。它已经不在终端区的 primary agent 候选里了
- * （见 `primaryAgentOptions`），所以前端不拿名字去选，只留 `PREVIEW_AGENT_LABEL` 给面板显示。
+ * 写进 opencode 的 agent map 并强制成默认 agent。前端不拿名字去选，只留
+ * `PREVIEW_AGENT_LABEL` 给面板显示。
  */
 export const PREVIEW_AGENT_NAME = "preview";
 export const PREVIEW_AGENT_LABEL = "预览助手";
@@ -54,25 +54,4 @@ export function mergeAgentLayer(global: AgentLayer, workspace: AgentLayer): Agen
       (agent) => agent.enabled && isValidAgentName(agent.name),
     ),
   };
-}
-
-/** 对话面板选择器的 primary agent 候选：内置 build / plan / 应用助手 + 生效层里的 primary / all */
-export function primaryAgentOptions(layer: AgentLayer): { value: string; label: string }[] {
-  const custom = layer.agents
-    .filter((agent) => agent.mode === "primary" || agent.mode === "all")
-    .map((agent) => ({ value: agent.name, label: agent.name }));
-  return [
-    { value: "build", label: "build" },
-    { value: "plan", label: "plan" },
-    // 应用助手由后端无条件注入到工作区智能体的配置里（见 agent.rs 的 write_config），
-    // 所以它总在候选里；选中只是把 primary 切成对应名字。
-    // 预览助手已挪到右栏「预览」面板（它只在预览助手进程里注入），这里不再给选项。
-    { value: APP_AGENT_NAME, label: APP_AGENT_LABEL },
-    ...custom,
-  ];
-}
-
-/** 写回全局层配置，返回可直接 update 的补丁。项目层不走这里——它以 `.codedock/` 下的文件为准 */
-export function withGlobalLayer(layer: AgentLayer): { agentGlobal: AgentLayer } {
-  return { agentGlobal: layer };
 }
