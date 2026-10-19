@@ -35,7 +35,7 @@ import {
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { agentTarget, useAttention, type AttentionKind } from "../lib/attention";
-import { APP_AGENT_NAME, mergeAgentLayer } from "../lib/agent-profiles";
+import { APP_AGENT_LABEL, APP_AGENT_NAME, mergeAgentLayer } from "../lib/agent-profiles";
 import { readWorkspaceLayer } from "../lib/agent-config";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentHistoryMenu } from "./AgentHistoryMenu";
@@ -726,7 +726,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
-        <span className="shrink-0 text-[12px] font-medium text-fg">应用助手</span>
+        <span className="shrink-0 text-[12px] font-medium text-fg">{APP_AGENT_LABEL}</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
           opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
           {/* 只在真配了提供商时才把引用译成名字：开发调试下提供商是后端合成的，

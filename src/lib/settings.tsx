@@ -90,20 +90,14 @@ export interface Settings {
   aiDefaultProvider: string;
   /** 全局默认模型 id；空或失效时回落到该提供商的第一个启用模型 */
   aiDefaultModel: string;
-  /** 终端区是否出现「终端 / 智能体」切换；关掉就和以前一样只有终端 */
-  agentEnabled: boolean;
-  /** opencode 可执行文件；裸命令名会去 PATH 里找 */
+  /** opencode 可执行文件；裸命令名会去 PATH 里找。应用助手（右栏抽屉）与数据库 / 预览助手共用它 */
   agentCommand: string;
   /** 智能体服务监听的端口；0 表示自动挑一个空闲的 */
   agentPort: number;
-  /** 对话面板里选中的 primary agent；空或不存在时由 opencode 回落到 build */
-  agentPrimary: string;
-  /** 全局层的智能体配置（所有工作区共享） */
-  agentGlobal: AgentLayer;
   /**
    * @deprecated 工作区层的智能体配置已改以工作区根下 `.codedock/` 的文件为准，
-   * 这里只保留旧数据用于一次性迁移（见 lib/agent-config.ts 的 readWorkspaceLayer）
-   * 以及删除提供商时对遗留引用的粗略计数。新代码不要再读写它。
+   * 这里只保留旧数据用于一次性迁移（见 lib/agent-config.ts 的 readWorkspaceLayer）。
+   * 新代码不要再读写它。
    */
   agentWorkspaces: Record<string, AgentLayer>;
   /** 界面字体（CSS font-family），留空用默认无衬线栈；只作用于界面，终端与编辑器各自另设 */
@@ -182,7 +176,6 @@ export type SettingsSection = "appearance" | "terminal" | "editor" | "shortcuts"
  */
 const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   appearance: [
-    "agentEnabled",
     "uiFontFamily",
     "terminalFontFamily",
     "terminalFontSize",
@@ -222,8 +215,6 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "aiDefaultModel",
     "agentCommand",
     "agentPort",
-    "agentPrimary",
-    "agentGlobal",
     "agentWorkspaces",
   ],
 };
@@ -280,11 +271,8 @@ const DEFAULTS: Settings = {
   aiProviders: [],
   aiDefaultProvider: "",
   aiDefaultModel: "",
-  agentEnabled: true,
   agentCommand: "opencode",
   agentPort: 0,
-  agentPrimary: "build",
-  agentGlobal: emptyAgentLayer(),
   agentWorkspaces: {},
   uiFontFamily: "",
   terminalShell: "",
@@ -527,13 +515,11 @@ function readSaved(): Settings {
     aiProviders,
     aiDefaultProvider: asString(raw.aiDefaultProvider, DEFAULTS.aiDefaultProvider),
     aiDefaultModel: asString(raw.aiDefaultModel, DEFAULTS.aiDefaultModel),
-    // 老版本的设置里没有这三个字段，asBoolean 回落 true 就是默认开着
-    agentEnabled: asBoolean(raw.agentEnabled, DEFAULTS.agentEnabled),
+    // 老版本的设置里没有这两个字段，asBoolean 回落 true 就是默认开着
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
-    agentPrimary: asString(raw.agentPrimary, DEFAULTS.agentPrimary),
-    // 老版本的设置里没有这两项，回落成空层 / 空表；更早的字段叫 agentProjects，兜底读旧名
-    agentGlobal: asLayer(raw.agentGlobal),
+    // 老版本的设置里没有这一项，回落成空表；更早的字段叫 agentProjects，兜底读旧名。
+    // 只用于一次性迁移到 `.codedock/`（见 lib/agent-config.ts 的 readWorkspaceLayer）
     agentWorkspaces: asWorkspaceLayers(raw.agentWorkspaces ?? raw.agentProjects),
     uiFontFamily: asString(raw.uiFontFamily, DEFAULTS.uiFontFamily),
     terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),
@@ -616,7 +602,6 @@ function freshDefaults(): Settings {
     ...DEFAULTS,
     aiCommands: DEFAULTS.aiCommands.map((item) => ({ ...item })),
     aiProviders: [],
-    agentGlobal: emptyAgentLayer(),
     agentWorkspaces: {},
     shortcuts: defaultShortcuts(),
   };

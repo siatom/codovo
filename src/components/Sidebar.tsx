@@ -361,7 +361,7 @@ export function Sidebar({
         </div>
 
         {settingsOpen && (
-          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={activeRoot} />
+          <SettingsDialog onClose={() => setSettingsOpen(false)} />
         )}
         {feedbackOpen && (
           <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
@@ -625,7 +625,7 @@ export function Sidebar({
       </footer>
 
       {settingsOpen && (
-          <SettingsDialog onClose={() => setSettingsOpen(false)} cwd={activeRoot} />
+          <SettingsDialog onClose={() => setSettingsOpen(false)} />
         )}
 
       {feedbackOpen && (

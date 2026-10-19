@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
   useSettings,
-  emptyAgentLayer,
   FONT_SIZE_MIN,
   FONT_SIZE_MAX,
   AUTOSAVE_DELAY_MIN,
@@ -17,9 +16,6 @@ import {
   DEFAULT_MONO_FONT,
   DEFAULT_UI_FONT,
   resolveFont,
-  type AgentLayer,
-  type AgentProfile,
-  type AgentSkill,
   type AiCommand,
   type AiProvider,
   type AutoSaveMode,
@@ -28,15 +24,9 @@ import {
   type Settings,
   type SettingsSection,
 } from "../lib/settings";
-import { isValidAgentName, withGlobalLayer } from "../lib/agent-profiles";
-import {
-  readWorkspaceLayerFile,
-  writeWorkspaceLayerFile,
-} from "../lib/agent-config";
 import {
   emptyModel,
   emptyProvider,
-  modelRef,
   modelRefOptions,
   newProviderId,
   resolveDefaultModel,
@@ -67,8 +57,6 @@ import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconGrip
 
 interface SettingsDialogProps {
   onClose: () => void;
-  /** 当前工作区路径；「智能体」分类的工作区层按它分桶，没开工作区时为 null */
-  cwd?: string | null;
 }
 
 /** 分类靠左边的竖排 tab，内容区一次只显示一组 */
@@ -77,7 +65,7 @@ const TABS = [
   { id: "terminal", label: "终端" },
   { id: "editor", label: "编辑器" },
   { id: "shortcuts", label: "快捷键" },
-  { id: "agent", label: "智能体" },
+  { id: "agent", label: "AI" },
   { id: "dependencies", label: "依赖" },
 ] as const;
 
@@ -85,11 +73,11 @@ type TabId = (typeof TABS)[number]["id"];
 
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
-  appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、智能体入口、启动恢复和关闭窗口行为",
+  appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
   terminal: "终端程序、配色，以及 AI CLI 列表",
   editor: "缩进宽度、缩略图、自动换行和自动保存",
   shortcuts: "全部快捷键键位",
-  agent: "模型提供商、密钥和智能体配置",
+  agent: "模型提供商、密钥，以及助手运行用的 opencode 与端口",
 };
 
 /** 依赖页只有环境检测与安装，没有可恢复的设置项 */
@@ -808,13 +796,7 @@ const RESIZE_HANDLES: { edges: ResizeEdges; className: string }[] = [
   { edges: { s: true, e: true }, className: "bottom-0 right-0 h-3 w-3 cursor-nwse-resize" },
 ];
 
-const AGENT_MODE_OPTIONS: { value: AgentProfile["mode"]; label: string }[] = [
-  { value: "primary", label: "主智能体" },
-  { value: "subagent", label: "子智能体" },
-  { value: "all", label: "两者皆可" },
-];
-
-/** 一条技能 / 一个 agent 的启用开关。用自绘滑块，省得给 checkbox 单独写样式 */
+/** 一条技能的启用开关。用自绘滑块，省得给 checkbox 单独写样式 */
 function Toggle({
   checked,
   onChange,
@@ -1426,79 +1408,6 @@ function ProviderEditor({
   );
 }
 
-/** 一条技能：折叠时只占一行（名字 + 开关），展开才编辑描述和正文 */
-function SkillEditor({
-  skill,
-  open,
-  onToggle,
-  onChange,
-  onRemove,
-}: {
-  skill: AgentSkill;
-  open: boolean;
-  onToggle: () => void;
-  onChange: (next: AgentSkill) => void;
-  onRemove: () => void;
-}) {
-  const patch = (part: Partial<AgentSkill>) => onChange({ ...skill, ...part });
-  const invalid = skill.name.trim() !== "" && !isValidAgentName(skill.name);
-  return (
-    <div className="w-full overflow-hidden rounded-md border border-line-strong">
-      <div className="flex items-center gap-1.5 p-2">
-        <CollapseHeader
-          open={open}
-          onToggle={onToggle}
-          mono
-          placeholder="未命名技能"
-          label={skill.name}
-        />
-        {invalid && <span className="shrink-0 text-[11px] text-danger">名称非法</span>}
-        {!skill.enabled && <span className="shrink-0 text-[11px] text-fg-faint">已停用</span>}
-        <Toggle
-          checked={skill.enabled}
-          title={skill.enabled ? "已启用" : "已停用"}
-          onChange={(next) => patch({ enabled: next })}
-        />
-        <button type="button" onClick={onRemove} title="删除技能" className={LIST_ACTION}>
-          <IconClose className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {open && (
-        <div className="flex flex-col gap-2 border-t border-line p-2">
-          <input
-            type="text"
-            value={skill.name}
-            spellCheck={false}
-            placeholder="技能名（小写字母、数字、连字符）"
-            onChange={(event) => patch({ name: event.target.value })}
-            className={`${TEXT_INPUT} font-mono`}
-          />
-          {invalid && (
-            <p className="text-[11px] text-danger">
-              名字只能用小写字母、数字和单个连字符，例如 my-skill
-            </p>
-          )}
-          <input
-            type="text"
-            value={skill.description}
-            placeholder="描述：什么时候该用它（必填）"
-            onChange={(event) => patch({ description: event.target.value })}
-            className={TEXT_INPUT}
-          />
-          <textarea
-            value={skill.content}
-            rows={4}
-            spellCheck={false}
-            placeholder="技能正文（markdown）"
-            onChange={(event) => patch({ content: event.target.value })}
-            className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
 /**
  * 默认模型存的那对指向可能刚被删掉、停用或清空。失效就把它写回落后的结果，
  * 让「存着的」和「界面上显示的」是同一个——不然重开设置面板又会跳到别家。
@@ -1517,270 +1426,6 @@ function defaultPatch(settings: Settings): Partial<Settings> {
     return {};
   }
   return { aiDefaultProvider: resolved.providerId, aiDefaultModel: resolved.modelId };
-}
-
-/** 有多少个 Agent 绑在这个提供商的模型上（全局层 + 遗留的工作区层 localStorage 值） */
-function countAgentRefs(settings: Settings, providerId: string): number {
-  const prefix = modelRef(providerId, "");
-  const layers = [settings.agentGlobal, ...Object.values(settings.agentWorkspaces)];
-  return layers.reduce(
-    (total, layer) =>
-      total +
-      layer.agents.filter((agent) => agent.model.trim().startsWith(prefix)).length,
-    0,
-  );
-}
-
-/** 模式在折叠行上的短标签 */
-const MODE_SHORT: Record<AgentProfile["mode"], string> = {
-  primary: "主",
-  subagent: "子",
-  all: "通用",
-};
-
-/** 一个自定义 agent：折叠时只占一行（名字 + 模式），展开才编辑其余字段 */
-function AgentEditor({
-  agent,
-  open,
-  modelOptions,
-  onToggle,
-  onChange,
-  onRemove,
-}: {
-  agent: AgentProfile;
-  open: boolean;
-  /** 可绑定的 `provider/model` 候选，来自「模型提供商」那一节 */
-  modelOptions: { value: string; label: string }[];
-  onToggle: () => void;
-  onChange: (next: AgentProfile) => void;
-  onRemove: () => void;
-}) {
-  const patch = (part: Partial<AgentProfile>) => onChange({ ...agent, ...part });
-  const invalid = agent.name.trim() !== "" && !isValidAgentName(agent.name);
-
-  // 绑定值可能指向已被删掉的提供商/模型：补一条「不可用」的候选，
-  // 不然下拉会显示成空的，让人以为根本没绑
-  const bound = agent.model.trim();
-  const options = [
-    { value: "", label: "使用全局默认" },
-    ...modelOptions,
-    ...(bound && !modelOptions.some((option) => option.value === bound)
-      ? [{ value: bound, label: `${bound}（不可用）` }]
-      : []),
-  ];
-  return (
-    <div className="w-full overflow-hidden rounded-md border border-line-strong">
-      <div className="flex items-center gap-1.5 p-2">
-        <CollapseHeader
-          open={open}
-          onToggle={onToggle}
-          mono
-          placeholder="未命名 Agent"
-          label={agent.name}
-        />
-        {invalid && <span className="shrink-0 text-[11px] text-danger">名称非法</span>}
-        {!agent.enabled && <span className="shrink-0 text-[11px] text-fg-faint">已停用</span>}
-        <span className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[11px] text-fg-dim">
-          {MODE_SHORT[agent.mode]}
-        </span>
-        <Toggle
-          checked={agent.enabled}
-          title={agent.enabled ? "已启用" : "已停用"}
-          onChange={(next) => patch({ enabled: next })}
-        />
-        <button type="button" onClick={onRemove} title="删除 Agent" className={LIST_ACTION}>
-          <IconClose className="h-3.5 w-3.5" />
-        </button>
-      </div>
-      {open && (
-        <div className="flex flex-col gap-2 border-t border-line p-2">
-          <input
-            type="text"
-            value={agent.name}
-            spellCheck={false}
-            placeholder="名称（小写字母、数字、连字符）"
-            onChange={(event) => patch({ name: event.target.value })}
-            className={`${TEXT_INPUT} font-mono`}
-          />
-          {invalid && (
-            <p className="text-[11px] text-danger">
-              名称只能用小写字母、数字和单个连字符，例如 code-reviewer
-            </p>
-          )}
-          <input
-            type="text"
-            value={agent.description}
-            placeholder="描述：它做什么（必填）"
-            onChange={(event) => patch({ description: event.target.value })}
-            className={TEXT_INPUT}
-          />
-          <div className="flex items-center gap-2">
-            <div className="w-36 shrink-0">
-              <Select
-                value={agent.mode}
-                options={AGENT_MODE_OPTIONS}
-                onChange={(next) => patch({ mode: next })}
-              />
-            </div>
-            <div className="min-w-0 flex-1">
-              <Select
-                value={bound}
-                options={options}
-                onChange={(next) => patch({ model: next })}
-              />
-            </div>
-          </div>
-          <textarea
-            value={agent.prompt}
-            rows={4}
-            spellCheck={false}
-            placeholder="系统提示词：告诉它该怎么做"
-            onChange={(event) => patch({ prompt: event.target.value })}
-            className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** 一层智能体配置的编辑区：规则 / 记忆 / 技能 / Agents。全局层与工作区层共用 */
-function LayerEditor({
-  layer,
-  modelOptions,
-  onChange,
-}: {
-  layer: AgentLayer;
-  /** 透传给 AgentEditor 的模型候选；来源是「模型提供商」那一节 */
-  modelOptions: { value: string; label: string }[];
-  onChange: (next: AgentLayer) => void;
-}) {
-  const patch = (part: Partial<AgentLayer>) => onChange({ ...layer, ...part });
-
-  // 手风琴：一次只展开一条技能 / 一个 agent，否则列表一长整页都被撑开。
-  // 新加的条目直接展开，让用户能马上填名字
-  const [openSkill, setOpenSkill] = useState<number | null>(null);
-  const [openAgent, setOpenAgent] = useState<number | null>(null);
-
-  const addSkill = () => {
-    setOpenSkill(layer.skills.length);
-    patch({
-      skills: [
-        ...layer.skills,
-        { name: "", description: "", content: "", enabled: true },
-      ],
-    });
-  };
-  const addAgent = () => {
-    setOpenAgent(layer.agents.length);
-    patch({
-      agents: [
-        ...layer.agents,
-        { name: "", description: "", mode: "subagent", model: "", prompt: "", enabled: true },
-      ],
-    });
-  };
-
-  return (
-    <>
-      <Field
-        label="规则"
-        hint="每次对话都会注入，用来约束智能体的行为（相当于 opencode 的 AGENTS.md）"
-      >
-        <textarea
-          value={layer.rules}
-          rows={4}
-          spellCheck={false}
-          placeholder="例如：改动前先读 README；注释一律用中文；不要顺手重构无关代码…"
-          onChange={(event) => patch({ rules: event.target.value })}
-          className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
-        />
-      </Field>
-
-      <Field
-        label="记忆"
-        hint="长期沉淀的事实与偏好，同样每次对话注入；和「规则」分开只是为了好管理"
-      >
-        <textarea
-          value={layer.memory}
-          rows={4}
-          spellCheck={false}
-          placeholder="例如：本机 cargo 走 tuna 镜像；应用打包主体是「硅原子」…"
-          onChange={(event) => patch({ memory: event.target.value })}
-          className={`${TEXT_INPUT} resize-y font-mono leading-relaxed`}
-        />
-      </Field>
-
-      <Field
-        label="技能"
-        hint="每条物化成一份 SKILL.md，智能体按需加载；停用或名字非法的条目不会下发"
-        action={
-          <button type="button" onClick={addSkill} title="新增技能" className={HEAD_ACTION}>
-            <IconPlus className="h-3.5 w-3.5" />
-          </button>
-        }
-      >
-        <div className="flex w-full flex-col gap-2">
-          {layer.skills.length === 0 ? (
-            <p className="text-[11px] text-fg-faint">还没有技能</p>
-          ) : (
-            layer.skills.map((skill, index) => (
-              <SkillEditor
-                key={index}
-                skill={skill}
-                open={openSkill === index}
-                onToggle={() => setOpenSkill(openSkill === index ? null : index)}
-                onChange={(next) =>
-                  patch({
-                    skills: layer.skills.map((item, i) => (i === index ? next : item)),
-                  })
-                }
-                onRemove={() => {
-                  setOpenSkill(null);
-                  patch({ skills: layer.skills.filter((_, i) => i !== index) });
-                }}
-              />
-            ))
-          )}
-        </div>
-      </Field>
-
-      <Field
-        label="Agents"
-        hint="自定义智能体；主智能体能在这里的对话面板顶部切换，子智能体由主智能体按需调用"
-        action={
-          <button type="button" onClick={addAgent} title="新增 Agent" className={HEAD_ACTION}>
-            <IconPlus className="h-3.5 w-3.5" />
-          </button>
-        }
-      >
-        <div className="flex w-full flex-col gap-2">
-          {layer.agents.length === 0 ? (
-            <p className="text-[11px] text-fg-faint">还没有自定义 Agent</p>
-          ) : (
-            layer.agents.map((agent, index) => (
-              <AgentEditor
-                key={index}
-                agent={agent}
-                modelOptions={modelOptions}
-                open={openAgent === index}
-                onToggle={() => setOpenAgent(openAgent === index ? null : index)}
-                onChange={(next) =>
-                  patch({
-                    agents: layer.agents.map((item, i) => (i === index ? next : item)),
-                  })
-                }
-                onRemove={() => {
-                  setOpenAgent(null);
-                  patch({ agents: layer.agents.filter((_, i) => i !== index) });
-                }}
-              />
-            ))
-          )}
-        </div>
-      </Field>
-    </>
-  );
 }
 
 function DependencyRow({
@@ -2017,7 +1662,7 @@ function AiCommandList({
   );
 }
 
-export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
+export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const { settings, update, reset, resetSection, secretNotice } = useSettings();
   // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
   const devAi = useDevAiOverrides();
@@ -2028,27 +1673,17 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
   ].filter((label) => label !== "");
   const { theme, palette, setPreference } = useTheme();
   const [tab, setTab] = useState<TabId>("appearance");
-  /** 「智能体」分类的作用域：全局层还是当前工作区的层 */
-  const [agentScope, setAgentScope] = useState<"global" | "workspace">("global");
-  /**
-   * 「本工作区」作用域下从 `<cwd>/.codedock/` 读到的项目层；null 表示还没读到
-   * （或当前是全局作用域）。项目层以文件为准，不再走 localStorage。
-   */
-  const [workspaceLayer, setWorkspaceLayer] = useState<AgentLayer | null>(null);
-  /** 项目层落盘 / 读取失败时的提示（例如工作区目录只读） */
-  const [workspaceError, setWorkspaceError] = useState("");
   /** 等确认的恢复默认：某个分类 id、`all` 表示整块回厂、null 表示没有 */
   const [confirmReset, setConfirmReset] = useState<TabId | "all" | null>(null);
-  /** 提供商列表的手风琴：一次只展开一条，和技能 / Agent 一个交互 */
+  /** 提供商列表的手风琴：一次只展开一条 */
   const [openProvider, setOpenProvider] = useState<number | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
   const [installMessage, setInstallMessage] = useState("");
   const [dependencyStatuses, setDependencyStatuses] = useState<Record<string, DependencyStatus>>({});
   const [checkingDependencies, setCheckingDependencies] = useState(true);
-  /** 等确认的「删除提供商」；带上被引用的次数，确认框里说清影响面 */
+  /** 等确认的「删除提供商」 */
   const [pendingRemove, setPendingRemove] = useState<{
     provider: AiProvider;
-    refs: number;
   } | null>(null);
   // 一次滚轮手势会连着抛好几个事件，不挡一下会一口气翻过两三个分类
   const lastFlipRef = useRef(0);
@@ -2116,38 +1751,11 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     void refreshDependencies();
   }, []);
 
-  // 项目层以工作区根下的 `.codedock/` 文件为准；切到「本工作区」或换 cwd 时重读。
-  // 全局作用域不读文件，顺手把状态清掉，避免下次切回来时短暂显示旧值。
-  useEffect(() => {
-    if (agentScope !== "workspace" || !cwd) {
-      setWorkspaceLayer(null);
-      setWorkspaceError("");
-      return;
-    }
-    let cancelled = false;
-    setWorkspaceLayer(null);
-    readWorkspaceLayerFile(cwd)
-      .then((loaded) => {
-        if (cancelled) return;
-        setWorkspaceLayer(loaded);
-        setWorkspaceError("");
-      })
-      .catch((reason) => {
-        if (cancelled) return;
-        setWorkspaceLayer(emptyAgentLayer());
-        setWorkspaceError(String(reason));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [agentScope, cwd]);
-
   // ---- 模型提供商 ----
 
   /** 下拉里存的是 `provider/model` 引用，不是哪一项；指向失效时由 resolveDefaultModel 兜底 */
   const resolved = resolveDefaultModel(settings);
   const defaultRef = resolved?.ref ?? "";
-  const modelOptions = modelRefOptions(settings);
 
   /** 改一条提供商，顺带把失效的默认指向写回落后的结果 */
   const applyProviders = (aiProviders: AiProvider[]) => {
@@ -2180,9 +1788,9 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
     applyProviders(aiProviders);
   };
 
-  /** 删之前先数一数有多少 Agent 绑在它身上：确认框得说清影响面 */
+  /** 删之前弹确认：模型配置会一起没，不可撤销 */
   const askRemoveProvider = (provider: AiProvider) => {
-    setPendingRemove({ provider, refs: countAgentRefs(settings, provider.id) });
+    setPendingRemove({ provider });
   };
 
   const removeProvider = (provider: AiProvider) => {
@@ -2570,18 +2178,8 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   <Section
                     title="界面"
                     dense
-                    hint="智能体入口和右栏模块显隐；右边栏关掉的模块不再出现在图标条上，至少留一个。"
+                    hint="右栏模块显隐；关掉的模块不再出现在图标条上，至少留一个。"
                   >
-                    <Row
-                      label="智能体（GUI）"
-                      hint="终端区顶栏的「智能体」入口；隐藏后只剩终端"
-                    >
-                      <BoolToggle
-                        value={settings.agentEnabled}
-                        options={VISIBLE_OPTIONS}
-                        onChange={(agentEnabled) => update({ agentEnabled })}
-                      />
-                    </Row>
                     <Row label="文件">
                       <BoolToggle
                         value={settings.rightFilesVisible}
@@ -2642,7 +2240,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                   <Section title="行为" dense>
                     <Row
                       label="关闭窗口"
-                      hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、智能体不受影响）；要真退出请用托盘菜单"
+                      hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、助手不受影响）；要真退出请用托盘菜单"
                     >
                       <BoolToggle
                         value={settings.closeToTray}
@@ -2926,7 +2524,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                 <>
                   <Section
                     title="模型提供商"
-                    hint="OpenAI 兼容的服务都能接入，一家一条；智能体和「变更」里的提交信息生成都读这里"
+                    hint="OpenAI 兼容的服务都能接入，一家一条；应用助手和「变更」里的提交信息生成都读这里"
                     action={
                       <button
                         type="button"
@@ -2967,7 +2565,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                         <p className="text-[11px] leading-relaxed text-fg-faint">
                           开发调试：src-tauri/.env 覆盖了「{overriddenAi.join("、")}」，
                           它们会顶掉「默认提供商」的接口地址、模型和密钥（密钥不再走钥匙串，
-                          直接注入子进程环境）。改完重开应用生效；已在跑的智能体要停掉再起。
+                          直接注入子进程环境）。改完重开应用生效；已在跑的助手要停掉再起。
                         </p>
                       )}
                     </div>
@@ -2975,7 +2573,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
 
                   <Section
                     title="默认模型"
-                    hint="新会话默认用它；单个 Agent 可以在下面单独绑定别的"
+                    hint="应用助手、提交信息与部署诊断这些 AI 功能默认用它"
                   >
                     <Field
                       label="全局默认"
@@ -2998,7 +2596,7 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
 
                   <Section
                     title="运行"
-                    hint="终端区顶栏的 GUI tab 里起一个 headless opencode，需要单独安装"
+                    hint="应用助手与数据库 / 预览助手都靠一个 headless opencode 服务，需要单独安装"
                   >
                     <Field
                       label="opencode 可执行文件"
@@ -3028,79 +2626,6 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
                     </Field>
                   </Section>
 
-                  <Section
-                    title="指令与扩展"
-                    hint={
-                      agentScope === "workspace" && !cwd
-                        ? "先打开一个工作区，才能编辑工作区层"
-                        : agentScope === "workspace"
-                          ? "存到工作区根的 .codedock/ 下、随仓库走；工作区层覆盖同名全局项，改动下次启动生效"
-                          : "启动时注入 / 加载；工作区层覆盖同名全局项，改动下次启动生效"
-                    }
-                    action={
-                      <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
-                        {(["global", "workspace"] as const).map((scope) => {
-                          const disabled = scope === "workspace" && !cwd;
-                          return (
-                            <button
-                              key={scope}
-                              type="button"
-                              disabled={disabled}
-                              onClick={() => setAgentScope(scope)}
-                              className={`rounded-md px-2.5 py-0.5 text-[12px] ${
-                                agentScope === scope
-                                  ? "bg-selected text-fg"
-                                  : "text-fg-dim hover:bg-hover hover:text-fg"
-                              } ${
-                                disabled
-                                  ? "cursor-not-allowed opacity-40 hover:bg-transparent"
-                                  : ""
-                              }`}
-                            >
-                              {scope === "global" ? "全局" : "本工作区"}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    }
-                  >
-                    {agentScope === "workspace" && !cwd ? (
-                      <p className="text-[12px] text-fg-faint">
-                        先打开一个工作区，才能编辑工作区层
-                      </p>
-                    ) : agentScope === "workspace" && workspaceLayer === null ? (
-                      <p className="text-[12px] text-fg-faint">正在读取 .codedock/ 配置…</p>
-                    ) : (
-                      <>
-                        {workspaceError !== "" && (
-                          <p className="text-[11px] text-danger">
-                            项目层读写失败：{workspaceError}
-                          </p>
-                        )}
-                        <LayerEditor
-                          layer={
-                            agentScope === "global"
-                              ? settings.agentGlobal
-                              : (workspaceLayer ?? emptyAgentLayer())
-                          }
-                          modelOptions={modelOptions}
-                          onChange={(next) => {
-                            if (agentScope === "global") {
-                              update(withGlobalLayer(next));
-                              return;
-                            }
-                            // 项目层：先本地生效，再落盘；落盘失败只提示、不回滚输入，
-                            // 免得用户敲一半的改动被吞掉
-                            setWorkspaceLayer(next);
-                            if (!cwd) return;
-                            writeWorkspaceLayerFile(cwd, next)
-                              .then(() => setWorkspaceError(""))
-                              .catch((reason) => setWorkspaceError(String(reason)));
-                          }}
-                        />
-                      </>
-                    )}
-                  </Section>
                 </>
               )}
             </div>
@@ -3139,15 +2664,9 @@ export function SettingsDialog({ onClose, cwd = null }: SettingsDialogProps) {
           `confirmReset` 挡掉，不会连设置面板一起关 */}
       {pendingRemove && (
         <ConfirmDialog
-          message={
-            pendingRemove.refs > 0
-              ? `删除提供商「${pendingRemove.provider.name || pendingRemove.provider.id}」？${
-                  pendingRemove.refs
-                } 个 Agent 绑在它的模型上，删掉后那些 Agent 会回落成跟随全局默认。`
-              : `删除提供商「${
-                  pendingRemove.provider.name || pendingRemove.provider.id
-                }」？它的模型配置会一起去掉，无法撤销。`
-          }
+          message={`删除提供商「${
+            pendingRemove.provider.name || pendingRemove.provider.id
+          }」？它的模型配置会一起去掉，无法撤销。`}
           confirmLabel="删除"
           onConfirm={() => {
             removeProvider(pendingRemove.provider);
