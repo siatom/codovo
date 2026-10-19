@@ -444,36 +444,6 @@ export function WorkspacePane({
     });
   }, []);
 
-  /**
-   * 变更面板里切了分支：整个工作区被换成那条分支的内容，按旧内容缓存下来的东西
-   * 全都不能信了。
-   *
-   * 三件事：
-   * 1. 差异视图的基线（HEAD / index / 某个提交）全部作废 —— model 缓存的 key 里
-   *    不含分支，留着就会拿旧基线跟新内容比，显示出根本不存在的差异。
-   * 2. 打开着的文件重读一遍 —— watcher 只会给「改动过的文件」发事件，被 checkout
-   *    删掉的文件收不到通知，标签里会一直留着那份已经不存在的内容。
-   * 3. 上一步读不回来的（文件确实没了）关掉标签，别留一堆死标签。
-   */
-  const onBranchChanged = useCallback(async () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    // 先作废所有差异标签：它们的基线跟着 HEAD 走，跨分支必然过期
-    editor.dropDiffs();
-    const paths = openTabs.map((tab) => tab.path);
-    await editor.reload(paths);
-    const missing = await editor.missingPaths(paths);
-    if (missing.length > 0) {
-      const gone = new Set(missing.map(pathKey));
-      const rest = openTabs.filter((tab) => !gone.has(pathKey(tab.path)));
-      editor.dropPaths(missing);
-      setOpenTabs(rest);
-      setActiveTab((current) =>
-        current && gone.has(pathKey(current.path)) ? (rest[rest.length - 1] ?? null) : current,
-      );
-    }
-  }, [openTabs]);
-
   /** 标题栏「⋯」菜单：一次关掉全部标签 */
   const closeAllTabs = useCallback(() => {
     setOpenTabs([]);
@@ -562,8 +532,6 @@ export function WorkspacePane({
                       onOpenMatch={openMatch}
                       onPickWorktree={pickWorktree}
                       onReview={setReview}
-                      onBranchChanged={() => void onBranchChanged()}
-                      onBeforeBranchSwitch={saveAllEdits}
                       onBeforeReplace={saveAllEdits}
                       onAfterReplace={reloadAfterReplace}
                       onBeforeRename={saveAllEdits}
