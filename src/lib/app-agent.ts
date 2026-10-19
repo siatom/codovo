@@ -171,7 +171,7 @@ async function execute(
       }
       ctx.setFullscreen(area);
       if (area === "none") return "已退出全屏";
-      return `已切换到${area === "left" ? "左侧（终端与智能体）" : "右侧（右边栏）"}全屏`;
+      return `已切换到${area === "left" ? "左侧（终端）" : "右侧（右边栏）"}全屏`;
     }
     default:
       throw new Error(`不支持的界面操作：${tool}`);

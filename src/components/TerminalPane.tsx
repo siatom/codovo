@@ -345,9 +345,10 @@ export function TerminalPane({
       {/* 顶栏是 AI CLI 快速切换条：配了哪些 CLI 就摆哪几个按钮，点一下切过去或新开。
           一个都没配时整条栏不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
       {aiCommands.length > 0 && (
-        <header className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
-          {/* 命令多起来就横向滚动，和标签栏同一套：细滚动条藏掉，操作靠滚轮 / 触控板 */}
-          <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+        <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
+          {/* 命令少时居中摆放；多到放不下时 `justify-center-safe` 会自动退回从左侧开始，
+              横向滚动才够得着第一项（纯 justify-center 会把开头挤到滚动区外面） */}
+          <div className="no-scrollbar flex min-w-0 flex-1 items-center justify-center-safe gap-1 overflow-x-auto">
             {aiCommands.map((item, index) => {
               // 当前活动标签正好是这个 CLI 时高亮，一眼看出「现在在跟谁说话」
               const isActive = hintByIdRef.current.get(activeId) === item.command;

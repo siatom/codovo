@@ -336,13 +336,13 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   /** 拉服务 → 接着上次的会话（没了就接最近的一条；一条都没有就停在空态，等用户发第一句再建） */
   const boot = useCallback(async () => {
     if (!root) {
-      setFatal("先选一个工作目录，智能体要知道在哪个仓库里干活");
+      setFatal("先选一个工作目录，助手要知道在哪个仓库里干活");
       setPhase("error");
       return;
     }
     if (!aiReady) {
       setFatal(
-        "请先在「设置 → 智能体 → 模型提供商」里加一个提供商，并把它下面的模型设为默认",
+        "请先在「设置 → AI → 模型提供商」里加一个提供商，并把它下面的模型设为默认",
       );
       setPhase("error");
       return;
@@ -449,7 +449,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
 
     void onAgentExit((eventRoot) => {
       if (!samePath(eventRoot, root)) return;
-      setFatal("智能体服务已退出，可能是被系统回收或端口被占");
+      setFatal("助手服务已退出，可能是被系统回收或端口被占");
       setPhase("error");
     }).then((fn) => {
       if (disposed) fn();
