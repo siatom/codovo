@@ -5,11 +5,8 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { formatTime } from "../lib/agent";
 import { useActivityAll } from "../lib/activity";
-import { useAgentSession } from "../lib/agent-session";
 import {
-  agentTarget,
   useAttentionAll,
   type AttentionKind,
   type AttentionMap,
@@ -19,30 +16,23 @@ import { pathKey, toDisplayPath } from "../lib/fs";
 import type { Workspace } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
-import type { AgentSessionSummary } from "../lib/types";
 import { CliHistory } from "./CliHistory";
-import { ConfirmDialog } from "./ConfirmDialog";
 import { FeedbackDialog } from "./FeedbackDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
-  AgentLogo,
   IconAlert,
-  IconChevronDown,
-  IconChevronRight,
   IconClose,
   IconExternalLink,
   IconFeedback,
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
-  IconHistory,
   IconMoon,
   IconMore,
   IconPanelCollapse,
   IconPanelExpand,
   IconPencil,
   IconPin,
-  IconPlus,
   IconSearch,
   IconSettings,
   IconSparkle,
@@ -68,8 +58,6 @@ interface SidebarProps {
   /** 目录已失效（被删 / 换盘）的工作区根，按 `pathKey` 存。命中就在行上标一枚警告 */
   missingRoots: ReadonlySet<string>;
   onSelect: (workspace: Workspace) => void;
-  /** 工作区行的「+」：新建对话。工作区还没打开时由 App 先把它打开再新建 */
-  onNewChat: (workspace: Workspace) => void;
   /** 「新建工作区」：新建一个工作区 */
   onCreate: () => void;
   onEdit: (workspace: Workspace) => void;
@@ -79,14 +67,11 @@ interface SidebarProps {
   onClose: (workspace: Workspace) => void;
   /** 切换置顶：置顶的工作区排在列表最前 */
   onTogglePin: (workspace: Workspace) => void;
-  /** 启动 AI CLI：由 App 转成「新开一个终端标签跑这条命令」，不注入当前终端。
-   *  title 是 CLI 名，作新标签的标题 */
-  onRunAiCommand: (command: string, title: string) => void;
   /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume"，title 作新标签的标题 */
   onResumeSession: (command: string, title: string) => void;
   /** 点「在等用户」的提示：由 App 切到该工作区并选中对应的标签 / 会话 */
   onFocusAttention: (workspace: Workspace, target: string) => void;
-  /** 打开「应用助手」（界面操作智能体）：切到当前工作区的智能体面板并选中内置 app agent */
+  /** 打开「应用助手」：由 App 展开右栏的助手抽屉 */
   onOpenAppAgent: () => void;
 }
 
@@ -144,20 +129,11 @@ const FOOTER_BUTTON =
 const ROW_ACTION =
   "pointer-events-none flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100";
 
-/** 工作区行右侧的「+」：和「⋯」一样平时藏着，悬停整行才露出；多一层底色，和主按钮悬停同色 */
-const ROW_PLUS = `${ROW_ACTION} hover:bg-active`;
-
 /** 工作区行「⋯」弹出来的菜单项 */
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
-/** 菜单宽度（px），贴着按钮右边缘往左排时要拿它算 left */
-const MENU_W = 112;
-
 /** 工作区菜单比别处宽：里面要列出工作目录的完整路径 */
 const WORKSPACE_MENU_W = 320;
-
-/** AI CLI 菜单比别的菜单宽：名字前面多了个 logo，112 会把 codebuddy 这种名字挤断 */
-const AI_MENU_W = 150;
 
 /** 路径末级名字（工作目录名），用于按目录名过滤工作区 */
 function baseName(path: string): string {
@@ -189,13 +165,11 @@ export function Sidebar({
   opened,
   missingRoots,
   onSelect,
-  onNewChat,
   onCreate,
   onEdit,
   onRemove,
   onClose,
   onTogglePin,
-  onRunAiCommand,
   onResumeSession,
   onFocusAttention,
   onOpenAppAgent,
@@ -209,51 +183,22 @@ export function Sidebar({
   const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  /** 当前工作区的对话历史是否展开；默认收起 */
-  const [historyOpen, setHistoryOpen] = useState(false);
   /** 工作区名过滤词。纯展示层：只影响渲染哪些行，不动列表的存储顺序 */
   const [wsQuery, setWsQuery] = useState("");
   /** 过滤框是否展开：默认只留一个搜索图标，点开才出现输入框 */
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
-  /** 等待确认删除的会话；非空时弹确认框 */
-  const [pendingDelete, setPendingDelete] = useState<AgentSessionSummary | null>(null);
   /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
   const [menu, setMenu] = useState<{ workspace: Workspace; x: number; y: number } | null>(null);
-  /** AI CLI 菜单开在哪儿；配了多个命令时才用得上，位置同工作区菜单 */
-  const [aiMenu, setAiMenu] = useState<{ x: number; y: number } | null>(null);
-  /** 会话行的「⋯」菜单开在哪条会话上，位置同工作区菜单 */
-  const [histMenu, setHistMenu] = useState<{
-    item: AgentSessionSummary;
-    x: number;
-    y: number;
-  } | null>(null);
-  /** 正在就地改名的会话 */
-  const [renamingSession, setRenamingSession] = useState<{
-    id: string;
-    value: string;
-  } | null>(null);
   /** 底部会话历史里当前选的是哪条命令；按活动根记住 */
   const [cliChoice, setCliChoice] = useState(() => readCliChoice(activeRoot));
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
 
-  const {
-    mode,
-    sessions,
-    currentId: sessionId,
-    requestSession,
-    requestDelete,
-    requestRename,
-  } = useAgentSession(activeRoot);
-  // 「在等用户」的标记（终端 CLI 与智能体会话都有）。侧栏要给所有工作区行做标记，
+  // 「在等用户」的标记（终端 CLI 与助手会话都有）。侧栏要给所有工作区行做标记，
   // 够不着单个 root 的 hook，所以取全局那一份，按各工作区的 root 查
   const attentionByRoot = useAttentionAll();
-  // 「最近活动」时间（终端 / 智能体用过才算）。工作区行按它排序，取全局那一份
+  // 「最近活动」时间（终端 / 助手用过才算）。工作区行按它排序，取全局那一份
   const activityByRoot = useActivityAll();
-  // 当前工作区的那一份：对话历史行挂在当前工作区下面，标记只看它
-  const sessionAttention = activeRoot ? (attentionByRoot[pathKey(activeRoot)] ?? {}) : {};
-  // 对话历史只在终端区停在 GUI 时出现：TUI 下智能体服务多半没起，列出来也没意义
-  const guiActive = settings.agentEnabled && mode === "agent";
   // 空命令是用户在设置里加了还没填的，不进菜单
   const aiCommands = settings.aiCommands
     .map((item) => ({ ...item, name: item.name.trim(), command: item.command.trim() }))
@@ -343,35 +288,6 @@ export function Sidebar({
   const openMenu = (workspace: Workspace, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
     setMenu({ workspace, x: rect.right, y: rect.bottom });
-  };
-
-  const openHistMenu = (item: AgentSessionSummary, target: HTMLElement) => {
-    const rect = target.getBoundingClientRect();
-    setHistMenu({ item, x: rect.right, y: rect.bottom });
-  };
-
-  /** 点工作区行右侧的「+」：只有一个命令就直接跑，配了多个才出菜单挑 */
-  const launchAi = (target: HTMLElement) => {
-    if (aiCommands.length === 1) {
-      // 顺便把底部会话历史的选择器切过去，两边始终看同一家
-      pickCli(aiCommands[0].command);
-      onRunAiCommand(aiCommands[0].command, aiCommands[0].name || "未命名 AI CLI");
-      return;
-    }
-    const rect = target.getBoundingClientRect();
-    setAiMenu({ x: rect.right, y: rect.bottom });
-  };
-
-  /**
-   * 会话改名：空标题当取消（后端也拒），没改动就不打后端。
-   * 真正的 PATCH 由 AgentPane 做——它拿着刷新列表的入口，改完侧边栏自然换字。
-   */
-  const renameSession = (id: string, value: string) => {
-    setRenamingSession(null);
-    const title = value.trim();
-    if (!title) return;
-    if (sessions.find((item) => item.id === id)?.title === title) return;
-    requestRename(id, title);
   };
 
   // 收起后留一个图标宽的竖条：常用入口（新建工作区、主题）仍然够得着，
@@ -643,149 +559,16 @@ export function Sidebar({
                     >
                       <IconMore className="h-3.5 w-3.5" />
                     </button>
-                    {/* 新建对话：当前工作区停在 GUI 时给；别的工作区（含还没打开的）也给——点了
-                        会先把它打开并切到 GUI，等价于「添加对话即打开工作区」。当前工作区停在 TUI
-                        时不出现，那个位置留给下面启动 AI CLI 的 + */}
-                    {(guiActive || (!isCurrent && settings.agentEnabled)) && (
-                      <button
-                        type="button"
-                        onClick={() => onNewChat(workspace)}
-                        title="新建对话"
-                        className={ROW_PLUS}
-                      >
-                        <IconPlus className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                    {/* 折叠按钮只对当前工作区且停在 GUI 时有意义（对话历史就挂它下面） */}
-                    {isCurrent && guiActive && (
-                      <button
-                        type="button"
-                        onClick={() => setHistoryOpen((open) => !open)}
-                        title={historyOpen ? "收起对话历史" : "展开对话历史"}
-                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
-                      >
-                        {historyOpen ? (
-                          <IconChevronDown className="h-3.5 w-3.5" />
-                        ) : (
-                          <IconChevronRight className="h-3.5 w-3.5" />
-                        )}
-                      </button>
-                    )}
-                    {/* TUI 下同一个位置放 AI CLI 的入口：新开一个终端标签启动它。
-                        配了多个命令时点「+」出菜单挑，只有一个就直接执行 */}
-                    {isCurrent && !guiActive && (
-                      <button
-                        type="button"
-                        onClick={(event) => launchAi(event.currentTarget)}
-                        disabled={aiCommands.length === 0}
-                        title={
-                          aiCommands.length === 0
-                            ? "还没配置 AI CLI 命令，去设置里加一个"
-                            : "新开终端标签启动 AI CLI"
-                        }
-                        className={`${ROW_PLUS} disabled:cursor-not-allowed disabled:hover:bg-transparent`}
-                      >
-                        <IconPlus className="h-3.5 w-3.5" />
-                      </button>
-                    )}
                   </div>
                 </div>
-
-                {/* 对话历史挂当前工作区下，由工作区行右侧的折叠按钮控制；点一条切到 GUI 并打开它 */}
-                {isCurrent &&
-                  guiActive &&
-                  historyOpen &&
-                  (sessions.length === 0 ? (
-                    <p className="pr-2 pb-1 pl-[34px] text-[11px] text-fg-faint">还没有对话</p>
-                  ) : (
-                    <ul className="flex flex-col pb-1">
-                      {sessions.map((item) => {
-                        const isActive = item.id === sessionId;
-                        // 这条对话有没有待处理的状态（权限询问 / 提问 / 任务完成）
-                        const sessionKind = sessionAttention[agentTarget(item.id)];
-                        // 只有 done 是「已完成」；permission / question 都是在等回应
-                        const sessionHint =
-                          sessionKind === "done"
-                            ? "任务完成，等待你的下一步指令"
-                            : sessionKind
-                              ? "正在等你输入"
-                              : null;
-                        return (
-                          <li
-                            key={item.id}
-                            className={`group/hist flex items-center rounded-md ${
-                              isActive ? "bg-active" : "hover:bg-hover"
-                            }`}
-                          >
-                            {renamingSession?.id === item.id ? (
-                              /* 就地改名：Enter 确认、Esc 取消、点别处也算确认 */
-                              <input
-                                autoFocus
-                                value={renamingSession.value}
-                                onChange={(event) =>
-                                  setRenamingSession({ id: item.id, value: event.target.value })
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    renameSession(item.id, renamingSession.value);
-                                  } else if (event.key === "Escape") {
-                                    event.preventDefault();
-                                    setRenamingSession(null);
-                                  }
-                                }}
-                                onBlur={() => renameSession(item.id, renamingSession.value)}
-                                className="my-0.5 mr-2 ml-[34px] min-w-0 flex-1 rounded border border-line bg-app px-1.5 py-0.5 text-[12px] text-fg outline-none focus:border-line-hover"
-                              />
-                            ) : (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => requestSession(item.id)}
-                                  title={sessionHint ? `${item.title}（${sessionHint}）` : item.title}
-                                  className={`flex min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-1 pl-[34px] text-left text-[12px] ${
-                                    isActive
-                                      ? "text-fg"
-                                      : "text-fg-muted group-hover/hist:text-fg"
-                                  }`}
-                                >
-                                  <IconHistory className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
-                                  {sessionHint && (
-                                    <span
-                                      title={sessionHint}
-                                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
-                                    />
-                                  )}
-                                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
-                                  {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」，两个都留会把标题挤没 */}
-                                  <span className="shrink-0 text-[11px] text-fg-faint group-hover/hist:hidden">
-                                    {formatTime(item.updated)}
-                                  </span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(event) => openHistMenu(item, event.currentTarget)}
-                                  title="更多操作"
-                                  className="pointer-events-none mr-1.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/hist:pointer-events-auto group-hover/hist:opacity-100"
-                                >
-                                  <IconMore className="h-3.5 w-3.5" />
-                                </button>
-                              </>
-                            )}
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ))}
               </div>
             </li>
           );
         })}
       </ul>
 
-      {/* 当前 AI CLI 的会话历史。只在 TUI 下出现：GUI 那边工作区行下面已经有
-          opencode 自己的对话历史了，两套同时出现会打架 */}
-      {activeRoot && !guiActive && aiCommands.length > 0 && (
+      {/* 当前 AI CLI 的会话历史。启动 CLI 在中间区顶栏，这里只负责翻历史、点一条 resume */}
+      {activeRoot && aiCommands.length > 0 && (
         <CliHistory
           cwd={activeRoot}
           commands={aiCommands}
@@ -847,19 +630,6 @@ export function Sidebar({
 
       {feedbackOpen && (
         <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
-      )}
-
-      {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
-      {pendingDelete && (
-        <ConfirmDialog
-          message={`删除会话「${pendingDelete.title}」？这条对话的消息会一起删掉，不可撤销。`}
-          confirmLabel="删除"
-          onConfirm={() => {
-            requestDelete(pendingDelete.id);
-            setPendingDelete(null);
-          }}
-          onCancel={() => setPendingDelete(null)}
-        />
       )}
 
       {/* 工作区行的「⋯」菜单：工作区名 + 各工作目录 + 编辑/关闭。用 fixed 定位而不是
@@ -959,77 +729,6 @@ export function Sidebar({
               <IconTrash className="h-3.5 w-3.5 shrink-0" />
               移除
             </button>
-          </div>
-        </>
-      )}
-
-      {/* 会话行的「⋯」菜单。同样 fixed 定位，理由见上面工作区菜单 */}
-      {histMenu && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setHistMenu(null)} />
-          <div
-            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
-            style={{
-              width: MENU_W,
-              left: histMenu.x - MENU_W,
-              top: Math.min(histMenu.y + 4, window.innerHeight - 72),
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => {
-                const { item } = histMenu;
-                setHistMenu(null);
-                setRenamingSession({ id: item.id, value: item.title });
-              }}
-              className={MENU_ITEM}
-            >
-              重命名
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const { item } = histMenu;
-                setHistMenu(null);
-                setPendingDelete(item);
-              }}
-              className={MENU_ITEM}
-            >
-              删除对话
-            </button>
-          </div>
-        </>
-      )}
-
-      {/* AI CLI 菜单。同样 fixed 定位，理由见上面工作区菜单 */}
-      {aiMenu && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setAiMenu(null)} />
-          <div
-            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
-            style={{
-              width: AI_MENU_W,
-              left: aiMenu.x - AI_MENU_W,
-              // 条数不定，按实际行数折算高度，免得贴底时被顶出可视区
-              top: Math.min(aiMenu.y + 4, window.innerHeight - (aiCommands.length * 26 + 20)),
-            }}
-          >
-            {aiCommands.map((item, index) => (
-              <button
-                key={`${item.name}-${item.command}-${index}`}
-                type="button"
-                onClick={() => {
-                  setAiMenu(null);
-                  pickCli(item.command);
-                  onRunAiCommand(item.command, item.name || "未命名 AI CLI");
-                }}
-                title={item.name || "未命名 AI CLI"}
-                className={`${MENU_ITEM} flex items-center gap-2`}
-              >
-                <AgentLogo name={item.name} command={item.command} />
-                <span className="truncate">{item.name || "未命名 AI CLI"}</span>
-              </button>
-            ))}
           </div>
         </>
       )}

@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   type Ref,
@@ -11,25 +12,21 @@ import {
   type TerminalSessionHandle,
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
-import { useAgentSession } from "../lib/agent-session";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import { useTabReorder } from "../lib/use-tab-reorder";
 import type { EditorLocation } from "../lib/types";
-import { AgentPane, type AgentPaneHandle } from "./AgentPane";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   AgentLogo,
-  IconBot,
   IconChevronDown,
   IconClose,
   IconLayoutColumns,
   IconLayoutRows,
   IconLayoutSingle,
   IconPlus,
-  IconTerminal,
   ShellIcon,
 } from "./icons";
 
@@ -50,17 +47,15 @@ function formatLocation({ path, start, end }: EditorLocation): string {
 
 export interface TerminalPaneHandle {
   /**
-   * 新开一个终端标签并在里面执行命令（侧栏的 AI CLI 入口与 CLI 会话 resume 都用它）。
+   * 新开一个终端标签并在里面执行命令（顶栏 AI CLI 切换条与侧栏 CLI 会话 resume 都用它）。
    * 不能写进当前活动会话——那儿可能正跑着别的东西，命令会被当成它的输入。
    * `title` 直接作新标签的标题：AI CLI 传 CLI 名，resume 传被恢复会话的标题。
    */
   runInNewSession: (command: string, title: string) => void;
   /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
   insertToTerminal: (location: EditorLocation) => void;
-  /** 把位置引用送进智能体输入框（插成一个可整体删除的 chip），顺带切到 GUI 模式 */
-  insertToAgent: (location: EditorLocation) => void;
   /**
-   * 选中某个已存在的终端标签（切到 TUI 并聚焦它）。侧栏的「在等用户」提示点它跳过来用。
+   * 选中某个已存在的终端标签并聚焦它。侧栏的「在等用户」提示点它跳过来用。
    * 标签已经关掉了就什么都不做。
    */
   focusSession: (id: number) => void;
@@ -71,9 +66,9 @@ interface TerminalPaneProps {
   root: string;
   /** 是不是当前显示的工作区。隐藏时只是不显示，shell 照跑 */
   visible: boolean;
-  /** 左侧这一列（终端与智能体）是否已全屏展示 */
+  /** 左侧终端列是否已全屏展示 */
   fullscreen: boolean;
-  /** 切换左侧全屏。按钮画在下面各 view 自己的标题栏右端 */
+  /** 切换左侧全屏。按钮画在标签栏右端 */
   onToggleFullscreen: () => void;
   /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<TerminalPaneHandle>;
@@ -83,8 +78,9 @@ interface TerminalPaneProps {
  * 终端区：管一组会话，标签栏负责新增/关闭/切换。
  * 每个会话各自持有一个 PTY，切走只是隐藏，shell 不会被打断。
  *
- * 开了智能体之后顶栏多出 TUI / GUI 两个入口，各自是一套完整界面（标签栏、状态条各管各的）。
- * 两套内容都挂在 DOM 上只切显隐，切回 TUI 时 shell 和滚动历史都还在。
+ * 顶栏是 **AI CLI 快速切换条**：配了哪些 CLI 就摆哪几个按钮，点一下——该 CLI 已经开着标签
+ * 就切过去，没有就新开一个标签跑它。想聊代码走这条线（真正的 CLI，原样运行）；
+ * 需要改 CodeDock 自身的设置与界面时，用右栏的「应用助手」抽屉。
  */
 export function TerminalPane({
   root,
@@ -101,9 +97,6 @@ export function TerminalPane({
    * 新会话第一次渲染就带着它——不存在"先挂载、后补命令"的时间窗。
    */
   const [launchFor, setLaunchFor] = useState<{ id: number; command: string } | null>(null);
-  // TUI/GUI 的选择提到了 AgentSessionContext：侧边栏要在 GUI 模式下才列对话历史。
-  // 按工作区取——一个窗口里同时开着多个工作区，各有各的模式和会话列表
-  const { mode, setMode } = useAgentSession(root);
   // 终端标签的「在等用户」标记：TerminalSession 启发式判出来上抛，这里写进全局 store，
   // 侧栏工作区行、标签栏据此提示（非当前工作区的也要看得见）
   const {
@@ -115,8 +108,6 @@ export function TerminalPane({
   const touchActivity = useTouchActivity();
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
-  /** 智能体面板的句柄：编辑器浮窗要把文本塞进它的输入框 */
-  const agentRef = useRef<AgentPaneHandle>(null);
   /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
   const shellByIdRef = useRef(new Map<number, string>());
   /**
@@ -291,21 +282,10 @@ export function TerminalPane({
     [activeId],
   );
 
-  // 智能体那侧同理：先切到 GUI，再把位置交给输入框（那边会插成一个 chip）。
-  // 面板可能还没就绪（刚切过来还在 starting），由它自己的 pending 兜住
-  const insertToAgent = useCallback(
-    (location: EditorLocation) => {
-      setMode("agent");
-      agentRef.current?.insertRef(location);
-    },
-    [setMode],
-  );
-
-  // 侧栏点了「在等用户」提示：切回 TUI 并选中那个标签。标签可能已经被关掉了，那就不动
+  // 侧栏点了「在等用户」提示：选中那个标签并聚焦它。标签可能已经被关掉了，那就不动
   const focusSession = useCallback(
     (id: number) => {
       if (!sessions.includes(id)) return;
-      setMode("terminal");
       setActiveId(id);
       const handle = handlesRef.current.get(id);
       // 「切过去即已读」：要切的标签本来就是当前这个时 setActiveId 是空操作，
@@ -313,64 +293,91 @@ export function TerminalPane({
       handle?.markSeen();
       handle?.focus();
     },
-    [sessions, setMode],
+    [sessions],
   );
 
   useImperativeHandle(
     ref,
-    () => ({ runInNewSession, insertToTerminal, insertToAgent, focusSession }),
-    [runInNewSession, insertToTerminal, insertToAgent, focusSession],
+    () => ({ runInNewSession, insertToTerminal, focusSession }),
+    [runInNewSession, insertToTerminal, focusSession],
   );
 
-  // 开关是在设置里随时能关的，而 mode 是共享状态：关掉之后分段控件不画了，
-  // 要是还认 mode 就会把人锁在智能体面板里出不去，还白白起一个 opencode。
-  const view = settings.agentEnabled ? mode : "terminal";
+  /** 配过的 AI CLI（空命令是加了还没填的，不进顶栏） */
+  const aiCommands = useMemo(
+    () =>
+      settings.aiCommands
+        .map((item) => ({
+          ...item,
+          name: item.name.trim() || "未命名 AI CLI",
+          command: item.command.trim(),
+        }))
+        .filter((item) => item.command),
+    [settings.aiCommands],
+  );
 
-  // 同时把 mode 也归零，不然重新打开开关会突然跳回智能体面板，看着像自己乱切
-  useEffect(() => {
-    if (!settings.agentEnabled) setMode("terminal");
-  }, [settings.agentEnabled, setMode]);
+  /** 某个命令当前对应的终端标签 id；没有（或已被关掉）返回 null */
+  const sessionForCommand = (command: string): number | null =>
+    sessions.find((id) => hintByIdRef.current.get(id) === command) ?? null;
+
+  /**
+   * 顶栏点某个 AI CLI：**已有则切过去，没有则新开**。
+   *
+   * 一个新标签只跑一个 CLI，所以「切过去」不会打断任何正在跑的会话；标签被关掉后再点，
+   * 自然就新开一个。只看精确命令：`claude --resume xxx` 那种恢复出来的标签不匹配，
+   * 免得点「Claude Code」跳到一条恢复会话上。
+   */
+  const launchCli = useCallback(
+    (command: string, title: string) => {
+      const existing = sessionForCommand(command);
+      if (existing !== null) {
+        setActiveId(existing);
+        handlesRef.current.get(existing)?.focus();
+        return;
+      }
+      runInNewSession(command, title);
+    },
+    // sessionForCommand 读的是 sessions / hint ref 的最新值，这里跟着 sessions 走
+    [sessions, runInNewSession],
+  );
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      {/* 顶栏只剩居中的 TUI / GUI 入口，收放右边栏的按钮在图标条底部。
-          关掉智能体后整条栏都不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
-      {settings.agentEnabled && (
-        <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
-          <div className="flex items-center gap-0.5 rounded-full bg-app p-0.5">
-            <button
-              type="button"
-              onClick={() => setMode("terminal")}
-              title="终端（TUI）"
-              className={`flex h-6 items-center justify-center gap-1 rounded-full px-4 text-[12px] ${
-                view === "terminal"
-                  ? "bg-selected text-fg shadow-sm"
-                  : "text-fg-dim hover:text-fg"
-              }`}
-            >
-              <IconTerminal className="h-3.5 w-3.5" />
-              终端
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("agent")}
-              title="智能体（GUI）"
-              className={`flex h-6 items-center justify-center gap-1 rounded-full px-4 text-[12px] ${
-                view === "agent"
-                  ? "bg-selected text-fg shadow-sm"
-                  : "text-fg-dim hover:text-fg"
-              }`}
-            >
-              <IconBot className="h-3.5 w-3.5" />
-              智能体
-            </button>
+      {/* 顶栏是 AI CLI 快速切换条：配了哪些 CLI 就摆哪几个按钮，点一下切过去或新开。
+          一个都没配时整条栏不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
+      {aiCommands.length > 0 && (
+        <header className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
+          {/* 命令多起来就横向滚动，和标签栏同一套：细滚动条藏掉，操作靠滚轮 / 触控板 */}
+          <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {aiCommands.map((item) => {
+              // 当前活动标签正好是这个 CLI 时高亮，一眼看出「现在在跟谁说话」
+              const isActive = hintByIdRef.current.get(activeId) === item.command;
+              return (
+                <button
+                  key={item.command}
+                  type="button"
+                  onClick={() => launchCli(item.command, item.name)}
+                  title={
+                    sessionForCommand(item.command) !== null
+                      ? `${item.name}：切到已打开的标签`
+                      : `${item.name}：新开一个终端标签启动`
+                  }
+                  className={`flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] ${
+                    isActive
+                      ? "bg-selected text-fg shadow-sm"
+                      : "text-fg-dim hover:bg-hover hover:text-fg"
+                  }`}
+                >
+                  <AgentLogo name={item.name} command={item.command} className="h-3.5 w-3.5" />
+                  <span className="max-w-[120px] truncate">{item.name}</span>
+                </button>
+              );
+            })}
           </div>
         </header>
       )}
 
-      {/* TUI 界面：标签栏和终端本体都归这一套自己管，不和其他界面共用一行 */}
-      <div className={view === "terminal" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        {/* 高度和上面 AgentPane 的状态条对齐（都是 h-8），TUI / GUI 来回切时下面内容不跳 */}
+      {/* 终端本体：标签栏和终端都归这一套自己管 */}
+      <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
           <div
             ref={tabsScrollRef}
@@ -561,8 +568,8 @@ export function TerminalPane({
                   // 这个会话有真实使用（用户输入 / 已在跑命令的输出）时上报工作区活动
                   onActivity={() => touchActivity(root)}
                   // 并列模式显示全部会话；标签模式只显示当前会话。active 仍只负责焦点和补尺寸。
-                  visible={visible && view === "terminal" && (layout !== "tabs" || id === activeId)}
-                  active={visible && view === "terminal" && id === activeId}
+                  visible={visible && (layout !== "tabs" || id === activeId)}
+                  active={visible && id === activeId}
                 />
               </div>
             );
@@ -597,16 +604,6 @@ export function TerminalPane({
             ];
           })}
         </div>
-      </div>
-
-      <div className={view === "agent" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <AgentPane
-          ref={agentRef}
-          root={root}
-          active={visible && view === "agent"}
-          fullscreen={fullscreen}
-          onToggleFullscreen={onToggleFullscreen}
-        />
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，

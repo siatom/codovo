@@ -10,12 +10,11 @@ import {
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { Toast } from "./components/Toast";
+import { AppAssistantDrawer, type AppAssistantDrawerHandle } from "./components/AppAssistantDrawer";
 import {
   AgentSessionProvider,
   useDropAgentSession,
-  useNewChatAt,
   useOpenSessionAt,
-  useSetAgentModeAt,
 } from "./lib/agent-session";
 import { AttentionProvider, useDropAttention } from "./lib/attention";
 import { ActivityProvider, useDropActivity, useTouchActivity } from "./lib/activity";
@@ -32,7 +31,6 @@ import {
   runPreviewTool,
   takePreviewAgentRequest,
 } from "./lib/preview-agent";
-import { APP_AGENT_NAME } from "./lib/agent-profiles";
 import { useTheme } from "./lib/theme";
 import {
   isPathInside,
@@ -56,6 +54,7 @@ import {
   type Workspace,
 } from "./lib/workspaces";
 import { useSettings } from "./lib/settings";
+import type { EditorLocation } from "./lib/types";
 import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
 /** 新建 / 编辑工作区对话框的状态 */
@@ -110,8 +109,6 @@ function Shell() {
   const dropActivity = useDropActivity();
   /** 新建工作区时记一次活动，让它立刻排到非置顶组最前 */
   const touchActivity = useTouchActivity();
-  /** 给还没切过去的工作区「新建对话」用 */
-  const newChatAt = useNewChatAt();
   /** 给还没切过去的工作区「打开某条会话」用（侧栏的「在等用户」标记） */
   const openSessionAt = useOpenSessionAt();
 
@@ -128,8 +125,10 @@ function Shell() {
   } | null>(null);
   /** 上面那个确认框的 resolver；用户点了确认 / 取消后兑现，工具调用据此继续 */
   const agentConfirmRef = useRef<((ok: boolean) => void) | null>(null);
-  /** 把当前工作区切成 GUI 视图（侧栏的应用助手入口用） */
-  const setModeAt = useSetAgentModeAt();
+  /** 应用助手抽屉是否展开；面板挂在 App 上——它是窗口级的，不属于任何工作区实例 */
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  /** 助手抽屉的句柄：编辑器浮窗要把位置引用塞进它的输入框 */
+  const assistantRef = useRef<AppAssistantDrawerHandle>(null);
 
   const activeWorkspace = workspaces.find((item) => item.id === activeId) ?? null;
   const activeRoot = activeWorkspace?.activeRoot ?? null;
@@ -180,21 +179,21 @@ function Shell() {
   }, []);
 
   /**
-   * 侧栏工作区行的 AI CLI 入口：新开一个终端标签启动它，不注入当前终端。
-   * `title`（CLI 名）作新标签的标题，让人一眼分辨是哪家 CLI
-   */
-  const runAiCommand = useCallback((command: string, title: string) => {
-    if (!activeIdRef.current) return;
-    handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command, title);
-  }, []);
-
-  /**
-   * 侧边栏点了某条 CLI 历史会话：新开一个终端标签跑 resume，不动正在用的那个。
+   * 侧栏底部点了某条 CLI 历史会话：新开一个终端标签跑 resume，不动正在用的那个。
    * `title`（被恢复会话的标题）作新标签的标题
    */
   const resumeSession = useCallback((command: string, title: string) => {
     if (!activeIdRef.current) return;
     handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command, title);
+  }, []);
+
+  /** 编辑器浮窗「送给助手」：展开抽屉并把位置引用插进它的输入框 */
+  const openAssistantAt = useCallback((location?: EditorLocation) => {
+    setAssistantOpen(true);
+    if (location) {
+      // 面板刚展开时输入框可能还没就绪，由它自己的 pending 兜住（见 AgentPane.insertRef）
+      assistantRef.current?.insertRef(location);
+    }
   }, []);
 
   /**
@@ -229,27 +228,9 @@ function Shell() {
   }, []);
 
   /**
-   * 侧栏工作区行的「+」：新建一条对话。工作区还没打开、或不是当前工作区时，先打开并切过去，
-   * 再把它切成 GUI、挂上新建请求——「添加对话」这一步顺带把工作区带成打开状态。
-   */
-  const newChat = useCallback(
-    async (workspace: Workspace) => {
-      let root = workspace.activeRoot;
-      if (activeIdRef.current !== workspace.id) {
-        const next = await openWorkspace(workspace);
-        // 目录打不开时 openWorkspace 已经提示过，这里不再建请求
-        if (!next) return;
-        root = next.activeRoot;
-      }
-      newChatAt(root);
-    },
-    [openWorkspace, newChatAt],
-  );
-
-  /**
    * 侧栏点了「在等用户」的提示：切到那个工作区，并选中对应的标签 / 会话。
    * `target` 形如 `term:<标签 id>` / `agent:<会话 id>`（见 lib/attention）。
-   * 工作区已经打开、只是切到后台时，实例还在，handle 拿得到。
+   * 终端标签直接聚焦；助手会话则展开右栏抽屉并选中它。
    */
   const focusAttention = useCallback(
     async (workspace: Workspace, target: string) => {
@@ -263,7 +244,9 @@ function Shell() {
       if (target.startsWith("term:")) {
         handlesRef.current.get(workspace.id)?.terminal?.focusSession(Number(target.slice(5)));
       } else if (target.startsWith("agent:")) {
+        // 请求挂在会话状态里，面板展开后会自己消费（见 AgentPane 的 requestedId）
         openSessionAt(root, target.slice(6));
+        setAssistantOpen(true);
       }
     },
     [openWorkspace, openSessionAt],
@@ -498,17 +481,15 @@ function Shell() {
     };
   }, []);
 
-  /** 侧栏底部的「应用助手」入口：切到当前工作区的智能体面板，并选中内置的 app agent */
+  /** 侧栏底部的「应用助手」入口：展开右栏抽屉 */
   const openAppAgent = useCallback(() => {
     const workspace = workspacesRef.current.find((item) => item.id === activeIdRef.current);
     if (!workspace) {
       setToast("先打开一个工作区，应用助手要在工作区里跑");
       return;
     }
-    // 智能体被关掉时先打开开关，否则面板根本不出现
-    update({ agentEnabled: true, agentPrimary: APP_AGENT_NAME });
-    setModeAt(workspace.activeRoot, "agent");
-  }, [update, setModeAt]);
+    setAssistantOpen(true);
+  }, []);
 
   // 启动时恢复上次用的工作区。只恢复**一个**：同时挂起多个工作区意味着一次起好几个
   // shell 和 opencode，用户没点过的不该有这种代价
@@ -630,6 +611,20 @@ function Shell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [fullscreen]);
 
+  // Esc 关掉助手抽屉。焦点在输入框里时不关——那儿的 Esc 是「反悔这次输入」，
+  // 顺手把整个面板收掉会让正在写的内容一起没了
+  useEffect(() => {
+    if (!assistantOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('[contenteditable="true"], input, textarea')) return;
+      setAssistantOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [assistantOpen]);
+
   if (booting) {
     return (
       <div className="flex h-full items-center justify-center text-[12px] text-fg-faint">
@@ -649,13 +644,11 @@ function Shell() {
           opened={opened}
           missingRoots={missingRoots}
           onSelect={(workspace) => void openWorkspace(workspace)}
-          onNewChat={(workspace) => void newChat(workspace)}
           onCreate={() => setDialog({ mode: "create" })}
           onEdit={(workspace) => setDialog({ mode: "edit", workspace })}
           onRemove={setPendingRemove}
           onClose={closeWorkspace}
           onTogglePin={togglePin}
-          onRunAiCommand={runAiCommand}
           onResumeSession={resumeSession}
           onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
           onOpenAppAgent={openAppAgent}
@@ -675,6 +668,7 @@ function Shell() {
             onToggleLeftFullscreen={toggleLeftFullscreen}
             onExitFullscreen={exitFullscreen}
             onHandles={onHandles}
+            onSendToAssistant={openAssistantAt}
           />
         );
       })}
@@ -686,6 +680,15 @@ function Shell() {
           }}
         />
       )}
+
+      {/* 应用助手抽屉：窗口级，跟着当前工作区换 root；没工作区时不渲染。
+          收起只是滑出视口，对话与滚动状态留着，再展开是原样 */}
+      <AppAssistantDrawer
+        ref={assistantRef}
+        open={assistantOpen && activeRoot !== null}
+        root={activeRoot}
+        onClose={() => setAssistantOpen(false)}
+      />
 
       {dialog && (
         <WorkspaceDialog

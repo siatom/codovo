@@ -35,21 +35,16 @@ import {
 } from "../lib/agent";
 import { useAgentSession } from "../lib/agent-session";
 import { agentTarget, useAttention, type AttentionKind } from "../lib/attention";
-import {
-  APP_AGENT_NAME,
-  mergeAgentLayer,
-  primaryAgentOptions,
-} from "../lib/agent-profiles";
+import { APP_AGENT_NAME, mergeAgentLayer } from "../lib/agent-profiles";
 import { readWorkspaceLayer } from "../lib/agent-config";
 import type { AgentConversation, AgentSessionSummary, EditorLocation } from "../lib/types";
 import { AgentHistoryMenu } from "./AgentHistoryMenu";
 import { AgentMessageView } from "./AgentMessageView";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { FullscreenButton } from "./FullscreenButton";
 import { ScrollToBottomButton, useStickToBottom } from "./ScrollToBottom";
 import {
   IconBot,
-  IconChevronDown,
+  IconClose,
   IconPlus,
   IconSend,
   IconStop,
@@ -63,14 +58,12 @@ export interface AgentPaneHandle {
 }
 
 interface AgentPaneProps {
-  /** 这个智能体面板属于哪个工作区。一个工作区一个 opencode 进程，各自独立 */
+  /** 这个助手面板属于哪个工作区。一个工作区一个 opencode 进程，各自独立 */
   root: string;
-  /** 当前是不是停在智能体 tab；第一次变 true 时才去拉服务 */
+  /** 面板是否展示中；第一次变 true 时才去拉服务 */
   active: boolean;
-  /** 左侧这一列（终端与智能体）是否已全屏展示 */
-  fullscreen: boolean;
-  /** 切换左侧全屏。按钮画在标题栏右端 */
-  onToggleFullscreen: () => void;
+  /** 关闭面板（抽屉右上角的关闭按钮） */
+  onClose: () => void;
   /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<AgentPaneHandle>;
 }
@@ -179,65 +172,17 @@ function focusComposerEnd(root: HTMLElement): void {
   selection?.addRange(range);
 }
 
-/** 状态行右端的 primary agent 选择器：内置 build / plan + 设置里定义的自定义 agent */
-function PrimaryAgentPicker({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (next: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  // 按钮上显示的是候选里的**显示名**而不是原始值：应用助手的值是 `app`，直接摆出来没法看
-  const current = options.find((option) => option.value === value)?.label ?? value;
-
-  return (
-    <div className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => setOpen((isOpen) => !isOpen)}
-        title="选择智能体"
-        className="flex items-center gap-1 rounded-md border border-line-strong px-1.5 py-0.5 text-[11px] text-fg-muted hover:border-line-hover hover:text-fg"
-      >
-        {current}
-        <IconChevronDown className="h-3 w-3 text-fg-faint" />
-      </button>
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute top-full right-0 z-40 mt-1 flex min-w-32 flex-col overflow-auto rounded border border-line-strong bg-raised py-1 shadow-lg">
-            {options.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  onChange(option.value);
-                }}
-                className={`px-3 py-1.5 text-left text-[12px] hover:bg-hover hover:text-fg ${
-                  option.value === value ? "text-fg" : "text-fg-muted"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
 /**
- * 智能体对话面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
+ * 应用助手面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
  * 这里只负责发消息、把 SSE 事件渲染成对话。
+ *
+ * 它是**内置应用助手**的界面：靠内置的 `app` agent 问答 CodeDock 用法、按指令改设置 /
+ * 管工作区 / 切右栏模块（见 lib/app-agent.ts 的邮箱桥）。所以 primary agent 固定为
+ * `app`，不给用户切换——要聊代码请用终端里的 AI CLI。
  */
-export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }: AgentPaneProps) {
-  const { settings, update } = useSettings();
-  // 会话列表和当前会话跟侧边栏共用：那边要按工作区列出历史、并高亮正在聊的那条
+export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
+  const { settings } = useSettings();
+  // 会话列表和当前会话按工作区存在 agent-session 里：抽屉的历史菜单要靠它切会话
   const {
     sessions,
     setSessions,
@@ -318,16 +263,15 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
     };
   }, [root, settings.agentWorkspaces]);
 
-  // 生效层（全局 + 项目已合并）与 primary agent 候选。选择器存的是名字，
-  // 可能已被删掉 / 改名，所以实际用的是「候选里还有没有它」的结果，没有就回落 build。
+  // 生效层只剩项目层：全局层随「设置 → 智能体」的瘦身一起去掉了，助手改用仓库根的
+  // `.codedock/`（rules / memory / skills / agents），随仓库走、能进 git。
+  // 仍然过一遍 mergeAgentLayer：它负责滤掉关掉的和名字非法的条目，非法名会让后端校验拦下整个服务。
   const layer = useMemo(
-    () => mergeAgentLayer(settings.agentGlobal, workspaceLayer ?? emptyAgentLayer()),
-    [settings.agentGlobal, workspaceLayer],
+    () => mergeAgentLayer(emptyAgentLayer(), workspaceLayer ?? emptyAgentLayer()),
+    [workspaceLayer],
   );
-  const agentOptions = useMemo(() => primaryAgentOptions(layer), [layer]);
-  const primary = agentOptions.some((option) => option.value === settings.agentPrimary)
-    ? settings.agentPrimary
-    : "build";
+  // primary 固定内置应用助手：这个面板只服务它（见上方组件注释）
+  const primary = APP_AGENT_NAME;
 
   /** 喂给 opencode 的提供商。只给启用的、地址填了的；密钥只说有没有，正文留后端取 */
   const providers = useMemo(
@@ -774,7 +718,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   if (phase !== "ready") {
     return (
       <div className="flex h-full items-center justify-center text-[12px] text-fg-faint">
-        正在启动智能体…
+        正在启动应用助手…
       </div>
     );
   }
@@ -782,6 +726,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
+        <span className="shrink-0 text-[12px] font-medium text-fg">应用助手</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
           opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
           {/* 只在真配了提供商时才把引用译成名字：开发调试下提供商是后端合成的，
@@ -790,8 +735,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
             ? modelRefLabel(settings, sendModel)
             : aiConfig.model) || "未配置模型"}
         </span>
-        {/* 历史 / 新建和侧边栏工作区行下那份是同一套状态（两处都能操作），
-            面板里这一份是为了不用把侧边栏展开就能切会话 */}
+        {/* 历史 / 新建：面板里这一份是为了不用去侧栏就能切会话 */}
         <AgentHistoryMenu
           sessions={sessions}
           currentId={currentId}
@@ -804,13 +748,9 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
         <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
           <IconPlus className="h-3.5 w-3.5" />
         </button>
-        <PrimaryAgentPicker
-          value={primary}
-          options={agentOptions}
-          onChange={(next) => update({ agentPrimary: next })}
-        />
-        {/* 全屏开关和终端标签栏右端那个是同一个（都在左侧这一列），只是各 view 各画一个 */}
-        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
+        <button type="button" onClick={onClose} title="关闭助手" className={HEAD_BUTTON}>
+          <IconClose className="h-3.5 w-3.5" />
+        </button>
       </div>
 
       {/* 外层 relative 只用来给「回到底部」按钮定位；滚动仍在内层容器上 */}
@@ -825,26 +765,12 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
               <span className="flex h-11 w-11 items-center justify-center rounded-full bg-raised text-fg-dim">
                 <IconBot className="h-5 w-5" />
               </span>
-              {/* 内置助手（应用助手）面向的不是工作区代码，空态文案得跟着换 */}
-              {primary === APP_AGENT_NAME ? (
-                <>
-                  <div className="text-[13px] font-medium text-fg-muted">
-                    问答 CodeDock 用法，或让它改设置与界面
-                  </div>
-                  <div className="text-[12px] leading-relaxed text-fg-faint">
-                    改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="text-[13px] font-medium text-fg-muted">
-                    让智能体读代码、改文件、跑命令
-                  </div>
-                  <div className="text-[12px] leading-relaxed text-fg-faint">
-                    改动会直接落到工作区，git 面板能看到
-                  </div>
-                </>
-              )}
+              <div className="text-[13px] font-medium text-fg-muted">
+                问答 CodeDock 用法，或让它改设置与界面
+              </div>
+              <div className="text-[12px] leading-relaxed text-fg-faint">
+                改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框
+              </div>
             </div>
           ) : (
             messages.map((message) => (
@@ -880,7 +806,7 @@ export function AgentPane({ root, active, fullscreen, onToggleFullscreen, ref }:
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             onClick={onComposerClick}
-            data-placeholder="让智能体改点什么…"
+            data-placeholder="问 CodeDock 用法，或让它改设置与界面…"
             className="agent-composer min-h-6 max-h-40 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-fg outline-none"
           />
           <div className="mt-1 flex items-center gap-2">

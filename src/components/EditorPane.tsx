@@ -287,9 +287,9 @@ interface EditorPaneProps {
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
-  /** 选中浮窗的两个动作：把位置引用送到终端 / 智能体输入框 */
+  /** 选中浮窗的两个动作：把位置引用送到终端 / 应用助手输入框 */
   onSendToTerminal: (location: EditorLocation) => void;
-  onSendToAgent: (location: EditorLocation) => void;
+  onSendToAssistant: (location: EditorLocation) => void;
   /** 工作区内当前活动根。文件命令的沙箱根按**文件实际所属根**算，见 `roots` */
   root: string;
   /**
@@ -490,7 +490,7 @@ export function EditorPane({
   fullscreen,
   onToggleFullscreen,
   onSendToTerminal,
-  onSendToAgent,
+  onSendToAssistant,
   root,
   roots,
   visible,
@@ -763,14 +763,14 @@ export function EditorPane({
 
   /** 点浮窗按钮：把快照里的位置交出去，然后收起浮窗 */
   const sendSelection = useCallback(
-    (target: "terminal" | "agent") => {
+    (target: "terminal" | "assistant") => {
       const location = floatLocationRef.current;
       setFloatBar(null);
       if (!location) return;
       if (target === "terminal") onSendToTerminal(location);
-      else onSendToAgent(location);
+      else onSendToAssistant(location);
     },
-    [onSendToTerminal, onSendToAgent],
+    [onSendToTerminal, onSendToAssistant],
   );
 
   // 浮窗开着时点别处就收起。用 window 监听而不是透明遮罩——遮罩会把编辑器也挡住，
@@ -2446,9 +2446,8 @@ export function EditorPane({
           </button>
           <button
             type="button"
-            title="复制到智能体输入框"
-            disabled={!settings.agentEnabled}
-            onClick={() => sendSelection("agent")}
+            title="送给应用助手"
+            onClick={() => sendSelection("assistant")}
             className={FLOAT_BAR_BUTTON}
           >
             <IconBot className="h-3.5 w-3.5" />
