@@ -703,13 +703,23 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
       <div className="flex h-full items-center justify-center p-6">
         <div className="max-w-md rounded border border-line bg-app p-4 text-center">
           <div className="text-[12px] leading-relaxed text-fg-muted">{fatal}</div>
-          <button
-            type="button"
-            onClick={() => void boot()}
-            className="mt-3 rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
-          >
-            重试
-          </button>
+          <div className="mt-3 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => void boot()}
+              className="rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
+            >
+              重试
+            </button>
+            {/* 这一屏没有标题栏，关闭按钮得在这儿给一个，否则只能靠 Esc */}
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
+            >
+              关闭
+            </button>
+          </div>
         </div>
       </div>
     );
