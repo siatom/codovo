@@ -352,16 +352,6 @@ export interface EditorPaneHandle {
    * 文件又写回磁盘。
    */
   dropPaths: (paths: string[]) => void;
-  /**
-   * 丢掉**所有**差异视图的缓存。差异的基线跟着 HEAD / index 走，切分支之后一律过期，
-   * 留着就会拿旧基线跟新内容比，显示出根本不存在的差异。
-   */
-  dropDiffs: () => void;
-  /**
-   * 这些路径里哪些在磁盘上已经不存在了。切分支用：checkout 删掉的文件 watcher
-   * 收不到通知（它只对 `is_file()` 发事件），得主动问一次才能把死标签清掉。
-   */
-  missingPaths: (paths: string[]) => Promise<string[]>;
   /** 关掉当前标签页。焦点在右侧面板（文件树 / 变更）里时走这个入口 */
   closeActiveTab: () => void;
 }
@@ -1036,35 +1026,6 @@ export function EditorPane({
         forgetKeys(
           disposeModels((path) => paths.some((item) => isPathInside(path, item))),
         );
-      },
-
-      dropDiffs: () => {
-        const keys: string[] = [];
-        for (const [key, pair] of diffModelsRef.current) {
-          const showing = diffRef.current?.getModel();
-          if (showing && (showing.original === pair.original || showing.modified === pair.modified)) {
-            diffRef.current?.setModel(null);
-          }
-          pair.original.dispose();
-          pair.modified.dispose();
-          keys.push(key);
-        }
-        diffModelsRef.current.clear();
-        forgetKeys(keys);
-      },
-
-      missingPaths: async (paths) => {
-        const gone: string[] = [];
-        for (const path of paths) {
-          try {
-            await readFile(rootFor(path), path);
-          } catch {
-            // 读不回来就算它没了。这里只处理「文件被删」这一种，二进制 / 过大的
-            // 文件读得回来，不会误判
-            gone.push(path);
-          }
-        }
-        return gone;
       },
 
       // 关掉当前标签。焦点在右侧面板里时由 ToolPane 调它——差异标签就开在这根标签栏上

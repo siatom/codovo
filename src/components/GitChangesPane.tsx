@@ -20,7 +20,6 @@ import {
   gitCommitGroups,
   gitCommitStat,
   gitCompareFiles,
-  gitCreateBranch,
   gitCreateTag,
   gitDeleteTag,
   gitDiscard,
@@ -40,7 +39,6 @@ import {
   gitStashList,
   gitStashPop,
   gitStashPush,
-  gitSwitchBranch,
   gitUndoCommit,
   gitUnstage,
   gitUnpushed,
@@ -152,17 +150,6 @@ interface GitChangesPaneProps {
   onOpen: (path: string, source: DiffSource) => void;
   /** 点行内的「打开文件」：开文件内容（不是差异），用来跳回去看上下文 */
   onOpenFile: (path: string) => void;
-  /**
-   * 切分支**之前**调。编辑器里可能有没保存的改动，它只活在内存里、git 看不见：
-   * 落盘之后 git 才能正确判断能不能安全切换，也免得切完用户一保存就把旧分支的
-   * 内容写进新分支。返回 false = 有文件没存成功，这次切换要中止。
-   */
-  onBeforeBranchSwitch: () => Promise<boolean>;
-  /**
-   * 切分支成功之后调一次。工作区整个被换掉，上层那些按旧内容缓存下来的东西
-   * （打开的文件、差异视图的基线）都得作废——见 WorkspacePane 的实现。
-   */
-  onBranchChanged: () => void;
   /**
    * 换了 worktree：把这个面板的数据源切到目标工作树。传回工作区自己的根
    * （`worktrees` 里那条 `current`）表示恢复默认。只有一个 worktree 时不会调。
@@ -1777,8 +1764,6 @@ export function GitChangesPane({
   git,
   onOpen,
   onOpenFile,
-  onBeforeBranchSwitch,
-  onBranchChanged,
   onSelectWorktree,
 }: GitChangesPaneProps) {
   const { settings } = useSettings();
@@ -1884,8 +1869,16 @@ export function GitChangesPane({
    * Ctrl/⌘ 或 Shift 点提交行切换；满 2 个后再选第三个时丢掉最早选的那个。
    */
   const [compareSel, setCompareSel] = useState<string[]>([]);
-  /** 正在看的两个 ref 之间的比较；null = 没在比较视图里 */
-  const [compare, setCompare] = useState<{ from: string; to: string; label: string } | null>(null);
+  /**
+   * 正在看的两个 ref 之间的比较；null = 没在比较视图里。
+   * `branch` 有值时是「从分支下拉进来的查看分支」：只读对比、不检出，顶部要标出查看态。
+   */
+  const [compare, setCompare] = useState<{
+    from: string;
+    to: string;
+    label: string;
+    branch?: string;
+  } | null>(null);
   /** 比较视图的文件列表；null = 还没拉到 */
   const [compareFiles, setCompareFiles] = useState<GitCommitFile[] | null>(null);
   const [compareBusy, setCompareBusy] = useState(false);
@@ -1947,14 +1940,10 @@ export function GitChangesPane({
   /** 路径筛选框是否展开：默认只留工具行右边一个漏斗图标，点开才出现输入框 */
   const [filterOpen, setFilterOpen] = useState(false);
 
-  // 分支下拉：null = 没开着。列表每次打开都重拉，切完分支/新建完都会自动重拉
+  // 分支下拉：null = 没开着。列表每次打开都重拉，让外部改动（fetch / 别处建分支）也能反映进来
   const [branchMenu, setBranchMenu] = useState(false);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [branchError, setBranchError] = useState<string | null>(null);
-  /** 新建分支的输入框：null = 没在输入 */
-  const [newBranch, setNewBranch] = useState<string | null>(null);
-  /** 点了被别的 worktree 占用的分支：菜单里就地提示 + 给「切到该工作树」入口 */
-  const [blocked, setBlocked] = useState<{ name: string; worktree: string } | null>(null);
 
   // worktree 概览：null = 还没拉到。列表只在仓库有多个工作树（或面板切到了别的
   // 工作树、需要切回来）时才有意义
@@ -2358,65 +2347,13 @@ export function GitChangesPane({
   }, [branchMenu, visible, moduleVisible, snapshot, loadBranches]);
 
   /**
-   * 打开分支下拉：清掉上回的残留（报错 / 新建输入框 / 被占用提示），免得切走再回来
-   * 还挂着上一次的输入。列表数据交给上面的 effect 拉——打开即拉，之后随轮询刷新。
+   * 打开分支下拉：清掉上回的残留（报错），免得切走再回来还挂着上一次的提示。
+   * 列表数据交给上面的 effect 拉——打开即拉，之后随轮询刷新。
    */
   const openBranchMenu = useCallback(() => {
     setBranchError(null);
-    setNewBranch(null);
-    setBlocked(null);
     setBranchMenu(true);
   }, []);
-
-  /**
-   * 切分支。切之前先把编辑器里没保存的改动落盘（理由见 onBeforeBranchSwitch），
-   * 切完工作区整个换掉，得让上层清掉那些「按旧内容缓存下来」的东西（见 onBranchChanged）。
-   */
-  const switchTo = useCallback(
-    (name: string) => {
-      setBranchMenu(false);
-      void run("branch", async () => {
-        if (!(await onBeforeBranchSwitch())) {
-          throw new Error("有文件没保存成功，已取消切换分支");
-        }
-        const payload = await gitSwitchBranch(root, name);
-        setLogRevision((revision) => revision + 1); // 历史整个换了
-        onBranchChanged();
-        return payload;
-      });
-    },
-    [run, root, onBranchChanged, onBeforeBranchSwitch],
-  );
-
-  /**
-   * 点分支列表里的一条。被别的 worktree 占用的分支 git 不让切（会报
-   * `already used by worktree`），就不发命令，改成菜单里就地提示 + 给跳转入口。
-   */
-  const onBranchClick = useCallback(
-    (item: GitBranch) => {
-      if (item.worktree && !item.current) {
-        setBlocked({ name: item.name, worktree: item.worktree });
-        return;
-      }
-      switchTo(item.name);
-    },
-    [switchTo],
-  );
-
-  const createBranchAndSwitch = useCallback(() => {
-    const name = (newBranch ?? "").trim();
-    if (!name) return;
-    setBranchMenu(false);
-    void run("branch", async () => {
-      if (!(await onBeforeBranchSwitch())) {
-        throw new Error("有文件没保存成功，已取消新建分支");
-      }
-      const payload = await gitCreateBranch(root, name);
-      setLogRevision((revision) => revision + 1);
-      onBranchChanged();
-      return payload;
-    });
-  }, [newBranch, run, root, onBranchChanged, onBeforeBranchSwitch]);
 
   // ---- worktree ----
 
@@ -3356,11 +3293,13 @@ export function GitChangesPane({
    *
    * from 与 to 字面相同（选了同一个 ref）时后端其实会返回空列表，这里先拦一道，
    * 省得白跑一次 git，也让提示更贴切。
+   *
+   * `branch` 只在「从分支下拉查看分支」时传：标出这是只读的查看态，顶部要给出口。
    */
   const startCompare = useCallback(
-    (from: string, to: string, label: string) => {
+    (from: string, to: string, label: string, branch?: string) => {
       const seq = ++compareSeq.current;
-      setCompare({ from, to, label });
+      setCompare({ from, to, label, branch });
       setCompareFiles(null);
       setCompareError(null);
       setCompareSel([]);
@@ -3395,6 +3334,25 @@ export function GitChangesPane({
     setCompareBusy(false);
     setCompareSel([]);
   }, []);
+
+  /**
+   * 分支下拉里点一条：只切**面板在看哪条分支**，不检出、不动工作区。
+   *
+   * 选中非当前分支 → 面板内容换成「HEAD ↔ 该分支」的只读差异（复用上面这套比较视图）；
+   * 点当前分支 → 退出查看，回到跟着 HEAD 走的改动列表。
+   */
+  const previewBranch = useCallback(
+    (item: GitBranch) => {
+      setBranchMenu(false);
+      if (item.current) {
+        exitCompare();
+        return;
+      }
+      // 用字面 HEAD 而不是分支名：游离 HEAD 下也能比，且比出来的方向固定是「当前 ↔ 目标」
+      startCompare("HEAD", item.name, `${snapshot.branch ?? "HEAD"} ↔ ${item.name}`, item.name);
+    },
+    [snapshot.branch, exitCompare, startCompare],
+  );
 
   /**
    * 选中两个提交时，算出「从哪个到哪个」。时间线上更靠下（更旧）的那个当 from，
@@ -3604,14 +3562,6 @@ export function GitChangesPane({
   const currentWt = wtList?.find((item) => item.current) ?? null;
   /** 列表里有没有失效记录（目录已不存在），决定要不要给「清理失效记录」入口 */
   const hasPrunable = (worktrees ?? []).some((item) => item.prunable || !item.exists);
-  /**
-   * 点了被占用的分支时，占用它的那个工作树在本面板列表里的条目（供「切到该工作树」
-   * 用）。目录不存在（prunable）的不给入口——切过去也没意义。
-   */
-  const blockedTarget =
-    blocked && wtList
-      ? (wtList.find((item) => item.exists && pathKey(item.path) === pathKey(blocked.worktree)) ?? null)
-      : null;
 
   // 目录还不是仓库：给一句说明 + 一键初始化，点进来看到的就是这里。
   // 放在所有 hooks 之后，条件返回不影响 hooks 顺序
@@ -3751,20 +3701,41 @@ export function GitChangesPane({
       <header className="flex shrink-0 flex-col gap-0.5 border-b border-line px-3 py-1">
         {/* 头部拆两行：第一行只留分支选择，第二行放领先/落后与远程/视图按钮——
             全挤一行按钮太密，分开后每行都有呼吸空间 */}
-        {/* 分支名点开是分支菜单：切分支 / 建新分支。下拉的写法照 SettingsDialog 的
-            ThemePicker：锚在按钮上，另铺一层透明遮罩接住外部点击 */}
+        {/* 分支名点开是分支列表：**只查看，不检出**。选中一条把面板内容换成「当前 HEAD
+            ↔ 该分支」的只读差异，工作区不动。下拉写法照 SettingsDialog 的 ThemePicker：
+            锚在按钮上，另铺一层透明遮罩接住外部点击 */}
         <div className="relative flex min-w-0 items-center gap-1">
           <button
             type="button"
             onClick={() => (branchMenu ? setBranchMenu(false) : openBranchMenu())}
             disabled={busy !== null}
-            title={`当前分支：${snapshot.branch ?? "游离 HEAD"}（点击切换）`}
+            title={`当前分支：${snapshot.branch ?? "游离 HEAD"}（点击查看其它分支）`}
             className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40"
           >
             <IconBranch className="h-3 w-3 shrink-0" />
             <span className="min-w-0 truncate">{snapshot.branch ?? "游离 HEAD"}</span>
             <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
           </button>
+
+          {/* 查看态：顶部常驻一条，说明现在看的是哪条分支、点 × 回到当前分支。
+              放在分支按钮旁边（同一行），列表滚到哪都能看见 */}
+          {compare?.branch && (
+            <span
+              className="flex min-w-0 items-center gap-1 rounded border border-accent-line bg-selected px-1 py-0.5 text-[11px] text-accent"
+              title={`正在查看分支 ${compare.branch}，只读对比，不会检出`}
+            >
+              <IconArrowsLeftRight className="h-3 w-3 shrink-0" />
+              <span className="min-w-0 truncate">正在查看 {compare.branch}</span>
+              <button
+                type="button"
+                onClick={exitCompare}
+                title="回到当前分支"
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-active"
+              >
+                <IconClose className="h-3 w-3" />
+              </button>
+            </span>
+          )}
 
           {branchMenu && (
             <>
@@ -3781,18 +3752,20 @@ export function GitChangesPane({
                   <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
                 )}
                 {branches.map((item) => {
-                  // 被别的 worktree 占用的分支切不过去（git 会报 already used by
-                  // worktree），标出来、点了就地提示，不发命令
+                  // 正在查看的那条：左侧用对比图标标出，再点一次就退出查看
+                  const viewing = compare?.branch === item.name;
+                  // 被别的 worktree 占用的分支照常能「查看」——只看差异、不检出，不受占用限制；
+                  // 保留「已检出」角标只是告知它此刻在别处的工作树里
                   const occupied = item.worktree !== null && !item.current;
                   return (
                     <button
                       key={item.name}
                       type="button"
-                      onClick={() => onBranchClick(item)}
-                      disabled={item.current || busy !== null}
+                      onClick={() => previewBranch(item)}
+                      disabled={busy !== null}
                       title={
                         occupied && item.worktree
-                          ? `已在工作树 ${toDisplayPath(item.worktree)} 中检出`
+                          ? `已在工作树 ${toDisplayPath(item.worktree)} 中检出（这里只看差异，不会切过去）`
                           : item.gone
                             ? `上游 ${item.upstream} 已经不存在了`
                             : item.upstream
@@ -3802,7 +3775,11 @@ export function GitChangesPane({
                       className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
                     >
                       <span className="flex w-3 shrink-0 justify-center">
-                        {item.current && <IconCheck className="h-3 w-3 text-ok" />}
+                        {viewing ? (
+                          <IconArrowsLeftRight className="h-3 w-3 text-accent" />
+                        ) : (
+                          item.current && <IconCheck className="h-3 w-3 text-ok" />
+                        )}
                       </span>
                       <span className="min-w-0 flex-1 truncate">{item.name}</span>
                       {occupied ? (
@@ -3818,73 +3795,15 @@ export function GitChangesPane({
                           {item.behind > 0 && <span>↓{item.behind}</span>}
                         </span>
                       )}
-                      {!occupied && <span className={MENU_CMD}>switch</span>}
+                      <span className={MENU_CMD}>{viewing ? "关闭" : "view"}</span>
                     </button>
                   );
                 })}
 
-                {/* 点了被别的 worktree 占用的分支：说明原因，能给跳转入口就给 */}
-                {blocked && (
-                  <div className="mt-1 border-t border-line px-3 py-1.5 text-[11px]">
-                    <p className="text-warn" title={toDisplayPath(blocked.worktree)}>
-                      分支 {blocked.name} 已在工作树{" "}
-                      {blocked.worktree.split(/[\\/]/).filter(Boolean).pop() ?? blocked.worktree}{" "}
-                      中检出，不能在这里切换。
-                    </p>
-                    {blockedTarget && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          pickWorktree(blockedTarget);
-                          setBlocked(null);
-                        }}
-                        className="mt-1 flex items-center gap-1 text-fg-muted hover:text-fg"
-                      >
-                        <IconWorktree className="h-3 w-3 shrink-0" />
-                        切到该工作树
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {/* 新建分支：点开输入框，回车或点 ✓ 建出来并切过去。
-                    不用 window.prompt（WKWebView 不支持），和重命名那套一致 */}
-                <div className="mt-1 border-t border-line pt-1">
-                  {newBranch === null ? (
-                    <button
-                      type="button"
-                      onClick={() => setNewBranch("")}
-                      className="flex w-full items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
-                    >
-                      <IconPlus className="h-3 w-3 shrink-0" />
-                      新建分支
-                      <span className={MENU_CMD}>switch -c</span>
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-1 px-2 py-0.5">
-                      <input
-                        autoFocus
-                        value={newBranch}
-                        onChange={(event) => setNewBranch(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") createBranchAndSwitch();
-                          if (event.key === "Escape") setNewBranch(null);
-                        }}
-                        placeholder="新分支名"
-                        className={`${TEXT_INPUT} min-w-0 flex-1`}
-                      />
-                      <button
-                        type="button"
-                        onClick={createBranchAndSwitch}
-                        disabled={!newBranch.trim() || busy !== null}
-                        title="新建并切换"
-                        className={HEADER_ACTION}
-                      >
-                        <IconCheck className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
+                {/* 菜单底部一句说明：这套下拉只做查看，不做检出，免得人误以为点了就切过去了 */}
+                <p className="mt-1 border-t border-line px-3 pt-1 text-[10px] leading-relaxed text-fg-faint">
+                  选中分支只查看差异，不会检出
+                </p>
               </div>
             </>
           )}
@@ -4462,10 +4381,10 @@ export function GitChangesPane({
               <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
                 <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  对比 {compare.label}
+                  {compare.branch ? `只读对比 ${compare.label}` : `对比 ${compare.label}`}
                 </span>
                 <button type="button" onClick={exitCompare} className={GROUP_ACTION}>
-                  退出对比
+                  {compare.branch ? "回到当前分支" : "退出对比"}
                 </button>
               </div>
               {compareBusy && (
