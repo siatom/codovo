@@ -121,6 +121,8 @@ export function AppAssistantDrawer({
       }`}
       style={{ width }}
       aria-hidden={!open}
+      // 收起时连键盘焦点也一起挡住：只靠 pointer-events 的话，Tab 还能钻进看不见的输入框
+      inert={!open}
     >
       {/* 左缘就是拖动条：视觉上一条细线，命中区加宽到 8px */}
       <div

@@ -92,7 +92,7 @@ export interface Settings {
   aiDefaultModel: string;
   /** opencode 可执行文件；裸命令名会去 PATH 里找。应用助手（右栏抽屉）与数据库 / 预览助手共用它 */
   agentCommand: string;
-  /** 智能体服务监听的端口；0 表示自动挑一个空闲的 */
+  /** 助手服务监听的端口；0 表示自动挑一个空闲的 */
   agentPort: number;
   /**
    * @deprecated 工作区层的智能体配置已改以工作区根下 `.codedock/` 的文件为准，
