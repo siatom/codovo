@@ -611,11 +611,15 @@ function Shell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [fullscreen]);
 
+  // 工作区全关了就没有助手可聊，顺手把抽屉收起来，免得下次开工作区时它突然冒出来
+  useEffect(() => {
+    if (!activeRoot) setAssistantOpen(false);
+  }, [activeRoot]);
+
   // Esc 关掉助手抽屉。焦点在输入框里时不关——那儿的 Esc 是「反悔这次输入」，
   // 顺手把整个面板收掉会让正在写的内容一起没了
   useEffect(() => {
-    if (!assistantOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
+    if (!assistantOpen) return;    const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       const target = event.target as HTMLElement | null;
       if (target?.closest?.('[contenteditable="true"], input, textarea')) return;

@@ -348,12 +348,12 @@ export function TerminalPane({
         <header className="flex h-9 shrink-0 items-center gap-1 border-b border-line px-2">
           {/* 命令多起来就横向滚动，和标签栏同一套：细滚动条藏掉，操作靠滚轮 / 触控板 */}
           <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-            {aiCommands.map((item) => {
+            {aiCommands.map((item, index) => {
               // 当前活动标签正好是这个 CLI 时高亮，一眼看出「现在在跟谁说话」
               const isActive = hintByIdRef.current.get(activeId) === item.command;
               return (
                 <button
-                  key={item.command}
+                  key={`${item.name}-${item.command}-${index}`}
                   type="button"
                   onClick={() => launchCli(item.command, item.name)}
                   title={
