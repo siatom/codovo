@@ -39,7 +39,6 @@ import {
   pathKey,
   pathsExist,
   pathsPresent,
-  pickFolder,
   pickOpenPath,
   workspaceActivate,
   workspaceClose,
@@ -60,7 +59,6 @@ import {
   type Workspace,
 } from "./lib/workspaces";
 import { clearSession } from "./lib/session";
-import { removeRecent } from "./lib/recent";
 import {
   useSettings,
   FONT_SIZE_MIN,
@@ -381,7 +379,7 @@ function Shell() {
    * - 不在任何工作区里 → 以文件所在目录为根建 / 复用临时工作区后打开。
    *
    * 沙箱没有放宽：新工作区的根会经 `workspace_activate` 登记，读写仍由后端校验。
-   * 文件已被删掉时只提示并从最近列表移除，不改变当前工作区。
+   * 文件已被删掉时只提示，不改变当前工作区。
    */
   const openFileAnywhere = useCallback(
     async (path: string) => {
@@ -389,7 +387,6 @@ function Shell() {
       try {
         const [present] = await pathsPresent([path]);
         if (!present) {
-          removeRecent(path);
           setToast(`文件不存在：${toDisplayPath(path)}`);
           return;
         }
@@ -438,16 +435,6 @@ function Shell() {
     },
     [openWorkspace, touchActivity, enqueueOpenRequest],
   );
-
-  /** 欢迎页 / 菜单里的「打开文件夹」：选完按工作区规则打开 */
-  const chooseFolder = useCallback(async () => {
-    try {
-      const picked = await pickFolder();
-      if (picked.length > 0) await openFolders(picked);
-    } catch (reason) {
-      setToast(`选择文件夹失败：${reason}`);
-    }
-  }, [openFolders]);
 
   /** 全局 Ctrl+O：没有工作区时也能选文件，选完由 `openFileAnywhere` 决定落到哪 */
   const chooseFile = useCallback(async () => {
@@ -979,8 +966,6 @@ function Shell() {
             onSendToAssistant={openAssistantAt}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
-            onOpenRecent={(path) => void openFileAnywhere(path)}
-            onOpenFolder={() => void chooseFolder()}
             openRequests={openRequests}
             onOpenRequestHandled={handleOpenRequestHandled}
           />

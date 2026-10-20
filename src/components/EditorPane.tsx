@@ -26,7 +26,6 @@ import {
 import { renderMarkdown } from "../lib/markdown";
 import { isDocumentPath, contentSignature } from "../lib/translate";
 import { clearTranslation, rekeyTranslation } from "../lib/translate-store";
-import { addRecent } from "../lib/recent";
 import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
 import {
   ENCODINGS,
@@ -67,7 +66,6 @@ import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { TranslationView } from "./TranslationView";
 import { PdfPreview } from "./PdfPreview";
-import { WelcomeScreen } from "./WelcomeScreen";
 import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -83,8 +81,6 @@ import {
   IconLayoutSingle,
   IconMore,
   IconPencil,
-  IconPlus,
-  IconSearch,
   IconTerminal,
   IconWand,
 } from "./icons";
@@ -100,10 +96,10 @@ const TAB_MENU_W = 190;
 
 /** markdown 的四种查看方式，顺序也是标题栏按钮的顺序 */
 const MARKDOWN_MODES = [
-  { id: "preview", label: "预览" },
-  { id: "edit", label: "编辑" },
-  { id: "split", label: "对照" },
-  { id: "translate", label: "翻译" },
+  { id: "preview", label: "预览", icon: IconEye, hint: "预览渲染后的效果" },
+  { id: "edit", label: "编辑", icon: IconPencil, hint: "编辑 Markdown 源码" },
+  { id: "split", label: "对照", icon: IconLayoutColumns, hint: "左边源码，右边渲染" },
+  { id: "translate", label: "翻译", icon: IconArrowsLeftRight, hint: "左原文、右译文的文档翻译" },
 ] as const;
 type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
 
@@ -166,10 +162,6 @@ function scrollEditorToPreview(
 }
 const TABS_MENU_ITEM =
   "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
-
-/** 标题栏上的次级动作（另存为 / 放弃变更），比主「保存」按钮弱一档 */
-const HEADER_BUTTON =
-  "shrink-0 rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
 
 /** 浮窗按钮：两个动作同款，禁用态（智能体没开）不给 hover 反馈 */
 const FLOAT_BAR_BUTTON =
@@ -365,10 +357,6 @@ interface EditorPaneProps {
   onPatchTab: (tab: Tab, patch: TabPatch) => void;
   /** 打开一个文件：工作区内的直接开标签，工作区外的由上层建 / 复用临时工作区（Ctrl+O 走它） */
   onOpenPath: (path: string) => void;
-  /** 打开最近文件：始终先做存在性校验，失效记录提示并移除 */
-  onOpenRecent: (path: string) => void;
-  /** 弹出目录选择框并把选中的文件夹打开为工作区（欢迎页入口） */
-  onOpenFolder: () => void;
   /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
   onRevealInFiles: (path: string) => void;
   /** 翻译视图里的「设置」入口：打开设置面板的 AI 页 */
@@ -672,8 +660,6 @@ export function EditorPane({
   onNewUntitled,
   onPatchTab,
   onOpenPath,
-  onOpenRecent,
-  onOpenFolder,
   onRevealInFiles,
   onOpenSettings,
   fullscreen,
@@ -2501,7 +2487,6 @@ export function EditorPane({
             setStatus({ kind: "tooLarge" });
             return;
           }
-          addRecent(imagePath);
           setStatus({ kind: "image", src: content.data });
         })
         .catch((reason) => {
@@ -2518,8 +2503,6 @@ export function EditorPane({
     // 和图片一样：打开即预览，判据只看扩展名，不必先把文件读进来
     if (isPdfPath(active.path)) {
       editor.setModel(null);
-      // PDF 打开后直接进预览，没有读盘成功回调；这里也算一次成功的打开
-      if (active.path !== null) addRecent(active.path);
       setStatus({ kind: "pdf" });
       dropPendingFormat(key);
       return;
@@ -2609,8 +2592,6 @@ export function EditorPane({
         if (!existing && (language === "json5" || language === "jsonc")) {
           reindentModelOnOpen(model);
         }
-        // 读盘成功才算「打开成功」：路径不存在 / 二进制 / 超限的文件不进最近列表
-        addRecent(path);
         attachModel(key, model);
         setStatus({ kind: "ready" });
         syncDirty();
@@ -3210,11 +3191,6 @@ export function EditorPane({
   }, [activeKey]);
 
   const activeEncoding = activeCached?.encoding || null;
-  /**
-   * 另存为的可用性：截断文件写出去只会得到残缺内容，直接禁掉。
-   * 保存按钮另有针对性禁用（只读 / 截断都不给按）。
-   */
-  const canSaveAsActive = activeCached !== null && !activeCached.truncated;
 
   /**
    * 编码状态栏只在普通文本文件上出现：差异、图片没有「按原编码回写」这回事；
@@ -3479,15 +3455,6 @@ export function EditorPane({
             );
           })}
         </div>
-        {/* 新建未命名缓冲区。快捷键 Ctrl+N，标签栏空白处双击也能新建 */}
-        <button
-          type="button"
-          onClick={onNewUntitled}
-          title={`新建文件（${formatShortcut(settings.shortcuts["editor.newFile"])}）`}
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
-        >
-          <IconPlus className="h-3.5 w-3.5" />
-        </button>
         {/* 批量关闭入口。紧贴 tab 栏右端，只在有标签时出现 */}
         {tabs.length > 0 && (
           <button
@@ -3517,36 +3484,29 @@ export function EditorPane({
             )}
           </button>
         )}
-        {/* markdown：预览 / 编辑 / 对照。默认预览，三种方式同一时间只开一个 */}
+        {/* markdown：预览 / 编辑 / 对照 / 翻译。默认预览，四种方式同一时间只开一个 */}
         {isMarkdownFile && status.kind === "ready" && markdownMode !== null && (
           <div
             role="group"
             aria-label="markdown 查看方式"
-            className="flex shrink-0 items-center gap-0.5 rounded-md border border-line-strong p-0.5"
+            className="flex shrink-0 items-center gap-0.5"
           >
-            {MARKDOWN_MODES.map(({ id, label }) => (
+            {MARKDOWN_MODES.map(({ id, label, icon: Icon, hint }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setMarkdownMode(id)}
+                aria-label={label}
                 aria-pressed={markdownMode === id}
                 disabled={id === "translate" && !canTranslate}
-                title={
-                  id === "preview"
-                    ? "预览渲染后的效果"
-                    : id === "edit"
-                      ? "编辑 Markdown 源码"
-                      : id === "split"
-                        ? "左边源码，右边渲染"
-                        : "左原文、右译文的文档翻译"
-                }
-                className={`rounded px-2 py-0.5 text-[11px] ${
+                title={hint}
+                className={`flex h-6 w-6 items-center justify-center rounded ${
                   markdownMode === id
                     ? "bg-selected text-fg"
                     : "text-fg-dim hover:bg-hover hover:text-fg"
                 } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim`}
               >
-                {label}
+                <Icon className="h-3.5 w-3.5" />
               </button>
             ))}
           </div>
@@ -3556,28 +3516,16 @@ export function EditorPane({
           <button
             type="button"
             onClick={toggleTranslation}
+            aria-label="文档翻译"
             aria-pressed={isTranslate}
             title={isTranslate ? "回到编辑" : "文档翻译（左原文、右译文）"}
-            className={`flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] ${
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
               isTranslate
                 ? "bg-selected text-fg"
                 : "text-fg-dim hover:bg-hover hover:text-fg"
             }`}
           >
             <IconArrowsLeftRight className="h-3.5 w-3.5" />
-            翻译
-          </button>
-        )}
-        {/* 查找 / 替换：切换 Monaco 的 find widget（开着再点就收起）。
-            Ctrl+F 走命令分发打开同一个 widget，Ctrl+H 的替换仍是 Monaco 内置 */}
-        {activeFile && status.kind === "ready" && (
-          <button
-            type="button"
-            onClick={toggleFind}
-            title={`查找 / 替换（${formatShortcut(settings.shortcuts["editor.find"])}、Ctrl+H）`}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
-          >
-            <IconSearch className="h-3.5 w-3.5" />
           </button>
         )}
         {/* 格式化：Prettier 覆盖的类型走 Prettier，其余退回缩进重排。
@@ -3604,39 +3552,7 @@ export function EditorPane({
             {saving ? "保存中…" : `保存 ${formatShortcut(settings.shortcuts["editor.save"])}`}
           </button>
         )}
-        {/* 文件生命周期入口：另存为对所有文件标签开放，放弃变更只在确实有未保存改动时可用 */}
-        {activeFile && activeCached && (
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                if (activeKey !== null) void saveAs(activeKey);
-              }}
-              disabled={!canSaveAsActive || saving}
-              title={
-                activeCached.truncated
-                  ? "文件已截断，不能另存为"
-                  : activeCached.path === null
-                    ? "把未命名缓冲区保存到工作区里的文件"
-                    : "另存为…"
-              }
-              className={HEADER_BUTTON}
-            >
-              另存为
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (activeKey !== null) void discardChanges(activeKey);
-              }}
-              disabled={!activeDirty}
-              title="放弃未保存的修改（已落盘文件从磁盘重读）"
-              className={HEADER_BUTTON}
-            >
-              放弃变更
-            </button>
-          </>
-        )}
+        {/* 文件生命周期入口：另存为 / 放弃变更在标签右键菜单里，标题栏只保留常用的保存 */}
         {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
@@ -3855,14 +3771,6 @@ export function EditorPane({
       {/* relative 给下面的绝对定位预览层（图片 / 整屏预览 / 加载遮罩）当定位父级；
           flex 让 SplitPane 的 flex-1 撑满 */}
       <div className="relative flex min-h-0 flex-1">
-        {/* 没有标签时整块让给欢迎页：最近文件 + 打开入口。它铺满这层，把下面的空 Monaco 盖住 */}
-        {tabs.length === 0 && (
-          <WelcomeScreen
-            onOpenFile={() => void openFromDisk()}
-            onOpenFolder={onOpenFolder}
-            onOpenRecent={onOpenRecent}
-          />
-        )}
         {/* 分栏的壳一直在：直接把 Monaco 的容器从「绝对铺满」改成「有宽度参与分栏」，
             切分屏时才会重新挂载（Monaco 实例只建一次，重挂载会让它挂到脱离的节点上）。
             不分屏时收起第二块，第一块自动撑满，和以前一个样 */}

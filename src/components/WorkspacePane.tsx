@@ -90,14 +90,10 @@ interface WorkspacePaneProps {
   /** 打开设置面板（编辑器翻译视图里的「设置」入口） */
   onOpenSettings: () => void;
   /**
-   * 打开一个不落在本工作区任何根下的文件。Ctrl+O、最近文件、系统拖放都可能指向
+   * 打开一个不落在本工作区任何根下的文件。Ctrl+O、系统拖放都可能指向
    * 工作区外的文件，由 App 建 / 复用临时工作区后把请求转回来。
    */
   onOpenFileAnywhere: (path: string) => void;
-  /** 打开最近文件：始终先校验存在性，失效记录提示并移除 */
-  onOpenRecent: (path: string) => void;
-  /** 弹出目录选择框并打开为工作区（编辑器欢迎页入口） */
-  onOpenFolder: () => void;
   /**
    * 交给本工作区打开的跨工作区请求队列（App 建好临时工作区后回填）。nonce 保证同一条
    * 路径连点两次也能重新执行；只看队首，处理完带上 nonce 由 `onOpenRequestHandled` 移除。
@@ -126,8 +122,6 @@ export function WorkspacePane({
   onSendToAssistant,
   onOpenSettings,
   onOpenFileAnywhere,
-  onOpenRecent,
-  onOpenFolder,
   openRequests,
   onOpenRequestHandled,
 }: WorkspacePaneProps) {
@@ -763,8 +757,6 @@ export function WorkspacePane({
                       onNewUntitled={newUntitled}
                       onPatchTab={patchOpenTab}
                       onOpenPath={openFile}
-                      onOpenRecent={onOpenRecent}
-                      onOpenFolder={onOpenFolder}
                       onRevealInFiles={revealInFiles}
                       fullscreen={rightFullscreen}
                       onToggleFullscreen={onToggleRightFullscreen}
