@@ -9,13 +9,35 @@ export interface FileEntry {
 export interface FileContent {
   text: string;
   isBinary: boolean;
+  /**
+   * 兼容旧前端：新逻辑不再因为「文件大」置位，只有真正读不了的情况才用。
+   * 大文件看 `isLarge` / `truncated`。
+   */
   tooLarge: boolean;
   /**
    * 后端检测到的编码标签（如 `gbk`）。保存时原样回传给 `writeFile`，
-   * 才能按原编码写回；二进制 / 超限时为空串。
+   * 才能按原编码写回；二进制 / 读不了时为空串。
    */
   encoding: string;
+  /** 文件实际大小（字节）。截断时是完整大小，不是读进来的那一段 */
+  size: number;
+  /** 只读文件，或内容已截断（截断后保存会把文件毁成半截，必须禁写） */
+  readOnly: boolean;
+  /** 文件超过 64MB，`text` 只是前 8MB */
+  truncated: boolean;
+  /** 文件超过 8MB，前端据此关掉语法解析 / Markdown 预览 */
+  isLarge: boolean;
+  /** 原文件的换行风格：`LF` / `CRLF` / `CR` */
+  eol: Eol;
+  /** 原文件开头是否带 BOM，保存时原样回传给 `writeFile` */
+  hasBom: boolean;
 }
+
+/** 文档翻译目标语言；设置里的 translateTarget 与翻译视图共用 */
+export type TranslateTarget = "zh" | "en";
+
+/** 文件换行风格，和后端 `eol` 字段一一对应 */
+export type Eol = "LF" | "CRLF" | "CR";
 
 /** 图片预览的内容：`data` 是能直接喂给 `<img src>` 的 data URL，超限时为空串 */
 export interface ImageContent {

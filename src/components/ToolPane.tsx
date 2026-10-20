@@ -105,6 +105,8 @@ interface ToolPaneProps {
   onSelectFile: (path: string) => void;
   /** 文件树里右键网页文件：在右栏的内置浏览器里打开它 */
   onOpenInBrowser: (path: string) => void;
+  /** 文件树里右键文件：格式化文档（已打开就直接格式化，否则先打开再格式化） */
+  onFormatFile: (path: string) => void;
   /** 改动列表 / 时间线里点一个文件：打开差异视图 */
   onOpenDiff: (path: string, source: DiffSource) => void;
   /**
@@ -131,6 +133,8 @@ interface ToolPaneProps {
    * （含从「变更」打开的差异标签）。编辑器自己那份处理管的是焦点在编辑器区内的情形。
    */
   onRequestCloseTab: () => void;
+  /** 编辑器标签右键「打开所在目录」：切到完整文件树并在树里定位这个文件 */
+  filesReveal?: { path: string; nonce: number } | null;
 }
 
 /**
@@ -151,6 +155,7 @@ export function ToolPane({
   gitReady,
   onSelectFile,
   onOpenInBrowser,
+  onFormatFile,
   onOpenDiff,
   onOpenMatch,
   onPickWorktree,
@@ -161,6 +166,7 @@ export function ToolPane({
   onEntryRenamed,
   onEntryDeleted,
   onRequestCloseTab,
+  filesReveal,
 }: ToolPaneProps) {
   const { settings } = useSettings();
   /** 变更模块的两个视图：总览（默认）/ 完整 Git 面板 */
@@ -233,12 +239,14 @@ export function ToolPane({
           gitReady={gitReady}
           onSelectFile={onSelectFile}
           onOpenInBrowser={onOpenInBrowser}
+          onFormatFile={onFormatFile}
           onOpenMatch={onOpenMatch}
           onBeforeRename={onBeforeRename}
           onEntryRenamed={onEntryRenamed}
           onEntryDeleted={onEntryDeleted}
           onBeforeReplace={onBeforeReplace}
           onAfterReplace={onAfterReplace}
+          reveal={filesReveal}
         />
       </div>
       {/* 变更：每个工作目录一块，各挂一个完整的变更面板。多根时每块能整块收起、只留

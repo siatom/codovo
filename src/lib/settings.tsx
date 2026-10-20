@@ -8,12 +8,25 @@ import {
 } from "react";
 import { secretStatus, setSecret } from "./secrets";
 import { defaultShortcuts, resolveShortcuts } from "./shortcuts";
+import type { TranslateTarget } from "./types";
 
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
 
 /** 编辑器缩进宽度；auto 表示按文件内容探测（Monaco 默认行为） */
 export type EditorIndent = "auto" | "2" | "4" | "8";
+
+/**
+ * 编辑器行高。存的是**倍数**而不是像素：Monaco 的 `lineHeight` 小于 8 时按
+ * 「字号 × 该值」解释（em 语义，见 monaco 的 BareFontInfo），于是字号一变行高跟着变，
+ * 不用在两边各算一次。1.6 与 CodeLite 的默认值一致。
+ */
+export type EditorLineHeight = "1.4" | "1.6" | "1.8";
+
+export const EDITOR_LINE_HEIGHTS: EditorLineHeight[] = ["1.4", "1.6", "1.8"];
+
+/** 编辑器字号出厂值。字号快捷键「重置字号」与设置面板都用它，别再写第二份字面量 */
+export const DEFAULT_EDITOR_FONT_SIZE = 13;
 
 export interface AiCommand {
   name: string;
@@ -90,6 +103,11 @@ export interface Settings {
   aiDefaultProvider: string;
   /** 全局默认模型 id；空或失效时回落到该提供商的第一个启用模型 */
   aiDefaultModel: string;
+  /**
+   * 文档翻译的目标语言。翻译复用上面的默认模型与钥匙串里的密钥，
+   * 不单独存接口地址 / 模型 / API Key。
+   */
+  translateTarget: TranslateTarget;
   /** opencode 可执行文件；裸命令名会去 PATH 里找。应用助手（右栏抽屉）与数据库 / 预览助手共用它 */
   agentCommand: string;
   /** 助手服务监听的端口；0 表示自动挑一个空闲的 */
@@ -137,10 +155,20 @@ export interface Settings {
   editorWordWrap: boolean;
   /** 编辑器缩进宽度；auto 按文件内容探测，否则固定用该数量的空格 */
   editorIndent: EditorIndent;
+  /** 编辑器是否显示行号 */
+  editorLineNumbers: boolean;
+  /** 是否高亮光标所在的那一行 */
+  editorHighlightActiveLine: boolean;
+  /** 行高倍数，直接交给 Monaco 的 lineHeight 选项（见 EditorLineHeight） */
+  editorLineHeight: EditorLineHeight;
   /** 编辑器自动保存时机 */
   editorAutoSave: AutoSaveMode;
   /** afterDelay 模式下停手多久才落盘（毫秒） */
   editorAutoSaveDelay: number;
+  /** 保存时先用 Prettier 格式化一遍再落盘。默认关：不是所有项目都接受 Prettier 的风格 */
+  editorFormatOnSave: boolean;
+  /** 保存前用 Prettier 解析器做一次语法校验。默认开：配置文件写坏了能及时发现 */
+  editorCheckSyntaxOnSave: boolean;
   /**
    * 关窗口时直接收进托盘、不再问。开着工作区才用得着——没工作区时关闭就是退出。
    * 用户在某次确认框里勾了「不再提醒」就会置成 true
@@ -204,15 +232,22 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   editor: [
     "editorAutoSave",
     "editorAutoSaveDelay",
+    "editorFormatOnSave",
+    "editorCheckSyntaxOnSave",
     "editorMinimap",
     "editorWordWrap",
     "editorIndent",
+    "editorLineNumbers",
+    "editorHighlightActiveLine",
+    "editorLineHeight",
   ],
   shortcuts: ["shortcuts"],
   agent: [
     "aiProviders",
     "aiDefaultProvider",
     "aiDefaultModel",
+    // 翻译复用 AI 默认模型，放在「AI」分类里恢复默认更符合用户直觉
+    "translateTarget",
     "agentCommand",
     "agentPort",
     "agentWorkspaces",
@@ -271,6 +306,8 @@ const DEFAULTS: Settings = {
   aiProviders: [],
   aiDefaultProvider: "",
   aiDefaultModel: "",
+  // 默认译成简体中文；用户可以在设置或翻译视图里随时切换
+  translateTarget: "zh",
   agentCommand: "opencode",
   agentPort: 0,
   agentWorkspaces: {},
@@ -285,15 +322,24 @@ const DEFAULTS: Settings = {
   terminalWaitHint: true,
   editorFontFamily: "",
   uiMonoFontFamily: "",
-  editorFontSize: 13,
+  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   editorFontBold: true,
   editorMinimap: true,
   // 默认开着：长注释和文档不用横向滚动，窄面板里读起来更顺
   editorWordWrap: true,
   // 默认按文件内容探测（Monaco 原行为），别一上来就强行统一缩进
   editorIndent: "auto",
+  // 行号与当前行高亮都默认开：这两样是编辑器的基本参照物
+  editorLineNumbers: true,
+  editorHighlightActiveLine: true,
+  // 1.6 与 CodeLite 一致；Monaco 自己的默认是 1.5（mac）/ 1.35（其余平台）
+  editorLineHeight: "1.6",
   editorAutoSave: "afterDelay",
   editorAutoSaveDelay: 1000,
+  // 默认关：Prettier 的风格不一定符合每个项目的习惯，得用户主动开
+  editorFormatOnSave: false,
+  // 默认开：写坏配置文件（少个括号、多个逗号）时提示一下，代价很低
+  editorCheckSyntaxOnSave: true,
   // 默认还是要问一句：第一次关窗口时得让用户知道工作区还在后台跑着
   closeToTray: false,
   // 默认接着上次的位置：用户上次停在哪就恢复到哪
@@ -333,11 +379,23 @@ function asAutoSave(value: unknown): AutoSaveMode {
 
 const EDITOR_INDENTS: EditorIndent[] = ["auto", "2", "4", "8"];
 
+/** 翻译目标语言只有中英两种，读坏了（含老版本没有这个字段）回落默认 */
+function asTranslateTarget(value: unknown): TranslateTarget {
+  return value === "en" ? "en" : DEFAULTS.translateTarget;
+}
+
 /** 缩进宽度同理：值域固定，读坏了回落 auto */
 function asEditorIndent(value: unknown): EditorIndent {
   return EDITOR_INDENTS.includes(value as EditorIndent)
     ? (value as EditorIndent)
     : DEFAULTS.editorIndent;
+}
+
+/** 行高同理：值域是固定的三档，读坏了（含老版本没有这个字段）回落默认 */
+function asEditorLineHeight(value: unknown): EditorLineHeight {
+  return EDITOR_LINE_HEIGHTS.includes(value as EditorLineHeight)
+    ? (value as EditorLineHeight)
+    : DEFAULTS.editorLineHeight;
 }
 
 function asString(value: unknown, fallback: string): string {
@@ -515,6 +573,8 @@ function readSaved(): Settings {
     aiProviders,
     aiDefaultProvider: asString(raw.aiDefaultProvider, DEFAULTS.aiDefaultProvider),
     aiDefaultModel: asString(raw.aiDefaultModel, DEFAULTS.aiDefaultModel),
+    // 老版本的设置里没有这一项，回落 zh
+    translateTarget: asTranslateTarget(raw.translateTarget),
     // 老版本的设置里没有这两个字段，asBoolean 回落 true 就是默认开着
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
@@ -541,10 +601,23 @@ function readSaved(): Settings {
     // 老版本的设置里没有这个字段，回落 true：长行默认折行
     editorWordWrap: asBoolean(raw.editorWordWrap, DEFAULTS.editorWordWrap),
     editorIndent: asEditorIndent(raw.editorIndent),
+    // 老版本的设置里没有这三项，回落成「行号开 / 当前行高亮开 / 1.6 倍行高」
+    editorLineNumbers: asBoolean(raw.editorLineNumbers, DEFAULTS.editorLineNumbers),
+    editorHighlightActiveLine: asBoolean(
+      raw.editorHighlightActiveLine,
+      DEFAULTS.editorHighlightActiveLine,
+    ),
+    editorLineHeight: asEditorLineHeight(raw.editorLineHeight),
     editorAutoSave: asAutoSave(raw.editorAutoSave),
     editorAutoSaveDelay: clampDelay(
       raw.editorAutoSaveDelay,
       DEFAULTS.editorAutoSaveDelay,
+    ),
+    // 这两个字段老版本的设置里没有：一个回落 false（默认不格式化）、一个回落 true（默认校验）
+    editorFormatOnSave: asBoolean(raw.editorFormatOnSave, DEFAULTS.editorFormatOnSave),
+    editorCheckSyntaxOnSave: asBoolean(
+      raw.editorCheckSyntaxOnSave,
+      DEFAULTS.editorCheckSyntaxOnSave,
     ),
     // 老版本的设置里没有这个字段，回落 false：默认仍然弹确认框
     closeToTray: asBoolean(raw.closeToTray, DEFAULTS.closeToTray),

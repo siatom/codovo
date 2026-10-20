@@ -73,6 +73,17 @@ interface SidebarProps {
   onFocusAttention: (workspace: Workspace, target: string) => void;
   /** 打开「应用助手」：由 App 展开右栏的助手抽屉 */
   onOpenAppAgent: () => void;
+  /**
+   * 侧边栏是否收起。状态挂在 App 上而不是这里：`app.toggleSidebar`（Ctrl+B）
+   * 是在窗口级分发的，够不着这个组件的内部 state。
+   */
+  collapsed: boolean;
+  /** 收起 / 展开侧边栏。落盘（sessionStorage）也由 App 一起做 */
+  onSetCollapsed: (collapsed: boolean) => void;
+  /** 设置面板是否打开。同样挂在 App 上，好让 `app.settings`（Ctrl+,）能打开它 */
+  settingsOpen: boolean;
+  onOpenSettings: () => void;
+  onCloseSettings: () => void;
 }
 
 /**
@@ -148,6 +159,20 @@ function readCollapsed(): boolean {
   }
 }
 
+/** 收起 / 展开侧边栏的落盘。App 那边（全局快捷键切换侧边栏）也要用，所以导出 */
+export function saveSidebarCollapsed(collapsed: boolean): void {
+  try {
+    window.sessionStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // 记不住就每次启动按展开算，不影响使用
+  }
+}
+
+/** 上一个会话里侧边栏是不是收起的。初值在 App 里读，见 SidebarProps.collapsed */
+export function readSidebarCollapsed(): boolean {
+  return readCollapsed();
+}
+
 function readWidth(): number {
   try {
     const raw = Number(window.sessionStorage.getItem(WIDTH_KEY));
@@ -173,14 +198,17 @@ export function Sidebar({
   onResumeSession,
   onFocusAttention,
   onOpenAppAgent,
+  collapsed,
+  onSetCollapsed,
+  settingsOpen,
+  onOpenSettings,
+  onCloseSettings,
 }: SidebarProps) {
-  const [collapsed, setCollapsed] = useState(readCollapsed);
   /** 展开态宽度，拖动分隔条改 */
   const [width, setWidth] = useState(readWidth);
   /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
   const [resizing, setResizing] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   /** 工作区名过滤词。纯展示层：只影响渲染哪些行，不动列表的存储顺序 */
@@ -228,15 +256,6 @@ export function Sidebar({
   const pickCli = (command: string) => {
     setCliChoice(command);
     saveCliChoice(activeRoot, command);
-  };
-
-  const setCollapsedPersisted = (next: boolean) => {
-    setCollapsed(next);
-    try {
-      window.sessionStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
-    } catch {
-      // 记不住就每次启动按展开算，不影响使用
-    }
   };
 
   /*
@@ -335,7 +354,7 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            onClick={() => setSettingsOpen(true)}
+            onClick={onOpenSettings}
             title="设置"
             className={FOOTER_BUTTON}
           >
@@ -352,7 +371,7 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            onClick={() => setCollapsedPersisted(false)}
+            onClick={() => onSetCollapsed(false)}
             title="展开侧边栏"
             className={FOOTER_BUTTON}
           >
@@ -361,7 +380,7 @@ export function Sidebar({
         </div>
 
         {settingsOpen && (
-          <SettingsDialog onClose={() => setSettingsOpen(false)} />
+          <SettingsDialog onClose={onCloseSettings} />
         )}
         {feedbackOpen && (
           <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
@@ -598,7 +617,7 @@ export function Sidebar({
         </button>
         <button
           type="button"
-          onClick={() => setSettingsOpen(true)}
+          onClick={onOpenSettings}
           title="设置"
           className={FOOTER_BUTTON}
         >
@@ -616,7 +635,7 @@ export function Sidebar({
         {/* 收起按钮跟着主题、设置一起沉到底部，头部只留标题 */}
         <button
           type="button"
-          onClick={() => setCollapsedPersisted(true)}
+          onClick={() => onSetCollapsed(true)}
           title="收起侧边栏"
           className={`${FOOTER_BUTTON} ml-auto`}
         >
@@ -625,7 +644,7 @@ export function Sidebar({
       </footer>
 
       {settingsOpen && (
-          <SettingsDialog onClose={() => setSettingsOpen(false)} />
+          <SettingsDialog onClose={onCloseSettings} />
         )}
 
       {feedbackOpen && (

@@ -13,34 +13,67 @@ import {
 import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import {
+  canFormatTab,
+  errorText,
+  formatIssueLocation,
+  formatText,
+  supportsFormatting,
+  validateText,
+} from "../lib/formatter";
 import { renderMarkdown } from "../lib/markdown";
+import { isDocumentPath, contentSignature } from "../lib/translate";
+import { clearTranslation, rekeyTranslation } from "../lib/translate-store";
+import { addRecent } from "../lib/recent";
 import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
 import {
+  ENCODINGS,
+  encodingName,
   gitFileDiff,
   isPathInside,
   ownerRoot,
   pathKey,
+  pathsPresent,
+  pickOpenPath,
+  pickSavePath,
   readFile,
   readImage,
   toDisplayPath,
   writeFile,
 } from "../lib/fs";
 import type { GitMark } from "../lib/git";
-import { useSettings, resolveFont, type EditorIndent } from "../lib/settings";
+import { useSettings, resolveFont, type EditorIndent, type EditorLineHeight } from "../lib/settings";
 import { useTabReorder } from "../lib/use-tab-reorder";
-import { sameTab, tabKey, tabSuffix, tabTitle, type Tab } from "../lib/tabs";
-import type { EditorLocation } from "../lib/types";
+import {
+  fileTabKey,
+  patchTab,
+  sameTab,
+  tabKey,
+  tabName,
+  tabSuffix,
+  tabTitle,
+  type ExternalState,
+  type FileTab,
+  type Tab,
+  type TabPatch,
+} from "../lib/tabs";
+import type { EditorLocation, Eol, FileContent } from "../lib/types";
 import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { TranslationView } from "./TranslationView";
 import { PdfPreview } from "./PdfPreview";
+import { WelcomeScreen } from "./WelcomeScreen";
 import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   IconArrowDown,
   IconArrowUp,
+  IconArrowsLeftRight,
   IconBot,
   IconCheck,
   IconChevronDown,
@@ -50,7 +83,10 @@ import {
   IconLayoutSingle,
   IconMore,
   IconPencil,
+  IconPlus,
+  IconSearch,
   IconTerminal,
+  IconWand,
 } from "./icons";
 
 /** 选中浮窗的估算宽度，用来把它收进窗口右边缘 */
@@ -59,11 +95,15 @@ const FLOAT_BAR_W = 76;
 /** 标签「⋯」菜单：宽度和条目样式，跟 Sidebar 的同类菜单保持一致 */
 const TABS_MENU_W = 112;
 
-/** markdown 的三种查看方式，顺序也是标题栏按钮的顺序 */
+/** 标签右键菜单的宽度：里面有「重新加载（放弃我的修改）」这种长文案 */
+const TAB_MENU_W = 190;
+
+/** markdown 的四种查看方式，顺序也是标题栏按钮的顺序 */
 const MARKDOWN_MODES = [
   { id: "preview", label: "预览" },
   { id: "edit", label: "编辑" },
   { id: "split", label: "对照" },
+  { id: "translate", label: "翻译" },
 ] as const;
 type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
 
@@ -127,6 +167,10 @@ function scrollEditorToPreview(
 const TABS_MENU_ITEM =
   "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
 
+/** 标题栏上的次级动作（另存为 / 放弃变更），比主「保存」按钮弱一档 */
+const HEADER_BUTTON =
+  "shrink-0 rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-muted";
+
 /** 浮窗按钮：两个动作同款，禁用态（智能体没开）不给 hover 反馈 */
 const FLOAT_BAR_BUTTON =
   "flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
@@ -168,9 +212,12 @@ interface ViewInfo {
   line: number;
   column: number;
   language: string;
-  eol: "LF" | "CRLF";
+  /** 标签记录的换行风格。CR 在 Monaco 里表示不了，但保存时要按它回写 */
+  eol: Eol;
   tabSize: number;
   insertSpaces: boolean;
+  /** 当前选区的长度（UTF-16 单位）；空选区是 0，状态栏据此才显示「已选」 */
+  selectionLength: number;
 }
 
 /** 两个视图信息是否完全一样，用来省掉光标没动时的无谓 setState */
@@ -181,7 +228,8 @@ function sameViewInfo(a: ViewInfo, b: ViewInfo): boolean {
     a.language === b.language &&
     a.eol === b.eol &&
     a.tabSize === b.tabSize &&
-    a.insertSpaces === b.insertSpaces
+    a.insertSpaces === b.insertSpaces &&
+    a.selectionLength === b.selectionLength
   );
 }
 
@@ -218,22 +266,9 @@ interface StatusMenuItem {
 }
 
 /**
- * 可切换的编码，顺序即下拉顺序。label 必须和后端 `Encoding::from_label` 一一对应，
- * 保存时原样回传给后端；name 只是给人看的显示名。
+ * 可切换的编码列表由 `lib/fs.ts` 统一维护（后端支持的标签只能有一份），
+ * 这里只负责把它渲染到状态栏菜单里。
  */
-const ENCODINGS: { label: string; name: string }[] = [
-  { label: "utf-8", name: "UTF-8" },
-  { label: "utf-8-bom", name: "UTF-8 with BOM" },
-  { label: "utf-16le", name: "UTF-16 LE" },
-  { label: "utf-16be", name: "UTF-16 BE" },
-  { label: "gbk", name: "GBK" },
-  { label: "big5", name: "Big5" },
-];
-
-/** 后端编码标签 -> 显示名；认不出就原样显示，不吞掉信息 */
-function encodingName(label: string): string {
-  return ENCODINGS.find((item) => item.label === label)?.name ?? label;
-}
 
 /** Monaco 的键名和 DOM 的 event.key 有几处对不上，别名一下 */
 const MONACO_KEY_ALIASES: Record<string, string> = {
@@ -270,6 +305,46 @@ function toMonacoKeybinding(combo: string): number | null {
   return mods | code;
 }
 
+/**
+ * 外观三项（行号 / 当前行高亮 / 行高）拼成 Monaco 选项，创建实例与热更新共用同一份口径。
+ *
+ * 行高直接给**倍数**：Monaco 的 `lineHeight` 小于 8 时按「字号 × 该值」解释（em 语义，
+ * 见 monaco 的 BareFontInfo），于是字号一变行高自己跟着变，这里不用再乘一次字号。
+ * `renderLineHighlight` 取 `all`（行内 + 行号栏一起亮）而不是 `line`，后者在高亮当前行时
+ * 行号栏那片会显得断开。
+ */
+function appearanceOptions(
+  lineNumbers: boolean,
+  activeLine: boolean,
+  lineHeight: EditorLineHeight,
+): monaco.editor.IEditorOptions {
+  return {
+    lineNumbers: lineNumbers ? "on" : "off",
+    renderLineHighlight: activeLine ? "all" : "none",
+    lineHeight: Number(lineHeight),
+  };
+}
+
+/**
+ * Monaco find widget 贡献对象里我们用到的那两个成员。`editor.contrib.findController`
+ * 是内部 API，版本锁在 package.json（见 monaco-editor），所以这里只声明用到的签名，
+ * 取不到就由调用方退回 DOM 判断，不会因为上游改名直接崩掉。
+ */
+interface FindControllerLike {
+  getState?: () => { isRevealed?: boolean } | null;
+}
+
+/** find widget 现在是不是开着。工具栏按钮要按它决定「打开还是收起」 */
+function isFindWidgetVisible(editor: monaco.editor.IStandaloneCodeEditor): boolean {
+  const controller = editor.getContribution("editor.contrib.findController") as
+    | FindControllerLike
+    | null;
+  const state = controller?.getState?.();
+  if (state && typeof state.isRevealed === "boolean") return state.isRevealed;
+  // 兜底：widget 的 DOM 在展开时会带上 visible 类（见 monaco 的 findWidget）
+  return editor.getDomNode()?.querySelector(".find-widget.visible") !== null;
+}
+
 interface EditorPaneProps {
   /** 已打开的标签，按打开顺序 */
   tabs: Tab[];
@@ -284,6 +359,20 @@ interface EditorPaneProps {
   /** 批量关闭：标题栏右侧「⋯」菜单用 */
   onCloseAll: () => void;
   onCloseOthers: () => void;
+  /** 新建一个未命名缓冲区。标签由 WorkspacePane 管，这里只管点按钮 */
+  onNewUntitled: () => void;
+  /** 改标签元数据：另存为改路径、外部变更改标记 */
+  onPatchTab: (tab: Tab, patch: TabPatch) => void;
+  /** 打开一个文件：工作区内的直接开标签，工作区外的由上层建 / 复用临时工作区（Ctrl+O 走它） */
+  onOpenPath: (path: string) => void;
+  /** 打开最近文件：始终先做存在性校验，失效记录提示并移除 */
+  onOpenRecent: (path: string) => void;
+  /** 弹出目录选择框并把选中的文件夹打开为工作区（欢迎页入口） */
+  onOpenFolder: () => void;
+  /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
+  onRevealInFiles: (path: string) => void;
+  /** 翻译视图里的「设置」入口：打开设置面板的 AI 页 */
+  onOpenSettings: () => void;
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -304,15 +393,34 @@ interface EditorPaneProps {
 }
 
 interface CachedModel {
-  /** 落盘要用，Map 的键是 tabKey 不是路径 */
-  path: string;
+  /** 落盘要用，Map 的键是 tabKey 不是路径；未命名缓冲区是 null（没有可写的盘上位置） */
+  path: string | null;
   model: monaco.editor.ITextModel;
   savedVersionId: number;
+  /**
+   * 最近一次保存 / 读盘时的正文。未命名缓冲区「放弃变更」要回到这份快照——
+   * 它没有磁盘可重读，只有版本号是不够的。
+   */
+  savedText: string;
   /**
    * 打开时后端检测到的编码标签。保存时原样回传，按原编码写回——
    * 不带着它的话 GBK / Big5 / UTF-16 文件会被 UTF-8 覆盖而损坏。
    */
   encoding: string;
+  /** 原文件的换行风格。保存时按它回写，保证 CR / CRLF 原样往返 */
+  eol: Eol;
+  /** 最近一次落盘时的换行风格；和 `eol` 不同也算「有未保存改动」（CR 改不了 model，只能记在这） */
+  savedEol: Eol;
+  /** 原文件开头有没有 BOM，保存时原样回传 */
+  hasBom: boolean;
+  /** 只读文件（或截断）：编辑器只读、保存禁用 */
+  readOnly: boolean;
+  /** 只加载了前 8MB：模型只读，且禁止保存 / 另存为 */
+  truncated: boolean;
+  /** 超过 8MB：关掉缩略图 / 折叠 / occurrences 这类高成本能力 */
+  isLarge: boolean;
+  /** 文件总字节数（截断时是完整大小），提示里显示给用户看 */
+  size: number;
 }
 
 /** 一个差异标签的一对 model，销毁时必须一起走 */
@@ -321,6 +429,14 @@ interface CachedDiff {
   path: string;
   original: monaco.editor.ITextModel;
   modified: monaco.editor.ITextModel;
+}
+
+/** 这个 model 相对最近一次保存有没有改动 */
+function isCachedDirty(cached: CachedModel): boolean {
+  return (
+    cached.model.getAlternativeVersionId() !== cached.savedVersionId ||
+    cached.eol !== cached.savedEol
+  );
 }
 
 /** 要定位到的位置。nonce 递增，好让「重复点同一条结果」也能重新定位 */
@@ -339,13 +455,22 @@ export interface EditorPaneHandle {
   /** 把编辑器里所有未保存的改动落盘；返回 false 表示有文件没存成功 */
   saveAll: () => Promise<boolean>;
   /**
-   * 重新从磁盘加载这些文件，扔掉编辑器里的旧内容。两个场景共用：搜索替换之后，
-   * 以及外部（终端 / git / 别的编辑器 / 智能体）改了打开着的文件。
-   * 有未保存改动的文件不覆盖——用户的编辑优先。
+   * 处理「磁盘上的文件被外部改了」：干净标签同步内容，脏标签只打冲突标记，
+   * 文件已经没了打删除标记。绝不覆盖未保存的编辑。
+   */
+  handleExternalChanges: (paths: string[]) => Promise<void>;
+  /**
+   * 重新从磁盘加载这些文件，扔掉编辑器里的旧内容。搜索替换之后用它：
+   * 替换前已经保存过，这里的「覆盖」是预期行为。
    */
   reload: (paths: string[]) => Promise<void>;
   /** 打开文件并定位到指定位置 */
   revealAt: (target: RevealTarget) => void;
+  /**
+   * 格式化某个磁盘文件：文件树右键「格式化文档」走这里。
+   * 文件已打开就直接格式化；还没加载好就记下来，等标签切过去、model 就绪后再做。
+   */
+  formatPath: (path: string) => void;
   /**
    * 丢掉落在这些路径下（含路径本身）的缓存 model。文件树里改了名或删了文件时用：
    * 名字变了要按新路径重读，文件没了就不该再留着——留着的话 Ctrl+S 会把删掉的
@@ -384,7 +509,8 @@ const IMAGE_EXTENSIONS = new Set([
   "avif",
 ]);
 
-function isImagePath(path: string): boolean {
+function isImagePath(path: string | null): boolean {
+  if (path === null) return false;
   const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
   const dot = name.lastIndexOf(".");
   return dot >= 0 && IMAGE_EXTENSIONS.has(name.slice(dot + 1));
@@ -396,7 +522,8 @@ function isImagePath(path: string): boolean {
  */
 const PDF_EXTENSIONS = new Set(["pdf"]);
 
-function isPdfPath(path: string): boolean {
+function isPdfPath(path: string | null): boolean {
+  if (path === null) return false;
   const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
   const dot = name.lastIndexOf(".");
   return dot >= 0 && PDF_EXTENSIONS.has(name.slice(dot + 1));
@@ -410,7 +537,8 @@ function isPdfPath(path: string): boolean {
  */
 const HTML_PREVIEW_EXTENSIONS = new Set(["html", "htm", "svg"]);
 
-function isHtmlPreviewPath(path: string): boolean {
+function isHtmlPreviewPath(path: string | null): boolean {
+  if (path === null) return false;
   const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
   const dot = name.lastIndexOf(".");
   return dot >= 0 && HTML_PREVIEW_EXTENSIONS.has(name.slice(dot + 1));
@@ -418,18 +546,30 @@ function isHtmlPreviewPath(path: string): boolean {
 
 const SVG_EXTENSIONS = new Set(["svg"]);
 
-function isSvgPath(path: string): boolean {
+function isSvgPath(path: string | null): boolean {
+  if (path === null) return false;
   const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
   const dot = name.lastIndexOf(".");
   return dot >= 0 && SVG_EXTENSIONS.has(name.slice(dot + 1));
 }
 
 /**
+ * 大文件不启用 Monaco 的语法 tokenization：8–64MB 的 JS/TS 仍会被整份解析，
+ * 打开和编辑都会卡。只把语言降成 plaintext，内容、缩进与编辑能力都不受影响；
+ * 用户仍可在状态栏手动切回具体语言。
+ */
+function effectiveLanguage(path: string | null, isLarge: boolean): string {
+  if (isLarge) return "plaintext";
+  return path === null ? "plaintext" : languageOf(path);
+}
+
+/**
  * 走 markdown 渲染预览的文件：markdown 系列（含按 `.mdc` 映射过来的规则文件），
  * 以及 `.mdx`——Monaco 里 mdx 是独立语言（markdown + jsx），所以判定得连语言一起看，
- * 只比 `"markdown"` 会把它漏掉。
+ * 只比 `"markdown"` 会把它漏掉。未命名缓冲区没有扩展名，永远不走预览。
  */
-function isMarkdownPath(path: string): boolean {
+function isMarkdownPath(path: string | null): boolean {
+  if (path === null) return false;
   const language = languageOf(path);
   return language === "markdown" || language === "mdx";
 }
@@ -438,12 +578,23 @@ function isMarkdownPath(path: string): boolean {
  * 打开即预览的文件：markdown（含 mdx）与 svg。这两种多半是拿来看的，进来先给渲染结果，
  * 想改再点「回到编辑」。`html` / `htm` 不在此列——它们通常是要动手改的，保持打开即编辑。
  */
-function previewsOnOpen(path: string): boolean {
+function previewsOnOpen(path: string | null): boolean {
   return isMarkdownPath(path) || isSvgPath(path);
 }
 
-function baseName(path: string): string {
-  return toDisplayPath(path).split("/").pop() ?? path;
+/**
+ * 后端按原样读回正文（可能混着 CRLF / CR），Monaco 只认 \n / \r\n。
+ * 喂给模型、以及和模型内容比对之前，一律先统一成 LF。
+ */
+function toLf(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
+/** 字节数转人话，只用在截断提示里，不追求精确到小数点后几位 */
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 }
 
 /**
@@ -454,6 +605,37 @@ function relativeToRoot(path: string, root: string): string {
   const full = toDisplayPath(path);
   const base = toDisplayPath(root).replace(/\/+$/, "");
   return full.startsWith(`${base}/`) ? full.slice(base.length + 1) : full;
+}
+
+/** 路径末级文件名，提示文案里用；取不到就退回整个路径 */
+function baseNameOf(path: string): string {
+  return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
+/**
+ * 编辑器缩进宽度：设了具体值就用它，auto 时按 model 自己探测到的值——
+ * Prettier 的 tabWidth 要和编辑器里看到的一致，格式化结果才不会和手写风格打架。
+ */
+function indentWidthOf(model: monaco.editor.ITextModel, indent: EditorIndent): number {
+  return indent === "auto" ? model.getOptions().tabSize : Number(indent);
+}
+
+/**
+ * 把格式化结果落到 model 上。
+ *
+ * 走 pushEditOperations 而不是 setValue：前者是一次**正常编辑**，撤销栈原样保留，
+ * 用户一步 Ctrl+Z 就能回到格式化之前。内容一致时直接返回 false，不产生无意义的
+ * edit——否则每次保存时格式化都会把干净的文件标脏。
+ */
+function applyFormatToModel(model: monaco.editor.ITextModel, text: string): boolean {
+  if (model.getValue() === text) return false;
+  model.pushEditOperations(
+    null,
+    [{ range: model.getFullModelRange(), text, forceMoveMarkers: true }],
+    () => null,
+  );
+  model.pushStackElement();
+  return true;
 }
 
 /**
@@ -487,6 +669,13 @@ export function EditorPane({
   onReorder,
   onCloseAll,
   onCloseOthers,
+  onNewUntitled,
+  onPatchTab,
+  onOpenPath,
+  onOpenRecent,
+  onOpenFolder,
+  onRevealInFiles,
+  onOpenSettings,
   fullscreen,
   onToggleFullscreen,
   onSendToTerminal,
@@ -499,6 +688,14 @@ export function EditorPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelsRef = useRef(new Map<string, CachedModel>());
+  /**
+   * 每个标签的视图状态（滚动位置、光标、选区）。Monaco 只给「此刻挂着的那个 model」
+   * 记住这些，而切标签、切到差异、进图片 / PDF 预览都会把 model 摘下来，不自己存就丢了。
+   * 关标签时由 forgetKeys 清掉，不跟着会话泄漏。
+   */
+  const viewStatesRef = useRef(new Map<string, monaco.editor.ICodeEditorViewState | null>());
+  /** 编辑器此刻挂着的 model 属于哪个标签（tabKey）；null = 没挂文本 model（差异 / 图片 / 空态） */
+  const shownKeyRef = useRef<string | null>(null);
 
   // 差异视图：另一套编辑器 + 另一套 model，和上面那套彻底分开——
   // 这样"只读"就是结构性保证，persist 根本看不到它
@@ -514,6 +711,21 @@ export function EditorPane({
   const diffChangesRef = useRef<monaco.editor.ILineChange[]>([]);
 
   const activeRef = useRef<Tab | null>(active);
+  /** 最新的标签列表。事件处理（外部变更 / 另存为）里要按 key 反查标签，props 闭包靠不住 */
+  const tabsRef = useRef<Tab[]>(tabs);
+  tabsRef.current = tabs;
+  /**
+   * 另存为把未命名缓冲区换成真实路径时，旧 key → 新 key 的映射。
+   * 关闭流程里「保存并关闭」发生在父级标签列表刷新之前，收尾时得靠它找到新 key 的 model。
+   * 必须连当时的标签对象一起记：旧路径之后又被打开时会产生**另一个**标签，不能拿
+   * 「旧 key 还在不在列表里」当判据，否则会关错标签、销毁新标签的 model。
+   */
+  const rekeyedRef = useRef(new Map<string, { key: string; path: string; tab: Tab }>());
+  /**
+   * 正在另存为的 key。快捷键 / 按钮 / 右键可能同时触发同一次另存为，
+   * 两次流程各自 delete(key) + set(新 key) 会留下两个 key 指向同一个 model。
+   */
+  const saveAsBusyRef = useRef(new Set<string>());
   /**
    * 关标签的实现要经 ref 暴露成 `closeActiveTab` 句柄（右侧面板也用它）。它定义在
    * useImperativeHandle 之后，塞不进那个依赖数组，只能用 ref 兜住最新那份。
@@ -528,13 +740,20 @@ export function EditorPane({
   const [diffChangeIndex, setDiffChangeIndex] = useState(0);
   const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
   /**
-   * 待确认的关闭动作（单个脏标签 / 关闭全部 / 关闭其他）。走自研确认框，
-   * 见 ConfirmDialog 的说明。null 表示没有待确认的关闭
+   * 待确认的关闭：`queue` 是这批要关的标签里有未保存改动的那些，逐个问
+   * 「保存 / 不保存 / 取消」；全部答完才真正执行 `request`。
    */
   const [closeRequest, setCloseRequest] = useState<{
     request: CloseRequest;
-    message: string;
+    queue: Tab[];
+    index: number;
   } | null>(null);
+  /**
+   * 一次性的轻提示（保存失败、外部变更、放弃变更…），几秒后自动消失。
+   * 不能塞进 status 的错误态：那会把整个编辑区盖成错误页，而这里要的是「边改边看」。
+   */
+  const [notice, setNotice] = useState<{ text: string; tone: "info" | "error" } | null>(null);
+  const noticeTimerRef = useRef<number | undefined>(undefined);
   /** 正处在预览模式的标签（存 tabKey）；不在集合里就是编辑模式 */
   const [previewPaths, setPreviewPaths] = useState<ReadonlySet<string>>(new Set());
   // togglePreview 是稳定回调（依赖为空），要用 ref 读预览集合的最新值来判断该进还是该退
@@ -547,15 +766,39 @@ export function EditorPane({
    */
   const seededRef = useRef(new Set<string>());
   /**
+   * 保存前语法问题的确认框内容；null = 不显示。确认结果通过下面那个 Promise 回传：
+   * ConfirmDialog 是声明式的，保存流程却要「等到用户点完再决定存不存」。
+   */
+  const [syntaxPrompt, setSyntaxPrompt] = useState<{ name: string; detail: string } | null>(null);
+  const syntaxResolveRef = useRef<((proceed: boolean) => void) | null>(null);
+  /** 上次格式化后的内容签名：内容没变时自动保存不必再跑一遍 Prettier */
+  const formattedSignatureRef = useRef(new Map<string, string>());
+  /**
+   * 外部变更按到达顺序串行处理。磁盘事件一多（切分支、解包）就会连发几批，
+   * 并行读盘会让后到的旧结果覆盖先到的新结果；这里用一条 Promise 链排队。
+   */
+  const externalChainRef = useRef<Promise<void>>(Promise.resolve());
+  /** 文件树右键「格式化文档」时，还没加载好的那个目标（tabKey）；就绪后再格式化 */
+  const pendingFormatRef = useRef<string | null>(null);
+  /**
    * 正处在左右分屏预览的标签（存 tabKey）。只对 markdown 有效：html / svg 的预览要读磁盘，
    * 不适合同屏边改边看。与 previewPaths 互斥（同一个标签不会既整屏预览又分屏）
    */
   const [splitPaths, setSplitPaths] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * 正处在翻译视图的标签（存 tabKey）。和 previewPaths / splitPaths 互斥，
+   * 翻译运行状态本身放在 translate-store 里，切标签不丢进度。
+   */
+  const [translationPaths, setTranslationPaths] = useState<ReadonlySet<string>>(new Set());
+  const translationPathsRef = useRef(translationPaths);
+  translationPathsRef.current = translationPaths;
   const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
   /** 标题栏「⋯」菜单的视口坐标；null = 不显示 */
   const [tabsMenu, setTabsMenu] = useState<{ x: number; y: number } | null>(null);
+  /** 标签右键菜单：位置 + 作用的标签。外部变更的「重新加载 / 保留我的修改」都在这里 */
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tab: Tab } | null>(null);
   /**
    * 编码菜单的位置。状态栏在底部，所以记的是按钮顶边的 y，渲染时按 `bottom` 定位到它上方
    */
@@ -587,6 +830,9 @@ export function EditorPane({
     useTabReorder(onReorder);
   const { theme, palette } = useTheme();
   const { settings } = useSettings();
+  // 保存流程（persist）里的格式化 / 校验开关走 ref：让 persist 回调不因设置变化而重建
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   // 建 editor 的 effect 只认挂载那一刻的主题，切换主题走下面的 effect 单独更新
   const themeRef = useRef(theme);
@@ -620,6 +866,13 @@ export function EditorPane({
   wordWrapRef.current = settings.editorWordWrap;
   const indentRef = useRef(settings.editorIndent);
   indentRef.current = settings.editorIndent;
+  // 行号 / 当前行高亮 / 行高同理：editor 只建一次，建的那一刻要拿到最新设置
+  const lineNumbersRef = useRef(settings.editorLineNumbers);
+  lineNumbersRef.current = settings.editorLineNumbers;
+  const activeLineRef = useRef(settings.editorHighlightActiveLine);
+  activeLineRef.current = settings.editorHighlightActiveLine;
+  const lineHeightRef = useRef(settings.editorLineHeight);
+  lineHeightRef.current = settings.editorLineHeight;
   // 差异编辑器只在第一次要看差异时建，建实例那一刻闭包里拿不到最新 state，
   // 所以排布偏好也走 ref（和 fontSizeRef 同一套路）
   const diffSideBySideRef = useRef(diffSideBySide);
@@ -632,10 +885,8 @@ export function EditorPane({
     if (!current || current.kind !== "file") return;
     const key = tabKey(current);
     const cached = modelsRef.current.get(key);
-    const model = editorRef.current?.getModel();
-    const isDirty = Boolean(
-      cached && model && model.getAlternativeVersionId() !== cached.savedVersionId,
-    );
+    // 版本号之外还要看换行：CR 在 model 里表示不了，只改了缓存上的 eol
+    const isDirty = Boolean(cached && isCachedDirty(cached));
     setDirtyPaths((prev) => {
       if (prev.has(key) === isDirty) return prev;
       const next = new Set(prev);
@@ -645,6 +896,62 @@ export function EditorPane({
     });
   }, []);
 
+  /** 弹一条几秒后自动消失的提示 */
+  const pushNotice = useCallback((text: string, tone: "info" | "error" = "info") => {
+    setNotice({ text, tone });
+    window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), 4000);
+  }, []);
+  useEffect(() => () => window.clearTimeout(noticeTimerRef.current), []);
+
+  /**
+   * 把 model 上跟文件有关的能力开关同步到编辑器：大文件关掉缩略图 / 折叠 /
+   * occurrences 高亮 / codeLens 这些高成本能力，只读 / 截断的文件锁住编辑。
+   * 切标签、加载完成、外部重载、改设置之后都要重新按当前标签算一次。
+   */
+  const applyCapabilities = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const current = activeRef.current;
+    const cached =
+      current && current.kind === "file" ? modelsRef.current.get(tabKey(current)) ?? null : null;
+    const isLarge = cached?.isLarge ?? false;
+    editor.updateOptions({
+      readOnly: cached?.readOnly ?? false,
+      minimap: { enabled: minimapRef.current && !isLarge },
+      folding: !isLarge,
+      occurrencesHighlight: isLarge ? "off" : "singleFile",
+      codeLens: !isLarge,
+    });
+  }, []);
+
+  /**
+   * 把一次读盘结果套到已有 model 上：正文、编码、EOL、BOM、只读 / 大文件元数据一起换。
+   * 换完就是「和磁盘一致」，所以顺带把保存基准也推到现在。
+   */
+  const applyLoadedContent = useCallback((cached: CachedModel, content: FileContent) => {
+    const text = toLf(content.text);
+    const wasLarge = cached.isLarge;
+    cached.model.setValue(text);
+    cached.savedVersionId = cached.model.getAlternativeVersionId();
+    cached.savedText = text;
+    cached.encoding = content.encoding;
+    cached.eol = content.eol;
+    cached.savedEol = content.eol;
+    cached.hasBom = content.hasBom;
+    cached.readOnly = content.readOnly || content.truncated;
+    cached.truncated = content.truncated;
+    cached.isLarge = content.isLarge;
+    cached.size = content.size;
+    // 大文件不保留语法 tokenization；文件从大变小（外部替换）时恢复按扩展名的语言。
+    // 只在这两种状态切换时动手，用户手动选的语言不会被普通重读覆盖
+    if (content.isLarge) {
+      monaco.editor.setModelLanguage(cached.model, "plaintext");
+    } else if (wasLarge) {
+      monaco.editor.setModelLanguage(cached.model, effectiveLanguage(cached.path, false));
+    }
+  }, []);
+
   /**
    * 刷新状态栏的「当前文件视图信息」。光标一动就调，切标签 / 改选项也复用。
    * 只在编辑器确实挂着当前文本 model 时才算数：差异、图片、加载中都没有 model，
@@ -652,10 +959,9 @@ export function EditorPane({
    */
   const refreshViewInfo = useCallback(() => {
     const current = activeRef.current;
-    const model =
-      current && current.kind === "file"
-        ? modelsRef.current.get(tabKey(current))?.model ?? null
-        : null;
+    const cached =
+      current && current.kind === "file" ? modelsRef.current.get(tabKey(current)) ?? null : null;
+    const model = cached?.model ?? null;
     const editor = editorRef.current;
     if (!editor || !model || editor.getModel() !== model) {
       setViewInfo((prev) => (prev === null ? prev : null));
@@ -663,48 +969,105 @@ export function EditorPane({
     }
     const position = editor.getPosition();
     const modelOptions = model.getOptions();
+    const selection = editor.getSelection();
     const next: ViewInfo = {
       line: position?.lineNumber ?? 1,
       column: position?.column ?? 1,
       language: model.getLanguageId(),
-      eol: model.getEOL() === "\r\n" ? "CRLF" : "LF",
+      // EOL 以标签记录为准：CR 在 Monaco 里表示不了（模型只能是 LF / CRLF），
+      // 但保存时要按 CR 回写，状态栏也不能显示成 LF
+      eol: cached?.eol ?? (model.getEOL() === "\r\n" ? "CRLF" : "LF"),
       tabSize: modelOptions.tabSize,
       insertSpaces: modelOptions.insertSpaces,
+      // 选区长度按 UTF-16 单位算，和 Monaco 的行列口径一致
+      selectionLength:
+        selection && !selection.isEmpty() ? model.getValueLengthInRange(selection) : 0,
     };
     setViewInfo((prev) => (prev && sameViewInfo(prev, next) ? prev : next));
   }, []);
 
   /**
+   * 把某个标签的 model 挂到编辑器上，并恢复它上次的视图状态（滚动位置 / 光标 / 选区）。
+   * 与 saveCurrentViewState 配套：换 model 之前先存旧的，挂上之后恢复新的。
+   */
+  const attachModel = useCallback((key: string, model: monaco.editor.ITextModel) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.setModel(model);
+    shownKeyRef.current = key;
+    const state = viewStatesRef.current.get(key);
+    if (state) editor.restoreViewState(state);
+  }, []);
+
+  /** 存下当前挂着的这个 model 的视图状态。切标签 / 切差异 / 进图片预览之前都要调 */
+  const saveCurrentViewState = useCallback(() => {
+    const editor = editorRef.current;
+    const key = shownKeyRef.current;
+    if (!editor || key === null || !editor.getModel()) return;
+    viewStatesRef.current.set(key, editor.saveViewState());
+  }, []);
+
+  /** 工具栏按钮与 editor.find：开着就收起，关着就打开（对齐 CodeLite 的切换语义） */
+  const toggleFind = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor || !editor.getModel()) return;
+    if (isFindWidgetVisible(editor)) {
+      editor.trigger("codedock", "closeFindWidget", null);
+      editor.focus();
+      return;
+    }
+    editor.trigger("codedock", "actions.find", null);
+  }, []);
+
+  /** 按标签栏顺序切到下一个 / 上一个标签（含差异标签），到头绕回 */
+  const stepTab = useCallback(
+    (delta: number) => {
+      const list = tabsRef.current;
+      if (list.length === 0) return;
+      const current = activeRef.current;
+      const index = current ? list.findIndex((item) => sameTab(item, current)) : -1;
+      // 找不到当前标签（列表刚被换掉）时从第一个开始往 delta 的方向走
+      const base = index >= 0 ? index : 0;
+      const next = list[(base + delta + list.length) % list.length];
+      if (next && (!current || !sameTab(next, current))) onActivate(next);
+    },
+    [onActivate],
+  );
+
+  /**
    * 按条件丢掉缓存里的 model，普通文件和差异（成对的）一起处理。返回被丢掉的
    * tabKey，调用处拿它清理脏标记和预览集合。只碰 ref，不碰 state。
    */
-  const disposeModels = useCallback((match: (path: string, key: string) => boolean): string[] => {
-    const dropped: string[] = [];
+  const disposeModels = useCallback(
+    (match: (path: string | null, key: string) => boolean): string[] => {
+      const dropped: string[] = [];
 
-    for (const [key, cached] of modelsRef.current) {
-      if (!match(cached.path, key)) continue;
-      modelsRef.current.delete(key);
-      // Monaco 不允许 dispose 正在编辑的 model，先把编辑器摘下来
-      if (editorRef.current?.getModel() === cached.model) editorRef.current.setModel(null);
-      cached.model.dispose();
-      dropped.push(key);
-    }
-
-    for (const [key, pair] of diffModelsRef.current) {
-      if (!match(pair.path, key)) continue;
-      diffModelsRef.current.delete(key);
-      const showing = diffRef.current?.getModel();
-      if (showing && (showing.original === pair.original || showing.modified === pair.modified)) {
-        diffRef.current?.setModel(null);
+      for (const [key, cached] of modelsRef.current) {
+        if (!match(cached.path, key)) continue;
+        modelsRef.current.delete(key);
+        // Monaco 不允许 dispose 正在编辑的 model，先把编辑器摘下来
+        if (editorRef.current?.getModel() === cached.model) editorRef.current.setModel(null);
+        cached.model.dispose();
+        dropped.push(key);
       }
-      // 成对的 model 要一起销毁
-      pair.original.dispose();
-      pair.modified.dispose();
-      dropped.push(key);
-    }
 
-    return dropped;
-  }, []);
+      for (const [key, pair] of diffModelsRef.current) {
+        if (!match(pair.path, key)) continue;
+        diffModelsRef.current.delete(key);
+        const showing = diffRef.current?.getModel();
+        if (showing && (showing.original === pair.original || showing.modified === pair.modified)) {
+          diffRef.current?.setModel(null);
+        }
+        // 成对的 model 要一起销毁
+        pair.original.dispose();
+        pair.modified.dispose();
+        dropped.push(key);
+      }
+
+      return dropped;
+    },
+    [],
+  );
 
   /** 把已经销毁的标签从脏标记 / 预览集合里摘掉 */
   const forgetKeys = useCallback((keys: string[]) => {
@@ -718,8 +1081,18 @@ export function EditorPane({
     setDirtyPaths(prune);
     setPreviewPaths(prune);
     setSplitPaths(prune);
+    setTranslationPaths(prune);
+    // 翻译运行状态按标签隔离，关标签就清掉；译文缓存仍留在 localStorage
+    for (const key of keys) clearTranslation(key);
+    // 视图状态跟着标签走：标签关了、文件改了名就把对应那份丢掉，不让它一直留在 Map 里
+    for (const key of keys) viewStatesRef.current.delete(key);
+    if (shownKeyRef.current !== null && keys.includes(shownKeyRef.current)) {
+      shownKeyRef.current = null;
+    }
     // 顺手把「默认模式」的记账也清掉，重开这个文件时重新按扩展名决定
     for (const key of keys) seededRef.current.delete(key);
+    // 格式化签名跟着标签走，避免标签 key 复用后误以为内容已经格式化过
+    for (const key of keys) formattedSignatureRef.current.delete(key);
   }, []);
 
   /**
@@ -747,10 +1120,10 @@ export function EditorPane({
       return;
     }
     // 两个动作发的都是这个位置：整段贴过去对 AI CLI / 智能体都没用，位置的指代才是要的。
-    // 只认普通文件标签——差异视图和预览不弹浮窗，这里再兜一层
+    // 只认普通文件标签——差异视图和预览不弹浮窗，这里再兜一层；未命名缓冲区没有路径可指代
     const current = activeRef.current;
     floatLocationRef.current =
-      current && current.kind === "file"
+      current && current.kind === "file" && current.path !== null
         ? {
             path: relativeToRoot(current.path, rootFor(current.path)),
             start: selection.startLineNumber,
@@ -785,56 +1158,551 @@ export function EditorPane({
   }, [floatBar]);
 
   /**
+   * 弹保存前的语法问题确认框，返回用户是否要继续保存。
+   * ConfirmDialog 是声明式的，这里用一个 Promise 把按钮结果接回来：
+   * 弹出时把 resolve 存进 ref，点「仍然保存 / 取消」时兑现。
+   */
+  const askSyntaxProceed = useCallback(
+    (name: string, detail: string) =>
+      new Promise<boolean>((resolve) => {
+        // 上一个还挂着就先按「取消」结掉，免得它永远悬着
+        syntaxResolveRef.current?.(false);
+        syntaxResolveRef.current = resolve;
+        setSyntaxPrompt({ name, detail });
+      }),
+    [],
+  );
+
+  /** 语法确认框的两个按钮：先收起框，再兑现保存流程等着的那个 Promise */
+  const answerSyntax = useCallback((proceed: boolean) => {
+    setSyntaxPrompt(null);
+    const resolve = syntaxResolveRef.current;
+    syntaxResolveRef.current = null;
+    resolve?.(proceed);
+  }, []);
+
+  /**
    * 把有未保存改动的文件写回磁盘；传 only（tabKey）就只存那一个。
    * 自动保存走"存全部"——别的标签切走后也可能留着没保存的 model。
    * 差异标签的 model 在另一个 Map 里，这里永远碰不到。
+   *
+   * 未命名缓冲区不进这里（没有可写的路径，自动保存绝不能弹「另存为」）；
+   * 只读 / 截断的文件直接跳过——截断时写回去会把文件毁成 8MB。
+   *
+   * 落盘前按设置做两件事：
+   * 1. `editorFormatOnSave`：先用 Prettier 格式化一遍，失败只提示、绝不阻断保存；
+   *    内容签名和上次格式化结果一致时直接跳过，自动保存不会反复解析大文件。
+   * 2. `editorCheckSyntaxOnSave`：用 Prettier 解析器校验；交互式保存（only 有值）弹
+   *    「仍然保存 / 取消」，取消则这个文件不落盘。自动保存（silent）整段跳过，
+   *    避免默认 1 秒节拍反复全量解析，也保持「不打断输入」的语义。
    */
-  const persist = useCallback(async (only?: string): Promise<boolean> => {
-    const targets = [...modelsRef.current.entries()].filter(
-      ([key, cached]) =>
-        (!only || key === only) &&
-        cached.model.getAlternativeVersionId() !== cached.savedVersionId,
-    );
-    if (targets.length === 0) return true;
+  const persist = useCallback(
+    async (only?: string, options?: { silent?: boolean }): Promise<boolean> => {
+      const silent = options?.silent ?? false;
+      const targets = [...modelsRef.current.entries()].filter(
+        ([key, cached]) =>
+          (!only || key === only) &&
+          cached.path !== null &&
+          !cached.readOnly &&
+          !cached.truncated &&
+          isCachedDirty(cached),
+      );
+      if (targets.length === 0) return true;
 
-    setSaving(true);
-    const saved = new Set<string>();
-    let ok = true;
-    try {
-      for (const [key, cached] of targets) {
-        await writeFile(
-          rootFor(cached.path),
-          cached.path,
-          cached.model.getValue(),
-          cached.encoding,
+      const { editorFormatOnSave, editorCheckSyntaxOnSave } = settingsRef.current;
+      setSaving(true);
+      const saved = new Set<string>();
+      let ok = true;
+      try {
+        for (const [key, cached] of targets) {
+          const path = cached.path;
+          if (path === null) continue;
+          // 这段流程里每个 await 都可能让标签被关掉、model 被销毁；之后再动缓存就会
+          // 写错文件或抛 disposed model。静默跳过这一份，别中止其它文件的保存。
+          const stillCached = () =>
+            modelsRef.current.get(key) === cached && !cached.model.isDisposed();
+
+          // 1) 保存时格式化：结果直接落到 model，随后的写盘与 savedVersionId 都以它为准。
+          //    内容签名和上次格式化结果一致时跳过——默认 1 秒自动保存没必要反复解析整份文件
+          if (editorFormatOnSave && canFormatTab(cached) && supportsFormatting(path)) {
+            const before = contentSignature(cached.model.getValue());
+            if (formattedSignatureRef.current.get(key) !== before) {
+              try {
+                const outcome = await formatText(cached.model.getValue(), path, {
+                  tabWidth: indentWidthOf(cached.model, indentRef.current),
+                });
+                if (!stillCached()) continue;
+                applyFormatToModel(cached.model, outcome.text);
+                formattedSignatureRef.current.set(key, contentSignature(cached.model.getValue()));
+              } catch (reason) {
+                if (!stillCached()) continue;
+                pushNotice(
+                  `「${baseNameOf(path)}」格式化失败，已按原内容保存：${errorText(reason)}`,
+                  "error",
+                );
+              }
+            }
+          }
+
+          // 2) 保存前语法校验。自动保存跳过：大文件每秒全量解析会直接把输入拖卡。
+          //    空内容、不覆盖的类型同样不拦
+          if (!silent && editorCheckSyntaxOnSave && canFormatTab(cached)) {
+            const text = cached.model.getValue();
+            if (text.trim() !== "") {
+              const issue = await validateText(text, path);
+              if (!stillCached()) continue;
+              if (issue) {
+                const name = baseNameOf(path);
+                const where = formatIssueLocation(issue);
+                const proceed = await askSyntaxProceed(name, `${issue.message}${where}`);
+                if (!stillCached()) continue;
+                if (!proceed) {
+                  // 用户选「取消」：这个文件不落盘（关闭流程据此中止）
+                  ok = false;
+                  continue;
+                }
+              }
+            }
+          }
+
+          await writeFile(
+            rootFor(path),
+            path,
+            cached.model.getValue(),
+            cached.encoding,
+            cached.eol,
+            cached.hasBom,
+          );
+          // 写盘期间标签被关掉：文件已经写好，但缓存 / 脏标记不该再回写
+          if (!stillCached()) continue;
+          cached.savedVersionId = cached.model.getAlternativeVersionId();
+          cached.savedText = cached.model.getValue();
+          cached.savedEol = cached.eol;
+          saved.add(key);
+          // 保存就是用户选择用本地内容覆盖磁盘，冲突 / 已更新提醒随之解除
+          const tab = tabsRef.current.find((item) => tabKey(item) === key);
+          if (tab && tab.kind === "file" && tab.externalState !== "none") {
+            onPatchTab(tab, { externalState: "none" });
+          }
+        }
+      } catch (reason) {
+        ok = false;
+        setStatus({ kind: "error", message: `保存失败：${reason}` });
+      } finally {
+        setSaving(false);
+        if (saved.size > 0) {
+          setDirtyPaths((prev) => {
+            let changed = false;
+            const next = new Set(prev);
+            for (const key of saved) if (next.delete(key)) changed = true;
+            return changed ? next : prev;
+          });
+        }
+      }
+      return ok;
+    },
+    [askSyntaxProceed, onPatchTab, pushNotice],
+  );
+
+  /** 另存为：选路径 → 写盘 → 成功后才改标签。失败 / 取消时标签保持原样 */
+  const saveAs = useCallback(
+    async (key: string): Promise<boolean> => {
+      if (saveAsBusyRef.current.has(key)) return false;
+      saveAsBusyRef.current.add(key);
+      try {
+        const cached = modelsRef.current.get(key);
+        if (!cached) return false;
+        if (cached.truncated) {
+          pushNotice("文件已截断，不能另存为", "error");
+          return false;
+        }
+        const current = tabsRef.current.find((item) => tabKey(item) === key);
+        const defaultName =
+          cached.path ??
+          (current ? `${tabName(current)}.txt` : "未命名.txt");
+        const target = await pickSavePath(defaultName);
+        if (target === null) return false;
+
+        // 弹框期间标签可能已经关了 / model 被丢弃，别拿旧缓存继续写
+        const targetCached = modelsRef.current.get(key);
+        if (!targetCached || targetCached !== cached || cached.model.isDisposed()) return false;
+        const targetTab = tabsRef.current.find((item) => tabKey(item) === key);
+        if (!targetTab || targetTab.kind !== "file") return false;
+
+        const targetRoot = ownerRoot(rootsRef.current, target);
+        if (targetRoot === null) {
+          pushNotice("另存为的目标不在当前工作区内", "error");
+          return false;
+        }
+        // 目标已经开在另一个标签里就不写：写进去会得到两个同 key 的标签，缓存也会打架
+        const opened = tabsRef.current.find(
+          (item) =>
+            item.kind === "file" &&
+            item.path !== null &&
+            tabKey(item) !== key &&
+            pathKey(item.path) === pathKey(target),
         );
-        cached.savedVersionId = cached.model.getAlternativeVersionId();
-        saved.add(key);
-      }
-    } catch (reason) {
-      ok = false;
-      setStatus({ kind: "error", message: `保存失败：${reason}` });
-    } finally {
-      setSaving(false);
-      if (saved.size > 0) {
-        setDirtyPaths((prev) => {
-          let changed = false;
-          const next = new Set(prev);
-          for (const key of saved) if (next.delete(key)) changed = true;
-          return changed ? next : prev;
+        if (opened) {
+          pushNotice("目标文件已经在另一个标签中打开", "error");
+          return false;
+        }
+
+        // 覆盖已有文件时沿用**目标文件**的编码 / EOL / BOM：源是 GBK、目标是 UTF-8
+        // 时不能把目标改成源编码；反过来也不能把 GBK 目标写成 UTF-8。
+        // 二进制 / 过大 / 读不回来一律中止，不拿半份内容覆盖。
+        let encoding = targetCached.encoding;
+        let eol = targetCached.eol;
+        let hasBom = targetCached.hasBom;
+        const [targetExists] = await pathsPresent([target]);
+        if (targetExists) {
+          let existing: FileContent;
+          try {
+            existing = await readFile(targetRoot, target);
+          } catch (reason) {
+            pushNotice(`目标文件无法读取，已取消另存为：${reason}`, "error");
+            return false;
+          }
+          if (existing.isBinary) {
+            pushNotice("目标文件不是可覆盖的文本文件，已取消另存为", "error");
+            return false;
+          }
+          // 大文件 / 截断仍是文本，只是不能安全覆盖：如实说大小问题，别谎称不是文本
+          if (existing.tooLarge || existing.truncated || existing.isLarge) {
+            pushNotice("目标文件过大，请换一个文件名", "error");
+            return false;
+          }
+          encoding = existing.encoding;
+          eol = existing.eol;
+          hasBom = existing.hasBom;
+        }
+
+        // 读目标元数据期间同样可能关标签 / 另存为到别处
+        const writable = modelsRef.current.get(key);
+        if (!writable || writable !== targetCached || writable.model.isDisposed()) return false;
+
+        let writtenBytes: number;
+        try {
+          writtenBytes = await writeFile(
+            targetRoot,
+            target,
+            writable.model.getValue(),
+            encoding,
+            eol,
+            hasBom,
+          );
+        } catch (reason) {
+          pushNotice(`保存失败：${reason}`, "error");
+          return false;
+        }
+
+        // 写盘期间标签被关掉 / model 已销毁：文件已经写好，但不能再动缓存或标签。
+        // 同时也确认缓存还挂在原 key 上，避免并发另存为把别人的 model 又搬一次
+        const afterWrite = modelsRef.current.get(key);
+        if (!afterWrite || afterWrite !== writable || writable.model.isDisposed()) return true;
+
+        // 写盘已成功，这里才开始改标签与缓存：顺序反过来会让失败留下一个不可用的路径。
+        // model 的 URI 改不了，只把语法切到新扩展名对应的语言（大文件仍保持 plaintext）。
+        monaco.editor.setModelLanguage(writable.model, effectiveLanguage(target, writable.isLarge));
+        writable.path = target;
+        writable.savedVersionId = writable.model.getAlternativeVersionId();
+        writable.savedText = writable.model.getValue();
+        writable.eol = eol;
+        writable.savedEol = eol;
+        writable.encoding = encoding;
+        writable.hasBom = hasBom;
+        writable.readOnly = false;
+        writable.truncated = false;
+        writable.size = writtenBytes;
+        modelsRef.current.delete(key);
+        const nextKey = fileTabKey(target);
+        modelsRef.current.set(nextKey, writable);
+        rekeyedRef.current.set(key, {
+          key: nextKey,
+          path: target,
+          // 记的是打补丁**之前**的标签对象，关闭流程拿 request.tab 做同一性判断
+          tab: targetTab,
         });
+        // 视图状态跟着换 key：另存为不该把滚动位置、光标丢掉
+        const movedView = viewStatesRef.current.get(key);
+        if (movedView !== undefined) {
+          viewStatesRef.current.delete(key);
+          viewStatesRef.current.set(nextKey, movedView);
+        }
+        if (shownKeyRef.current === key) shownKeyRef.current = nextKey;
+        // 旧 key 的派生状态一起搬走（脏标记除外：刚保存完，新 key 是干净的）
+        const prune = (prev: ReadonlySet<string>) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          next.add(nextKey);
+          return next;
+        };
+        setPreviewPaths(prune);
+        setSplitPaths(prune);
+        setTranslationPaths(prune);
+        // 翻译 run 也搬到新 key：正在跑的分段请求继续写回，切回翻译视图不丢进度
+        rekeyTranslation(key, nextKey);
+        setDirtyPaths((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        seededRef.current.delete(key);
+        // 新路径不再按扩展名重新播种视图模式：另存为不该把用户正在编辑的窗口切成预览
+        seededRef.current.add(nextKey);
+        if (targetTab.kind === "file") {
+          onPatchTab(targetTab, { path: target, externalState: "none" });
+        }
+        pushNotice(`已保存 ${target.replace(/\\/g, "/").split("/").pop() ?? target}`);
+        return true;
+      } finally {
+        saveAsBusyRef.current.delete(key);
       }
-    }
-    return ok;
-  }, []);
+    },
+    [onPatchTab, pushNotice],
+  );
+
+  /** 保存某个标签：未命名缓冲区自动走另存为 */
+  const saveTab = useCallback(
+    async (key: string, options?: { silent?: boolean }): Promise<boolean> => {
+      const cached = modelsRef.current.get(key);
+      if (!cached) return false;
+      if (cached.path === null) return saveAs(key);
+      if (cached.truncated) {
+        pushNotice("文件已截断，不能保存", "error");
+        return false;
+      }
+      if (cached.readOnly) {
+        pushNotice("文件是只读的，不能保存", "error");
+        return false;
+      }
+      return persist(key, options);
+    },
+    [persist, pushNotice, saveAs],
+  );
+
+  /**
+   * Ctrl+O / 欢迎页入口：选一个文件打开。
+   *
+   * 这里不判断文件在不在当前工作区——交给 `onOpenPath` 的上层路由：工作区内的直接开标签，
+   * 工作区外的以文件所在目录建 / 复用临时工作区，沙箱仍然由后端的 root 校验把关。
+   */
+  const openFromDisk = useCallback(async () => {
+    const target = await pickOpenPath();
+    if (target === null) return;
+    onOpenPath(target);
+  }, [onOpenPath]);
+
+  /** 标签右键「打开所在目录」：右栏切到「文件」模块并在树里定位这个文件 */
+  const revealInFiles = useCallback(
+    (path: string) => onRevealInFiles(path),
+    [onRevealInFiles],
+  );
+
+  /** 标签右键「在文件管理器中显示」：交给系统文件管理器，并选中这个文件 */
+  const revealInSystem = useCallback(
+    (path: string) => {
+      void revealItemInDir(path).catch(() => pushNotice("无法在文件管理器中显示", "error"));
+    },
+    [pushNotice],
+  );
+
+  /**
+   * 状态栏点路径：复制绝对路径。走 Tauri 的 clipboard 插件而不是 `navigator.clipboard`，
+   * 理由同 ExplorerPane（WebView2 会弹系统授权框）。
+   */
+  const copyActivePath = useCallback(() => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file" || current.path === null) return;
+    void writeText(current.path).then(
+      () => pushNotice(`已复制路径 ${current.path}`),
+      () => pushNotice("复制路径失败", "error"),
+    );
+  }, [pushNotice]);
+
+  /**
+   * 放弃某个标签的未保存改动：已落盘的文件从磁盘重读，未命名缓冲区回到最近一次
+   * 保存快照。没有未保存改动时什么都不做。
+   */
+  const discardChanges = useCallback(
+    async (key: string) => {
+      const cached = modelsRef.current.get(key);
+      if (!cached || !isCachedDirty(cached)) return;
+      const current = tabsRef.current.find((item) => tabKey(item) === key);
+
+      if (cached.path === null) {
+        // 未命名缓冲区没有磁盘可读，只能回到「最后一次保存」的那份正文
+        cached.model.setValue(cached.savedText);
+        cached.savedVersionId = cached.model.getAlternativeVersionId();
+        cached.eol = cached.savedEol;
+        pushNotice("已放弃未保存的修改");
+      } else {
+        try {
+          const content = await readFile(rootFor(cached.path), cached.path, cached.encoding);
+          // 读盘期间标签被关掉或缓存被替换：这份结果已经没有归属，静默丢弃
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
+          if (content.isBinary || content.tooLarge) {
+            pushNotice("文件无法作为文本重新读取，未放弃改动", "error");
+            return;
+          }
+          applyLoadedContent(cached, content);
+          applyCapabilities();
+          pushNotice("已放弃未保存的修改");
+        } catch (reason) {
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
+          pushNotice(`放弃改动失败：${reason}`, "error");
+          return;
+        }
+      }
+
+      if (current && current.kind === "file" && current.externalState !== "none") {
+        onPatchTab(current, { externalState: "none" });
+      }
+      setPreviewNonce((count) => count + 1);
+      syncDirty();
+      refreshViewInfo();
+    },
+    [
+      applyCapabilities,
+      applyLoadedContent,
+      onPatchTab,
+      pushNotice,
+      refreshViewInfo,
+      rootFor,
+      syncDirty,
+    ],
+  );
 
   // 快捷键和保存按钮只管当前文件；差异标签是只读的，按了没反应
   const saveRef = useRef<() => void>(() => {});
   saveRef.current = () => {
     const current = activeRef.current;
     if (!current || current.kind !== "file") return;
-    void persist(tabKey(current));
+    void saveTab(tabKey(current));
   };
+
+  /**
+   * 格式化一个标签的正文（工具栏 / 快捷键 / 文件树右键共用）。
+   *
+   * - Prettier 覆盖的类型走 Prettier；其余类型或解析失败时退回 Monaco 的
+   *   `editor.action.reindentlines`，不做「静默什么都不干」。
+   * - 结果走 pushEditOperations 落到 model（见 applyFormatToModel），撤销栈保留；
+   *   光标按 Prettier 的映射结果还原，内容没变时不产生 edit、也不会把干净文件标脏。
+   */
+  const formatTab = useCallback(
+    async (key: string): Promise<void> => {
+      const cached = modelsRef.current.get(key);
+      const editor = editorRef.current;
+      if (!cached || !editor) return;
+      if (!canFormatTab(cached)) {
+        pushNotice(
+          cached.truncated
+            ? "文件已截断，不能格式化"
+            : cached.isLarge
+              ? "大文件已跳过格式化"
+              : "只读文件不能格式化",
+          "error",
+        );
+        return;
+      }
+
+      // 只有正显示在编辑器里才谈得上「保持光标」与「退回缩进重排」
+      const live = editor.getModel() === cached.model ? editor : null;
+      const name = cached.path !== null ? baseNameOf(cached.path) : "未命名缓冲区";
+
+      if (cached.path !== null && supportsFormatting(cached.path)) {
+        const cursorOffset = live
+          ? cached.model.getOffsetAt(live.getPosition() ?? { lineNumber: 1, column: 1 })
+          : undefined;
+        try {
+          const outcome = await formatText(cached.model.getValue(), cached.path, {
+            tabWidth: indentWidthOf(cached.model, indentRef.current),
+            cursorOffset,
+          });
+          // 解析期间标签可能被关掉，或者编辑器已经切到别的 model：这时候再改
+          // cached.model / live 就会动错文件，直接放弃本次格式化。
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
+          const changed = applyFormatToModel(cached.model, outcome.text);
+          if (
+            live &&
+            changed &&
+            outcome.cursorOffset !== null &&
+            editor.getModel() === cached.model
+          ) {
+            live.setPosition(cached.model.getPositionAt(outcome.cursorOffset));
+          }
+          pushNotice(changed ? `已格式化 ${name}` : "内容已符合格式化规范");
+          syncDirty();
+          refreshViewInfo();
+          return;
+        } catch (reason) {
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
+          pushNotice(`格式化失败：${errorText(reason)}，已改用缩进重排`, "error");
+        }
+      }
+
+      if (live) {
+        // await 期间编辑器可能已经切走；只有当前仍挂着这个 model 才能做光标 / 重排
+        if (editor.getModel() !== cached.model) return;
+        // 未命名缓冲区没有扩展名，判断不了语言；退回缩进重排对纯文本也没有意义，
+        // 如实说明而不是假装做过了
+        if (cached.path === null) {
+          pushNotice("未命名缓冲区还没有扩展名，暂不支持格式化", "info");
+          return;
+        }
+        // 兜底：Monaco 的按语法重排缩进。至少把缩进对齐，不静默失败
+        live.trigger("codedock", "editor.action.reindentlines", null);
+        syncDirty();
+        return;
+      }
+      pushNotice("当前文件类型暂不支持格式化", "info");
+    },
+    [pushNotice, refreshViewInfo, syncDirty],
+  );
+
+  /** 工具栏按钮与 Shift+Alt+F：格式化当前标签 */
+  const formatActive = useCallback(() => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file") {
+      pushNotice("当前没有可格式化的文件", "error");
+      return;
+    }
+    void formatTab(tabKey(current));
+  }, [formatTab, pushNotice]);
+  // Monaco 的 action 回调建在只跑一次的 effect 里，拿不到最新闭包，用 ref 兜住
+  const formatActiveRef = useRef(formatActive);
+  formatActiveRef.current = formatActive;
+
+  /**
+   * 文件树右键「格式化文档」：文件已打开就直接格式化；还没加载好就记下来，
+   * 等标签切过去、model 就绪后再做（见 flushPendingFormat 与切标签 effect）。
+   */
+  const formatPath = useCallback(
+    (path: string) => {
+      const key = fileTabKey(path);
+      const cached = modelsRef.current.get(key);
+      if (cached && editorRef.current?.getModel() === cached.model) {
+        void formatTab(key);
+        return;
+      }
+      pendingFormatRef.current = key;
+    },
+    [formatTab],
+  );
+
+  /** 待格式化的标签就绪了，补做一次；没记着就什么都不做 */
+  const flushPendingFormat = useCallback(() => {
+    const key = pendingFormatRef.current;
+    if (key === null) return;
+    pendingFormatRef.current = null;
+    void formatTab(key);
+  }, [formatTab]);
+
+  /** 这个待格式化请求作废（标签换走了、或文件根本没法当文本加载） */
+  const dropPendingFormat = useCallback((key: string | null) => {
+    if (key === null || pendingFormatRef.current === key) pendingFormatRef.current = null;
+  }, []);
 
   // 自动保存要存全部，单独留一个给下面的 effect
   const persistRef = useRef(persist);
@@ -855,7 +1723,7 @@ export function EditorPane({
    */
   const applyEncoding = useCallback(
     async (tab: Tab, label: string) => {
-      if (tab.kind !== "file") return;
+      if (tab.kind !== "file" || tab.path === null) return;
       const key = tabKey(tab);
       const path = tab.path;
       const cached = modelsRef.current.get(key);
@@ -886,8 +1754,7 @@ export function EditorPane({
 
       const editor = editorRef.current;
       if (cached) {
-        cached.model.setValue(content.text);
-        cached.savedVersionId = cached.model.getAlternativeVersionId();
+        applyLoadedContent(cached, content);
         cached.encoding = content.encoding || label;
         // 标成干净的：刚才是整份从磁盘读回来的，和磁盘一致
         setDirtyPaths((prev) => {
@@ -900,26 +1767,36 @@ export function EditorPane({
         setPreviewNonce((count) => count + 1);
       } else {
         const uri = monaco.Uri.file(path);
-        const language = languageOf(path);
+        const language = effectiveLanguage(path, content.isLarge);
         const existing = monaco.editor.getModel(uri);
-        const model = existing ?? monaco.editor.createModel(content.text, language, uri);
+        const model = existing ?? monaco.editor.createModel(toLf(content.text), language, uri);
         if (!existing) applyIndentToModel(model, indentRef.current);
         modelsRef.current.set(key, {
           path,
           model,
           // 版本号在重排之前取：json5/jsonc 自动重排后会算成未保存改动（和打开时一致）
           savedVersionId: model.getAlternativeVersionId(),
+          savedText: model.getValue(),
           encoding: content.encoding || label,
+          eol: content.eol,
+          savedEol: content.eol,
+          hasBom: content.hasBom,
+          readOnly: content.readOnly || content.truncated,
+          truncated: content.truncated,
+          isLarge: content.isLarge,
+          size: content.size,
         });
         if (!existing && (language === "json5" || language === "jsonc")) {
           reindentModelOnOpen(model);
         }
-        editor?.setModel(model);
+        if (editor) attachModel(key, model);
+        applyCapabilities();
       }
       setStatus({ kind: "ready" });
       syncDirty();
+      refreshViewInfo();
     },
-    [rootFor, syncDirty],
+    [applyCapabilities, applyLoadedContent, refreshViewInfo, rootFor, syncDirty, attachModel],
   );
 
   /** 状态栏里选了某个编码：脏标签先确认（会丢掉未保存的改动），干净的直接切 */
@@ -943,7 +1820,146 @@ export function EditorPane({
   useImperativeHandle(
     ref,
     () => ({
-      saveAll: () => persistRef.current(),
+      // 批量落盘（替换 / 改名 / 关闭全部前）不打断用户：语法问题只提示，照常保存
+      saveAll: () => persistRef.current(undefined, { silent: true }),
+
+      handleExternalChanges: (paths) => {
+        // 串到上一批后面：切分支 / 解包会连发几批事件，并行读盘会让后到的旧结果覆盖新结果
+        const run = externalChainRef.current.then(async () => {
+          const wanted = new Map(paths.map((path) => [pathKey(path), path]));
+
+          for (const [key, cached] of [...modelsRef.current]) {
+            if (cached.path === null) continue;
+            const diskPath = wanted.get(pathKey(cached.path));
+            if (diskPath === undefined) continue;
+
+            /**
+             * 每次 await 之后都重新确认这一条缓存还活着、标签还指着同一个路径：
+             * 读盘期间用户可能关标签、另存为、或重新打开了别的文件。
+             */
+            const stillSame = (): FileTab | null => {
+              const live = modelsRef.current.get(key);
+              if (!live || live !== cached || cached.model.isDisposed()) return null;
+              const tab = tabsRef.current.find((item) => tabKey(item) === key);
+              if (!tab || tab.kind !== "file" || tab.path === null) return null;
+              if (pathKey(tab.path) !== pathKey(diskPath)) return null;
+              return tab;
+            };
+
+            let tab = stillSame();
+            if (!tab) continue;
+
+            // 先看文件还在不在。删除是唯一没法靠「读回内容比较」判断的状态
+            let exists = true;
+            try {
+              const flags = await pathsPresent([diskPath]);
+              exists = flags[0] !== false;
+            } catch {
+              // 探不到就当它还在，下面读文件时照常报错
+            }
+            tab = stillSame();
+            if (!tab) continue;
+            if (!exists) {
+              onPatchTab(tab, { externalState: "deleted" });
+              pushNotice(`「${tabName(tab)}」已在磁盘上被删除`, "error");
+              continue;
+            }
+
+            let content: FileContent;
+            try {
+              content = await readFile(rootFor(diskPath), diskPath, cached.encoding);
+            } catch {
+              // 读不回来（权限、被占用…）保持原样，界面上还有旧内容可用
+              continue;
+            }
+            // 读盘期间标签可能已经关了 / 换了路径，结果不能落到别的 model 上
+            tab = stillSame();
+            if (!tab) continue;
+            if (content.isBinary || content.tooLarge) continue;
+
+            const diskText = toLf(content.text);
+            // 内容没变 = 多半是编辑器自己刚保存触发的写入回声。只同步元数据，
+            // 不重设 model（重设会清掉撤销栈、把光标弹回开头）
+            if (diskText === cached.model.getValue()) {
+              const dirty = isCachedDirty(cached);
+              const eolChanged = content.eol !== cached.eol;
+              const wasLarge = cached.isLarge;
+              cached.hasBom = content.hasBom;
+              cached.readOnly = content.readOnly || content.truncated;
+              cached.truncated = content.truncated;
+              cached.isLarge = content.isLarge;
+              cached.size = content.size;
+              if (content.isLarge) {
+                monaco.editor.setModelLanguage(cached.model, "plaintext");
+              } else if (wasLarge) {
+                monaco.editor.setModelLanguage(
+                  cached.model,
+                  effectiveLanguage(cached.path, false),
+                );
+              }
+              if (dirty && eolChanged) {
+                // 用户只把换行符改成 CR / CRLF 时 model 正文不变；这里若把磁盘 EOL
+                // 当成保存基准，就会静默清掉脏标记、覆盖用户的选择。保留 cached.eol，
+                // 等用户明确「重新加载」或保存，先按冲突处理
+                onPatchTab(tab, { externalState: "conflict" });
+                pushNotice(
+                  `「${tabName(tab)}」的换行符与磁盘不同，且你有未保存的修改`,
+                  "error",
+                );
+              } else {
+                cached.eol = content.eol;
+                cached.savedEol = content.eol;
+              }
+              if (activeRef.current !== null && tabKey(activeRef.current) === key) {
+                applyCapabilities();
+                syncDirty();
+                refreshViewInfo();
+              }
+              continue;
+            }
+
+            // 有未保存改动：绝不覆盖编辑器内容，只打冲突标记等用户决定
+            if (isCachedDirty(cached)) {
+              onPatchTab(tab, { externalState: "conflict" });
+              pushNotice(
+                `「${tabName(tab)}」在磁盘上被外部修改，你也有未保存的修改`,
+                "error",
+              );
+              continue;
+            }
+
+            // 干净标签：直接同步成磁盘内容。前台标签不打扰用户，后台标签留个「已更新」提醒
+            applyLoadedContent(cached, content);
+            const isActive = activeRef.current !== null && tabKey(activeRef.current) === key;
+            onPatchTab(tab, { externalState: isActive ? "none" : "updated" });
+            if (!isActive) pushNotice(`「${tabName(tab)}」已在磁盘上更新`);
+            setPreviewNonce((count) => count + 1);
+            if (isActive) {
+              applyCapabilities();
+              syncDirty();
+              refreshViewInfo();
+            }
+          }
+
+          // 差异视图的基线是旧的，留着会显示出过期的对比，整对丢掉、下次切过去重拉
+          for (const [key, pair] of diffModelsRef.current) {
+            if (!wanted.has(pathKey(pair.path))) continue;
+            diffModelsRef.current.delete(key);
+            const showing = diffRef.current?.getModel();
+            if (
+              showing &&
+              (showing.original === pair.original || showing.modified === pair.modified)
+            ) {
+              diffRef.current?.setModel(null);
+            }
+            pair.original.dispose();
+            pair.modified.dispose();
+          }
+        });
+        // 队列本身不能因为某一批失败而永久断掉；调用方拿到的仍是这一批的真实结果
+        externalChainRef.current = run.catch(() => {});
+        return run;
+      },
 
       reload: async (paths) => {
         const wanted = new Set(paths.map(pathKey));
@@ -951,21 +1967,19 @@ export function EditorPane({
         let touched = false;
 
         for (const [key, cached] of modelsRef.current) {
-          if (!wanted.has(pathKey(cached.path))) continue;
+          if (cached.path === null || !wanted.has(pathKey(cached.path))) continue;
           // 编辑器里还留着没保存的改动就不覆盖，用户的编辑优先
-          if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
+          if (isCachedDirty(cached)) continue;
           try {
             const content = await readFile(rootFor(cached.path), cached.path);
             if (content.isBinary || content.tooLarge) continue;
             // 读文件这一下用户可能又敲进了改动，再查一次，编辑优先
-            if (cached.model.getAlternativeVersionId() !== cached.savedVersionId) continue;
+            if (isCachedDirty(cached)) continue;
             // 磁盘上和 model 里一模一样就别 setValue——这一般是编辑器自己刚保存
             // 触发的回声，重设一遍会白白清掉撤销栈、还会把光标弹回开头
-            if (cached.model.getValue() === content.text) continue;
-            cached.model.setValue(content.text);
-            cached.savedVersionId = cached.model.getAlternativeVersionId();
-            // 外部可能用别的编码重写过这个文件，跟着更新，保存时按新编码回写
-            cached.encoding = content.encoding;
+            if (cached.model.getValue() === toLf(content.text)) continue;
+            // 外部可能用别的编码 / 换行重写过这个文件，跟着更新，保存时按新元数据回写
+            applyLoadedContent(cached, content);
             done.push(key);
             touched = true;
           } catch {
@@ -994,22 +2008,33 @@ export function EditorPane({
             for (const key of done) next.delete(key);
             return next;
           });
+          // 替换之后磁盘上就是编辑器里的内容，冲突 / 已更新提醒不再成立
+          for (const key of done) {
+            const tab = tabsRef.current.find((item) => tabKey(item) === key);
+            if (tab?.kind === "file" && tab.externalState !== "none") {
+              onPatchTab(tab, { externalState: "none" });
+            }
+          }
         }
-        if (touched) setPreviewNonce((count) => count + 1);
+        if (touched) {
+          setPreviewNonce((count) => count + 1);
+          applyCapabilities();
+          refreshViewInfo();
+        }
 
         // 图片不进 modelsRef（缓存里不可能有它），正在看的那张单独重读一遍
         const current = activeRef.current;
+        const currentPath = current?.kind === "file" ? current.path : null;
         if (
-          current &&
-          current.kind === "file" &&
-          isImagePath(current.path) &&
-          paths.some((item) => pathKey(item) === pathKey(current.path))
+          currentPath !== null &&
+          isImagePath(currentPath) &&
+          paths.some((item) => pathKey(item) === pathKey(currentPath))
         ) {
           try {
-            const content = await readImage(rootFor(current.path), current.path);
+            const content = await readImage(rootFor(currentPath), currentPath);
             // 等这一下的时候用户可能已经切走了，别把结果盖到别的标签上
             const now = activeRef.current;
-            if (now && now.kind === "file" && pathKey(now.path) === pathKey(current.path)) {
+            if (now && now.kind === "file" && now.path === currentPath) {
               setStatus(
                 content.tooLarge ? { kind: "tooLarge" } : { kind: "image", src: content.data },
               );
@@ -1022,9 +2047,13 @@ export function EditorPane({
 
       revealAt: (target) => setReveal(target),
 
+      formatPath,
+
       dropPaths: (paths) => {
         forgetKeys(
-          disposeModels((path) => paths.some((item) => isPathInside(path, item))),
+          disposeModels(
+            (path) => path !== null && paths.some((item) => isPathInside(path, item)),
+          ),
         );
       },
 
@@ -1034,7 +2063,18 @@ export function EditorPane({
         if (current) closeTabRef.current(current);
       },
     }),
-    [disposeModels, forgetKeys],
+    [
+      applyCapabilities,
+      applyLoadedContent,
+      disposeModels,
+      forgetKeys,
+      formatPath,
+      onPatchTab,
+      pushNotice,
+      refreshViewInfo,
+      rootFor,
+      syncDirty,
+    ],
   );
 
   /** 读一遍当前差异的改动块缓存进 ref 并同步数量；差异重算 / 换标签 / 打开时都走它 */
@@ -1112,6 +2152,12 @@ export function EditorPane({
       renderWhitespace: "selection",
       renderOverviewRuler: false,
       padding: { top: 8 },
+      // 行号 / 当前行高亮 / 行高与主编辑器同一口径（改设置时两边一起热更新）
+      ...appearanceOptions(
+        lineNumbersRef.current,
+        activeLineRef.current,
+        lineHeightRef.current,
+      ),
     });
     // 差异算完的那一刻才知道第一处改动在哪；顺带把块数量同步给状态栏
     diffRef.current.onDidUpdateDiff(() => {
@@ -1207,6 +2253,12 @@ export function EditorPane({
       renderWhitespace: "selection",
       tabSize: 2,
       padding: { top: 8 },
+      // 行号 / 当前行高亮 / 行高（见 appearanceOptions）
+      ...appearanceOptions(
+        lineNumbersRef.current,
+        activeLineRef.current,
+        lineHeightRef.current,
+      ),
     });
     editorRef.current = editor;
 
@@ -1220,9 +2272,11 @@ export function EditorPane({
       if (event.event.browserEvent.button !== 0) return;
       showFloatBar();
     });
-    // 选区被清空、或内容滚动了，浮窗的位置立刻失真，直接收起
+    // 选区被清空、或内容滚动了，浮窗的位置立刻失真，直接收起。
+    // 顺带刷新状态栏：选区长度就在这个事件里变，不刷的话「已选 N」不会更新
     const selectionSub = editor.onDidChangeCursorSelection((event) => {
       if (event.selection.isEmpty()) setFloatBar(null);
+      refreshViewInfo();
     });
     const scrollSub = editor.onDidScrollChange(() => setFloatBar(null));
 
@@ -1234,6 +2288,11 @@ export function EditorPane({
       scrollSub.dispose();
       editor.dispose();
       editorRef.current = null;
+      shownKeyRef.current = null;
+      viewStatesRef.current.clear();
+      // 实例卸载（切工作区不会卸载，只有关掉工作区 / 退出才会）时把本实例的翻译
+      // 运行状态收掉；普通标签切换不动它，切回来还要接着看进度
+      for (const key of modelsRef.current.keys()) clearTranslation(key);
       for (const cached of modelsRef.current.values()) cached.model.dispose();
       modelsRef.current.clear();
 
@@ -1248,23 +2307,41 @@ export function EditorPane({
     };
   }, [syncDirty, showFloatBar, refreshViewInfo]);
 
-  // 保存键可配置：单独挂一个 effect，改键位时重建 action。
+  // 保存与格式化键可配置：单独挂一个 effect，改键位时重建 action。
   // 不能塞进上面那个建实例的 effect——它的依赖里没有 settings，改键位永远不会生效。
   // 声明在建实例之后，首次挂载跑起来时 editorRef 已经是新的编辑器了。
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
-    const keybinding = toMonacoKeybinding(settings.shortcuts["editor.save"]);
-    const action = editor.addAction({
+
+    const saveKey = toMonacoKeybinding(settings.shortcuts["editor.save"]);
+    const saveAction = editor.addAction({
       id: "codedock.save",
       label: "保存文件",
       // 键位翻不出来就不注册键位，保存按钮和菜单里的该项仍可用
-      keybindings: keybinding === null ? [] : [keybinding],
+      keybindings: saveKey === null ? [] : [saveKey],
       run: () => {
         void saveRef.current();
       },
     });
-    return () => action.dispose();
+
+    // 格式化：键位默认 Shift+Alt+F（VS Code 惯例）。Monaco 自带的「格式化文档」同键，
+    // 但只在注册过格式化 provider 的语言（json5 / jsonc）上激活，本应用注册的动态键位
+    // 排在它之后、_findCommand 从数组尾部找起，因此这里优先生效。
+    // 只读时 Monaco 不接管（截断 / 只读不该改内容），工具栏按钮另有针对性禁用。
+    const formatKey = toMonacoKeybinding(settings.shortcuts["editor.format"]);
+    const formatAction = editor.addAction({
+      id: "codedock.format",
+      label: "格式化文档",
+      keybindings: formatKey === null ? [] : [formatKey],
+      precondition: "!editorReadonly",
+      run: () => formatActiveRef.current(),
+    });
+
+    return () => {
+      saveAction.dispose();
+      formatAction.dispose();
+    };
   }, [settings.shortcuts]);
 
   // 切主题不重建 editor，只换配色（差分编辑器共用全局主题）
@@ -1288,10 +2365,11 @@ export function EditorPane({
     settings.editorFontBold,
   ]);
 
-  // 缩略图是 editor 级选项，热更新即可（差异编辑器不显示缩略图，无需跟随）
+  // 缩略图是 editor 级选项，热更新即可（差异编辑器不显示缩略图，无需跟随）。
+  // 大文件会强制关掉缩略图，所以这里统一交给 applyCapabilities 按当前标签重算
   useEffect(() => {
-    editorRef.current?.updateOptions({ minimap: { enabled: settings.editorMinimap } });
-  }, [settings.editorMinimap]);
+    applyCapabilities();
+  }, [settings.editorMinimap, applyCapabilities]);
 
   // 自动换行也是 editor 级选项；改设置立刻生效，不用重开文件
   useEffect(() => {
@@ -1299,6 +2377,22 @@ export function EditorPane({
       wordWrap: settings.editorWordWrap ? "on" : "off",
     });
   }, [settings.editorWordWrap]);
+
+  // 行号 / 当前行高亮 / 行高：主编辑器与差异编辑器一起热更新。
+  // 行高给的是倍数（见 appearanceOptions），字号变化时 Monaco 自己会重算，这里不用跟着动
+  useEffect(() => {
+    const options = appearanceOptions(
+      settings.editorLineNumbers,
+      settings.editorHighlightActiveLine,
+      settings.editorLineHeight,
+    );
+    editorRef.current?.updateOptions(options);
+    diffRef.current?.updateOptions(options);
+  }, [
+    settings.editorLineNumbers,
+    settings.editorHighlightActiveLine,
+    settings.editorLineHeight,
+  ]);
 
   // 缩进宽度是 model 级选项：改了要把缓存里的所有 model 一起更新（含差异两侧），
   // 否则已打开的文件还是旧缩进，切回来才发现不一致
@@ -1327,7 +2421,7 @@ export function EditorPane({
         // 手一直不停就一直往后推，停下来才落盘
         window.clearTimeout(timer);
         timer = window.setTimeout(
-          () => void persistRef.current(),
+          () => void persistRef.current(undefined, { silent: true }),
           settings.editorAutoSaveDelay,
         );
       });
@@ -1340,12 +2434,12 @@ export function EditorPane({
     if (mode === "onFocusChange") {
       const editor = editorRef.current;
       if (!editor) return;
-      const sub = editor.onDidBlurEditorText(() => void persistRef.current());
+      const sub = editor.onDidBlurEditorText(() => void persistRef.current(undefined, { silent: true }));
       return () => sub.dispose();
     }
 
     // onWindowChange：整个窗口失焦时存一次
-    const onBlur = () => void persistRef.current();
+    const onBlur = () => void persistRef.current(undefined, { silent: true });
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
   }, [settings.editorAutoSave, settings.editorAutoSaveDelay]);
@@ -1355,14 +2449,25 @@ export function EditorPane({
     activeRef.current = active;
     // 换了标签，上一次的浮窗不再对应任何文本
     setFloatBar(null);
+    // 「磁盘上已更新」只是后台提醒：切到这个标签就算看到了，清掉。
+    // 冲突 / 已删除不能自动清，必须等用户明确处理。
+    if (active?.kind === "file" && active.externalState === "updated") {
+      onPatchTab(active, { externalState: "none" });
+    }
     const editor = editorRef.current;
     if (!editor) return;
+
+    // 先把当前标签的视图状态存下来再换 model：下面几条分支（差异 / 图片 / PDF / 空态）
+    // 都会把 model 摘下来，而 Monaco 只给「此刻挂着的那个 model」记住滚动与选区
+    saveCurrentViewState();
+    shownKeyRef.current = null;
 
     if (!active) {
       editor.setModel(null);
       diffRef.current?.setModel(null);
       setStatus({ kind: "idle" });
       setDiffStatus({ kind: "idle" });
+      dropPendingFormat(null);
       return;
     }
 
@@ -1370,6 +2475,7 @@ export function EditorPane({
       // 文件编辑器摘掉 model，免得它在后面白白占着
       editor.setModel(null);
       setStatus({ kind: "idle" });
+      dropPendingFormat(null);
       void showDiff(active);
       return;
     }
@@ -1381,18 +2487,21 @@ export function EditorPane({
 
     // 图片整张读回来当 data URL 渲染，不进 Monaco——二进制没有 model 可言。
     // 放在缓存查找之前：图片永远不进 modelsRef，缓存里不可能有它
-    if (isImagePath(active.path)) {
+    if (active.path !== null && isImagePath(active.path)) {
+      const imagePath = active.path;
       let cancelled = false;
       setStatus({ kind: "loading" });
       editor.setModel(null);
+      dropPendingFormat(key);
 
-      void readImage(rootFor(active.path), active.path)
+      void readImage(rootFor(imagePath), imagePath)
         .then((content) => {
           if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
           if (content.tooLarge) {
             setStatus({ kind: "tooLarge" });
             return;
           }
+          addRecent(imagePath);
           setStatus({ kind: "image", src: content.data });
         })
         .catch((reason) => {
@@ -1409,19 +2518,53 @@ export function EditorPane({
     // 和图片一样：打开即预览，判据只看扩展名，不必先把文件读进来
     if (isPdfPath(active.path)) {
       editor.setModel(null);
+      // PDF 打开后直接进预览，没有读盘成功回调；这里也算一次成功的打开
+      if (active.path !== null) addRecent(active.path);
       setStatus({ kind: "pdf" });
+      dropPendingFormat(key);
       return;
     }
 
     const cached = modelsRef.current.get(key);
     if (cached) {
-      editor.setModel(cached.model);
+      attachModel(key, cached.model);
       setStatus({ kind: "ready" });
       syncDirty();
+      applyCapabilities();
+      // 文件树右键的「打开并格式化」：模型已经挂上，补做那一次格式化
+      flushPendingFormat();
       return;
     }
 
     const path = active.path;
+    if (path === null) {
+      // 未命名缓冲区：没有磁盘内容可读，直接给一个空 model。序号由 WorkspacePane 发，
+      // 这里只按它建 URI；重开同一个标签会先命中上面的缓存，不会重复建
+      const uri = monaco.Uri.parse(`inmemory://codedock/untitled-${active.untitledId ?? "new"}`);
+      const model = monaco.editor.createModel("", "plaintext", uri);
+      applyIndentToModel(model, indentRef.current);
+      modelsRef.current.set(key, {
+        path: null,
+        model,
+        savedVersionId: model.getAlternativeVersionId(),
+        savedText: "",
+        encoding: "utf-8",
+        eol: "LF",
+        savedEol: "LF",
+        hasBom: false,
+        readOnly: false,
+        truncated: false,
+        isLarge: false,
+        size: 0,
+      });
+      attachModel(key, model);
+      setStatus({ kind: "ready" });
+      syncDirty();
+      applyCapabilities();
+      flushPendingFormat();
+      return;
+    }
+
     let cancelled = false;
     setStatus({ kind: "loading" });
     editor.setModel(null);
@@ -1431,16 +2574,20 @@ export function EditorPane({
         if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
         if (content.tooLarge) {
           setStatus({ kind: "tooLarge" });
+          dropPendingFormat(key);
           return;
         }
         if (content.isBinary) {
           setStatus({ kind: "binary" });
+          dropPendingFormat(key);
           return;
         }
         const uri = monaco.Uri.file(path);
-        const language = languageOf(path);
+        const language = effectiveLanguage(path, content.isLarge);
         const existing = monaco.editor.getModel(uri);
-        const model = existing ?? monaco.editor.createModel(content.text, language, uri);
+        // 后端按原样读回，可能带着 CRLF / CR；Monaco 只认 LF / CRLF，先统一成 LF，
+        // 原换行风格记在 cached.eol 里，保存时由后端按它还原
+        const model = existing ?? monaco.editor.createModel(toLf(content.text), language, uri);
         if (!existing) applyIndentToModel(model, indentRef.current);
         // savedVersionId 取「重排之前」的版本号：json5/jsonc 打开时会自动重排，
         // 于是重排完立刻算未保存改动（用户 Ctrl+Z 撤销回原缩进时，版本号回到这里又会变干净）
@@ -1448,25 +2595,48 @@ export function EditorPane({
           path,
           model,
           savedVersionId: model.getAlternativeVersionId(),
+          savedText: model.getValue(),
           encoding: content.encoding,
+          eol: content.eol,
+          savedEol: content.eol,
+          hasBom: content.hasBom,
+          readOnly: content.readOnly || content.truncated,
+          truncated: content.truncated,
+          isLarge: content.isLarge,
+          size: content.size,
         });
         // 只对首次创建的 json5 / jsonc 自动重排；缓存 model 与差异 model 都到不了这里
         if (!existing && (language === "json5" || language === "jsonc")) {
           reindentModelOnOpen(model);
         }
-        editor.setModel(model);
+        // 读盘成功才算「打开成功」：路径不存在 / 二进制 / 超限的文件不进最近列表
+        addRecent(path);
+        attachModel(key, model);
         setStatus({ kind: "ready" });
         syncDirty();
+        applyCapabilities();
+        flushPendingFormat();
       })
       .catch((reason) => {
         if (cancelled || !activeRef.current || tabKey(activeRef.current) !== key) return;
         setStatus({ kind: "error", message: String(reason) });
+        dropPendingFormat(key);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [active, syncDirty, showDiff]);
+  }, [
+    active,
+    applyCapabilities,
+    attachModel,
+    saveCurrentViewState,
+    dropPendingFormat,
+    flushPendingFormat,
+    onPatchTab,
+    syncDirty,
+    showDiff,
+  ]);
 
   /**
    * markdown / svg 打开即预览：标签第一次被激活时按扩展名给它定默认模式。
@@ -1486,7 +2656,7 @@ export function EditorPane({
 
   // 搜索结果的定位：等标签切过去、model 挂上之后再选中并滚过去
   useEffect(() => {
-    if (!reveal || !active || active.kind !== "file") return;
+    if (!reveal || !active || active.kind !== "file" || active.path === null) return;
     if (status.kind !== "ready") return;
     if (pathKey(active.path) !== pathKey(reveal.path)) return;
 
@@ -1496,6 +2666,13 @@ export function EditorPane({
     // 预览模式下先退回编辑，否则高亮落在 hidden 的编辑器里，用户什么都看不到
     const key = tabKey(active);
     setPreviewPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    // 翻译视图同样把编辑器藏起来了，定位前也退出去
+    setTranslationPaths((prev) => {
       if (!prev.has(key)) return prev;
       const next = new Set(prev);
       next.delete(key);
@@ -1540,6 +2717,13 @@ export function EditorPane({
         next.delete(key);
         return next;
       });
+      // 翻译视图也是整块替换内容，和预览互斥
+      setTranslationPaths((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     };
     if (!isHtmlPreviewPath(current.path)) {
       enter();
@@ -1554,9 +2738,9 @@ export function EditorPane({
   }, []);
 
   /**
-   * 切换 markdown 的三种查看方式：预览 / 编辑 / 对照。
-   * 「预览」与「对照」互斥，「编辑」会把两者都摘掉——同一份内容只在一处显示。
-   * 内容变化后右侧的重渲染由下面的防抖 effect 驱动。
+   * 切换 markdown 的查看方式：预览 / 编辑 / 对照 / 翻译。
+   * 同一份内容只在一处显示，所以每次进入一种模式都把其余集合摘掉。
+   * 翻译视图的内容变化由内容签名驱动，切回编辑后译文仍留在 store 里。
    */
   const setMarkdownMode = useCallback((mode: MarkdownMode) => {
     const current = activeRef.current;
@@ -1568,42 +2752,73 @@ export function EditorPane({
       next.delete(key);
       return next;
     };
+    const add = (prev: ReadonlySet<string>) =>
+      prev.has(key) ? prev : new Set(prev).add(key);
     if (mode === "edit") {
       setPreviewPaths(without);
       setSplitPaths(without);
+      setTranslationPaths(without);
       return;
     }
     if (mode === "preview") {
-      setPreviewPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+      setPreviewPaths(add);
       setSplitPaths(without);
+      setTranslationPaths(without);
       return;
     }
-    setSplitPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    if (mode === "split") {
+      setSplitPaths(add);
+      setPreviewPaths(without);
+      setTranslationPaths(without);
+      return;
+    }
+    setTranslationPaths(add);
     setPreviewPaths(without);
+    setSplitPaths(without);
+  }, []);
+
+  /** 纯文本等非 markdown 文档的翻译入口：再点一次回到编辑 */
+  const toggleTranslation = useCallback(() => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file") return;
+    const key = tabKey(current);
+    if (translationPathsRef.current.has(key)) {
+      setTranslationPaths((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      return;
+    }
+    setTranslationPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    setPreviewPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    setSplitPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   }, []);
 
   /**
-   * 这批关闭动作涉及的标签里哪些有未保存的改动，拼一句确认文案；一个都没有就返回 null
-   * （不用弹框，直接关）。单个关闭报文件名，批量关闭只列前几个，别把十几个名字铺满整屏。
+   * 这批关闭动作里哪些标签有未保存的改动。差异标签永远干净，未命名缓冲区也要算。
+   * 一个都没有就直接关；有的话逐个弹「保存 / 不保存 / 取消」。
    */
-  const dirtyLabel = useCallback(
-    (request: CloseRequest): string | null => {
+  const dirtyTargets = useCallback(
+    (request: CloseRequest): Tab[] => {
       const targets =
         request.kind === "one"
           ? [request.tab]
           : tabs.filter(
               (tab) => request.kind === "all" || !active || !sameTab(tab, active),
             );
-      const names = targets
-        .filter((tab) => dirtyPaths.has(tabKey(tab)))
-        .map((tab) => baseName(tab.path));
-      if (names.length === 0) return null;
-      if (names.length === 1) return `${names[0]} 有未保存的改动，确定关闭吗？`;
-      const shown =
-        names.length > 3
-          ? `${names.slice(0, 3).join("、")} 等 ${names.length} 个`
-          : names.join("、");
-      return `有未保存改动的文件：${shown}，确定关闭吗？`;
+      return targets.filter((tab) => dirtyPaths.has(tabKey(tab)));
     },
     [tabs, active, dirtyPaths],
   );
@@ -1617,15 +2832,25 @@ export function EditorPane({
     (request: CloseRequest) => {
       if (request.kind === "one") {
         const key = tabKey(request.tab);
-        forgetKeys(disposeModels((_, current) => current === key));
-        onClose(request.tab);
+        // 这次关闭可能刚做过「另存为」：标签已经换了路径（甚至父级的列表还没刷新），
+        // 用记录下来的新 key / 新路径收尾，model 才不会漏在缓存里。
+        // 必须比对**标签对象本身**：旧路径后来又打开成新标签时，旧 key 的映射还在，
+        // 单纯看 key 会关掉新标签、销毁它的 model。
+        const moved = rekeyedRef.current.get(key);
+        rekeyedRef.current.delete(key);
+        const usesMove = moved !== undefined && moved.tab === request.tab;
+        const targetKey = usesMove ? moved.key : key;
+        forgetKeys(disposeModels((_, current) => current === targetKey));
+        onClose(usesMove ? patchTab(request.tab, { path: moved.path }) : request.tab);
         return;
       }
       if (request.kind === "all") {
+        rekeyedRef.current.clear();
         forgetKeys(disposeModels(() => true));
         onCloseAll();
         return;
       }
+      rekeyedRef.current.clear();
       const keep = active ? tabKey(active) : null;
       forgetKeys(disposeModels((_, key) => key !== keep));
       onCloseOthers();
@@ -1642,14 +2867,47 @@ export function EditorPane({
     (request: CloseRequest) => {
       // 关闭其他时当前标签要留着，没有当前标签就没得可关
       if (request.kind === "others" && !active) return;
-      const message = dirtyLabel(request);
-      if (!message) {
+      const queue = dirtyTargets(request);
+      if (queue.length === 0) {
         performClose(request);
         return;
       }
-      setCloseRequest({ request, message });
+      setCloseRequest({ request, queue, index: 0 });
     },
-    [active, dirtyLabel, performClose],
+    [active, dirtyTargets, performClose],
+  );
+
+  /** 当前正在问的那个待关闭标签；null 表示没有待确认的关闭 */
+  const closeTabNow = closeRequest ? closeRequest.queue[closeRequest.index] ?? null : null;
+
+  /** 当前这个答完了，接着问下一个；全部答完才真正关 */
+  const answerClose = useCallback(
+    (action: "save" | "discard") => {
+      const state = closeRequest;
+      if (!state) return;
+      const tab = state.queue[state.index];
+      const finish = (ok: boolean) => {
+        if (!ok) {
+          // 保存失败 / 另存为取消：中止整次关闭，标签原样留着
+          setCloseRequest(null);
+          pushNotice("保存失败，已取消关闭", "error");
+          return;
+        }
+        const next = state.index + 1;
+        if (next >= state.queue.length) {
+          setCloseRequest(null);
+          performClose(state.request);
+          return;
+        }
+        setCloseRequest({ ...state, index: next });
+      };
+      if (action === "discard" || !tab) {
+        finish(true);
+        return;
+      }
+      void saveTab(tabKey(tab), { silent: true }).then(finish);
+    },
+    [closeRequest, performClose, pushNotice, saveTab],
   );
 
   const closeTab = useCallback(
@@ -1659,12 +2917,15 @@ export function EditorPane({
   closeTabRef.current = closeTab;
 
   /**
-   * 关掉当前标签（文件标签和差异标签同一根标签栏，走同一套逻辑）。键位可配置，
-   * 默认 Ctrl/Cmd+W。
+   * 编辑器区内的命令分发：焦点在这一区（含标签栏、状态栏）时按下配置里的键就跑对应命令，
+   * 键位全部来自 `settings.shortcuts`（见 lib/shortcuts.ts 的命令表）。
    *
-   * 挂在编辑器区最外层、**捕获阶段**：焦点在标签栏按钮上、或落在 Monaco 里都收得到，
-   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。焦点在右侧面板里时另有一份处理
-   * （见 ToolPane），所以这里只管编辑器区内。
+   * 挂在最外层 section 的**捕获阶段**：焦点落在 Monaco 里、或落在标签栏按钮上都收得到，
+   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。几条刻意留白的边界：
+   * - 终端在另一个面板里，事件到不了这里，Ctrl+C/V/W 的 shell 语义不受影响；
+   * - 终端专属的键（Ctrl+B 这类 readline 键）在窗口级分发那边被 `isTypingTarget` 挡掉；
+   * - Monaco 自带的 Ctrl+H、撤销、多光标照旧由 Monaco 处理，只有本应用注册过的命令键
+   *   才被吃掉（`editor.find` 打开的就是 Monaco 同一个 find widget）。
    */
   const onPaneKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     const current = activeRef.current;
@@ -1684,15 +2945,52 @@ export function EditorPane({
       gotoDiff(diffChangeIndex + (event.shiftKey ? -1 : 1));
       return;
     }
-    if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
-    if (!current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    closeTabRef.current(current);
+
+    // Ctrl+PageDown / Ctrl+PageUp 是切标签的同义别名（对齐 VS Code / CodeLite）。
+    // 刻意不进命令表：单按 PageUp / PageDown 要留给翻页，录成键位后会和浏览器语义打架
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      (event.key === "PageDown" || event.key === "PageUp")
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      stepTab(event.key === "PageDown" ? 1 : -1);
+      return;
+    }
+
+    // 顺序即匹配顺序；resolveShortcuts 保证了不会有两条命令占同一个键
+    const commands: [string, () => void][] = [
+      ["closeTab", () => current && closeTabRef.current(current)],
+      ["editor.save", () => saveRef.current()],
+      [
+        "editor.saveAs",
+        () => {
+          if (current?.kind === "file") void saveAs(tabKey(current));
+        },
+      ],
+      ["editor.newFile", onNewUntitled],
+      ["editor.openFile", () => void openFromDisk()],
+      ["editor.find", toggleFind],
+      ["editor.format", () => formatActiveRef.current()],
+      ["editor.togglePreview", togglePreview],
+      ["editor.nextTab", () => stepTab(1)],
+      ["editor.prevTab", () => stepTab(-1)],
+    ];
+    for (const [id, run] of commands) {
+      if (!matchesShortcut(event, settings.shortcuts[id])) continue;
+      event.preventDefault();
+      event.stopPropagation();
+      run();
+      return;
+    }
   };
 
   const isDiffTab = active?.kind === "diff";
   const activeKey = active ? tabKey(active) : null;
+  /** 当前标签是普通文件（含未命名缓冲区）时才有文件生命周期动作 */
+  const activeFile: FileTab | null = active !== null && active.kind === "file" ? active : null;
 
   // 图片没有"编辑/预览"两个模式，打开就是预览。判据用 active 而不是 status：
   // 加载中和加载失败时也得把 Monaco 那块藏住，否则会露出上一次的残留内容
@@ -1716,6 +3014,9 @@ export function EditorPane({
   const isMarkdownFile = active?.kind === "file" && isMarkdownPath(active.path);
   /** 预览时按这个路径解析相对图片；diff / 非文件标签没有 */
   const previewSourcePath = active?.kind === "file" ? active.path : null;
+  // 当前文件在 model 缓存里的那条记录。直接从缓存里现取（每次渲染都算）：加载完成、
+  // 切标签、切编码都会走一次渲染，取到的自然是最新的；不用 state 单独存一份，省得两处对不上
+  const activeCached = activeKey ? modelsRef.current.get(activeKey) ?? null : null;
   /**
    * 左右分屏预览。只对 markdown 开：html / svg 的预览读磁盘、要整屏才够用。
    * 和整屏预览互斥（两个 toggle 各自会把对方摘掉），这里再兜一层：整屏优先
@@ -1724,16 +3025,31 @@ export function EditorPane({
     canPreview && activeKey !== null && isMarkdownFile && splitPaths.has(activeKey) && !isPreview;
 
   /**
+   * 翻译视图：只对文档扩展名开放（源码 / 脚本 / 配置不给入口），
+   * 大文件、二进制、空内容都不进。翻译与预览 / 对照互斥。
+   */
+  const isTranslate = activeKey !== null && translationPaths.has(activeKey);
+  const canTranslate =
+    status.kind === "ready" &&
+    activeFile !== null &&
+    activeCached !== null &&
+    isDocumentPath(activeFile.path) &&
+    !activeCached.isLarge &&
+    activeCached.model.getValue().trim() !== "";
+
+  /**
    * 当前 markdown 标签的查看方式。默认由 previewsOnOpen 播种成「预览」；
-   * 之后只认用户点的那三个按钮，切走再切回来保持原样。
+   * 之后只认用户点的那几个按钮，切走再切回来保持原样。
    */
   const markdownMode: MarkdownMode | null = !isMarkdownFile
     ? null
-    : isPreview
-      ? "preview"
-      : isSplitPreview
-        ? "split"
-        : "edit";
+    : isTranslate
+      ? "translate"
+      : isPreview
+        ? "preview"
+        : isSplitPreview
+          ? "split"
+          : "edit";
 
   // 进预览时同步渲染一次：放在渲染期算完，就不会先闪一帧空白。
   // 内容按 activeKey 从缓存里取，**不能**读编辑器当前挂着的 model：换 model 的
@@ -1743,10 +3059,10 @@ export function EditorPane({
   // 预览期间编辑器是 hidden 的、内容改不了，缓存里那份就是当前内容。
   const previewHtml = useMemo(() => {
     if (!isMarkdownPreview || activeKey === null || previewSourcePath === null) return "";
-    const model = modelsRef.current.get(activeKey)?.model;
-    return model
-      ? renderMarkdown(model.getValue(), { filePath: previewSourcePath, roots })
-      : "";
+    const cached = modelsRef.current.get(activeKey);
+    // 大文件不渲染全文：MarkdownPreview 会显示降级提示，编辑模式仍然可用
+    if (!cached || cached.isLarge) return "";
+    return renderMarkdown(cached.model.getValue(), { filePath: previewSourcePath, roots });
   }, [isMarkdownPreview, activeKey, previewNonce, previewSourcePath, roots]);
 
   /**
@@ -1769,11 +3085,13 @@ export function EditorPane({
       setSplitHtml("");
       return;
     }
-    const model = modelsRef.current.get(activeKey)?.model;
-    if (!model) {
+    const cached = modelsRef.current.get(activeKey);
+    // 大文件不渲染右侧正文：MarkdownPreview 只显示降级提示，避免整篇渲染卡住
+    if (!cached || cached.isLarge) {
       setSplitHtml("");
       return;
     }
+    const model = cached.model;
     // 进入分屏先同步渲染一次，右侧不留空白
     setSplitHtml(
       renderMarkdown(model.getValue(), {
@@ -1802,7 +3120,7 @@ export function EditorPane({
       sub.dispose();
       window.clearTimeout(timer);
     };
-  }, [isSplitPreview, activeKey, previewSourcePath, roots]);
+  }, [isSplitPreview, activeKey, activeCached?.isLarge, previewSourcePath, roots]);
 
   /**
    * 对照模式的滚动同步：顶部先按块锚点对齐，块内再按行数插值。
@@ -1891,17 +3209,22 @@ export function EditorPane({
     }
   }, [activeKey]);
 
-  // 当前文件的编码。直接从 model 缓存里现取（每次渲染都算）：加载完成、切标签、切编码
-  // 都会走一次渲染，取到的自然是最新的；不用 state 单独存一份，省得两处对不上。
-  const activeEncoding = activeKey ? modelsRef.current.get(activeKey)?.encoding || null : null;
+  const activeEncoding = activeCached?.encoding || null;
+  /**
+   * 另存为的可用性：截断文件写出去只会得到残缺内容，直接禁掉。
+   * 保存按钮另有针对性禁用（只读 / 截断都不给按）。
+   */
+  const canSaveAsActive = activeCached !== null && !activeCached.truncated;
 
   /**
    * 编码状态栏只在普通文本文件上出现：差异、图片没有「按原编码回写」这回事；
+   * 未命名缓冲区固定按 UTF-8 落盘，也没有可切的编码；
    * 二进制 / 超限也没有 model 可重读。编码已知、或加载失败（认不出编码）时显示——
    * 后者正是它的补救入口。首次加载中不显示，免得和正在跑的加载抢着建 model。
    */
   const showEncodingBar =
     active?.kind === "file" &&
+    active.path !== null &&
     !isImageTab &&
     !isPdfTab &&
     status.kind !== "binary" &&
@@ -1916,6 +3239,13 @@ export function EditorPane({
 
   const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
+
+  // 标签右键菜单要显示哪些项，取决于这个标签当前的状态；先算好，JSX 里就不再嵌逻辑
+  const tabMenuKey = tabMenu ? tabKey(tabMenu.tab) : null;
+  const tabMenuCached = tabMenuKey !== null ? modelsRef.current.get(tabMenuKey) ?? null : null;
+  const tabMenuDirty = tabMenuKey !== null && dirtyPaths.has(tabMenuKey);
+  const tabMenuExternal: ExternalState =
+    tabMenu && tabMenu.tab.kind === "file" ? tabMenu.tab.externalState : "none";
 
   // 切标签 / 文件加载完成后刷一次状态栏信息。声明在「换 model」那个 effect 之后，
   // 保证轮到它时 editor 上挂的已经是新 model（effect 按声明顺序跑）
@@ -1948,15 +3278,33 @@ export function EditorPane({
     refreshViewInfo();
   };
 
-  /** 换行符：用 pushEOL（一次可撤销的内容编辑），不用会清掉撤销栈的 setEOL */
-  const applyEol = (eol: "LF" | "CRLF") => {
+  /**
+   * 换行符：LF / CRLF 用 pushEOL（一次可撤销的内容编辑），不用会清掉撤销栈的 setEOL。
+   * CR 在 Monaco 里表示不了，模型保持 LF、只把「保存时按 CR 回写」记在缓存上。
+   * 状态栏显示与保存都以 cached.eol 为准，不再拿 model.getEOL() 当唯一依据。
+   */
+  const applyEol = (eol: Eol) => {
     setStatusMenu(null);
-    const model = activeTextModel();
-    if (!model) return;
-    model.pushEOL(
-      eol === "CRLF" ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF,
-    );
+    const current = activeRef.current;
+    if (!current || current.kind !== "file") return;
+    const cached = modelsRef.current.get(tabKey(current));
+    if (!cached) return;
+    // 只读 / 截断文件写不回去，改 EOL 只会留下一个永远存不掉的脏标记
+    if (cached.readOnly || cached.truncated) {
+      pushNotice("只读或已截断的文件不能修改换行符", "error");
+      return;
+    }
+    cached.eol = eol;
+    if (eol !== "CR") {
+      cached.model.pushEOL(
+        eol === "CRLF"
+          ? monaco.editor.EndOfLineSequence.CRLF
+          : monaco.editor.EndOfLineSequence.LF,
+      );
+    }
     refreshViewInfo();
+    // CR 这种 Monaco 表示不了的换行只改缓存、不改内容，脏标记得手动刷一次
+    syncDirty();
   };
 
   /** 缩进：作用在 model 上，只影响这个文件的编辑行为 */
@@ -1998,7 +3346,7 @@ export function EditorPane({
     return items;
   };
 
-  /** 换行符菜单项 */
+  /** 换行符菜单项。CR 只是保存目标，Monaco 里看不到区别，所以状态栏显示得单独说明 */
   const eolItems = (): StatusMenuItem[] => [
     { key: "lf", label: "LF", checked: viewInfo?.eol === "LF", onPick: () => applyEol("LF") },
     {
@@ -2007,14 +3355,25 @@ export function EditorPane({
       checked: viewInfo?.eol === "CRLF",
       onPick: () => applyEol("CRLF"),
     },
+    {
+      key: "cr",
+      label: "CR（老式 Mac）",
+      checked: viewInfo?.eol === "CR",
+      onPick: () => applyEol("CR"),
+    },
   ];
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
+    <section className="relative flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
         <div
           ref={tabsScrollRef}
           onClickCapture={onClickCapture}
+          // 标签栏空白处双击新建未命名缓冲区（照 VS Code）；落在标签 / 关闭按钮上不触发
+          onDoubleClick={(event) => {
+            if ((event.target as HTMLElement).closest("[data-tab-item]")) return;
+            onNewUntitled();
+          }}
           className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
         >
           {tabs.length === 0 && (
@@ -2024,7 +3383,9 @@ export function EditorPane({
             const key = tabKey(tab);
             const isActive = active !== null && tabKey(active) === key;
             const isDirty = dirtyPaths.has(key);
-            const mark = gitMarks.get(pathKey(tab.path));
+            // 未命名缓冲区没有路径，既没有 git 标记也不显示路径
+            const mark = tab.path === null ? undefined : gitMarks.get(pathKey(tab.path));
+            const external: ExternalState = tab.kind === "file" ? tab.externalState : "none";
             const suffix = tabSuffix(tab);
             const dropBefore = dropIndex === index;
             const dropAfter = dropIndex === tabs.length && index === tabs.length - 1;
@@ -2034,6 +3395,17 @@ export function EditorPane({
                 data-tab-item
                 data-tab-active={isActive ? "" : undefined}
                 onPointerDown={onTabDown(index)}
+                // 中键关闭：和 VS Code / 浏览器的习惯一致（左键拖动重排不受影响，
+                // onTabDown 只认左键）
+                onAuxClick={(event) => {
+                  if (event.button !== 1) return;
+                  event.preventDefault();
+                  closeTab(tab);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setTabMenu({ x: event.clientX, y: event.clientY, tab });
+                }}
                 className={`relative flex shrink-0 items-center rounded ${
                   isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
                 } ${dragFrom === index ? "opacity-40" : ""}`}
@@ -2052,19 +3424,48 @@ export function EditorPane({
                   title={tabTitle(tab)}
                   className="flex max-w-[200px] items-center py-0.5 pl-2 text-[11px]"
                 >
-                  <span className="truncate">{baseName(tab.path)}</span>
+                  <span className="truncate">{tabName(tab)}</span>
                   {suffix && (
                     <span className="ml-1 shrink-0 text-[10px] text-fg-faint">{suffix}</span>
                   )}
-                  {/* 未保存的改动比 git 状态更要紧，两者只占同一个位置 */}
-                  {isDirty ? (
-                    <span className="ml-1 shrink-0 text-warn" title="有未保存的改动">
-                      ●
+                  {/* 外部变更比未保存圆点更要紧：冲突 / 删除要用户处理，先占这个位置 */}
+                  {external !== "none" && (
+                    <span
+                      title={
+                        external === "conflict"
+                          ? "磁盘上的文件已被外部修改，你的未保存修改没有被覆盖"
+                          : external === "deleted"
+                            ? "磁盘上的文件已被删除"
+                            : "磁盘上的文件已在外部更新"
+                      }
+                      className={`ml-1 shrink-0 text-[10px] font-medium ${
+                        external === "conflict"
+                          ? "text-danger"
+                          : external === "deleted"
+                            ? "text-danger"
+                            : "text-accent-soft"
+                      }`}
+                    >
+                      {external === "conflict" ? "≠" : external === "deleted" ? "∅" : "↓"}
                     </span>
-                  ) : (
-                    mark && <GitMarkBadge mark={mark} className="ml-1 text-[10px]" />
                   )}
+                  {/* 未保存的改动比 git 状态更要紧，两者只占同一个位置：脏的时候下面那颗
+                      圆点按钮就是它的标记（点一下即保存），这里让位 */}
+                  {!isDirty && mark && <GitMarkBadge mark={mark} className="ml-1 text-[10px]" />}
                 </button>
+                {/* 脏标签的圆点即保存（照 VS Code / CodeLite）：点它是保存，不是关闭。
+                    关闭入口仍在右边，只是不再和「保存」抢同一个圆点的语义 */}
+                {isDirty && (
+                  <button
+                    type="button"
+                    data-tab-save
+                    onClick={() => void saveTab(key)}
+                    title={`保存（${formatShortcut(settings.shortcuts["editor.save"])}）`}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-warn hover:bg-hover"
+                  >
+                    <span className="h-2 w-2 rounded-full bg-current" />
+                  </button>
+                )}
                 <button
                   type="button"
                   data-tab-close
@@ -2078,6 +3479,15 @@ export function EditorPane({
             );
           })}
         </div>
+        {/* 新建未命名缓冲区。快捷键 Ctrl+N，标签栏空白处双击也能新建 */}
+        <button
+          type="button"
+          onClick={onNewUntitled}
+          title={`新建文件（${formatShortcut(settings.shortcuts["editor.newFile"])}）`}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+        >
+          <IconPlus className="h-3.5 w-3.5" />
+        </button>
         {/* 批量关闭入口。紧贴 tab 栏右端，只在有标签时出现 */}
         {tabs.length > 0 && (
           <button
@@ -2120,25 +3530,70 @@ export function EditorPane({
                 type="button"
                 onClick={() => setMarkdownMode(id)}
                 aria-pressed={markdownMode === id}
+                disabled={id === "translate" && !canTranslate}
                 title={
                   id === "preview"
                     ? "预览渲染后的效果"
                     : id === "edit"
                       ? "编辑 Markdown 源码"
-                      : "左边源码，右边渲染"
+                      : id === "split"
+                        ? "左边源码，右边渲染"
+                        : "左原文、右译文的文档翻译"
                 }
                 className={`rounded px-2 py-0.5 text-[11px] ${
                   markdownMode === id
                     ? "bg-selected text-fg"
                     : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim`}
               >
                 {label}
               </button>
             ))}
           </div>
         )}
-        {activeDirty && (
+        {/* 纯文本 / 日志等文档：markdown 走上面的四态分组，这里给一个独立的翻译开关 */}
+        {activeFile && status.kind === "ready" && !isMarkdownFile && canTranslate && (
+          <button
+            type="button"
+            onClick={toggleTranslation}
+            aria-pressed={isTranslate}
+            title={isTranslate ? "回到编辑" : "文档翻译（左原文、右译文）"}
+            className={`flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] ${
+              isTranslate
+                ? "bg-selected text-fg"
+                : "text-fg-dim hover:bg-hover hover:text-fg"
+            }`}
+          >
+            <IconArrowsLeftRight className="h-3.5 w-3.5" />
+            翻译
+          </button>
+        )}
+        {/* 查找 / 替换：切换 Monaco 的 find widget（开着再点就收起）。
+            Ctrl+F 走命令分发打开同一个 widget，Ctrl+H 的替换仍是 Monaco 内置 */}
+        {activeFile && status.kind === "ready" && (
+          <button
+            type="button"
+            onClick={toggleFind}
+            title={`查找 / 替换（${formatShortcut(settings.shortcuts["editor.find"])}、Ctrl+H）`}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+          >
+            <IconSearch className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {/* 格式化：Prettier 覆盖的类型走 Prettier，其余退回缩进重排。
+            只读 / 截断 / 大文件不给按（重写整篇正文对它们没有意义） */}
+        {activeFile && activeCached && (
+          <button
+            type="button"
+            onClick={formatActive}
+            disabled={!canFormatTab(activeCached)}
+            title={`格式化文档（${formatShortcut(settings.shortcuts["editor.format"])}）`}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
+          >
+            <IconWand className="h-3.5 w-3.5" />
+          </button>
+        )}
+        {activeDirty && activeCached && !activeCached.truncated && !activeCached.readOnly && (
           <button
             type="button"
             onClick={() => saveRef.current()}
@@ -2148,6 +3603,39 @@ export function EditorPane({
             {/* 文案跟随可配置快捷键，改键后这里也跟着变，不再写死 Ctrl+S */}
             {saving ? "保存中…" : `保存 ${formatShortcut(settings.shortcuts["editor.save"])}`}
           </button>
+        )}
+        {/* 文件生命周期入口：另存为对所有文件标签开放，放弃变更只在确实有未保存改动时可用 */}
+        {activeFile && activeCached && (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                if (activeKey !== null) void saveAs(activeKey);
+              }}
+              disabled={!canSaveAsActive || saving}
+              title={
+                activeCached.truncated
+                  ? "文件已截断，不能另存为"
+                  : activeCached.path === null
+                    ? "把未命名缓冲区保存到工作区里的文件"
+                    : "另存为…"
+              }
+              className={HEADER_BUTTON}
+            >
+              另存为
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (activeKey !== null) void discardChanges(activeKey);
+              }}
+              disabled={!activeDirty}
+              title="放弃未保存的修改（已落盘文件从磁盘重读）"
+              className={HEADER_BUTTON}
+            >
+              放弃变更
+            </button>
+          </>
         )}
         {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
@@ -2185,6 +3673,116 @@ export function EditorPane({
               className={TABS_MENU_ITEM}
             >
               关闭全部
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* 标签右键菜单：定位文件（打开所在目录 / 在文件管理器中显示）+ 文件生命周期动作
+          + 外部变更的处理入口 */}
+      {tabMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setTabMenu(null)} />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: TAB_MENU_W,
+              left: Math.min(tabMenu.x, window.innerWidth - TAB_MENU_W - 4),
+              // 最多 7 项（定位 2 项 + 另存为 / 放弃变更 / 重载 / 保留 + 关闭），按每项 ~23px 估
+              top: Math.min(tabMenu.y, window.innerHeight - 250),
+            }}
+          >
+            {tabMenu.tab.kind === "file" && (
+              <>
+                <button
+                  type="button"
+                  disabled={tabMenuCached === null || tabMenuCached.truncated}
+                  onClick={() => {
+                    const key = tabMenuKey;
+                    setTabMenu(null);
+                    if (key !== null) void saveAs(key);
+                  }}
+                  className={TABS_MENU_ITEM}
+                >
+                  另存为…
+                </button>
+                <button
+                  type="button"
+                  disabled={!tabMenuDirty || tabMenuCached === null}
+                  onClick={() => {
+                    const key = tabMenuKey;
+                    setTabMenu(null);
+                    if (key !== null) void discardChanges(key);
+                  }}
+                  className={TABS_MENU_ITEM}
+                >
+                  放弃变更
+                </button>
+                {tabMenuExternal === "conflict" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const key = tabMenuKey;
+                      setTabMenu(null);
+                      if (key !== null) void discardChanges(key);
+                    }}
+                    className={TABS_MENU_ITEM}
+                  >
+                    重新加载（放弃我的修改）
+                  </button>
+                )}
+                {(tabMenuExternal === "conflict" || tabMenuExternal === "deleted") && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const tab = tabMenu.tab;
+                      setTabMenu(null);
+                      onPatchTab(tab, { externalState: "none" });
+                    }}
+                    className={TABS_MENU_ITEM}
+                  >
+                    保留我的修改
+                  </button>
+                )}
+              </>
+            )}
+            {/* 打开所在目录 / 在文件管理器中显示：都用于「找到这个文件」，一个在应用内的
+                文件树里定位（右栏会切到「文件」模块并展开到它），一个交给系统文件管理器。
+                未命名缓冲区还没有路径，两项都禁用 */}
+            <button
+              type="button"
+              disabled={tabMenu.tab.path === null}
+              onClick={() => {
+                const path = tabMenu.tab.path;
+                setTabMenu(null);
+                if (path !== null) revealInFiles(path);
+              }}
+              className={TABS_MENU_ITEM}
+            >
+              打开所在目录
+            </button>
+            <button
+              type="button"
+              disabled={tabMenu.tab.path === null}
+              onClick={() => {
+                const path = tabMenu.tab.path;
+                setTabMenu(null);
+                if (path !== null) revealInSystem(path);
+              }}
+              className={TABS_MENU_ITEM}
+            >
+              在文件管理器中显示
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const tab = tabMenu.tab;
+                setTabMenu(null);
+                closeTab(tab);
+              }}
+              className={TABS_MENU_ITEM}
+            >
+              关闭
             </button>
           </div>
         </>
@@ -2257,6 +3855,14 @@ export function EditorPane({
       {/* relative 给下面的绝对定位预览层（图片 / 整屏预览 / 加载遮罩）当定位父级；
           flex 让 SplitPane 的 flex-1 撑满 */}
       <div className="relative flex min-h-0 flex-1">
+        {/* 没有标签时整块让给欢迎页：最近文件 + 打开入口。它铺满这层，把下面的空 Monaco 盖住 */}
+        {tabs.length === 0 && (
+          <WelcomeScreen
+            onOpenFile={() => void openFromDisk()}
+            onOpenFolder={onOpenFolder}
+            onOpenRecent={onOpenRecent}
+          />
+        )}
         {/* 分栏的壳一直在：直接把 Monaco 的容器从「绝对铺满」改成「有宽度参与分栏」，
             切分屏时才会重新挂载（Monaco 实例只建一次，重挂载会让它挂到脱离的节点上）。
             不分屏时收起第二块，第一块自动撑满，和以前一个样 */}
@@ -2268,14 +3874,16 @@ export function EditorPane({
           first={
             <div
               ref={containerRef}
-              className={isPreview || isDiffTab || isImageTab || isPdfTab ? "hidden" : "h-full w-full"}
+              className={isPreview || isDiffTab || isImageTab || isPdfTab || isTranslate ? "hidden" : "h-full w-full"}
             />
           }
           second={
             // 右侧渲染预览。MarkdownPreview 是 absolute inset-0，得给它一个定位父级；
             // 滚动同步通过这个外壳找到里面真正的滚动容器
             <div ref={splitPreviewRef} className="relative h-full w-full">
-              {isSplitPreview && <MarkdownPreview html={splitHtml} />}
+              {isSplitPreview && (
+                <MarkdownPreview html={splitHtml} isLarge={activeCached?.isLarge ?? false} />
+              )}
             </div>
           }
         />
@@ -2284,15 +3892,29 @@ export function EditorPane({
           className={isDiffTab ? "absolute inset-0" : "hidden"}
         />
 
-        {isMarkdownPreview && <MarkdownPreview html={previewHtml} />}
+        {isMarkdownPreview && (
+          <MarkdownPreview html={previewHtml} isLarge={activeCached?.isLarge ?? false} />
+        )}
+        {/* 翻译视图：左原文右译文，正文取编辑器当前内容（含未保存改动），不写回文件 */}
+        {isTranslate && status.kind === "ready" && activeKey !== null && activeFile && activeCached && (
+          <TranslationView
+            tabKey={activeKey}
+            path={activeFile.path}
+            title={tabName(activeFile)}
+            content={activeCached.model.getValue()}
+            roots={roots}
+            isLarge={activeCached.isLarge}
+            onOpenSettings={onOpenSettings}
+          />
+        )}
         {/* html / htm / svg 预览：iframe 走 asset 协议读磁盘，相对路径的 css / js / 图片一并生效 */}
-        {isHtmlPreview && active && active.kind === "file" && (
-          <HtmlPreview path={active.path} nonce={previewNonce} />
+        {isHtmlPreview && activeFile && activeFile.path !== null && (
+          <HtmlPreview path={activeFile.path} nonce={previewNonce} />
         )}
 
         {/* PDF 预览：同样走 asset 协议，交给 WebView 内置阅读器翻页 / 缩放 */}
-        {isPdfTab && active && active.kind === "file" && (
-          <PdfPreview path={active.path} />
+        {isPdfTab && activeFile && activeFile.path !== null && (
+          <PdfPreview path={activeFile.path} />
         )}
 
         {/* 图片按原比例整体放进可视区，不放大也不让横竖滚动条出场 */}
@@ -2300,13 +3922,17 @@ export function EditorPane({
           <div className="absolute inset-0 flex items-center justify-center overflow-hidden p-4">
             <img
               src={status.src}
-              alt={active ? baseName(active.path) : ""}
+              alt={active ? tabName(active) : ""}
               className="max-h-full max-w-full object-contain"
             />
           </div>
         )}
 
-        {overlay.kind !== "ready" && overlay.kind !== "image" && overlay.kind !== "pdf" && (
+        {overlay.kind !== "ready" &&
+          overlay.kind !== "image" &&
+          overlay.kind !== "pdf" &&
+          // 没有标签时上面已经铺了欢迎页，这里不再叠一句「从左侧文件树选一个文件」
+          !(tabs.length === 0 && overlay.kind === "idle") && (
           <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
             {overlay.kind === "idle" && (
               <p className="text-[12px] text-fg-faint">
@@ -2390,11 +4016,24 @@ export function EditorPane({
             )}
             {!showDiffBar && viewInfo && (
               <>
+                {/* 路径：点击复制绝对路径（只对已落盘的文件显示；未命名缓冲区没有路径）。
+                    窄面板里靠 max-w + truncate 收住，完整路径挂在 title 上 */}
+                {activeFile && activeFile.path !== null && (
+                  <button
+                    type="button"
+                    onClick={copyActivePath}
+                    title={`${toDisplayPath(activeFile.path)}\n点击复制路径`}
+                    className={`${STATUS_BUTTON} min-w-0 max-w-[45%]`}
+                  >
+                    <span className="truncate">{toDisplayPath(activeFile.path)}</span>
+                  </button>
+                )}
                 <span
                   title="光标位置"
                   className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
                 >
                   行 {viewInfo.line}，列 {viewInfo.column}
+                  {viewInfo.selectionLength > 0 && `（已选 ${viewInfo.selectionLength}）`}
                 </span>
                 <button
                   type="button"
@@ -2415,11 +4054,45 @@ export function EditorPane({
                 <button
                   type="button"
                   onClick={(event) => openStatusMenu(event, eolItems())}
-                  title="换行符（点击切换）"
+                  title="换行符（点击切换，保存时按它回写）"
                   className={STATUS_BUTTON}
                 >
                   {viewInfo.eol}
                 </button>
+                {/* 文件属性标记：截断最要紧（不能保存），其次是只读，再是大文件降级 */}
+                {activeCached?.truncated && (
+                  <span
+                    title={`文件 ${formatSize(activeCached.size)}，只加载了前 8MB，保存已禁用`}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-danger"
+                  >
+                    已截断，只读
+                  </span>
+                )}
+                {!activeCached?.truncated && activeCached?.readOnly && (
+                  <span
+                    title="磁盘上的文件是只读的，保存已禁用"
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-warn"
+                  >
+                    只读
+                  </span>
+                )}
+                {activeCached?.isLarge && !activeCached.truncated && (
+                  <span
+                    title={`文件 ${formatSize(activeCached.size)}，已关闭缩略图 / 折叠 / 高亮等高成本能力`}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-warn"
+                  >
+                    大文件
+                  </span>
+                )}
+                {/* 文件大小：只在已落盘的文件上有意义（未命名缓冲区是 0） */}
+                {activeFile && activeFile.path !== null && activeCached && (
+                  <span
+                    title="文件大小（磁盘上的字节数）"
+                    className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
+                  >
+                    {formatSize(activeCached.size)}
+                  </span>
+                )}
               </>
             )}
           </div>
@@ -2475,8 +4148,8 @@ export function EditorPane({
       {/* 切编码会从磁盘重读，等于丢掉未保存的改动，脏标签先确认 */}
       {encodingSwitch && (
         <ConfirmDialog
-          message={`按 ${encodingName(encodingSwitch.label)} 重新读取 ${baseName(
-            encodingSwitch.tab.path,
+          message={`按 ${encodingName(encodingSwitch.label)} 重新读取 ${tabName(
+            encodingSwitch.tab,
           )}，未保存的改动会丢失，确定吗？`}
           confirmLabel="丢弃改动"
           onConfirm={() => {
@@ -2488,18 +4161,49 @@ export function EditorPane({
         />
       )}
 
-      {/* 关闭有未保存改动的标签（单个 / 全部 / 其他）前先确认，统一走自研确认框 */}
-      {closeRequest && (
+      {/* 关闭有未保存改动的标签（单个 / 全部 / 其他）：逐个问「保存 / 不保存 / 取消」。
+          保存失败或另存为取消都会中止整次关闭，标签原样留着 */}
+      {closeRequest && closeTabNow && (
         <ConfirmDialog
-          message={closeRequest.message}
-          confirmLabel="放弃改动"
-          onConfirm={() => {
-            const { request } = closeRequest;
-            setCloseRequest(null);
-            performClose(request);
-          }}
+          message={`${tabName(closeTabNow)} 有未保存的改动。${
+            closeTabNow.kind === "file" && closeTabNow.path === null
+              ? "这个缓冲区还没保存到磁盘。"
+              : ""
+          }`}
+          confirmLabel="保存"
+          secondaryLabel="不保存"
+          danger={false}
+          onConfirm={() => answerClose("save")}
+          onSecondary={() => answerClose("discard")}
           onCancel={() => setCloseRequest(null)}
         />
+      )}
+
+      {/* 保存前的语法问题：交互式保存时问一句「仍然保存 / 取消」，取消则这个文件不落盘。
+          排在其它弹窗之后渲染，真要同时出现时也压在最上面 */}
+      {syntaxPrompt && (
+        <ConfirmDialog
+          message={`「${syntaxPrompt.name}」可能存在语法错误：${syntaxPrompt.detail}。仍要保存吗？`}
+          confirmLabel="仍然保存"
+          danger={false}
+          onConfirm={() => answerSyntax(true)}
+          onCancel={() => answerSyntax(false)}
+        />
+      )}
+
+      {/* 一次性提示条。浮在编辑区底部，几秒后自动消失，不挡住内容 */}
+      {notice && (
+        <div className="pointer-events-none absolute bottom-8 left-1/2 z-30 -translate-x-1/2 px-4">
+          <div
+            className={`pointer-events-auto rounded-md border px-3 py-1.5 text-[11px] shadow-lg ${
+              notice.tone === "error"
+                ? "border-danger-line bg-danger-bg text-danger"
+                : "border-line-strong bg-raised text-fg-muted"
+            }`}
+          >
+            {notice.text}
+          </div>
+        </div>
       )}
     </section>
   );

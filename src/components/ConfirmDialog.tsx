@@ -10,6 +10,17 @@ interface ConfirmDialogProps {
    * （关窗口那处，「取消」= 「最小化到托盘」）
    */
   cancelLabel?: string;
+  /**
+   * 可选的第三个按钮（如关闭脏标签时的「不保存」），位置在取消与确认之间。
+   * 给了文案就必须给 `onSecondary`，否则它点了没反应。
+   */
+  secondaryLabel?: string;
+  onSecondary?: (checked: boolean) => void;
+  /**
+   * 确认按钮是否用危险色（默认 true，因为多数场景是不可撤销的破坏性操作）。
+   * 「保存」这类非破坏性动作传 false，免得看着像要删东西。
+   */
+  danger?: boolean;
   /** 有值时在正文下方多一个勾选框，勾没勾跟着确认 / 取消一起回传 */
   checkboxLabel?: string;
   /** `checked` 只在给了 `checkboxLabel` 时才有意义，否则恒为 false */
@@ -30,6 +41,14 @@ const CANCEL_BUTTON =
 const CONFIRM_BUTTON =
   "rounded-md border border-danger-line px-3 py-1 text-[12px] text-danger hover:bg-danger-bg";
 
+/** 非破坏性确认（如「保存」）用强调色，别让用户误以为要删东西 */
+const PRIMARY_BUTTON =
+  "rounded-md border border-accent-line px-3 py-1 text-[12px] text-accent-soft hover:bg-active";
+
+/** 中间那个「有意义的第三个选择」（如「不保存」）：比取消更醒目一点 */
+const SECONDARY_BUTTON =
+  "rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg hover:bg-active";
+
 /**
  * 破坏性操作的确认框。外壳照设置面板那一套（遮罩 + 圆角卡片），
  * 点遮罩或按 Esc 都算「反悔」（走 `onDismiss`，默认等同取消）。
@@ -42,6 +61,9 @@ export function ConfirmDialog({
   message,
   confirmLabel,
   cancelLabel = "取消",
+  secondaryLabel,
+  onSecondary,
+  danger = true,
   checkboxLabel,
   onConfirm,
   onCancel,
@@ -97,10 +119,19 @@ export function ConfirmDialog({
           >
             {cancelLabel}
           </button>
+          {secondaryLabel && (
+            <button
+              type="button"
+              onClick={() => onSecondary?.(checked)}
+              className={SECONDARY_BUTTON}
+            >
+              {secondaryLabel}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onConfirm(checked)}
-            className={CONFIRM_BUTTON}
+            className={danger ? CONFIRM_BUTTON : PRIMARY_BUTTON}
           >
             {confirmLabel}
           </button>

@@ -20,6 +20,7 @@ import {
   type AiProvider,
   type AutoSaveMode,
   type EditorIndent,
+  type EditorLineHeight,
   type ProviderModel,
   type Settings,
   type SettingsSection,
@@ -44,7 +45,12 @@ import {
   type RemoteModel,
 } from "../lib/ai";
 import { deleteSecret, setSecret } from "../lib/secrets";
-import { SHORTCUT_COMMANDS, formatShortcut, shortcutFromEvent } from "../lib/shortcuts";
+import {
+  SHORTCUT_COMMANDS,
+  formatShortcut,
+  setShortcutRecording,
+  shortcutFromEvent,
+} from "../lib/shortcuts";
 import {
   checkDependencies,
   installDependency,
@@ -52,6 +58,7 @@ import {
 } from "../lib/installer";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
+import type { TranslateTarget } from "../lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconGripVertical, IconPlus } from "./icons";
 
@@ -75,9 +82,9 @@ type TabId = (typeof TABS)[number]["id"];
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
   terminal: "终端程序、配色，以及 AI CLI 列表",
-  editor: "缩进宽度、缩略图、自动换行和自动保存",
+  editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
   shortcuts: "全部快捷键键位",
-  agent: "模型提供商、密钥，以及助手运行用的 opencode 与端口",
+  agent: "模型提供商、密钥、文档翻译目标语言，以及助手运行用的 opencode 与端口",
 };
 
 /** 依赖页只有环境检测与安装，没有可恢复的设置项 */
@@ -136,12 +143,25 @@ const AUTO_SAVE_OPTIONS: { value: AutoSaveMode; label: string }[] = [
   { value: "onWindowChange", label: "窗口失焦时" },
 ];
 
+/** 文档翻译目标语言；只支持中英，翻译视图里也能切换 */
+const TRANSLATE_TARGET_OPTIONS: { value: TranslateTarget; label: string }[] = [
+  { value: "zh", label: "简体中文" },
+  { value: "en", label: "English" },
+];
+
 /** 编辑器缩进宽度；auto 交回 Monaco 按文件内容探测 */
 const INDENT_OPTIONS: { value: EditorIndent; label: string }[] = [
   { value: "auto", label: "按文件内容自动探测" },
   { value: "2", label: "2 空格" },
   { value: "4", label: "4 空格" },
   { value: "8", label: "8 空格" },
+];
+
+/** 行高三档：值是**倍数**，直接交给 Monaco 的 lineHeight（小于 8 时它按字号倍数解释） */
+const LINE_HEIGHT_OPTIONS: { value: EditorLineHeight; label: string }[] = [
+  { value: "1.4", label: "紧凑（1.4 倍）" },
+  { value: "1.6", label: "默认（1.6 倍）" },
+  { value: "1.8", label: "宽松（1.8 倍）" },
 ];
 
 const TEXT_INPUT =
@@ -260,6 +280,8 @@ function ShortcutRecorder({
 
   useEffect(() => {
     if (!recording) return;
+    // 让全局快捷键分发让路：它的 window 监听注册得比这里早（见 lib/shortcuts.ts）
+    setShortcutRecording(true);
     const onKeyDown = (event: KeyboardEvent) => {
       // 录制期间吃掉所有按键，别让它们去触发别的快捷键或输入
       event.preventDefault();
@@ -297,6 +319,7 @@ function ShortcutRecorder({
     window.addEventListener("blur", onBlur);
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => {
+      setShortcutRecording(false);
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("pointerdown", onPointerDown, true);
@@ -2361,6 +2384,35 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       onChange={(editorWordWrap) => update({ editorWordWrap })}
                     />
                   </Field>
+                  <Field label="行号" hint="编辑器左侧的行号栏。差异视图同样跟着变">
+                    <BoolToggle
+                      value={settings.editorLineNumbers}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorLineNumbers) => update({ editorLineNumbers })}
+                    />
+                  </Field>
+                  <Field
+                    label="当前行高亮"
+                    hint="把光标所在的那一行（连同行号）标出来；关掉后编辑区更干净，但不好定位光标"
+                  >
+                    <BoolToggle
+                      value={settings.editorHighlightActiveLine}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorHighlightActiveLine) =>
+                        update({ editorHighlightActiveLine })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="行高"
+                    hint="存的是倍数，按「字号 × 倍数」交给 Monaco，所以改字号时行距跟着一起变；Monaco 自己的默认约为 1.35（Windows / Linux）/ 1.5（macOS）"
+                  >
+                    <Select
+                      value={settings.editorLineHeight}
+                      options={LINE_HEIGHT_OPTIONS}
+                      onChange={(editorLineHeight) => update({ editorLineHeight })}
+                    />
+                  </Field>
                   <Field
                     label="自动保存"
                     hint="四种时机照 VS Code 来；有未保存改动的文件都会写回磁盘"
@@ -2389,13 +2441,33 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       <span className="shrink-0 text-[12px] text-fg-dim">毫秒</span>
                     </Field>
                   )}
+                  <Field
+                    label="保存时格式化"
+                    hint="落盘前先用 Prettier 格式化一遍；当前文件类型不被 Prettier 支持、或格式化失败时按原内容保存"
+                  >
+                    <BoolToggle
+                      value={settings.editorFormatOnSave}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorFormatOnSave) => update({ editorFormatOnSave })}
+                    />
+                  </Field>
+                  <Field
+                    label="保存前检查语法"
+                    hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析"
+                  >
+                    <BoolToggle
+                      value={settings.editorCheckSyntaxOnSave}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorCheckSyntaxOnSave) => update({ editorCheckSyntaxOnSave })}
+                    />
+                  </Field>
                 </>
               )}
 
               {tab === "shortcuts" && (
                 <Section
                   title="应用命令"
-                  hint="点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。"
+                  hint="点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效；编辑器命令（保存 / 查找 / 格式化 / 切换标签…）在编辑器区按下时生效；窗口级命令（设置 / 侧栏 / 字号）在除终端与输入框以外的任何地方生效——终端里 Ctrl+B、Ctrl+PageUp/Down 这类键有自己的含义，宿主不抢。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。"
                 >
                   {SHORTCUT_COMMANDS.map((command) => (
                     <Field
@@ -2590,6 +2662,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                           ...modelRefOptions(settings),
                         ]}
                         onChange={(next) => updateDefaultModel(next)}
+                      />
+                    </Field>
+                  </Section>
+
+                  <Section
+                    title="文档翻译"
+                    hint="Markdown / 纯文本文档的翻译复用上面的全局默认模型，不需要单独配置接口和密钥"
+                  >
+                    <Field
+                      label="目标语言"
+                      hint="切换后翻译视图会按新语言重新翻译；也可以在翻译视图里直接切换"
+                    >
+                      <Select
+                        value={settings.translateTarget}
+                        options={TRANSLATE_TARGET_OPTIONS}
+                        onChange={(next) =>
+                          update({ translateTarget: next as TranslateTarget })
+                        }
                       />
                     </Field>
                   </Section>

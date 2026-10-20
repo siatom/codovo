@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSettings } from "./settings";
 import { resolveDefaultModel } from "./providers";
 import type { DiffSource } from "./tabs";
+import type { TranslateTarget } from "./translate";
 
 /**
  * OpenAI 兼容接口的配置。开发调试版里可能被 `src-tauri/.env` 盖掉，
@@ -138,6 +139,26 @@ export function diagnosePreview(
   log: string,
 ): Promise<string> {
   return invoke<string>("ai_diagnose_preview", { root, config, command, log });
+}
+
+/**
+ * 让后端调用默认模型翻译一段文档正文。
+ *
+ * 前端负责切分、代码/目录保护和结果拼装（见 `lib/translate.ts`），这里只发一段；
+ * 密钥仍只在 Rust 侧从系统钥匙串读取，不经过 WebView。
+ */
+export function translateText(
+  config: AiConfig,
+  targetLanguage: TranslateTarget,
+  text: string,
+  documentTitle: string | null,
+): Promise<string> {
+  return invoke<string>("ai_translate_text", {
+    config,
+    targetLanguage,
+    text,
+    documentTitle,
+  });
 }
 
 /**

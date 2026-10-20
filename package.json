@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "gen:file-icons": "node scripts/gen-file-icons.mjs",
+    "test:translate": "node scripts/test-translate-split.mjs",
     "postinstall": "node scripts/gen-file-icons.mjs"
   },
   "dependencies": {
@@ -25,6 +26,7 @@
     "marked-katex-extension": "^5.1.13",
     "mermaid": "^12.2.0",
     "monaco-editor": "0.56.0",
+    "prettier": "^3.9.10",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "simple-icons": "^16.32.0",

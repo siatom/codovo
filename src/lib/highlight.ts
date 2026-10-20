@@ -55,8 +55,11 @@ export function resolveLanguage(name: string | null | undefined): string | null 
   return monaco.languages.getLanguages().some((item) => item.id === id) ? id : null;
 }
 
-/** Monaco 的主题是全局的，转换函数跟编辑器共用，这样 `.mtk*` 配色和编辑器对得上 */
-function syncTheme(palette: Theme, theme: ResolvedTheme) {
+/**
+ * Monaco 的主题是全局的，转换函数跟编辑器共用，这样 `.mtk*` 配色和编辑器对得上。
+ * 预览层自己调 colorize 前也要先把主题同步过去，否则拿到的是上一次的主题配色。
+ */
+export function syncHighlightTheme(palette: Theme, theme: ResolvedTheme) {
   // 同一个主题名 Monaco 自己会短路，重复调用没有代价
   monaco.editor.setTheme(monacoThemeFor(palette, theme));
 }
@@ -84,8 +87,12 @@ export async function highlightCode(code: string, languageId: string): Promise<s
   }
 }
 
-/** marked 渲染出的围栏代码块：`<pre><code class="language-xxx">…</code></pre>` */
-const FENCED_CODE = /<pre><code class="language-([^"]*)">([\s\S]*?)<\/code><\/pre>/g;
+/**
+ * marked 渲染出的围栏代码块：`<pre><code class="language-xxx">…</code></pre>`。
+ * 对照预览会给 `<pre>` 补 `data-src-line`，所以开始标签要允许带属性，
+ * 替换时也要原样保留，否则高亮后行号锚点就丢了。
+ */
+const FENCED_CODE = /<pre([^>]*)><code class="language-([^"]*)">([\s\S]*?)<\/code><\/pre>/g;
 
 /** marked 只会转义 `&<>"'` 这几个字符（见它的 escape 表），照着还原即可 */
 function unescapeHtml(text: string): string {
@@ -108,15 +115,15 @@ export async function highlightCodeFences(html: string): Promise<string> {
   const jobs: { start: number; end: number; html: Promise<string> }[] = [];
   for (const match of html.matchAll(FENCED_CODE)) {
     const start = match.index ?? 0;
-    const language = resolveLanguage(match[1]);
+    const language = resolveLanguage(match[2]);
     // marked 会在代码末尾补一个换行，留着它会多渲染出一行空行
-    const code = unescapeHtml(match[2]).replace(/\n$/, "");
+    const code = unescapeHtml(match[3]).replace(/\n$/, "");
     jobs.push({
       start,
       end: start + match[0].length,
       html: language
         ? highlightCode(code, language).then((inner) =>
-            inner === null ? match[0] : `<pre>${inner}</pre>`,
+            inner === null ? match[0] : `<pre${match[1]}>${inner}</pre>`,
           )
         : Promise.resolve(match[0]),
     });
@@ -145,7 +152,7 @@ export function useHighlightedCode(code: string, languageId: string | null): str
   useEffect(() => {
     if (!languageId) return;
     let alive = true;
-    syncTheme(palette, theme);
+    syncHighlightTheme(palette, theme);
     void highlightCode(code, languageId).then((html) => {
       if (alive && html !== null) setDone({ key, html });
     });
@@ -170,7 +177,7 @@ export function useHighlightedMarkdown(text: string, enabled = true): string {
   useEffect(() => {
     if (!base) return;
     let alive = true;
-    syncTheme(palette, theme);
+    syncHighlightTheme(palette, theme);
     void highlightCodeFences(base).then((html) => {
       // html 与 base 相同时（没有代码块，或者全都认不出语言）不必再触发一次渲染
       if (alive && html !== base) setDone({ base, html });

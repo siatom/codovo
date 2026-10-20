@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type { DiffSource } from "./tabs";
 import type {
   CloneProgress,
   DiscardSource,
+  Eol,
   FileContent,
   FileDiff,
   FileEntry,
@@ -56,6 +57,15 @@ export function pathsExist(paths: string[]): Promise<boolean[]> {
   return invoke<boolean[]>("paths_exist", { paths });
 }
 
+/**
+ * 批量判断一批路径是否**存在（文件或目录都算）**。
+ * 编辑器恢复会话、打开最近文件时用它跳过已经被删掉的路径；
+ * 与 `pathsExist` 分开：那个只认目录，是工作区根专用的判据。
+ */
+export function pathsPresent(paths: string[]): Promise<boolean[]> {
+  return invoke<boolean[]>("paths_present", { paths });
+}
+
 /** 弹目录选择框（可多选），返回选中的路径数组；用户取消时返回空数组 */
 export async function pickFolder(): Promise<string[]> {
   const picked = await open({ directory: true, multiple: true, title: "选择工作目录" });
@@ -67,6 +77,28 @@ export async function pickFolder(): Promise<string[]> {
 /** 弹目录选择框（单选），返回选中的路径；用户取消时返回 null。克隆时用来选「克隆到哪个目录下」 */
 export async function pickCloneParent(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title: "选择克隆到的位置" });
+  return typeof picked === "string" ? picked : null;
+}
+
+/**
+ * 弹「另存为」文件选择框，返回目标绝对路径；用户取消时返回 null。
+ *
+ * 只负责选路径，**不写盘也不校验沙箱**：写与越界判断由调用方（EditorPane）做——
+ * 目标是否落在当前工作区的某个 root 里，只有它知道。
+ */
+export async function pickSavePath(defaultName: string): Promise<string | null> {
+  const picked = await save({ title: "另存为", defaultPath: defaultName });
+  return typeof picked === "string" ? picked : null;
+}
+
+/**
+ * 弹「打开文件」选择框（单选），返回选中的绝对路径；用户取消时返回 null。
+ *
+ * 只选路径，不校验沙箱：文件落在当前工作区里就直接开标签，落在外面则由 App
+ * 以文件所在目录建 / 复用临时工作区（见 App 的 `openFileAnywhere`）。
+ */
+export async function pickOpenPath(): Promise<string | null> {
+  const picked = await open({ directory: false, multiple: false, title: "打开文件" });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -118,8 +150,41 @@ export function replaceAll(request: {
 }
 
 /**
+ * 可切换的编码，顺序即下拉顺序。`label` 必须和后端 `FileEncoding::from_label`
+ * 一一对应，保存时原样回传给后端；`name` 只是给人看的显示名。
+ *
+ * 前端所有编码下拉都从这里取，避免 EditorPane 与后端各维护一份、加一种编码就漏一边。
+ */
+export interface EncodingOption {
+  label: string;
+  name: string;
+}
+
+export const ENCODINGS: readonly EncodingOption[] = [
+  { label: "utf-8", name: "UTF-8" },
+  { label: "utf-8-bom", name: "UTF-8 with BOM" },
+  { label: "utf-16le", name: "UTF-16 LE" },
+  { label: "utf-16be", name: "UTF-16 BE" },
+  { label: "gbk", name: "GBK" },
+  { label: "gb18030", name: "GB18030" },
+  { label: "big5", name: "Big5" },
+  { label: "shift_jis", name: "Shift_JIS" },
+  { label: "euc-kr", name: "EUC-KR" },
+  { label: "windows-1252", name: "windows-1252" },
+  { label: "iso-8859-1", name: "ISO-8859-1" },
+];
+
+/** 后端编码标签 -> 显示名；认不出就原样显示，不吞掉信息 */
+export function encodingName(label: string): string {
+  return ENCODINGS.find((item) => item.label === label)?.name ?? label;
+}
+
+/**
  * 读一个文本文件。不传 `encoding` 时后端自动嗅探；传了 `encoding` 标签（如 `gbk`）就按
  * 指定编码解码、不再嗅探——编辑器里用户手动切换编码走的就是这条。
+ *
+ * 返回值除了正文，还带 `size` / `readOnly` / `truncated` / `isLarge` / `eol` / `hasBom`：
+ * 大文件与只读状态由调用方决定怎么提示、怎么禁写。
  */
 export function readFile(root: string, path: string, encoding?: string): Promise<FileContent> {
   return invoke<FileContent>("fs_read_file", { root, path, encoding: encoding ?? null });
@@ -137,14 +202,30 @@ export function readImage(root: string, path: string): Promise<ImageContent> {
  * 写回文件内容。`encoding` 是打开时 `readFile` 检测到的编码标签，必须原样回传：
  * 后端按它把文本编回原编码，非 UTF-8 的老工程（GBK / Big5 / UTF-16）才不会被
  * UTF-8 覆盖而损坏。不传（新建文件等）就按 UTF-8 写。
+ *
+ * `eol` / `hasBom` 选自 `FileContent` 的同名字段：传了才按指定换行风格 / BOM 写回，
+ * 不传保持旧行为（原样写正文，BOM 随编码标签）。`hasBom` 要显式传 `false` 才能去掉
+ * UTF-8 BOM；传 `undefined` 只会被当成「没要求」。
+ *
+ * 返回实际写入的字节数（编码 + EOL + BOM 之后），另存为用它刷新文件大小；
+ * 非 UTF-8 编码下不能用字符串长度估算。
  */
 export function writeFile(
   root: string,
   path: string,
   text: string,
   encoding?: string,
-): Promise<void> {
-  return invoke("fs_write_file", { root, path, text, encoding: encoding ?? null });
+  eol?: Eol,
+  hasBom?: boolean,
+): Promise<number> {
+  return invoke<number>("fs_write_file", {
+    root,
+    path,
+    text,
+    encoding: encoding ?? null,
+    eol: eol ?? null,
+    hasBom: hasBom ?? null,
+  });
 }
 
 export function createFile(root: string, path: string): Promise<void> {

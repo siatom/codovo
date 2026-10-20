@@ -21,8 +21,18 @@ import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import type { ReviewTarget } from "../lib/workstreams";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
-import { isPathInside, ownerRoot, pathKey, toDisplayPath, type MovePair } from "../lib/fs";
-import { sameTab, type DiffSource, type Tab } from "../lib/tabs";
+import { isPathInside, ownerRoot, pathKey, pathsPresent, samePath, toDisplayPath, type MovePair } from "../lib/fs";
+import { readSession, scheduleSessionSave } from "../lib/session";
+import {
+  newUntitledTab,
+  openFileTab,
+  patchTab,
+  sameTab,
+  tabKey,
+  type DiffSource,
+  type Tab,
+  type TabPatch,
+} from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
 import type { Workspace } from "../lib/workspaces";
 import type { BrowserFileRequest } from "./BrowserPane";
@@ -48,6 +58,20 @@ export interface WorkspaceLayoutHandle {
 
 export type Fullscreen = "none" | "right" | "left";
 
+/**
+ * 关闭标签时的匹配。另存为会把未命名缓冲区的 `path` 换成真实路径、但 `untitledId` 不变；
+ * 「保存并关闭」收尾时父级的标签列表可能还停在另存为之前那一份，按 id 兜住。
+ */
+function sameTabForClose(a: Tab, b: Tab): boolean {
+  if (sameTab(a, b)) return true;
+  return (
+    a.kind === "file" &&
+    b.kind === "file" &&
+    a.untitledId !== undefined &&
+    a.untitledId === b.untitledId
+  );
+}
+
 interface WorkspacePaneProps {
   /** 这个工作区：名字、全部工作目录、以及当前活动根 */
   workspace: Workspace;
@@ -63,6 +87,23 @@ interface WorkspacePaneProps {
   onHandles: (workspaceId: string, handles: WorkspaceHandles) => void;
   /** 编辑器浮窗「送给助手」：由 App 展开助手抽屉并插入位置引用 */
   onSendToAssistant: (location: EditorLocation) => void;
+  /** 打开设置面板（编辑器翻译视图里的「设置」入口） */
+  onOpenSettings: () => void;
+  /**
+   * 打开一个不落在本工作区任何根下的文件。Ctrl+O、最近文件、系统拖放都可能指向
+   * 工作区外的文件，由 App 建 / 复用临时工作区后把请求转回来。
+   */
+  onOpenFileAnywhere: (path: string) => void;
+  /** 打开最近文件：始终先校验存在性，失效记录提示并移除 */
+  onOpenRecent: (path: string) => void;
+  /** 弹出目录选择框并打开为工作区（编辑器欢迎页入口） */
+  onOpenFolder: () => void;
+  /**
+   * 交给本工作区打开的跨工作区请求队列（App 建好临时工作区后回填）。nonce 保证同一条
+   * 路径连点两次也能重新执行；只看队首，处理完带上 nonce 由 `onOpenRequestHandled` 移除。
+   */
+  openRequests: Array<{ workspaceId: string; path: string; nonce: number }>;
+  onOpenRequestHandled: (nonce: number) => void;
 }
 
 /**
@@ -83,6 +124,12 @@ export function WorkspacePane({
   onExitFullscreen,
   onHandles,
   onSendToAssistant,
+  onOpenSettings,
+  onOpenFileAnywhere,
+  onOpenRecent,
+  onOpenFolder,
+  openRequests,
+  onOpenRequestHandled,
 }: WorkspacePaneProps) {
   /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
   const root = workspace.activeRoot;
@@ -91,12 +138,24 @@ export function WorkspacePane({
   // 标签身份是结构化的（文件 / 差异视图），不能只拿路径当键，见 lib/tabs.ts
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<Tab | null>(null);
+  /** 最新标签列表的快照：会话恢复是异步的，要能在读盘途中判断用户是否已经手动开了文件 */
+  const openTabsRef = useRef<Tab[]>([]);
+  openTabsRef.current = openTabs;
   /** 右栏看的是哪个模块（按活动根各记一份） */
   const [tool, setTool] = useState<ToolId>(() => readTool(root));
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(false);
   /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
   const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
+  /**
+   * 「打开所在目录」的请求（编辑器标签右键发起）：带着 nonce 一路传给文件树，
+   * 树据此展开到这个文件。右栏同时切到「文件」模块。
+   */
+  const [filesReveal, setFilesReveal] = useState<{ path: string; nonce: number } | null>(null);
+  /** 上面那个请求的序号：同一条路径再点一次也要重新定位 */
+  const filesRevealNonceRef = useRef(0);
+  /** 已经触发过打开请求的 nonce：父级移除状态前可能多渲染一帧，别重复打开 */
+  const handledOpenRequestRef = useRef(0);
   /**
    * 变更中心打开的审阅工作台。非空时以绝对定位盖住整个工作区，
    * 下面的终端 / 编辑器 / 文件树保持挂载和原尺寸，关闭后原样露出。
@@ -305,6 +364,20 @@ export function WorkspacePane({
     [onSendToAssistant],
   );
 
+  /**
+   * 编辑器标签右键「打开所在目录」：先把右栏切到「文件」模块，再把带序号的请求交给
+   * 文件树去展开定位。切模块不能走 pickTool——它在当前模块已选中时是「收起面板」
+   */
+  const revealInFiles = useCallback(
+    (path: string) => {
+      setTool("files");
+      saveTool(root, "files");
+      setRightOpen(true);
+      setFilesReveal({ path, nonce: (filesRevealNonceRef.current += 1) });
+    },
+    [root],
+  );
+
   /** 已经开着的标签只切过去，不重复开——连点同一个改动项就是这个路径 */
   const openTab = useCallback((tab: Tab) => {
     setOpenTabs((current) =>
@@ -315,10 +388,124 @@ export function WorkspacePane({
 
   const openFile = useCallback(
     (path: string) => {
-      openTab({ kind: "file", path });
+      // 不在本工作区任何根下的文件走 App：由它建 / 复用临时工作区再转回来，
+      // 沙箱不在这里放宽，真正的读写仍由后端按白名单校验
+      if (ownerRoot(workspace.roots, path) === null) {
+        onOpenFileAnywhere(path);
+        return;
+      }
+      openTab(openFileTab(path));
     },
-    [openTab],
+    [onOpenFileAnywhere, openTab, workspace.roots],
   );
+
+  /**
+   * 新建未命名缓冲区。序号只在本工作区内自增，标签身份（tabKey）靠它，
+   * 所以关掉再开不会撞车、也不会和已有标签混成一个。
+   */
+  const untitledSeqRef = useRef(0);
+  const newUntitled = useCallback(() => {
+    untitledSeqRef.current += 1;
+    openTab(newUntitledTab(String(untitledSeqRef.current)));
+  }, [openTab]);
+
+  // ---- 会话恢复 / 落盘 ----
+
+  /** 是否已经走过一次恢复。恢复完成前不写会话，免得把空标签列表覆盖上去 */
+  const sessionRestoredRef = useRef(false);
+
+  /**
+   * 实例挂载时恢复上次的标签。工作区根在 App 里已经 activate 成 canonical 路径，
+   * 这里只做过滤和读取；路径已被删掉（`paths_present` 为 false）的静默跳过。
+   *
+   * 只恢复普通文件标签：差异视图依赖当时的 git 状态，未命名缓冲区没有落盘内容。
+   */
+  useEffect(() => {
+    const session = readSession(workspace.id);
+    const candidates = session
+      ? session.paths.filter((path) => ownerRoot(workspace.roots, path) !== null)
+      : [];
+    if (!session || candidates.length === 0) {
+      sessionRestoredRef.current = true;
+      return;
+    }
+
+    let cancelled = false;
+    void pathsPresent(candidates)
+      .then((flags) => {
+        if (cancelled) return;
+        const valid = candidates.filter((_, index) => flags[index]);
+        // 读盘途中用户可能已经手动开了文件：不能拿旧会话把当前标签盖掉
+        if (valid.length > 0 && openTabsRef.current.length === 0) {
+          const tabs = valid.map((path) => openFileTab(path));
+          setOpenTabs(tabs);
+          const wanted = session.active;
+          const active =
+            (wanted !== null &&
+              tabs.find((tab) => tab.path !== null && samePath(tab.path, wanted))) ||
+            tabs[0];
+          setActiveTab(active);
+        }
+        sessionRestoredRef.current = true;
+      })
+      .catch(() => {
+        // 校验失败就当作没有可恢复的标签，不阻断正常使用
+        if (!cancelled) sessionRestoredRef.current = true;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // 只在实例挂载时恢复一次：roots 变化（编辑工作区）不该重建标签列表
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * 标签打开 / 关闭 / 激活 / 重排时防抖写入。只存已落盘的普通文件路径，
+   * 未命名缓冲区与差异视图不进会话；数组顺序就是标签顺序。
+   */
+  useEffect(() => {
+    if (!sessionRestoredRef.current) return;
+    const paths: string[] = [];
+    const seen = new Set<string>();
+    for (const tab of openTabs) {
+      if (tab.kind !== "file" || tab.path === null) continue;
+      const key = pathKey(tab.path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(tab.path);
+    }
+    scheduleSessionSave(workspace.id, {
+      paths,
+      active: activeTab?.kind === "file" ? activeTab.path : null,
+    });
+  }, [openTabs, activeTab, workspace.id]);
+
+  /** App 建好 / 切好临时工作区后转回来的单文件请求：只看队首，处理完按 nonce 移除 */
+  useEffect(() => {
+    const request = openRequests[0];
+    if (!request || request.workspaceId !== workspace.id) return;
+    if (request.nonce <= handledOpenRequestRef.current) return;
+    handledOpenRequestRef.current = request.nonce;
+    if (ownerRoot(workspace.roots, request.path) !== null) {
+      openFile(request.path);
+    }
+    onOpenRequestHandled(request.nonce);
+  }, [openRequests, workspace.id, workspace.roots, openFile, onOpenRequestHandled]);
+
+  /**
+   * 改标签的元数据（另存为改路径、外部变更改标记）。匹配按**改之前**的 key：
+   * 另存为会把路径换掉，用新路径反查就找不到这条标签了。
+   */
+  const patchOpenTab = useCallback((tab: Tab, patch: TabPatch) => {
+    const key = tabKey(tab);
+    setOpenTabs((current) =>
+      current.map((item) => (tabKey(item) === key ? patchTab(item, patch) : item)),
+    );
+    setActiveTab((current) =>
+      current && tabKey(current) === key ? patchTab(current, patch) : current,
+    );
+  }, []);
 
   /** 从「变更」列表或时间线点进来的：开的是差异视图，不是文件内容 */
   const openDiff = useCallback(
@@ -357,10 +544,22 @@ export function WorkspacePane({
     [root, workspace.roots],
   );
 
+  /**
+   * 文件树右键「格式化文档」：先把文件打开（已开则只切过去），再请编辑器格式化。
+   * 编辑器负责「model 还没就绪」的那段时间——见 EditorPane 的 formatPath。
+   */
+  const formatFile = useCallback(
+    (path: string) => {
+      openFile(path);
+      editorRef.current?.formatPath(path);
+    },
+    [openFile],
+  );
+
   /** 搜索结果里点一条：打开文件并把光标送到那一处 */
   const openMatch = useCallback(
     (path: string, line: number, column: number, length: number) => {
-      openTab({ kind: "file", path });
+      openTab(openFileTab(path));
       editorRef.current?.revealAt({
         path,
         line,
@@ -396,30 +595,27 @@ export function WorkspacePane({
       }
       return path;
     };
-    setOpenTabs((current) =>
-      current.map((tab) => {
-        const next = nextPath(tab.path);
-        return next === tab.path ? tab : { ...tab, path: next };
-      }),
-    );
-    setActiveTab((current) => {
-      if (!current) return current;
-      const next = nextPath(current.path);
-      return next === current.path ? current : { ...current, path: next };
-    });
+    // 未命名缓冲区没有路径，改名跟它无关，原样留着
+    const renameTab = (tab: Tab): Tab =>
+      tab.path === null ? tab : { ...tab, path: nextPath(tab.path) };
+    setOpenTabs((current) => current.map(renameTab));
+    setActiveTab((current) => (current ? renameTab(current) : current));
   }, []);
 
   /** 文件树里删了东西：落在这些路径下的标签一并关掉，当前标签落到它右边那个 */
   const dropOpenTabs = useCallback(
     (paths: string[]) => {
       if (paths.length === 0) return;
-      const removed = (path: string) => paths.some((item) => isPathInside(path, item));
+      const removed = (tab: Tab) => {
+        const path = tab.path;
+        return path !== null && paths.some((item) => isPathInside(path, item));
+      };
       editorRef.current?.dropPaths(paths);
-      const index = openTabs.findIndex((tab) => removed(tab.path));
+      const index = openTabs.findIndex(removed);
       if (index === -1) return;
-      const rest = openTabs.filter((tab) => !removed(tab.path));
+      const rest = openTabs.filter((tab) => !removed(tab));
       setOpenTabs(rest);
-      if (activeTab && removed(activeTab.path)) {
+      if (activeTab && removed(activeTab)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
       }
     },
@@ -428,12 +624,13 @@ export function WorkspacePane({
 
   const closeTab = useCallback(
     (tab: Tab) => {
-      const index = openTabs.findIndex((item) => sameTab(item, tab));
+      const match = (item: Tab) => sameTabForClose(item, tab);
+      const index = openTabs.findIndex(match);
       if (index === -1) return;
-      const rest = openTabs.filter((item) => !sameTab(item, tab));
+      const rest = openTabs.filter((item) => !match(item));
       setOpenTabs(rest);
       // 关掉的是当前标签时，焦点落到它右边那个（没有就往左退一格）
-      if (activeTab && sameTab(activeTab, tab)) {
+      if (activeTab && match(activeTab)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
       }
     },
@@ -535,6 +732,7 @@ export function WorkspacePane({
                       gitReady={gitReady}
                       onSelectFile={openFile}
                       onOpenInBrowser={openInBrowser}
+                      onFormatFile={formatFile}
                       onOpenDiff={openDiff}
                       onOpenMatch={openMatch}
                       onPickWorktree={pickWorktree}
@@ -545,6 +743,7 @@ export function WorkspacePane({
                       onEntryRenamed={renameOpenTabs}
                       onEntryDeleted={dropOpenTabs}
                       onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
+                      filesReveal={filesReveal}
                     />
                   }
                   second={
@@ -561,10 +760,17 @@ export function WorkspacePane({
                       onReorder={reorderTabs}
                       onCloseAll={closeAllTabs}
                       onCloseOthers={closeOtherTabs}
+                      onNewUntitled={newUntitled}
+                      onPatchTab={patchOpenTab}
+                      onOpenPath={openFile}
+                      onOpenRecent={onOpenRecent}
+                      onOpenFolder={onOpenFolder}
+                      onRevealInFiles={revealInFiles}
                       fullscreen={rightFullscreen}
                       onToggleFullscreen={onToggleRightFullscreen}
                       onSendToTerminal={insertToTerminal}
                       onSendToAssistant={insertToAssistant}
+                      onOpenSettings={onOpenSettings}
                     />
                   }
                 />
