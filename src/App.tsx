@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { WorkspaceDialog } from "./components/WorkspaceDialog";
-import { Sidebar } from "./components/Sidebar";
+import { Sidebar, readSidebarCollapsed, saveSidebarCollapsed } from "./components/Sidebar";
 import {
   WorkspacePane,
   type Fullscreen,
@@ -53,7 +53,14 @@ import {
   saveWorkspace,
   type Workspace,
 } from "./lib/workspaces";
-import { useSettings } from "./lib/settings";
+import {
+  useSettings,
+  FONT_SIZE_MIN,
+  FONT_SIZE_MAX,
+  DEFAULT_EDITOR_FONT_SIZE,
+} from "./lib/settings";
+import { matchesShortcut, isShortcutRecording } from "./lib/shortcuts";
+import { isTypingTarget } from "./lib/dom";
 import type { EditorLocation } from "./lib/types";
 import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
@@ -100,6 +107,16 @@ function Shell() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   /** 等着确认移除的工作区；非空时弹确认框 */
   const [pendingRemove, setPendingRemove] = useState<Workspace | null>(null);
+  /**
+   * 侧边栏收起 / 展开。状态挂在这里而不是 Sidebar 内部：`app.toggleSidebar`（Ctrl+B）
+   * 在窗口级分发，够不着组件内部 state；落盘仍是 sessionStorage（窗口级偏好）。
+   */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
+  /**
+   * 设置面板是否打开。同样挂在窗口级：`app.settings`（Ctrl+,）要能打开它，
+   * 面板本体仍渲染在 Sidebar 里（它的入口按钮在那里）。
+   */
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /** 关工作区时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
@@ -115,6 +132,16 @@ function Shell() {
   const { settings, update, reset, resetSection } = useSettings();
   // 启动恢复只在挂载时判定一次：之后用户在设置里改开关，不该影响本次启动
   const restoreWorkspaceRef = useRef(settings.restoreWorkspace);
+  /**
+   * 窗口级快捷键分发要读「此刻」的键位与字号，而监听只注册一次，所以走 ref。
+   * （编辑器命令不在这里分发，见 components/EditorPane.tsx 的 onPaneKeyDown）
+   */
+  const shortcutsRef = useRef(settings.shortcuts);
+  shortcutsRef.current = settings.shortcuts;
+  const editorFontSizeRef = useRef(settings.editorFontSize);
+  editorFontSizeRef.current = settings.editorFontSize;
+  const sidebarCollapsedRef = useRef(sidebarCollapsed);
+  sidebarCollapsedRef.current = sidebarCollapsed;
   const { preference: themePreference, setPreference: setTheme } = useTheme();
   /** 关窗口的确认框：开着工作区、又还没记住选择时才弹 */
   const [closePrompt, setClosePrompt] = useState(false);
@@ -368,6 +395,52 @@ function Shell() {
   );
 
   const exitFullscreen = useCallback(() => setFullscreen("none"), []);
+
+  /** 收起 / 展开侧边栏：状态在 App 上，落盘一并做（Ctrl+B 与侧栏里的按钮共用） */
+  const applySidebarCollapsed = useCallback((next: boolean) => {
+    setSidebarCollapsed(next);
+    saveSidebarCollapsed(next);
+  }, []);
+
+  /**
+   * 窗口级快捷键分发：打开设置、切换侧边栏、编辑器字号缩放。这几条不属于任何编辑器实例
+   * （字号是所有编辑器共用的设置），也不是终端该处理的键，所以挂在窗口的**捕获阶段**。
+   *
+   * 三道闸门保证不抢键盘：
+   * 1. 只认这几个 id 的键位（白名单）——Ctrl+S / Ctrl+F 这些编辑器命令一律由
+   *    EditorPane 在自己区域内分发，终端里的 Ctrl+C/V/W 完全不受影响；
+   * 2. 焦点在终端或输入框里时整条放行（`isTypingTarget`）——Ctrl+B 在 shell 里是
+   *    readline 的光标左移、Ctrl+PageUp/Down 也被 TUI 用着，宿主抢了前台程序就没法用；
+   * 3. 正在录制键位时整条让路（见 lib/shortcuts.ts 的 isShortcutRecording）。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const shortcuts = shortcutsRef.current;
+      const zoom = (delta: number) => {
+        const current = editorFontSizeRef.current;
+        const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, current + delta));
+        if (next !== current) update({ editorFontSize: next });
+      };
+      const commands: [string, () => void][] = [
+        ["app.settings", () => setSettingsOpen(true)],
+        ["app.toggleSidebar", () => applySidebarCollapsed(!sidebarCollapsedRef.current)],
+        ["editor.zoomIn", () => zoom(1)],
+        ["editor.zoomOut", () => zoom(-1)],
+        ["editor.zoomReset", () => update({ editorFontSize: DEFAULT_EDITOR_FONT_SIZE })],
+      ];
+      for (const [id, run] of commands) {
+        if (!matchesShortcut(event, shortcuts[id])) continue;
+        // 录制键位时整条让路（录制控件会自己处理这些按键），终端 / 输入框里同理
+        if (isShortcutRecording() || isTypingTarget(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        run();
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [applySidebarCollapsed, update]);
 
   // ---- 应用助手（界面操作智能体）的桥 ----
 
@@ -656,6 +729,11 @@ function Shell() {
           onResumeSession={resumeSession}
           onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
           onOpenAppAgent={openAppAgent}
+          collapsed={sidebarCollapsed}
+          onSetCollapsed={applySidebarCollapsed}
+          settingsOpen={settingsOpen}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onCloseSettings={() => setSettingsOpen(false)}
         />
       </div>
       {/* 每个打开的工作区挂一个实例：非当前的 hidden 藏着不卸载，切回来是原样 */}

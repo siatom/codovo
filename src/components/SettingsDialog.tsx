@@ -20,6 +20,7 @@ import {
   type AiProvider,
   type AutoSaveMode,
   type EditorIndent,
+  type EditorLineHeight,
   type ProviderModel,
   type Settings,
   type SettingsSection,
@@ -44,7 +45,12 @@ import {
   type RemoteModel,
 } from "../lib/ai";
 import { deleteSecret, setSecret } from "../lib/secrets";
-import { SHORTCUT_COMMANDS, formatShortcut, shortcutFromEvent } from "../lib/shortcuts";
+import {
+  SHORTCUT_COMMANDS,
+  formatShortcut,
+  setShortcutRecording,
+  shortcutFromEvent,
+} from "../lib/shortcuts";
 import {
   checkDependencies,
   installDependency,
@@ -142,6 +148,13 @@ const INDENT_OPTIONS: { value: EditorIndent; label: string }[] = [
   { value: "2", label: "2 空格" },
   { value: "4", label: "4 空格" },
   { value: "8", label: "8 空格" },
+];
+
+/** 行高三档：值是**倍数**，直接交给 Monaco 的 lineHeight（小于 8 时它按字号倍数解释） */
+const LINE_HEIGHT_OPTIONS: { value: EditorLineHeight; label: string }[] = [
+  { value: "1.4", label: "紧凑（1.4 倍）" },
+  { value: "1.6", label: "默认（1.6 倍）" },
+  { value: "1.8", label: "宽松（1.8 倍）" },
 ];
 
 const TEXT_INPUT =
@@ -260,6 +273,8 @@ function ShortcutRecorder({
 
   useEffect(() => {
     if (!recording) return;
+    // 让全局快捷键分发让路：它的 window 监听注册得比这里早（见 lib/shortcuts.ts）
+    setShortcutRecording(true);
     const onKeyDown = (event: KeyboardEvent) => {
       // 录制期间吃掉所有按键，别让它们去触发别的快捷键或输入
       event.preventDefault();
@@ -297,6 +312,7 @@ function ShortcutRecorder({
     window.addEventListener("blur", onBlur);
     window.addEventListener("pointerdown", onPointerDown, true);
     return () => {
+      setShortcutRecording(false);
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("pointerdown", onPointerDown, true);
@@ -2361,6 +2377,35 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       onChange={(editorWordWrap) => update({ editorWordWrap })}
                     />
                   </Field>
+                  <Field label="行号" hint="编辑器左侧的行号栏。差异视图同样跟着变">
+                    <BoolToggle
+                      value={settings.editorLineNumbers}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorLineNumbers) => update({ editorLineNumbers })}
+                    />
+                  </Field>
+                  <Field
+                    label="当前行高亮"
+                    hint="把光标所在的那一行（连同行号）标出来；关掉后编辑区更干净，但不好定位光标"
+                  >
+                    <BoolToggle
+                      value={settings.editorHighlightActiveLine}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorHighlightActiveLine) =>
+                        update({ editorHighlightActiveLine })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="行高"
+                    hint="存的是倍数，按「字号 × 倍数」交给 Monaco，所以改字号时行距跟着一起变；Monaco 自己的默认约为 1.35（Windows / Linux）/ 1.5（macOS）"
+                  >
+                    <Select
+                      value={settings.editorLineHeight}
+                      options={LINE_HEIGHT_OPTIONS}
+                      onChange={(editorLineHeight) => update({ editorLineHeight })}
+                    />
+                  </Field>
                   <Field
                     label="自动保存"
                     hint="四种时机照 VS Code 来；有未保存改动的文件都会写回磁盘"
@@ -2415,7 +2460,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               {tab === "shortcuts" && (
                 <Section
                   title="应用命令"
-                  hint="点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。"
+                  hint="点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效；编辑器命令（保存 / 查找 / 格式化 / 切换标签…）在编辑器区按下时生效；窗口级命令（设置 / 侧栏 / 字号）在除终端与输入框以外的任何地方生效——终端里 Ctrl+B、Ctrl+PageUp/Down 这类键有自己的含义，宿主不抢。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。"
                 >
                   {SHORTCUT_COMMANDS.map((command) => (
                     <Field

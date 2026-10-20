@@ -15,6 +15,18 @@ export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowCha
 /** 编辑器缩进宽度；auto 表示按文件内容探测（Monaco 默认行为） */
 export type EditorIndent = "auto" | "2" | "4" | "8";
 
+/**
+ * 编辑器行高。存的是**倍数**而不是像素：Monaco 的 `lineHeight` 小于 8 时按
+ * 「字号 × 该值」解释（em 语义，见 monaco 的 BareFontInfo），于是字号一变行高跟着变，
+ * 不用在两边各算一次。1.6 与 CodeLite 的默认值一致。
+ */
+export type EditorLineHeight = "1.4" | "1.6" | "1.8";
+
+export const EDITOR_LINE_HEIGHTS: EditorLineHeight[] = ["1.4", "1.6", "1.8"];
+
+/** 编辑器字号出厂值。字号快捷键「重置字号」与设置面板都用它，别再写第二份字面量 */
+export const DEFAULT_EDITOR_FONT_SIZE = 13;
+
 export interface AiCommand {
   name: string;
   command: string;
@@ -137,6 +149,12 @@ export interface Settings {
   editorWordWrap: boolean;
   /** 编辑器缩进宽度；auto 按文件内容探测，否则固定用该数量的空格 */
   editorIndent: EditorIndent;
+  /** 编辑器是否显示行号 */
+  editorLineNumbers: boolean;
+  /** 是否高亮光标所在的那一行 */
+  editorHighlightActiveLine: boolean;
+  /** 行高倍数，直接交给 Monaco 的 lineHeight 选项（见 EditorLineHeight） */
+  editorLineHeight: EditorLineHeight;
   /** 编辑器自动保存时机 */
   editorAutoSave: AutoSaveMode;
   /** afterDelay 模式下停手多久才落盘（毫秒） */
@@ -213,6 +231,9 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "editorMinimap",
     "editorWordWrap",
     "editorIndent",
+    "editorLineNumbers",
+    "editorHighlightActiveLine",
+    "editorLineHeight",
   ],
   shortcuts: ["shortcuts"],
   agent: [
@@ -291,13 +312,18 @@ const DEFAULTS: Settings = {
   terminalWaitHint: true,
   editorFontFamily: "",
   uiMonoFontFamily: "",
-  editorFontSize: 13,
+  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   editorFontBold: true,
   editorMinimap: true,
   // 默认开着：长注释和文档不用横向滚动，窄面板里读起来更顺
   editorWordWrap: true,
   // 默认按文件内容探测（Monaco 原行为），别一上来就强行统一缩进
   editorIndent: "auto",
+  // 行号与当前行高亮都默认开：这两样是编辑器的基本参照物
+  editorLineNumbers: true,
+  editorHighlightActiveLine: true,
+  // 1.6 与 CodeLite 一致；Monaco 自己的默认是 1.5（mac）/ 1.35（其余平台）
+  editorLineHeight: "1.6",
   editorAutoSave: "afterDelay",
   editorAutoSaveDelay: 1000,
   // 默认关：Prettier 的风格不一定符合每个项目的习惯，得用户主动开
@@ -348,6 +374,13 @@ function asEditorIndent(value: unknown): EditorIndent {
   return EDITOR_INDENTS.includes(value as EditorIndent)
     ? (value as EditorIndent)
     : DEFAULTS.editorIndent;
+}
+
+/** 行高同理：值域是固定的三档，读坏了（含老版本没有这个字段）回落默认 */
+function asEditorLineHeight(value: unknown): EditorLineHeight {
+  return EDITOR_LINE_HEIGHTS.includes(value as EditorLineHeight)
+    ? (value as EditorLineHeight)
+    : DEFAULTS.editorLineHeight;
 }
 
 function asString(value: unknown, fallback: string): string {
@@ -551,6 +584,13 @@ function readSaved(): Settings {
     // 老版本的设置里没有这个字段，回落 true：长行默认折行
     editorWordWrap: asBoolean(raw.editorWordWrap, DEFAULTS.editorWordWrap),
     editorIndent: asEditorIndent(raw.editorIndent),
+    // 老版本的设置里没有这三项，回落成「行号开 / 当前行高亮开 / 1.6 倍行高」
+    editorLineNumbers: asBoolean(raw.editorLineNumbers, DEFAULTS.editorLineNumbers),
+    editorHighlightActiveLine: asBoolean(
+      raw.editorHighlightActiveLine,
+      DEFAULTS.editorHighlightActiveLine,
+    ),
+    editorLineHeight: asEditorLineHeight(raw.editorLineHeight),
     editorAutoSave: asAutoSave(raw.editorAutoSave),
     editorAutoSaveDelay: clampDelay(
       raw.editorAutoSaveDelay,

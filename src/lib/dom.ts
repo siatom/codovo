@@ -18,3 +18,22 @@ export function isBlankClick(event: { target: EventTarget | null }): boolean {
   }
   return true;
 }
+
+/**
+ * 窗口级快捷键分发前的一道闸：焦点是不是落在「要独占键盘」的地方。
+ *
+ * 终端（xterm 的输入层）在 shell 里有自己的键义——Ctrl+B 是 readline 的光标左移、
+ * Ctrl+PageDown 也被 TUI 用着，宿主抢了前台程序就没法用；文本输入框同理，在框里
+ * Ctrl+, 不该被解释成「打开设置」。
+ *
+ * Monaco 的隐藏输入层是个 `<textarea>`，但它代表的就是编辑器本身——那里的
+ * Ctrl+, / Ctrl+= 恰恰是要处理的，所以命中 `.monaco-editor` 时先返回 false。
+ */
+export function isTypingTarget(event: { target: EventTarget | null }): boolean {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest(".xterm")) return true;
+  if (target.closest(".monaco-editor")) return false;
+  if (target.isContentEditable) return true;
+  return target.closest("input, textarea, select") !== null;
+}

@@ -7,6 +7,10 @@
  *
  * 终端捕获的 Ctrl+C/V 与 Esc 关闭弹窗**不在这张表里**：它们和 shell / 系统语义绑死
  * （Ctrl+C 是 SIGINT），改了会出事，保留内置。
+ *
+ * 表里的命令分两级作用域：编辑器命令（`editor.*`）在编辑器区按下时生效；窗口级命令
+ * （`app.*`）由 App 统一分发。分发的写法见 `components/EditorPane.tsx` 的 onPaneKeyDown
+ * 与 `App.tsx` 的全局分发 effect——两级都不会在终端里抢键（见 `isTypingTarget`）。
  */
 import { IS_MAC } from "./keys";
 
@@ -34,9 +38,27 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
   // （展开 tasks），宿主抢了前台程序就没法用；Mod+Shift+T 是浏览器 / VS Code 的新建标签惯例
   { id: "newTab", label: "新建终端标签页", defaultCombo: "Mod+Shift+T", legacyDefault: "Mod+T" },
   { id: "editor.save", label: "保存文件", defaultCombo: "Mod+S" },
+  { id: "editor.saveAs", label: "文件另存为", defaultCombo: "Mod+Shift+S" },
+  { id: "editor.newFile", label: "新建文件（未命名缓冲区）", defaultCombo: "Mod+N" },
+  // Ctrl+O 选中的文件必须在某个工作目录里：跨工作区的单文件打开（临时工作区）还没做
+  { id: "editor.openFile", label: "打开文件", defaultCombo: "Mod+O" },
+  // 查找的默认键与 Monaco 自带的 actions.find 同键：编辑器区捕获后走本应用的动作，
+  // 因此仍然打开同一个 find widget（Ctrl+H 的替换留 Monaco 内置，不改）
+  { id: "editor.find", label: "查找", defaultCombo: "Mod+F" },
   // 默认沿用 VS Code / Prettier 的惯例键；Monaco 自带的「格式化文档」只在注册过
   // 格式化 provider 的语言（json5 / jsonc）上激活，本应用注册的动态键位排在它之后、优先生效
   { id: "editor.format", label: "格式化文档", defaultCombo: "Shift+Alt+F" },
+  { id: "editor.togglePreview", label: "切换预览（Markdown / 网页）", defaultCombo: "Mod+Shift+V" },
+  // 标签切换照 VS Code / CodeLite 用 Ctrl+Tab：刻意不写 Mod+Tab——macOS 上 Cmd+Tab
+  // 是系统级的应用切换，注册上去也收不到事件。另外 Ctrl+PageUp/PageDown 是同义的
+  // 内置别名（那两键进不了这张表，见 EditorPane 的说明）
+  { id: "editor.nextTab", label: "下一个标签页", defaultCombo: "Ctrl+Tab" },
+  { id: "editor.prevTab", label: "上一个标签页", defaultCombo: "Ctrl+Shift+Tab" },
+  { id: "editor.zoomIn", label: "增大编辑器字号", defaultCombo: "Mod+=" },
+  { id: "editor.zoomOut", label: "减小编辑器字号", defaultCombo: "Mod+-" },
+  { id: "editor.zoomReset", label: "重置编辑器字号", defaultCombo: "Mod+0" },
+  { id: "app.settings", label: "打开设置", defaultCombo: "Mod+," },
+  { id: "app.toggleSidebar", label: "切换侧边栏", defaultCombo: "Mod+B" },
   { id: "git.commit", label: "提交（提交信息框内）", defaultCombo: "Mod+Enter" },
   // 文件树的复制 / 剪切 / 粘贴：只在树里某一行有焦点时生效（事件走行自己的 keydown，
   // 终端那边是兄弟子树、抢不到），所以和终端的 Ctrl+C 语义不冲突
@@ -62,8 +84,14 @@ const MODIFIER_KEYS = new Set([
   "CapsLock",
 ]);
 
-/** 保留键：Esc 用来取消录制，Tab 留给焦点切换，都不允许录 */
-const RESERVED_KEYS = new Set(["Escape", "Esc", "Tab", "Dead", "Unidentified", "Process"]);
+/**
+ * 保留键：Esc 用来取消录制，Dead / Unidentified / Process 也不许录。
+ *
+ * **Tab 是特例**：这里刻意不列它——单按 Tab（以及 Shift+Tab）交给下面的「至少要有一个
+ * 前缀」那条规则挡掉，留给焦点切换；而 Ctrl+Tab / Ctrl+Shift+Tab 是正常的命令键
+ * （切标签），必须能录能匹配。
+ */
+const RESERVED_KEYS = new Set(["Escape", "Esc", "Dead", "Unidentified", "Process"]);
 
 export interface ParsedShortcut {
   mod: boolean;
@@ -105,7 +133,8 @@ export function parseShortcut(combo: string): ParsedShortcut | null {
   }
   if (key === null) return null; // 只有修饰键
   if (RESERVED_KEYS.has(key)) return null;
-  // 至少要有一个真正的"前缀"（Mod/Ctrl/Meta/Alt），光靠 Shift 会和正常输入撞车
+  // 至少要有一个真正的"前缀"（Mod/Ctrl/Meta/Alt），光靠 Shift 会和正常输入撞车；
+  // 单按 Tab / Shift+Tab 也正好被这条挡掉，交给焦点切换
   if (!flags.Mod && !flags.Ctrl && !flags.Meta && !flags.Alt) return null;
   return {
     mod: flags.Mod,
@@ -136,6 +165,21 @@ export function normalizeCombo(combo: string): string | null {
 
 export function isValidShortcut(combo: string): boolean {
   return parseShortcut(combo) !== null;
+}
+
+/**
+ * 是否正在录制键位（设置面板的 ShortcutRecorder）。录制期间要独占键盘：录制控件自己也
+ * 挂在 window 捕获阶段，但它**注册得比全局快捷键分发晚**，所以分发那边得先看这个标志
+ * 让路——否则录 Ctrl+B 会顺手把侧边栏收起来、录 Ctrl+= 会顺手把字号改了。
+ */
+let shortcutRecording = false;
+
+export function setShortcutRecording(recording: boolean): void {
+  shortcutRecording = recording;
+}
+
+export function isShortcutRecording(): boolean {
+  return shortcutRecording;
 }
 
 /**
