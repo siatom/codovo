@@ -722,7 +722,7 @@ pub fn fs_read_image(
 /// `encoding` 是打开时检测到的编码标签，由前端原样回传。为空表示调用方没带
 /// （新建文件，或非编辑器调用），这时只允许写 UTF-8；已有文件若不是 UTF-8，
 /// 宁可报错也不能按 UTF-8 覆盖——那正是原编码被冲掉的成因。
-fn write_text_file(file: &Path, text: &str, encoding: Option<&str>) -> Result<(), String> {
+fn write_text_file(file: &Path, text: &str, encoding: Option<&str>) -> Result<u64, String> {
     write_text_file_with(file, text, encoding, None, None)
 }
 
@@ -752,13 +752,16 @@ fn ensure_writable(size: u64, read_only: bool, name: &str) -> Result<(), String>
 /// `eol` / `has_bom` 都没给时行为和旧版完全一致（新建文件仍是 UTF-8 无 BOM），
 /// 所以现有调用方不用改。给了就按指定风格写回：编辑器状态栏切了 EOL、或用户
 /// 明确要求去掉 BOM 时走这条。
+///
+/// 返回实际写入的字节数（编码 + EOL + BOM 之后）：另存为要据此刷新文件大小，
+/// 非 UTF-8 编码下不能拿 JS 字符数估算。
 fn write_text_file_with(
     file: &Path,
     text: &str,
     encoding: Option<&str>,
     eol: Option<&str>,
     has_bom: Option<bool>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     if let Ok(meta) = fs::metadata(file) {
         ensure_writable(meta.len(), meta.permissions().readonly(), &display(file))?;
     }
@@ -779,7 +782,8 @@ fn write_text_file_with(
         }
     };
     let bytes = encoding::encode_with(text, encoding, eol, has_bom)?;
-    write_atomic(file, &bytes)
+    write_atomic(file, &bytes)?;
+    Ok(bytes.len() as u64)
 }
 
 /// 原子写：先写同目录的临时文件，再 rename 覆盖目标。
@@ -835,9 +839,9 @@ pub fn fs_write_file(
     eol: Option<String>,
     // 是否写 BOM；不传沿用编码标签本身的默认语义
     has_bom: Option<bool>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let file = resolve(&state.checked_root(&root)?, &path)?;
-    // 不传 eol / hasBom 时走旧路径，行为和以前完全一致
+    // 不传 eol / hasBom 时走旧路径，行为和以前完全一致；返回值是实际写入字节数
     match (eol.as_deref(), has_bom) {
         (None, None) => write_text_file(&file, &text, encoding.as_deref()),
         _ => write_text_file_with(
@@ -2859,6 +2863,29 @@ mod tests {
         // 文件还不存在（新建后立刻保存）：没有编码信息就按 UTF-8 写
         write_text_file(&file, "你好，世界", None).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "你好，世界");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn returns_the_number_of_bytes_actually_written() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+
+        // UTF-8 非 ASCII：字节数和 JS 字符数不一样，另存为必须拿真实字节数刷 size
+        let utf8 = workspace.join("utf8.txt");
+        let written = write_text_file(&utf8, "你好", None).unwrap();
+        assert_eq!(written, fs::metadata(&utf8).unwrap().len());
+        assert_eq!(written as usize, "你好".as_bytes().len());
+
+        // GBK + CRLF：编码和换行转换后的字节数才是落盘大小
+        let gbk = workspace.join("gbk.txt");
+        let written = write_text_file_with(&gbk, "一\n二", Some("gbk"), Some("CRLF"), None).unwrap();
+        assert_eq!(written, fs::metadata(&gbk).unwrap().len());
+        assert!(
+            fs::read(&gbk).unwrap().windows(2).any(|pair| pair == b"\r\n"),
+            "CRLF 应真实写进文件"
+        );
+
         fs::remove_dir_all(&root).ok();
     }
 

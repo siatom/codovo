@@ -206,6 +206,9 @@ export function readImage(root: string, path: string): Promise<ImageContent> {
  * `eol` / `hasBom` 选自 `FileContent` 的同名字段：传了才按指定换行风格 / BOM 写回，
  * 不传保持旧行为（原样写正文，BOM 随编码标签）。`hasBom` 要显式传 `false` 才能去掉
  * UTF-8 BOM；传 `undefined` 只会被当成「没要求」。
+ *
+ * 返回实际写入的字节数（编码 + EOL + BOM 之后），另存为用它刷新文件大小；
+ * 非 UTF-8 编码下不能用字符串长度估算。
  */
 export function writeFile(
   root: string,
@@ -214,8 +217,8 @@ export function writeFile(
   encoding?: string,
   eol?: Eol,
   hasBom?: boolean,
-): Promise<void> {
-  return invoke("fs_write_file", {
+): Promise<number> {
+  return invoke<number>("fs_write_file", {
     root,
     path,
     text,
