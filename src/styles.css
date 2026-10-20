@@ -621,6 +621,54 @@ body.codedock-dragging-list * {
   border-radius: 4px;
 }
 
+/* Mermaid 流程图。源码一直留在 .md-mermaid-src 里：出图后藏起来，
+   语法错误时露出来当兜底，不至于只看到一句报错。 */
+.markdown-body .md-mermaid {
+  margin: 1em 0;
+  padding: 12px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  background: var(--c-raised);
+  overflow-x: auto;
+}
+
+.markdown-body .md-mermaid[data-state="error"] {
+  border-color: var(--c-warn-line);
+}
+
+.markdown-body .md-mermaid[data-state="pending"] > .md-mermaid-src,
+.markdown-body .md-mermaid[data-state="loading"] > .md-mermaid-src,
+.markdown-body .md-mermaid[data-state="ready"] > .md-mermaid-src {
+  display: none;
+}
+
+.markdown-body .md-mermaid[data-state="pending"]::before,
+.markdown-body .md-mermaid[data-state="loading"]::before {
+  content: "流程图渲染中…";
+  color: var(--c-fg-faint);
+  font-size: 12px;
+}
+
+.markdown-body .md-mermaid-src {
+  margin: 0;
+}
+
+.markdown-body .md-mermaid-svg > svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+/* mermaid 的语法报错常常很长，换行展示；真正的源码在提示下面 */
+.markdown-body .md-mermaid-error {
+  margin-bottom: 8px;
+  color: var(--c-warn);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 /* KaTeX：行间公式可能比正文宽，横向滚动而不是把预览撑破。
    行内公式跟着正文走，不动。 */
 .markdown-body .katex-display {

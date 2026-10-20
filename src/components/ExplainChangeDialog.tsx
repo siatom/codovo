@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { renderMarkdown } from "../lib/markdown";
+import { useMermaidBlocks } from "../lib/mermaid";
 import { IconClose, IconSparkle } from "./icons";
 
 interface ExplainChangeDialogProps {
@@ -46,6 +47,11 @@ export function ExplainChangeDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const html = useMemo(() => (text === null ? "" : renderMarkdown(text)), [text]);
+  // 解读正文里也可能带 mermaid 流程图，和编辑器预览走同一套异步水合
+  useMermaidBlocks(bodyRef, html);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
@@ -89,8 +95,9 @@ export function ExplainChangeDialog({
         ) : (
           <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
             <div
+              ref={bodyRef}
               className="markdown-body dialog-text"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+              dangerouslySetInnerHTML={{ __html: html }}
             />
           </div>
         )}

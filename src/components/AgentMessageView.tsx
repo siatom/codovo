@@ -1,5 +1,7 @@
+import { useRef } from "react";
 import type { AgentMessage, AgentPart } from "../lib/types";
 import { useHighlightedMarkdown } from "../lib/highlight";
+import { useMermaidBlocks } from "../lib/mermaid";
 import { AgentToolCard } from "./AgentToolCard";
 import { IconBot } from "./icons";
 
@@ -9,11 +11,15 @@ function TextPartView({ text, streaming }: { text: string; streaming: boolean })
   // 代码高亮是异步的（Monaco 语言包懒加载），所以先给一版没上色的，算好之后它自己换上。
   // 字号和行高都要跟下面的 .agent-text 对齐，否则这一轮跑完切 markdown 时会跳一下
   const html = useHighlightedMarkdown(text, !streaming);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // 回答里可能带 mermaid 流程图，和编辑器预览走同一套异步水合
+  useMermaidBlocks(bodyRef, html);
   if (streaming) {
     return <div className="text-[14px] leading-[1.75] whitespace-pre-wrap">{text}</div>;
   }
   return (
     <div
+      ref={bodyRef}
       className="markdown-body agent-text text-[14px]"
       dangerouslySetInnerHTML={{ __html: html }}
     />

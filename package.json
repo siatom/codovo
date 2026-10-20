@@ -23,6 +23,7 @@
     "katex": "^0.18.11",
     "marked": "^18.0.14",
     "marked-katex-extension": "^5.1.13",
+    "mermaid": "^12.2.0",
     "monaco-editor": "0.56.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

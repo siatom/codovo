@@ -1714,6 +1714,8 @@ export function EditorPane({
 
   // 当前文件是不是 markdown——整屏预览与分屏预览都只有它走「从 model 现渲染」这条路
   const isMarkdownFile = active?.kind === "file" && isMarkdownPath(active.path);
+  /** 预览时按这个路径解析相对图片；diff / 非文件标签没有 */
+  const previewSourcePath = active?.kind === "file" ? active.path : null;
   /**
    * 左右分屏预览。只对 markdown 开：html / svg 的预览读磁盘、要整屏才够用。
    * 和整屏预览互斥（两个 toggle 各自会把对方摘掉），这里再兜一层：整屏优先
@@ -1740,10 +1742,12 @@ export function EditorPane({
   // 换好之后依赖没再变过，memo 不会重算，上一个文件的内容就永久留在预览层上了。
   // 预览期间编辑器是 hidden 的、内容改不了，缓存里那份就是当前内容。
   const previewHtml = useMemo(() => {
-    if (!isMarkdownPreview || activeKey === null) return "";
+    if (!isMarkdownPreview || activeKey === null || previewSourcePath === null) return "";
     const model = modelsRef.current.get(activeKey)?.model;
-    return model ? renderMarkdown(model.getValue()) : "";
-  }, [isMarkdownPreview, activeKey, previewNonce]);
+    return model
+      ? renderMarkdown(model.getValue(), { filePath: previewSourcePath, roots })
+      : "";
+  }, [isMarkdownPreview, activeKey, previewNonce, previewSourcePath, roots]);
 
   /**
    * 分屏预览的 HTML。整屏那份是渲染期一次算完的，前提「预览期间编辑器改不了内容」
@@ -1771,13 +1775,26 @@ export function EditorPane({
       return;
     }
     // 进入分屏先同步渲染一次，右侧不留空白
-    setSplitHtml(renderMarkdown(model.getValue(), { sourceLines: true }));
+    setSplitHtml(
+      renderMarkdown(model.getValue(), {
+        sourceLines: true,
+        filePath: previewSourcePath ?? undefined,
+        roots,
+      }),
+    );
     let timer: number | undefined;
     const sub = model.onDidChangeContent(() => {
       // 手一直不停就一直往后推，停下来才重渲染
       window.clearTimeout(timer);
       timer = window.setTimeout(
-        () => setSplitHtml(renderMarkdown(model.getValue(), { sourceLines: true })),
+        () =>
+          setSplitHtml(
+            renderMarkdown(model.getValue(), {
+              sourceLines: true,
+              filePath: previewSourcePath ?? undefined,
+              roots,
+            }),
+          ),
         200,
       );
     });
@@ -1785,7 +1802,7 @@ export function EditorPane({
       sub.dispose();
       window.clearTimeout(timer);
     };
-  }, [isSplitPreview, activeKey]);
+  }, [isSplitPreview, activeKey, previewSourcePath, roots]);
 
   /**
    * 对照模式的滚动同步：顶部先按块锚点对齐，块内再按行数插值。
