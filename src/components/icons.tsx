@@ -648,6 +648,14 @@ export const IconEye = icon(
   </>,
 );
 
+/** 源码编辑：尖括号。比铅笔更能表示「回到代码 / 源码」 */
+export const IconCode = icon(
+  <>
+    <path d="m16 18 6-6-6-6" />
+    <path d="m8 6-6 6 6 6" />
+  </>,
+);
+
 /** 预览态显示，点了回编辑 */
 export const IconPencil = icon(
   <>

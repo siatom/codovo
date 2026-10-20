@@ -75,11 +75,11 @@ import {
   IconCheck,
   IconChevronDown,
   IconClose,
+  IconCode,
   IconEye,
   IconLayoutColumns,
   IconLayoutSingle,
   IconMore,
-  IconPencil,
   IconTerminal,
   IconTranslate,
   IconWand,
@@ -97,7 +97,7 @@ const TAB_MENU_W = 190;
 /** markdown 的四种查看方式，顺序也是标题栏按钮的顺序 */
 const MARKDOWN_MODES = [
   { id: "preview", label: "预览", icon: IconEye, hint: "预览渲染后的效果" },
-  { id: "edit", label: "编辑", icon: IconPencil, hint: "编辑 Markdown 源码" },
+  { id: "edit", label: "编辑", icon: IconCode, hint: "编辑 Markdown 源码" },
   { id: "split", label: "对照", icon: IconLayoutColumns, hint: "左边源码，右边渲染" },
   { id: "translate", label: "翻译", icon: IconTranslate, hint: "左原文、右译文的文档翻译" },
 ] as const;
@@ -3478,7 +3478,7 @@ export function EditorPane({
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
           >
             {isPreview ? (
-              <IconPencil className="h-3.5 w-3.5" />
+              <IconCode className="h-3.5 w-3.5" />
             ) : (
               <IconEye className="h-3.5 w-3.5" />
             )}
