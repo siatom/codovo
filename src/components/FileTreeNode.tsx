@@ -1,4 +1,4 @@
-import type { DragEvent, KeyboardEvent, MouseEvent } from "react";
+import type { KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import type { FileEntry } from "../lib/types";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import type { GitMark } from "../lib/git";
@@ -62,12 +62,11 @@ export interface TreeController {
   onRenameChange: (value: string) => void;
   onRenameSubmit: () => void;
   onRenameCancel: () => void;
-  /** HTML5 拖拽：源行的四个回调（目标由目录行 / 根行 / 空白区各自处理） */
-  onDragStart: (entry: FileEntry, event: DragEvent) => void;
-  onDragOver: (entry: FileEntry, event: DragEvent) => void;
-  onDragLeave: (entry: FileEntry) => void;
-  onDrop: (entry: FileEntry, event: DragEvent) => void;
-  onDragEnd: () => void;
+  /** 指针拖拽：源行的四个回调（落点由目录行 / 根行 / 空白区在 ExplorerPane 里统一判定） */
+  onPointerDown: (entry: FileEntry, event: PointerEvent) => void;
+  onPointerMove: (entry: FileEntry, event: PointerEvent) => void;
+  onPointerUp: (entry: FileEntry, event: PointerEvent) => void;
+  onPointerCancel: (entry: FileEntry, event: PointerEvent) => void;
 }
 
 interface FileTreeNodeProps {
@@ -165,17 +164,15 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           data-row-key={pathKey(entry.path)}
           // roving tabindex：整棵树只有一个入口，方向键在树内移动焦点
           tabIndex={(tree.focusedKey ?? tree.firstKey) === pathKey(entry.path) ? 0 : -1}
-          draggable
           title={`${toDisplayPath(entry.path)}\n最近修改：${formatModified(entry.modified)}`}
           onClick={(event) => tree.onRowClick(entry, event)}
           onDoubleClick={(event) => tree.onRowDoubleClick(entry, event)}
           onContextMenu={(event) => tree.openMenu(entry, event)}
           onKeyDown={(event) => tree.onRowKeyDown(entry, event)}
-          onDragStart={(event) => tree.onDragStart(entry, event)}
-          onDragOver={(event) => tree.onDragOver(entry, event)}
-          onDragLeave={() => tree.onDragLeave(entry)}
-          onDrop={(event) => tree.onDrop(entry, event)}
-          onDragEnd={tree.onDragEnd}
+          onPointerDown={(event) => tree.onPointerDown(entry, event)}
+          onPointerMove={(event) => tree.onPointerMove(entry, event)}
+          onPointerUp={(event) => tree.onPointerUp(entry, event)}
+          onPointerCancel={(event) => tree.onPointerCancel(entry, event)}
           className={`flex w-full items-center gap-1.5 rounded px-1 py-[3px] text-left text-[12px] ${tone}${dropRing}${fade}`}
           style={{ paddingLeft: depth * INDENT + 4 }}
         >

@@ -116,8 +116,8 @@ function openFolderId(id: string): string {
 
 /**
  * material 的 svg 颜色是烤在 fill 里的（不像内置图标走 currentColor），当图片用最省事。
- * `draggable={false}` 是必须的：文件树的整行是 draggable，img 默认可拖，
- * 不关掉的话指针按在图标上会拖出一张图标幽灵图、把整行的拖拽顶掉。
+ * `draggable={false}` 仍然保留：拖动浮标里也会用到图标，别让指针按在图标上时拖出一张
+ * 浏览器原生幽灵图（文件树内部已经改用 Pointer Events，不依赖 HTML5 拖拽）。
  */
 function IconImage({ id, className }: { id: string; className: string }) {
   return (

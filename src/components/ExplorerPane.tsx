@@ -5,9 +5,9 @@ import {
   useMemo,
   useRef,
   useState,
-  type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent,
   type Ref,
 } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -45,6 +45,7 @@ import {
 } from "./FileTreeNode";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
+import { FileTypeIcon, FolderTypeIcon } from "./fileIcons";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -116,6 +117,15 @@ interface ExplorerPaneProps {
 
 /** 输入停下来多久才去搜，省得每敲一个字都跑一趟目录遍历 */
 const SEARCH_DEBOUNCE_MS = 200;
+
+/**
+ * 指针移动多远才算拖动。用 Pointer Events 自己实现而不用 HTML5 DnD：
+ * Tauri 在 Windows 上默认接管 WebView2 的拖放处理器，页面里的 `dragstart` / `drop`
+ * 根本不会触发（见 tauri `dragDropEnabled`）。自己判位移还能顺手做自动展开。
+ */
+const DRAG_START_DISTANCE = 4;
+/** 拖到折叠目录上悬停多久自动展开，跟 VS Code 的手感对齐 */
+const DRAG_EXPAND_DELAY = 600;
 
 /** 过滤模式下这两个集合没有意义，共用同一份引用免得 useMemo 每次都失效 */
 const EMPTY_SET: ReadonlySet<string> = new Set();
@@ -307,8 +317,44 @@ export function ExplorerPane({
   const [dragging, setDragging] = useState<string[]>([]);
   /** 当前悬停到的可投放目录（归一化路径），画高亮 */
   const [dropDir, setDropDir] = useState<string | null>(null);
-  /** 树滚动容器的 ref：键盘移动焦点时按 data-row-key 找行 */
+  /** 拖动浮标：跟着指针走的小标签，显示正在拖的名字 / 数量 */
+  const [dragLabel, setDragLabel] = useState<{
+    name: string;
+    count: number;
+    isDir: boolean;
+  } | null>(null);
+  const dragGhostRef = useRef<HTMLDivElement>(null);
+  /**
+   * 一次指针拖拽的原始状态。`active` 之前只是按下了鼠标，还可能是普通点击——
+   * 必须等位移超过阈值才真正开始拖，否则单击、双击都会被误判成拖动。
+   */
+  const pointerDragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    path: string;
+    active: boolean;
+  } | null>(null);
+  /** 本次拖拽要搬的路径。用 ref 而不用 state：pointermove 里要同步读到最新值 */
+  const dragPathsRef = useRef<string[]>([]);
+  /** 拖动落点也存一份 ref：pointerup 里要立刻拿到，不能等 state 渲染 */
+  const dropDirRef = useRef<string | null>(null);
+  /** 拖完紧跟的那一下 click 要吞掉，免得文件夹又被展开 / 文件被打开 */
+  const suppressClickRef = useRef(false);
+  /** 悬停在折叠目录上自动展开的计时器 */
+  const expandTimerRef = useRef<number | null>(null);
+  const expandPathRef = useRef<string | null>(null);
+  /** 树的滚动容器，键盘移动焦点与拖拽自动滚动共用 */
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // 工作区被关掉时组件会卸载：把拖拽留下的全局光标与计时器收干净
+  useEffect(
+    () => () => {
+      if (expandTimerRef.current !== null) window.clearTimeout(expandTimerRef.current);
+      document.body.classList.remove("codedock-dragging-list");
+    },
+    [],
+  );
 
   // 右键菜单：开在哪一行、贴光标多远处。位置用 fixed 定位，所以要的是视口坐标
   const [menu, setMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
@@ -1269,6 +1315,11 @@ export function ExplorerPane({
 
   const selectionKeys = useMemo(() => new Set(selection.keys()), [selection]);
   const draggingKeys = useMemo(() => new Set(dragging.map(pathKey)), [dragging]);
+  /** 归一化路径 -> 可见行，拖动时按 data-row-key 反查落点用 */
+  const entryByKey = useMemo(
+    () => new Map(flatEntries.map((entry) => [pathKey(entry.path), entry])),
+    [flatEntries],
+  );
   // 被剪切、正等着粘贴的行：淡化（照 dragging 的写法，过滤模式下同样有效）
   const cutKeys = useMemo(
     () => (clipboard?.cut ? new Set(clipboard.paths.map(pathKey)) : EMPTY_SET),
@@ -1524,65 +1575,31 @@ export function ExplorerPane({
    * 目标目录能不能投放这批拖拽项。
    * 跨工作目录的拖拽直接禁止：后端虽有跨根能力，但跨卷 rename 会失败，
    * 与其半途报错不如在界面上就不让放。
+   *
+   * `paths` 显式传入而不是只读 `dragging`：拖拽刚开始时 state 还没渲染回来，
+   * pointermove / pointerup 里必须能同步判断。
    */
   const canDropOn = useCallback(
-    (destDir: string) => {
-      if (dragging.length === 0) return false;
+    (destDir: string, paths: string[] = dragPathsRef.current) => {
+      if (paths.length === 0) return false;
       const key = pathKey(destDir);
       const destOwner = ownerRoot(roots, destDir);
       if (!destOwner) return false;
       // 全部项本来就在这个目录里 → 没有可移动的
-      if (dragging.every((path) => pathKey(parentOf(path)) === key)) return false;
-      for (const path of dragging) {
+      if (paths.every((path) => pathKey(parentOf(path)) === key)) return false;
+      for (const path of paths) {
         if (isPathInside(destDir, path)) return false; // 拖到自己或自己的子孙里
         if (pathKey(ownerRoot(roots, path) ?? "") !== pathKey(destOwner)) return false; // 跨根
       }
       return true;
     },
-    [dragging, roots],
+    [roots],
   );
 
-  const handleDragStart = useCallback(
-    (entry: FileEntry, event: DragEvent) => {
-      const key = pathKey(entry.path);
-      const paths = selection.has(key)
-        ? [...selection.values()].map((item) => item.path)
-        : [entry.path];
-      const pruned = pruneNested(paths);
-      setDragging(pruned);
-      setDropDir(null);
-      event.dataTransfer.effectAllowed = "move";
-      // 必须写点数据，否则部分环境不认这次拖拽（内容本身从 dragging 状态读）
-      event.dataTransfer.setData("text/plain", pruned.join("\n"));
-    },
-    [selection],
-  );
-
-  const handleDragOver = useCallback(
-    (entry: FileEntry, event: DragEvent) => {
-      if (!entry.isDir || !canDropOn(entry.path)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = "move";
-      setDropDir(pathKey(entry.path));
-    },
-    [canDropOn],
-  );
-
-  const handleDragLeave = useCallback((entry: FileEntry) => {
-    const key = pathKey(entry.path);
-    setDropDir((current) => (current === key ? null : current));
-  }, []);
-
-  /** 把当前拖拽项移动到 `destDir`。所有落点（目录行 / 根行 / 空白区）最终都汇到这里 */
-  const handleDrop = useCallback(
-    async (destDir: string, event: DragEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const paths = dragging;
-      setDropDir(null);
-      setDragging([]);
-      if (paths.length === 0 || !canDropOn(destDir)) return;
+  /** 把一批路径移动到 `destDir`。目录行 / 根行 / 空白区的落点最终都汇到这里 */
+  const moveInto = useCallback(
+    async (destDir: string, paths: string[]) => {
+      if (paths.length === 0) return;
       const toOwner = ownerRoot(roots, destDir);
       if (!toOwner) return;
 
@@ -1632,23 +1649,208 @@ export function ExplorerPane({
         setBusy(false);
       }
     },
-    [dragging, canDropOn, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter],
+    [roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter],
   );
 
-  /** 拖到某一行上：目录行就是它，文件行落到它所在目录（照 VS Code） */
-  const handleRowDrop = useCallback(
-    (entry: FileEntry, event: DragEvent) => {
-      event.stopPropagation();
-      const destDir = entry.isDir ? entry.path : parentOf(entry.path);
-      void handleDrop(destDir, event);
-    },
-    [handleDrop],
-  );
+  /** 浮标跟着指针走。直接改 DOM，不走 state：不然每个 pointermove 都要重渲染整棵树 */
+  const positionGhost = useCallback((x: number, y: number) => {
+    const ghost = dragGhostRef.current;
+    if (ghost) ghost.style.transform = `translate3d(${x + 14}px, ${y + 10}px, 0)`;
+  }, []);
 
-  const handleDragEnd = useCallback(() => {
+  const stopExpandTimer = useCallback(() => {
+    if (expandTimerRef.current !== null) {
+      window.clearTimeout(expandTimerRef.current);
+      expandTimerRef.current = null;
+    }
+    expandPathRef.current = null;
+  }, []);
+
+  /** 结束一次拖拽，把高亮、浮标、body 光标全部还原 */
+  const finishDrag = useCallback(() => {
+    pointerDragRef.current = null;
+    dragPathsRef.current = [];
+    dropDirRef.current = null;
+    stopExpandTimer();
+    document.body.classList.remove("codedock-dragging-list");
     setDragging([]);
     setDropDir(null);
+    setDragLabel(null);
+  }, [stopExpandTimer]);
+
+  /**
+   * 指针底下是哪个目录。行按钮、工作目录标题、树里的空白区都算落点；
+   * 落在文件行上按 VS Code 的语义落到它所在目录。
+   * 用 elementFromPoint 而不是事件 target：指针被 setPointerCapture 锁在源行上，
+   * pointermove 的 target 永远是源行，拿不到真正的落点。
+   */
+  const dropTargetAt = useCallback(
+    (x: number, y: number) => {
+      const element = document.elementFromPoint(x, y) as HTMLElement | null;
+      if (!element) return null;
+
+      const row = element.closest<HTMLElement>("[data-row-key]");
+      if (row) {
+        const entry = entryByKey.get(row.dataset.rowKey ?? "");
+        if (!entry) return null;
+        return {
+          dir: entry.isDir ? entry.path : parentOf(entry.path),
+          entry: entry.isDir ? entry : null,
+        };
+      }
+
+      const rootRow = element.closest<HTMLElement>("[data-root-key]");
+      if (rootRow) {
+        const root = roots.find((item) => pathKey(item) === rootRow.dataset.rootKey);
+        return root ? { dir: root, entry: null } : null;
+      }
+
+      // 剩下落在滚动容器里的都算空白处：移动到主要工作目录
+      if (primaryRoot && scrollRef.current?.contains(element)) {
+        return { dir: primaryRoot, entry: null };
+      }
+      return null;
+    },
+    [entryByKey, roots, primaryRoot],
+  );
+
+  /** 按下只是候选：先记住起点，越过阈值才真正进入拖拽 */
+  const handleRowPointerDown = useCallback((entry: FileEntry, event: PointerEvent) => {
+    if (event.button !== 0) return;
+    pointerDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      path: entry.path,
+      active: false,
+    };
+    // 捕获指针：拖到树外面（终端、侧栏）也不会丢 pointerup
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // 环境不支持时忽略，拖动仍可在树内完成
+    }
   }, []);
+
+  const handleRowPointerMove = useCallback(
+    (entry: FileEntry, event: PointerEvent) => {
+      const state = pointerDragRef.current;
+      if (!state || state.pointerId !== event.pointerId) return;
+      // 按下后 pointerup 丢了（例如右键菜单抢走焦点）：没有按键在按下就别继续当成拖动
+      if (!state.active && event.buttons === 0) {
+        pointerDragRef.current = null;
+        return;
+      }
+
+      if (!state.active) {
+        const distance = Math.hypot(event.clientX - state.startX, event.clientY - state.startY);
+        if (distance < DRAG_START_DISTANCE) return;
+
+        // 拖的是选中项里的一行就整批搬走，否则只搬按下的这一行
+        const paths = pruneNested(
+          selection.has(pathKey(state.path))
+            ? [...selection.values()].map((item) => item.path)
+            : [state.path],
+        );
+        if (paths.length === 0) {
+          pointerDragRef.current = null;
+          return;
+        }
+        state.active = true;
+        dragPathsRef.current = paths;
+        setDragging(paths);
+
+        const dragged = selection.get(pathKey(state.path)) ?? entry;
+        setDragLabel({ name: dragged.name, count: paths.length, isDir: dragged.isDir });
+        document.body.classList.add("codedock-dragging-list");
+        requestAnimationFrame(() => positionGhost(event.clientX, event.clientY));
+      }
+
+      // 拖动期间别让浏览器去选文字
+      event.preventDefault();
+      positionGhost(event.clientX, event.clientY);
+
+      // 靠近上下边缘时自动滚动，长目录也能拖到。只在指针确实位于树的横向范围内滚动
+      const viewport = scrollRef.current;
+      if (viewport) {
+        const rect = viewport.getBoundingClientRect();
+        if (event.clientX >= rect.left && event.clientX <= rect.right) {
+          if (event.clientY < rect.top + 24) viewport.scrollTop -= 12;
+          else if (event.clientY > rect.bottom - 24) viewport.scrollTop += 12;
+        }
+      }
+
+      const target = dropTargetAt(event.clientX, event.clientY);
+      const nextDir = target && canDropOn(target.dir) ? target.dir : null;
+      const nextKey = nextDir ? pathKey(nextDir) : null;
+      if (dropDirRef.current !== nextKey) {
+        dropDirRef.current = nextKey;
+        setDropDir(nextKey);
+      }
+
+      // 停在被折叠的目录上就自动展开，方便继续往里拖（跨根等无效落点不展开）
+      if (nextDir && target?.entry && !treeExpanded.has(target.entry.path)) {
+        if (expandPathRef.current !== target.entry.path) {
+          stopExpandTimer();
+          expandPathRef.current = target.entry.path;
+          const dirEntry = target.entry;
+          expandTimerRef.current = window.setTimeout(() => {
+            expandTimerRef.current = null;
+            expandPathRef.current = null;
+            void activateDir(dirEntry);
+          }, DRAG_EXPAND_DELAY);
+        }
+      } else {
+        stopExpandTimer();
+      }
+    },
+    [
+      selection,
+      positionGhost,
+      dropTargetAt,
+      canDropOn,
+      treeExpanded,
+      stopExpandTimer,
+      activateDir,
+    ],
+  );
+
+  const handleRowPointerUp = useCallback(
+    (_entry: FileEntry, event: PointerEvent) => {
+      const state = pointerDragRef.current;
+      if (!state || state.pointerId !== event.pointerId) return;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (!state.active) {
+        // 没越过阈值，交回给 click，正常选中 / 打开 / 展开
+        pointerDragRef.current = null;
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const paths = dragPathsRef.current;
+      const destDir = dropDirRef.current;
+      finishDrag();
+      // 拖完浏览器还会补一个 click，吞掉它，否则松手时文件夹会再折叠一次
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+      if (destDir && canDropOn(destDir, paths)) void moveInto(destDir, paths);
+    },
+    [finishDrag, canDropOn, moveInto],
+  );
+
+  const handleRowPointerCancel = useCallback(
+    (_entry: FileEntry, event: PointerEvent) => {
+      const state = pointerDragRef.current;
+      if (!state || state.pointerId !== event.pointerId) return;
+      finishDrag();
+    },
+    [finishDrag],
+  );
 
   const tree = useMemo<TreeController>(() => {
     const common = {
@@ -1663,11 +1865,10 @@ export function ExplorerPane({
       onRowClick: handleRowClick,
       onRowDoubleClick: handleRowDoubleClick,
       onRowKeyDown: handleRowKeyDown,
-      onDragStart: handleDragStart,
-      onDragOver: handleDragOver,
-      onDragLeave: handleDragLeave,
-      onDrop: handleRowDrop,
-      onDragEnd: handleDragEnd,
+      onPointerDown: handleRowPointerDown,
+      onPointerMove: handleRowPointerMove,
+      onPointerUp: handleRowPointerUp,
+      onPointerCancel: handleRowPointerCancel,
       openMenu,
       renaming,
       renameError,
@@ -1728,11 +1929,10 @@ export function ExplorerPane({
     handleRowClick,
     handleRowDoubleClick,
     handleRowKeyDown,
-    handleDragStart,
-    handleDragOver,
-    handleDragLeave,
-    handleRowDrop,
-    handleDragEnd,
+    handleRowPointerDown,
+    handleRowPointerMove,
+    handleRowPointerUp,
+    handleRowPointerCancel,
     gitMarks,
     ignored,
     toggle,
@@ -1757,7 +1957,15 @@ export function ExplorerPane({
   }, [filtering, filtered, roots, entries]);
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-content">
+    <section
+      className="flex h-full min-h-0 flex-col bg-content"
+      // 拖完那一下 click 在捕获阶段吞掉：行按钮、根标题、空白区的点击都不该再触发
+      onClickCapture={(event) => {
+        if (!suppressClickRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-auto px-1 py-1"
@@ -1781,17 +1989,6 @@ export function ExplorerPane({
           setActionError(null);
           setRootMenu({ root: primaryRoot, x: event.clientX, y: event.clientY });
         }}
-        // 拖到树里的空白处 = 移动到主要根目录
-        onDragOver={(event) => {
-          if (!canDropOn(primaryRoot)) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-          setDropDir(pathKey(primaryRoot));
-        }}
-        onDragLeave={() => {
-          setDropDir((current) => (current === pathKey(primaryRoot) ? null : current));
-        }}
-        onDrop={(event) => void handleDrop(primaryRoot, event)}
       >
         {filtering && (
           <p className="px-2 py-1 text-[11px] text-fg-faint">
@@ -1825,19 +2022,9 @@ export function ExplorerPane({
                   这一行也是投放目标：拖到根名上 = 移到这个根目录 */}
               <button
                 type="button"
+                data-root-key={pathKey(group.root)}
                 onClick={() => toggleRoot(group.root)}
                 title={toDisplayPath(group.root)}
-                onDragOver={(event) => {
-                  if (!canDropOn(group.root)) return;
-                  event.preventDefault();
-                  event.stopPropagation();
-                  event.dataTransfer.dropEffect = "move";
-                  setDropDir(pathKey(group.root));
-                }}
-                onDragLeave={() => {
-                  setDropDir((current) => (current === pathKey(group.root) ? null : current));
-                }}
-                onDrop={(event) => void handleDrop(group.root, event)}
                 // 根行也能右键：开的是同一份根菜单，好让空目录（没有子行可右键）也能新建、粘贴
                 onContextMenu={(event) => {
                   event.preventDefault();
@@ -1902,6 +2089,27 @@ export function ExplorerPane({
           );
         })}
       </div>
+
+      {/* 拖动浮标：跟着指针走，告诉用户正在搬哪一项；多选时顺带显示数量 */}
+      {dragLabel && (
+        <div
+          ref={dragGhostRef}
+          className="pointer-events-none fixed left-0 top-0 z-50 flex max-w-[240px] items-center gap-1.5 rounded-md border border-line-strong bg-raised px-2 py-1 text-[12px] text-fg shadow-lg"
+          style={{ transform: "translate3d(-9999px, -9999px, 0)" }}
+        >
+          <span className="flex shrink-0 items-center text-fg-icon">
+            {dragLabel.isDir ? (
+              <FolderTypeIcon name={dragLabel.name} isOpen className="h-3.5 w-3.5" />
+            ) : (
+              <FileTypeIcon name={dragLabel.name} className="h-3.5 w-3.5" />
+            )}
+          </span>
+          <span className="min-w-0 truncate">{dragLabel.name}</span>
+          {dragLabel.count > 1 && (
+            <span className="shrink-0 text-fg-faint">+{dragLabel.count - 1}</span>
+          )}
+        </div>
+      )}
 
       {/* 删除不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
