@@ -121,11 +121,12 @@ fn start_watch(app: &AppHandle, root: &Path) -> Result<Watch, String> {
                 let _ = event_tx.send(Signal::Dir(dir));
             }
         }
-        // 内容变了的文件：不挑事件类型，靠"现在是不是一个真实文件"兜底。
+        // 内容变了的文件：删除 / 改名也要发，否则前端永远收不到「文件没了」，
+        // 标签上的「已删除」状态不可达。其余事件仍靠"现在是不是一个真实文件"兜底：
         // 各平台的保存姿势不一样（直接写、原子替换、inotify 的 CLOSE_WRITE），
         // 按事件类型逐个枚举迟早会漏，代价只是多几次 is_file。
         for file in changed_files(&event_root, &event.paths) {
-            if file.is_file() {
+            if should_emit_file(&event.kind, &file) {
                 let _ = event_tx.send(Signal::File(file));
             }
         }
@@ -222,6 +223,18 @@ fn changed_dirs(root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
     out
 }
 
+/// 这个事件路径要不要作为「文件内容变了」发给编辑器。
+///
+/// 删除 / 改名必须发：事件到达时路径已经不在磁盘上，不能再用 `is_file` 过滤，
+/// 否则前端永远收不到「文件被删了」。目录路径也会被发出去，前端拿
+/// `pathsPresent` 复核后自然匹配不到文件标签。其余事件仍只认真实文件。
+fn should_emit_file(kind: &EventKind, path: &Path) -> bool {
+    match kind {
+        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => true,
+        _ => path.is_file(),
+    }
+}
+
 /// 事件路径 -> 内容可能变了的文件（就是它自己）。这里只做"该不该关心"的清洗，
 /// 是不是真的文件由调用方现查磁盘——事件到达时它可能已经被删了。
 fn changed_files(root: &Path, paths: &[PathBuf]) -> Vec<PathBuf> {
@@ -314,6 +327,43 @@ mod tests {
     fn still_reports_a_heavy_directory_being_created() {
         let dirs = changed_dirs(&root(), &[under(&["dist"])]);
         assert_eq!(dirs, vec![root()], "重目录自己出现时要刷新它所在的目录");
+    }
+
+    #[test]
+    fn emits_file_signals_for_removed_and_renamed_paths() {
+        use notify::event::{RemoveKind, RenameMode};
+
+        // 删除 / 改名时路径已经不在磁盘上，不能再拿 is_file 把它筛掉；
+        // 前端会再用 pathsPresent 判断，目录路径匹配不到文件标签。
+        let gone = under(&["src", "gone.rs"]);
+        assert!(should_emit_file(
+            &EventKind::Remove(RemoveKind::File),
+            &gone
+        ));
+        assert!(should_emit_file(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            &gone
+        ));
+        assert!(should_emit_file(
+            &EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+            &gone
+        ));
+    }
+
+    #[test]
+    fn only_emits_file_signals_for_existing_files_on_content_changes() {
+        use notify::event::DataChange;
+
+        // 正文变化仍要求路径此刻是文件：目录 / 已删除的路径不该当文件送给编辑器
+        let missing = under(&["src", "missing.rs"]);
+        assert!(!should_emit_file(
+            &EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            &missing
+        ));
+        assert!(!should_emit_file(
+            &EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            &under(&["src", "missing-dir"])
+        ));
     }
 
     #[test]
