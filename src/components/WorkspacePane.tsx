@@ -668,6 +668,7 @@ export function WorkspacePane({
         first={
           <TerminalPane
             root={root}
+            roots={workspace.roots}
             visible={visible}
             ref={setTerminalHandle}
             fullscreen={leftFullscreen}

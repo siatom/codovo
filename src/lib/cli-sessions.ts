@@ -28,9 +28,9 @@ const CLI_CHOICE_KEY = "codedock.cliChoice";
  *
  * 和 components/icons.tsx 里认 logo 的 `agentKey` 是同一套规则，故意留了两份：
  * 本仓库没有 lib 反向 import components 的先例，为一个五行的字符串函数破这个
- * 方向不划算。改后缀正则时两处一起改。
+ * 方向不划算。改后缀正则时两处一起改。`cli-launch.ts` 直接复用本函数，别再抄第三份。
  */
-function cliKey(text: string): string {
+export function cliKey(text: string): string {
   const first = text.trim().split(/\s+/)[0] ?? "";
   const base = first.split(/[\\/]/).pop() ?? "";
   return base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();

@@ -12,6 +12,8 @@ import {
   type TerminalSessionHandle,
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
+import { withAdditionalDirs } from "../lib/cli-launch";
+import { samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
 import { listShells, type ShellInfo } from "../lib/pty";
@@ -49,6 +51,7 @@ export interface TerminalPaneHandle {
   /**
    * 新开一个终端标签并在里面执行命令（顶栏 AI CLI 切换条与侧栏 CLI 会话 resume 都用它）。
    * 不能写进当前活动会话——那儿可能正跑着别的东西，命令会被当成它的输入。
+   * 命令会按工作区的附加目录自动注入 CLI 参数（见 lib/cli-launch.ts）。
    * `title` 直接作新标签的标题：AI CLI 传 CLI 名，resume 传被恢复会话的标题。
    */
   runInNewSession: (command: string, title: string) => void;
@@ -62,8 +65,10 @@ export interface TerminalPaneHandle {
 }
 
 interface TerminalPaneProps {
-  /** 这个终端区属于哪个工作区（工作区根）。PTY 会话按它归属，关工作区时要能收干净 */
+  /** 这个终端区属于哪个工作区（活动根）。PTY 会话按它归属，关工作区时要能收干净 */
   root: string;
+  /** 工作区挂的全部工作目录。root 是活动根，其余目录在启动 AI CLI 时作为附加目录注入 */
+  roots: string[];
   /** 是不是当前显示的工作区。隐藏时只是不显示，shell 照跑 */
   visible: boolean;
   /** 左侧终端列是否已全屏展示 */
@@ -84,6 +89,7 @@ interface TerminalPaneProps {
  */
 export function TerminalPane({
   root,
+  roots,
   visible,
   fullscreen,
   onToggleFullscreen,
@@ -119,8 +125,10 @@ export function TerminalPane({
   const shellCountRef = useRef(new Map<string, number>());
   /** AI CLI / resume 会话的标签标题；有值的会话不再按 shell 命名 */
   const customTitleByIdRef = useRef(new Map<number, string>());
-  /** 标签的 hover 提示：AI CLI / resume 记启动命令，普通会话回落到 shell 全名 */
+  /** AI CLI / resume 的原始启动命令：用于顶栏精确匹配与 logo 识别 */
   const hintByIdRef = useRef(new Map<number, string>());
+  /** 实际敲进终端的完整命令（带注入的附加目录参数），只用于标签的 hover 提示 */
+  const launchCommandByIdRef = useRef(new Map<number, string>());
   const addButtonRef = useRef<HTMLDivElement>(null);
   /** 并列布局的容器：拖分隔条时按它的尺寸换算比例 */
   const splitRef = useRef<HTMLDivElement>(null);
@@ -136,6 +144,16 @@ export function TerminalPane({
     null,
   );
   const { settings } = useSettings();
+
+  /** root 之外的工作目录：启动 AI CLI 时作为附加目录传给 CLI */
+  const additionalRoots = useMemo(
+    () => roots.filter((item) => !samePath(item, root)),
+    [root, roots],
+  );
+  // runInNewSession 走 useImperativeHandle 暴露给 App，句柄必须保持稳定；
+  // 附加目录却会随活动根切换而变，用 ref 取最新值，别把 ref 回调带旧。
+  const additionalRootsRef = useRef(additionalRoots);
+  additionalRootsRef.current = additionalRoots;
 
   // 标签页要显示每个会话的 shell 图标和名字，所以候选一挂载就拉，不用等到点开菜单
   useEffect(() => {
@@ -264,8 +282,11 @@ export function TerminalPane({
     nextIdRef.current += 1;
     // 标题与提示创建时就定死，之后不随别的标签增删改动
     customTitleByIdRef.current.set(id, title);
+    // 顶栏匹配用原始命令；实际敲进去的命令带上工作区的附加目录
     hintByIdRef.current.set(id, command);
-    setLaunchFor({ id, command });
+    const launched = withAdditionalDirs(command, additionalRootsRef.current);
+    launchCommandByIdRef.current.set(id, launched);
+    setLaunchFor({ id, command: launched });
     setSessions((list) => [...list, id]);
     setActiveId(id);
   }, []);
@@ -392,13 +413,15 @@ export function TerminalPane({
               // AI CLI / resume 会话用创建时传来的标题；普通 shell 会话按 shell 名，
               // 同名的从第二个起带固定序号（见 assignShellSeq）
               const custom = customTitleByIdRef.current.get(id);
-              // AI CLI / resume 会话的启动命令：有值说明这个标签是 AI CLI，图标用它的 logo
+              // AI CLI / resume 会话的原始启动命令：有值说明这个标签是 AI CLI，图标用它的 logo
               const launchCommand = hintByIdRef.current.get(id);
+              // 实际执行的完整命令（可能带附加目录参数），只用于悬停提示
+              const launchedCommand = launchCommandByIdRef.current.get(id) ?? launchCommand;
               const seq = shellSeqByIdRef.current.get(id) ?? 1;
               const shellName = shell?.name ?? `终端 ${index + 1}`;
               const title = custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
-              // 悬停提示：启动过的会话报命令，普通会话报 shell 全名
-              const hint = launchCommand ?? shell?.label ?? shellName;
+              // 悬停提示：启动过的会话报实际命令，普通会话报 shell 全名
+              const hint = launchedCommand ?? shell?.label ?? shellName;
               // 这个标签有没有「在等用户」的标记：等回应（prompt）或任务完成（done）
               const kind = attention[terminalTarget(id)];
               const attentionHint =
