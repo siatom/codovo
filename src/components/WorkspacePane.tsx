@@ -22,7 +22,16 @@ import type { ReviewTarget } from "../lib/workstreams";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
 import { isPathInside, ownerRoot, pathKey, toDisplayPath, type MovePair } from "../lib/fs";
-import { sameTab, type DiffSource, type Tab } from "../lib/tabs";
+import {
+  newUntitledTab,
+  openFileTab,
+  patchTab,
+  sameTab,
+  tabKey,
+  type DiffSource,
+  type Tab,
+  type TabPatch,
+} from "../lib/tabs";
 import type { EditorLocation } from "../lib/types";
 import type { Workspace } from "../lib/workspaces";
 import type { BrowserFileRequest } from "./BrowserPane";
@@ -47,6 +56,20 @@ export interface WorkspaceLayoutHandle {
 }
 
 export type Fullscreen = "none" | "right" | "left";
+
+/**
+ * 关闭标签时的匹配。另存为会把未命名缓冲区的 `path` 换成真实路径、但 `untitledId` 不变；
+ * 「保存并关闭」收尾时父级的标签列表可能还停在另存为之前那一份，按 id 兜住。
+ */
+function sameTabForClose(a: Tab, b: Tab): boolean {
+  if (sameTab(a, b)) return true;
+  return (
+    a.kind === "file" &&
+    b.kind === "file" &&
+    a.untitledId !== undefined &&
+    a.untitledId === b.untitledId
+  );
+}
 
 interface WorkspacePaneProps {
   /** 这个工作区：名字、全部工作目录、以及当前活动根 */
@@ -315,10 +338,34 @@ export function WorkspacePane({
 
   const openFile = useCallback(
     (path: string) => {
-      openTab({ kind: "file", path });
+      openTab(openFileTab(path));
     },
     [openTab],
   );
+
+  /**
+   * 新建未命名缓冲区。序号只在本工作区内自增，标签身份（tabKey）靠它，
+   * 所以关掉再开不会撞车、也不会和已有标签混成一个。
+   */
+  const untitledSeqRef = useRef(0);
+  const newUntitled = useCallback(() => {
+    untitledSeqRef.current += 1;
+    openTab(newUntitledTab(String(untitledSeqRef.current)));
+  }, [openTab]);
+
+  /**
+   * 改标签的元数据（另存为改路径、外部变更改标记）。匹配按**改之前**的 key：
+   * 另存为会把路径换掉，用新路径反查就找不到这条标签了。
+   */
+  const patchOpenTab = useCallback((tab: Tab, patch: TabPatch) => {
+    const key = tabKey(tab);
+    setOpenTabs((current) =>
+      current.map((item) => (tabKey(item) === key ? patchTab(item, patch) : item)),
+    );
+    setActiveTab((current) =>
+      current && tabKey(current) === key ? patchTab(current, patch) : current,
+    );
+  }, []);
 
   /** 从「变更」列表或时间线点进来的：开的是差异视图，不是文件内容 */
   const openDiff = useCallback(
@@ -360,7 +407,7 @@ export function WorkspacePane({
   /** 搜索结果里点一条：打开文件并把光标送到那一处 */
   const openMatch = useCallback(
     (path: string, line: number, column: number, length: number) => {
-      openTab({ kind: "file", path });
+      openTab(openFileTab(path));
       editorRef.current?.revealAt({
         path,
         line,
@@ -396,30 +443,27 @@ export function WorkspacePane({
       }
       return path;
     };
-    setOpenTabs((current) =>
-      current.map((tab) => {
-        const next = nextPath(tab.path);
-        return next === tab.path ? tab : { ...tab, path: next };
-      }),
-    );
-    setActiveTab((current) => {
-      if (!current) return current;
-      const next = nextPath(current.path);
-      return next === current.path ? current : { ...current, path: next };
-    });
+    // 未命名缓冲区没有路径，改名跟它无关，原样留着
+    const renameTab = (tab: Tab): Tab =>
+      tab.path === null ? tab : { ...tab, path: nextPath(tab.path) };
+    setOpenTabs((current) => current.map(renameTab));
+    setActiveTab((current) => (current ? renameTab(current) : current));
   }, []);
 
   /** 文件树里删了东西：落在这些路径下的标签一并关掉，当前标签落到它右边那个 */
   const dropOpenTabs = useCallback(
     (paths: string[]) => {
       if (paths.length === 0) return;
-      const removed = (path: string) => paths.some((item) => isPathInside(path, item));
+      const removed = (tab: Tab) => {
+        const path = tab.path;
+        return path !== null && paths.some((item) => isPathInside(path, item));
+      };
       editorRef.current?.dropPaths(paths);
-      const index = openTabs.findIndex((tab) => removed(tab.path));
+      const index = openTabs.findIndex(removed);
       if (index === -1) return;
-      const rest = openTabs.filter((tab) => !removed(tab.path));
+      const rest = openTabs.filter((tab) => !removed(tab));
       setOpenTabs(rest);
-      if (activeTab && removed(activeTab.path)) {
+      if (activeTab && removed(activeTab)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
       }
     },
@@ -428,12 +472,13 @@ export function WorkspacePane({
 
   const closeTab = useCallback(
     (tab: Tab) => {
-      const index = openTabs.findIndex((item) => sameTab(item, tab));
+      const match = (item: Tab) => sameTabForClose(item, tab);
+      const index = openTabs.findIndex(match);
       if (index === -1) return;
-      const rest = openTabs.filter((item) => !sameTab(item, tab));
+      const rest = openTabs.filter((item) => !match(item));
       setOpenTabs(rest);
       // 关掉的是当前标签时，焦点落到它右边那个（没有就往左退一格）
-      if (activeTab && sameTab(activeTab, tab)) {
+      if (activeTab && match(activeTab)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
       }
     },
@@ -561,6 +606,8 @@ export function WorkspacePane({
                       onReorder={reorderTabs}
                       onCloseAll={closeAllTabs}
                       onCloseOthers={closeOtherTabs}
+                      onNewUntitled={newUntitled}
+                      onPatchTab={patchOpenTab}
                       fullscreen={rightFullscreen}
                       onToggleFullscreen={onToggleRightFullscreen}
                       onSendToTerminal={insertToTerminal}

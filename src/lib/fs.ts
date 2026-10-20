@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type { DiffSource } from "./tabs";
 import type {
   CloneProgress,
@@ -68,6 +68,17 @@ export async function pickFolder(): Promise<string[]> {
 /** 弹目录选择框（单选），返回选中的路径；用户取消时返回 null。克隆时用来选「克隆到哪个目录下」 */
 export async function pickCloneParent(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title: "选择克隆到的位置" });
+  return typeof picked === "string" ? picked : null;
+}
+
+/**
+ * 弹「另存为」文件选择框，返回目标绝对路径；用户取消时返回 null。
+ *
+ * 只负责选路径，**不写盘也不校验沙箱**：写与越界判断由调用方（EditorPane）做——
+ * 目标是否落在当前工作区的某个 root 里，只有它知道。
+ */
+export async function pickSavePath(defaultName: string): Promise<string | null> {
+  const picked = await save({ title: "另存为", defaultPath: defaultName });
   return typeof picked === "string" ? picked : null;
 }
 

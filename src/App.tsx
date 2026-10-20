@@ -573,11 +573,11 @@ function Shell() {
   }, [workspaces]);
 
   /**
-   * 打开着的文件被外部改了（终端、git、别的编辑器、智能体写的）就重读回最新的。
+   * 打开着的文件被外部改了（终端、git、别的编辑器、智能体写的）就交给编辑器自己判断怎么处理。
    *
    * 只订阅一次、按路径分发：每个路径只喂给**它所属工作区**的编辑器，不然切走的工作区
    * 也会跟着重读一遍。一个工作区可能挂着多个工作目录，落在任意一个根下都算它。
-   * 有未保存改动的不覆盖，见 `EditorPane.reload`。
+   * 干净标签自动同步、有未保存改动只打冲突标记，见 `EditorPane.handleExternalChanges`。
    */
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
@@ -589,7 +589,7 @@ function Shell() {
         const mine = paths.filter((path) =>
           workspace.roots.some((root) => isPathInside(path, root)),
         );
-        if (mine.length > 0) void handles.editor?.reload(mine);
+        if (mine.length > 0) void handles.editor?.handleExternalChanges(mine);
       }
     }).then((stop) => {
       if (cancelled) stop();
