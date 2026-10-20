@@ -99,11 +99,11 @@ interface WorkspacePaneProps {
   /** 弹出目录选择框并打开为工作区（编辑器欢迎页入口） */
   onOpenFolder: () => void;
   /**
-   * 交给本工作区打开的跨工作区请求（App 建好临时工作区后回填）。nonce 保证同一条
-   * 路径连点两次也能重新执行；处理完由 `onOpenRequestHandled` 清掉。
+   * 交给本工作区打开的跨工作区请求队列（App 建好临时工作区后回填）。nonce 保证同一条
+   * 路径连点两次也能重新执行；只看队首，处理完带上 nonce 由 `onOpenRequestHandled` 移除。
    */
-  openRequest: { workspaceId: string; path: string; nonce: number } | null;
-  onOpenRequestHandled: () => void;
+  openRequests: Array<{ workspaceId: string; path: string; nonce: number }>;
+  onOpenRequestHandled: (nonce: number) => void;
 }
 
 /**
@@ -128,7 +128,7 @@ export function WorkspacePane({
   onOpenFileAnywhere,
   onOpenRecent,
   onOpenFolder,
-  openRequest,
+  openRequests,
   onOpenRequestHandled,
 }: WorkspacePaneProps) {
   /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
@@ -154,6 +154,8 @@ export function WorkspacePane({
   const [filesReveal, setFilesReveal] = useState<{ path: string; nonce: number } | null>(null);
   /** 上面那个请求的序号：同一条路径再点一次也要重新定位 */
   const filesRevealNonceRef = useRef(0);
+  /** 已经触发过打开请求的 nonce：父级移除状态前可能多渲染一帧，别重复打开 */
+  const handledOpenRequestRef = useRef(0);
   /**
    * 变更中心打开的审阅工作台。非空时以绝对定位盖住整个工作区，
    * 下面的终端 / 编辑器 / 文件树保持挂载和原尺寸，关闭后原样露出。
@@ -479,14 +481,17 @@ export function WorkspacePane({
     });
   }, [openTabs, activeTab, workspace.id]);
 
-  /** App 建好 / 切好临时工作区后转回来的单文件请求 */
+  /** App 建好 / 切好临时工作区后转回来的单文件请求：只看队首，处理完按 nonce 移除 */
   useEffect(() => {
-    if (!openRequest || openRequest.workspaceId !== workspace.id) return;
-    if (ownerRoot(workspace.roots, openRequest.path) !== null) {
-      openFile(openRequest.path);
+    const request = openRequests[0];
+    if (!request || request.workspaceId !== workspace.id) return;
+    if (request.nonce <= handledOpenRequestRef.current) return;
+    handledOpenRequestRef.current = request.nonce;
+    if (ownerRoot(workspace.roots, request.path) !== null) {
+      openFile(request.path);
     }
-    onOpenRequestHandled();
-  }, [openRequest, workspace.id, workspace.roots, openFile, onOpenRequestHandled]);
+    onOpenRequestHandled(request.nonce);
+  }, [openRequests, workspace.id, workspace.roots, openFile, onOpenRequestHandled]);
 
   /**
    * 改标签的元数据（另存为改路径、外部变更改标记）。匹配按**改之前**的 key：

@@ -140,15 +140,22 @@ function Shell() {
   /** 系统拖放文件 / 文件夹进窗口时显示遮罩 */
   const [dropActive, setDropActive] = useState(false);
   /**
-   * 跨工作区打开文件的请求：App 找到（或新建）目标工作区后，把路径交给那个实例。
-   * nonce 让同一条路径连点两次也能再执行一次。
+   * 跨工作区打开文件的请求队列：App 找到（或新建）目标工作区后，把路径交给那个实例。
+   * 用数组而不是单槽：一次拖进多个文件、或连续按 Ctrl+O 时，后一个不能覆盖前一个。
+   * nonce 让同一条路径连点两次也能再执行一次，处理完按 nonce 移除。
    */
-  const [openRequest, setOpenRequest] = useState<{
-    workspaceId: string;
-    path: string;
-    nonce: number;
-  } | null>(null);
+  const [openRequests, setOpenRequests] = useState<
+    Array<{
+      workspaceId: string;
+      path: string;
+      nonce: number;
+    }>
+  >([]);
   const openRequestNonceRef = useRef(0);
+  const enqueueOpenRequest = useCallback((workspaceId: string, path: string) => {
+    const nonce = (openRequestNonceRef.current += 1);
+    setOpenRequests((current) => [...current, { workspaceId, path, nonce }]);
+  }, []);
 
   /** 关工作区时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
@@ -398,11 +405,7 @@ function Shell() {
           const next = await openWorkspace(owner);
           if (!next) return;
         }
-        setOpenRequest({
-          workspaceId: owner.id,
-          path,
-          nonce: (openRequestNonceRef.current += 1),
-        });
+        enqueueOpenRequest(owner.id, path);
         return;
       }
 
@@ -419,11 +422,7 @@ function Shell() {
           const next = await openWorkspace(reusable);
           if (!next) return;
         }
-        setOpenRequest({
-          workspaceId: reusable.id,
-          path,
-          nonce: (openRequestNonceRef.current += 1),
-        });
+        enqueueOpenRequest(reusable.id, path);
         return;
       }
 
@@ -435,9 +434,9 @@ function Shell() {
         activeRoot: dir,
       });
       if (!next) return;
-      setOpenRequest({ workspaceId: next.id, path, nonce: (openRequestNonceRef.current += 1) });
+      enqueueOpenRequest(next.id, path);
     },
-    [openWorkspace, touchActivity],
+    [openWorkspace, touchActivity, enqueueOpenRequest],
   );
 
   /** 欢迎页 / 菜单里的「打开文件夹」：选完按工作区规则打开 */
@@ -461,8 +460,10 @@ function Shell() {
   }, [openFileAnywhere]);
   chooseFileRef.current = chooseFile;
 
-  /** 目标工作区处理完单文件请求后清掉，免得实例重挂载时又打开一次 */
-  const handleOpenRequestHandled = useCallback(() => setOpenRequest(null), []);
+  /** 目标工作区处理完单文件请求后按 nonce 移除，免得实例重挂载时又打开一次 */
+  const handleOpenRequestHandled = useCallback((nonce: number) => {
+    setOpenRequests((current) => current.filter((item) => item.nonce !== nonce));
+  }, []);
 
   /**
    * 「编辑工作区」提交：改名字与工作目录。
@@ -510,6 +511,8 @@ function Shell() {
       // 工作区实例要卸载了，它那份标签会话不再有用；下次打开从空标签开始
       clearSession(workspace.id);
       handlesRef.current.delete(workspace.id);
+      // 还没来得及消费的打开请求跟着作废，别让队首永远卡在一个已关闭的工作区上
+      setOpenRequests((current) => current.filter((item) => item.workspaceId !== workspace.id));
 
       const rest = openedRef.current.filter((id) => id !== workspace.id);
       setOpened(rest);
@@ -978,7 +981,7 @@ function Shell() {
             onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
             onOpenRecent={(path) => void openFileAnywhere(path)}
             onOpenFolder={() => void chooseFolder()}
-            openRequest={openRequest}
+            openRequests={openRequests}
             onOpenRequestHandled={handleOpenRequestHandled}
           />
         );
