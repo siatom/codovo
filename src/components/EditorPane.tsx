@@ -778,7 +778,6 @@ export function EditorPane({
   const [translationPaths, setTranslationPaths] = useState<ReadonlySet<string>>(new Set());
   const translationPathsRef = useRef(translationPaths);
   translationPathsRef.current = translationPaths;
-  const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
   /** 标题栏「⋯」菜单的视口坐标；null = 不显示 */
@@ -1196,7 +1195,6 @@ export function EditorPane({
       if (targets.length === 0) return true;
 
       const { editorFormatOnSave, editorCheckSyntaxOnSave } = settingsRef.current;
-      setSaving(true);
       const saved = new Set<string>();
       let ok = true;
       try {
@@ -1275,7 +1273,6 @@ export function EditorPane({
         ok = false;
         setStatus({ kind: "error", message: `保存失败：${reason}` });
       } finally {
-        setSaving(false);
         if (saved.size > 0) {
           setDirtyPaths((prev) => {
             let changed = false;
@@ -2968,6 +2965,36 @@ export function EditorPane({
     }
   };
 
+  /**
+   * Monaco 聚焦时的 Ctrl+W 兜底。
+   *
+   * 上面的 onPaneKeyDown 挂在 section 的合成捕获阶段，标签栏 / 状态栏都收得到；但焦点
+   * 落在 Monaco 的隐藏输入层时，按键会先被 Monaco 自己的键盘服务处理，实测到不了
+   * section。这里用窗口级原生捕获监听补一条：焦点确实在文本 / 差异编辑器里时，按
+   * `closeTab` 关闭当前标签。窗口捕获先于 Monaco 和 React 的合成事件，能稳定生效；
+   * 终端、输入框不在这些容器里，不受影响。
+   */
+  useEffect(() => {
+    const onEditorKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (closeRequest || syntaxPrompt) return;
+      const target = event.target;
+      if (
+        !(target instanceof Node) ||
+        (!(containerRef.current?.contains(target) ?? false) &&
+          !(diffContainerRef.current?.contains(target) ?? false))
+      ) {
+        return;
+      }
+      if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = activeRef.current;
+      if (current) closeTabRef.current(current);
+    };
+    window.addEventListener("keydown", onEditorKeyDown, true);
+    return () => window.removeEventListener("keydown", onEditorKeyDown, true);
+  }, [closeRequest, syntaxPrompt, settings.shortcuts]);
+
   const isDiffTab = active?.kind === "diff";
   const activeKey = active ? tabKey(active) : null;
   /** 当前标签是普通文件（含未命名缓冲区）时才有文件生命周期动作 */
@@ -3213,7 +3240,6 @@ export function EditorPane({
    */
   const showDiffBar = isDiffTab && diffStatus.kind === "ready";
 
-  const activeDirty = activeKey !== null && dirtyPaths.has(activeKey);
   const overlay: Status = isDiffTab ? diffStatus : status;
 
   // 标签右键菜单要显示哪些项，取决于这个标签当前的状态；先算好，JSX 里就不再嵌逻辑
@@ -3541,18 +3567,7 @@ export function EditorPane({
             <IconWand className="h-3.5 w-3.5" />
           </button>
         )}
-        {activeDirty && activeCached && !activeCached.truncated && !activeCached.readOnly && (
-          <button
-            type="button"
-            onClick={() => saveRef.current()}
-            disabled={saving}
-            className="shrink-0 rounded border border-accent-line px-2 py-0.5 text-[11px] text-accent-soft hover:bg-active disabled:opacity-50"
-          >
-            {/* 文案跟随可配置快捷键，改键后这里也跟着变，不再写死 Ctrl+S */}
-            {saving ? "保存中…" : `保存 ${formatShortcut(settings.shortcuts["editor.save"])}`}
-          </button>
-        )}
-        {/* 文件生命周期入口：另存为 / 放弃变更在标签右键菜单里，标题栏只保留常用的保存 */}
+        {/* 文件生命周期入口：另存为 / 放弃变更在标签右键菜单里 */}
         {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
