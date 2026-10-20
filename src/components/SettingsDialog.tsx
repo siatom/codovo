@@ -60,20 +60,64 @@ import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconGripVertical, IconPlus } from "./icons";
+import {
+  IconBot,
+  IconCheck,
+  IconChevronDown,
+  IconClose,
+  IconCopy,
+  IconDownload,
+  IconGripVertical,
+  IconKeyboard,
+  IconPalette,
+  IconPencil,
+  IconPlus,
+  IconSettings,
+  IconTerminal,
+} from "./icons";
 
 interface SettingsDialogProps {
   onClose: () => void;
 }
 
-/** 分类靠左边的竖排 tab，内容区一次只显示一组 */
+/** 分类靠左边的竖排 tab，内容区一次只显示一组。desc 作为内容区页头的一句话说明 */
 const TABS = [
-  { id: "appearance", label: "外观" },
-  { id: "terminal", label: "终端" },
-  { id: "editor", label: "编辑器" },
-  { id: "shortcuts", label: "快捷键" },
-  { id: "agent", label: "AI" },
-  { id: "dependencies", label: "依赖" },
+  {
+    id: "appearance",
+    label: "外观",
+    desc: "主题配色、界面字体与右栏模块",
+    icon: IconPalette,
+  },
+  {
+    id: "terminal",
+    label: "终端",
+    desc: "终端程序、配色方案与 AI CLI",
+    icon: IconTerminal,
+  },
+  {
+    id: "editor",
+    label: "编辑器",
+    desc: "排版方式、缩进与保存行为",
+    icon: IconPencil,
+  },
+  {
+    id: "shortcuts",
+    label: "快捷键",
+    desc: "为应用命令录制自定义键位",
+    icon: IconKeyboard,
+  },
+  {
+    id: "agent",
+    label: "AI",
+    desc: "模型提供商、文档翻译与助手服务",
+    icon: IconBot,
+  },
+  {
+    id: "dependencies",
+    label: "依赖",
+    desc: "检查并安装运行所需的命令行工具",
+    icon: IconDownload,
+  },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -165,18 +209,31 @@ const LINE_HEIGHT_OPTIONS: { value: EditorLineHeight; label: string }[] = [
 ];
 
 const TEXT_INPUT =
-  "w-full rounded-md border border-line-strong bg-surface px-2 py-1 text-[12px] text-fg outline-none focus:border-accent";
+  "w-full rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-[12px] text-fg outline-none transition-colors placeholder:text-fg-faint hover:border-line-hover focus:border-accent focus:ring-2 focus:ring-accent/15";
 
 const LIST_ACTION =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger";
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-faint transition-colors hover:bg-hover hover:text-danger";
 
 /** 分组标题右端的行内操作按钮，和列表里的删除按钮同一套视觉 */
 const HEAD_ACTION =
-  "flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg";
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg-faint transition-colors hover:bg-hover hover:text-fg";
+
+/** 设置页里的次级按钮：描边、悬停才染色，避免满屏都是实心按钮 */
+const BUTTON =
+  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:border-line-hover hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:bg-transparent disabled:hover:text-fg-muted";
+
+const BUTTON_SM =
+  "inline-flex shrink-0 items-center justify-center gap-1 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted transition-colors hover:border-line-hover hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:bg-transparent disabled:hover:text-fg-muted";
+
+const BUTTON_DANGER =
+  "inline-flex shrink-0 items-center justify-center gap-1 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted transition-colors hover:border-danger-line hover:bg-danger-bg hover:text-danger disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:bg-transparent disabled:hover:text-fg-muted";
+
+const BUTTON_PRIMARY =
+  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-accent-line bg-accent/10 px-2.5 py-1 text-[12px] text-accent-soft transition-colors hover:bg-accent/15 disabled:cursor-not-allowed disabled:opacity-40";
 
 /** 底部的「恢复默认设置」：描边按钮，悬停才透出危险色——它会把密钥和 CLI 列表一起清掉 */
 const RESET_BUTTON =
-  "rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:border-danger-line hover:bg-danger-bg hover:text-danger";
+  "rounded-lg border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted transition-colors hover:border-danger-line hover:bg-danger-bg hover:text-danger";
 
 /** 两次边界滚轮事件间隔小于它，就当作触控板的同一次惯性滑动：只有停手后再滑才算新的一下 */
 const EDGE_GAP_MS = 200;
@@ -200,11 +257,11 @@ function Field({
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 text-[12px] text-fg-muted">{label}</span>
+        <span className="min-w-0 flex-1 text-[12px] font-medium text-fg-muted">{label}</span>
         {action}
       </div>
       <div className="flex items-center gap-2">{children}</div>
-      {hint && <p className="text-[11px] text-fg-faint">{hint}</p>}
+      {hint && <p className="text-[11px] leading-relaxed text-fg-faint">{hint}</p>}
     </div>
   );
 }
@@ -227,12 +284,13 @@ function Row({
         <span className="w-24 shrink-0 text-[12px] text-fg-muted">{label}</span>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2">{children}</div>
       </div>
-      {hint && <p className="pl-[108px] text-[11px] text-fg-faint">{hint}</p>}
+      {hint && <p className="pl-[108px] text-[11px] leading-relaxed text-fg-faint">{hint}</p>}
     </div>
   );
 }
 
-/** 设置页里的一组字段：一道细分隔线 + 标题 +（可选）右侧操作，让长页面能扫读 */
+/** 设置页里的一组字段：标题 + 说明 +（可选）右侧操作，字段收进一张浅色卡片里，
+    长页面也能按块扫读。标题右侧留一条细线，把操作按钮和标题连成同一行。 */
 function Section({
   title,
   hint,
@@ -249,15 +307,22 @@ function Section({
   children: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-3 border-t border-line pt-4 first:border-t-0 first:pt-0">
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-2">
-          <h3 className="min-w-0 flex-1 text-[12px] font-semibold text-fg">{title}</h3>
+    <section className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1 px-0.5">
+        <div className="flex min-h-6 items-center gap-2">
+          <h3 className="shrink-0 text-[12px] font-semibold tracking-wide text-fg">{title}</h3>
+          <span className="h-px min-w-2 flex-1 bg-line" />
           {action}
         </div>
-        {hint && <p className="text-[11px] text-fg-faint">{hint}</p>}
+        {hint && <p className="text-[11px] leading-relaxed text-fg-faint">{hint}</p>}
       </div>
-      <div className={`flex flex-col ${dense ? "gap-2" : "gap-3"}`}>{children}</div>
+      <div
+        className={`flex flex-col rounded-xl border border-line bg-surface/50 p-3.5 ${
+          dense ? "gap-2.5" : "gap-3.5"
+        }`}
+      >
+        {children}
+      </div>
     </section>
   );
 }
@@ -335,10 +400,10 @@ function ShortcutRecorder({
           setRecording((current) => !current);
           setError("");
         }}
-        className={`min-w-28 rounded-md border px-2 py-1 text-left text-[12px] ${
+        className={`min-w-32 rounded-lg border bg-surface px-2.5 py-1.5 text-left text-[12px] transition-colors ${
           recording
-            ? "border-accent text-accent"
-            : "border-line-strong text-fg hover:border-accent"
+            ? "border-accent text-accent ring-2 ring-accent/15"
+            : "border-line-strong text-fg hover:border-line-hover"
         }`}
       >
         {recording ? "按下组合键…" : formatShortcut(combo)}
@@ -364,9 +429,9 @@ function SizeSlider({
         max={FONT_SIZE_MAX}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="min-w-0 flex-1 accent-accent"
+        className="codedock-range min-w-0 flex-1"
       />
-      <span className="w-9 shrink-0 text-right text-[12px] text-fg-dim tabular-nums">
+      <span className="w-11 shrink-0 rounded-md bg-hover px-1 py-0.5 text-center text-[11px] text-fg-dim tabular-nums">
         {value}px
       </span>
     </>
@@ -387,7 +452,7 @@ function BoolToggle({
   onChange: (next: boolean) => void;
 }) {
   return (
-    <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong p-0.5">
+    <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong bg-surface/60 p-0.5">
       {options.map((option) => {
         const disabled = option.value === disabledValue;
         return (
@@ -396,9 +461,9 @@ function BoolToggle({
             type="button"
             onClick={() => onChange(option.value)}
             disabled={disabled}
-            className={`rounded-md px-2.5 py-1 text-[12px] ${
+            className={`rounded-md px-2.5 py-1 text-[12px] transition-colors ${
               value === option.value
-                ? "bg-selected text-fg"
+                ? "bg-selected text-fg shadow-sm"
                 : "text-fg-dim hover:bg-hover hover:text-fg"
             } ${disabled ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""}`}
           >
@@ -451,7 +516,7 @@ function Select<T extends string>({
               overscroll-contain 再挡住浮层滚到底后的链式滚动 */}
           <div
             onWheel={(event) => event.stopPropagation()}
-            className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col overflow-auto overscroll-contain rounded border border-line-strong bg-raised py-1 shadow-lg"
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col gap-px overflow-auto overscroll-contain rounded-lg border border-line-strong bg-raised p-1 shadow-2xl"
           >
             {options.map((item) => (
               <button
@@ -461,8 +526,10 @@ function Select<T extends string>({
                   setOpen(false);
                   onChange(item.value);
                 }}
-                className={`flex items-center gap-2 border-l-2 px-3 py-1.5 text-left text-[12px] ${
-                  value === item.value ? "border-accent bg-accent/30 text-accent" : "border-transparent text-fg-muted hover:bg-accent/20 hover:text-fg"
+                className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12px] transition-colors ${
+                  value === item.value
+                    ? "bg-selected text-fg"
+                    : "text-fg-muted hover:bg-hover hover:text-fg"
                 }`}
               >
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
@@ -555,8 +622,8 @@ function TerminalThemeSelect({
         setOpen(false);
         onChange(key);
       }}
-      className={`flex items-center gap-2 border-l-2 px-3 py-1.5 text-left text-[12px] ${
-        value === key ? "border-accent bg-accent/30 text-accent" : "border-transparent text-fg-muted hover:bg-accent/20 hover:text-fg"
+      className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12px] transition-colors ${
+        value === key ? "bg-selected text-fg" : "text-fg-muted hover:bg-hover hover:text-fg"
       }`}
     >
       {swatch(key)}
@@ -597,7 +664,7 @@ function TerminalThemeSelect({
               overscroll-contain 再挡住浮层滚到底后的链式滚动 */}
           <div
             onWheel={(event) => event.stopPropagation()}
-            className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col overflow-auto overscroll-contain rounded border border-line-strong bg-raised py-1 shadow-lg"
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col gap-px overflow-auto overscroll-contain rounded-lg border border-line-strong bg-raised p-1 shadow-2xl"
           >
             {option("", "跟随界面主题")}
             {TERMINAL_THEME_OPTIONS.map((item) => option(item.key, item.label))}
@@ -718,7 +785,7 @@ function ThemeSelect() {
             role="listbox"
             onMouseLeave={() => previewTheme(null)}
             onWheel={(event) => event.stopPropagation()}
-            className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-full flex-col overflow-auto overscroll-contain rounded border border-line-strong bg-raised py-1 shadow-lg"
+            className="absolute top-full left-0 z-40 mt-1 flex max-h-72 w-full flex-col gap-px overflow-auto overscroll-contain rounded-lg border border-line-strong bg-raised p-1 shadow-2xl"
           >
             {THEME_OPTIONS.map((item, index) => (
               <button
@@ -728,12 +795,12 @@ function ThemeSelect() {
                 aria-selected={preference === item.value}
                 onMouseEnter={() => highlight(index)}
                 onClick={() => pick(item.value)}
-                className={`flex items-center gap-2 border-l-2 px-3 py-1.5 text-left text-[12px] ${
+                className={`flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12px] transition-colors ${
                   preference === item.value
-                    ? "border-accent bg-accent/30 text-accent"
+                    ? "bg-selected text-fg"
                     : activeIndex === index
-                      ? "border-transparent bg-accent/20 text-fg"
-                      : "border-transparent text-fg-muted hover:bg-accent/20 hover:text-fg"
+                      ? "bg-hover text-fg"
+                      : "text-fg-muted hover:bg-hover hover:text-fg"
                 }`}
               >
                 <ThemeSwatch swatch={item.swatch} />
@@ -795,8 +862,8 @@ interface MoveDrag {
 }
 
 /** 能缩到多小，再小导航栏和内容就挤没了 */
-const DIALOG_MIN_WIDTH = 380;
-const DIALOG_MIN_HEIGHT = 320;
+const DIALOG_MIN_WIDTH = 520;
+const DIALOG_MIN_HEIGHT = 380;
 
 function clamp(min: number, value: number, max: number): number {
   return Math.max(min, Math.min(value, max));
@@ -836,12 +903,12 @@ function Toggle({
       aria-checked={checked}
       title={title}
       onClick={() => onChange(!checked)}
-      className={`flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors ${
-        checked ? "bg-accent" : "bg-active"
+      className={`flex h-5 w-9 shrink-0 items-center rounded-full px-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+        checked ? "bg-accent-strong" : "bg-active hover:bg-line-strong"
       }`}
     >
       <span
-        className={`h-4 w-4 rounded-full bg-app transition-transform ${
+        className={`h-4 w-4 rounded-full bg-app shadow-sm transition-transform ${
           checked ? "translate-x-4" : ""
         }`}
       />
@@ -966,7 +1033,7 @@ function ModelPicker({
   const selectable = shown.filter((model) => !existing.has(model.id)).map((model) => model.id);
 
   return (
-    <div className="flex w-full flex-col gap-2 rounded-md border border-line-strong bg-surface p-2">
+    <div className="flex w-full flex-col gap-2.5 rounded-lg border border-line-strong bg-raised p-2.5">
       <div className="flex items-center gap-2">
         <input
           type="text"
@@ -980,9 +1047,7 @@ function ModelPicker({
           type="button"
           onClick={() => onSelectAll(selectable)}
           disabled={selectable.length === 0}
-          className={`shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg ${
-            selectable.length === 0 ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""
-          }`}
+          className={BUTTON_SM}
         >
           {selectable.length > 0 && selectable.every((id) => picked.has(id))
             ? "全不选"
@@ -990,7 +1055,7 @@ function ModelPicker({
         </button>
       </div>
 
-      <div className="flex max-h-56 min-h-0 flex-col overflow-y-auto rounded border border-line">
+      <div className="flex max-h-56 min-h-0 flex-col overflow-y-auto rounded-lg border border-line bg-surface">
         {shown.length === 0 ? (
           <p className="px-2 py-3 text-center text-[11px] text-fg-faint">没有匹配的模型</p>
         ) : (
@@ -1003,12 +1068,12 @@ function ModelPicker({
                 type="button"
                 disabled={added}
                 onClick={() => onToggle(model.id)}
-                className={`flex items-center gap-2 px-2 py-1 text-left ${
+                className={`flex items-center gap-2 px-2.5 py-1.5 text-left transition-colors ${
                   added ? "cursor-not-allowed opacity-50" : "hover:bg-hover"
                 }`}
               >
                 <span
-                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${
+                  className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border transition-colors ${
                     on ? "border-accent bg-accent text-app" : "border-line-strong"
                   }`}
                 >
@@ -1033,17 +1098,14 @@ function ModelPicker({
         <span className="min-w-0 flex-1 text-[11px] text-fg-faint">
           已选 {picked.size} 个
         </span>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
-        >
+        <button type="button" onClick={onCancel} className={BUTTON}>
           取消
         </button>
         <button
           type="button"
           onClick={onConfirm}
-          className="rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+          disabled={picked.size === 0}
+          className={BUTTON_PRIMARY}
         >
           添加选中的
         </button>
@@ -1185,8 +1247,8 @@ function ProviderEditor({
   };
 
   return (
-    <div className="w-full overflow-hidden rounded-md border border-line-strong">
-      <div className="flex items-center gap-1.5 p-2">
+    <div className="w-full overflow-hidden rounded-lg border border-line-strong bg-raised transition-colors">
+      <div className="flex items-center gap-1.5 p-2.5">
         <CollapseHeader
           open={open}
           onToggle={onToggle}
@@ -1194,7 +1256,7 @@ function ProviderEditor({
           label={provider.name}
         />
         {isDefault && (
-          <span className="shrink-0 rounded bg-selected px-1.5 py-0.5 text-[11px] text-fg-dim">
+          <span className="shrink-0 rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-soft ring-1 ring-accent/20">
             默认
           </span>
         )}
@@ -1218,7 +1280,7 @@ function ProviderEditor({
       </div>
 
       {open && (
-        <div className="flex flex-col gap-3 border-t border-line p-2">
+        <div className="flex flex-col gap-3 border-t border-line p-3">
           <Field label="名称" hint="只用于界面展示，改名不会动 ID">
             <input
               type="text"
@@ -1258,7 +1320,7 @@ function ProviderEditor({
             <button
               type="button"
               onClick={() => setRevealKey((current) => !current)}
-              className="shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
+              className={BUTTON_SM}
             >
               {revealKey ? "隐藏" : "显示"}
             </button>
@@ -1267,11 +1329,7 @@ function ProviderEditor({
               onClick={() => void saveKey()}
               disabled={busy || draftKey.trim() === "" || secretStoreError !== ""}
               title={secretStoreError !== "" ? secretStoreError : "写进系统钥匙串"}
-              className={`shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg ${
-                busy || draftKey.trim() === "" || secretStoreError !== ""
-                  ? "cursor-not-allowed opacity-40 hover:bg-transparent"
-                  : ""
-              }`}
+              className={BUTTON_SM}
             >
               保存
             </button>
@@ -1281,9 +1339,7 @@ function ProviderEditor({
                 onClick={() => void clearKey()}
                 disabled={busy}
                 title="从系统钥匙串删掉这个提供商的密钥"
-                className={`shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:border-danger-line hover:bg-danger-bg hover:text-danger ${
-                  busy ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""
-                }`}
+                className={BUTTON_DANGER}
               >
                 清除
               </button>
@@ -1393,11 +1449,7 @@ function ProviderEditor({
               type="button"
               onClick={() => void test()}
               disabled={provider.baseUrl.trim() === "" || busy}
-              className={`rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg ${
-                provider.baseUrl.trim() === "" || busy
-                  ? "cursor-not-allowed opacity-40 hover:bg-transparent"
-                  : ""
-              }`}
+              className={BUTTON}
             >
               {busy ? "测试中…" : "测试连接"}
             </button>
@@ -1407,9 +1459,7 @@ function ProviderEditor({
                 onClick={onSetDefault}
                 disabled={missing}
                 title={missing ? "先填接口地址、并至少启用一个模型" : "设为全局默认"}
-                className={`rounded-md border border-line-strong px-2.5 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg ${
-                  missing ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""
-                }`}
+                className={BUTTON}
               >
                 设为默认
               </button>
@@ -1472,7 +1522,7 @@ function DependencyRow({
   return (
     <div
       className={`group flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors ${
-        "border-line bg-surface hover:border-line-hover"
+        "border-line bg-raised/70 hover:border-line-hover hover:bg-raised"
       }`}
     >
       <div
@@ -1509,7 +1559,7 @@ function DependencyRow({
           type="button"
           disabled={checking || installing}
           onClick={() => onInstall(id)}
-          className="flex shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-2.5 py-1.5 text-[12px] text-fg-muted transition-colors hover:border-accent-line hover:bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-50"
+          className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line-strong px-2.5 py-1.5 text-[12px] text-fg-muted transition-colors hover:border-accent-line hover:bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-50"
         >
           {checking ? "检查中…" : installing ? "安装中…" : "安装"}
         </button>
@@ -2023,10 +2073,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     moveRef.current = null;
   };
 
+  /** 当前页的标题与说明；tab 一定在 TABS 里，兜底只是让 TS 不用非空断言 */
+  const currentTab = TABS.find((item) => item.id === tab) ?? TABS[0];
+
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+      className="codedock-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-[2px]"
       // 认「按下点就在遮罩上」而不是 click：从弹窗内按下、拖到遮罩上松开会误判成点外部
       onMouseDown={(event) => {
         if (event.button !== 0 || event.target !== event.currentTarget) return;
@@ -2053,7 +2106,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               }
             : undefined
         }
-        className="relative flex h-[620px] max-h-full w-[640px] max-w-full flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-lg"
+        className="codedock-dialog-in relative flex h-[640px] max-h-full w-[780px] max-w-full flex-col overflow-hidden rounded-2xl border border-line-strong bg-raised shadow-[0_24px_80px_-16px_rgb(0_0_0_/_0.7)]"
         onClick={(event) => event.stopPropagation()}
       >
         {/* 四边四角都能拖着改大小，热区压在最上层 */}
@@ -2075,35 +2128,51 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
           onPointerMove={onMoveMove}
           onPointerUp={onMoveUp}
           onPointerCancel={onMoveUp}
-          className="flex h-11 shrink-0 cursor-move items-center border-b border-line px-4"
+          className="flex h-14 shrink-0 cursor-move items-center border-b border-line px-5 select-none"
         >
-          <span className="flex-1 text-[13px] font-semibold text-fg">设置</span>
+          <div className="flex flex-1 items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent/10 text-accent ring-1 ring-accent/20">
+              <IconSettings className="h-4 w-4" />
+            </span>
+            <span className="text-[13px] font-semibold tracking-wide text-fg">设置</span>
+          </div>
           <button
             type="button"
             onClick={onClose}
             title="关闭"
-            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg"
+            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-fg-dim transition-colors hover:bg-hover hover:text-fg"
           >
             <IconClose className="h-3.5 w-3.5" />
           </button>
         </header>
 
         <div className="flex min-h-0 flex-1">
-          <nav className="flex w-28 shrink-0 flex-col gap-0.5 border-r border-line p-2">
-            {TABS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setTab(item.id)}
-                className={`rounded-md px-2.5 py-1.5 text-left text-[12px] ${
-                  tab === item.id
-                    ? "bg-selected text-fg"
-                    : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
+          <nav className="flex w-[184px] shrink-0 flex-col gap-0.5 border-r border-line bg-panel/30 p-2.5">
+            {TABS.map((item) => {
+              const Icon = item.icon;
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-current={active ? "page" : undefined}
+                  onClick={() => setTab(item.id)}
+                  className={`group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12px] transition-colors ${
+                    active
+                      ? "bg-selected text-fg"
+                      : "text-fg-dim hover:bg-hover hover:text-fg"
+                  }`}
+                >
+                  <Icon
+                    className={`h-4 w-4 transition-colors ${
+                      active ? "text-accent" : "text-fg-icon group-hover:text-fg-muted"
+                    }`}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {active && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+                </button>
+              );
+            })}
           </nav>
 
           {/* key 用 tab：切分类时容器重建，滚动位置跟着归零 */}
@@ -2112,7 +2181,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             onWheel={onWheel}
             className="min-h-0 flex-1 overflow-auto"
           >
-            <div className="flex flex-col gap-3.5 p-4">
+            <div className="codedock-tab-in flex flex-col gap-5 p-5">
+              <div className="flex flex-col gap-1">
+                <h2 className="text-[15px] font-semibold tracking-tight text-fg">
+                  {currentTab.label}
+                </h2>
+                <p className="text-[11px] leading-relaxed text-fg-faint">{currentTab.desc}</p>
+              </div>
               {tab === "appearance" && (
                 <>
                   <Section title="主题" dense>
@@ -2287,50 +2362,49 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
               {tab === "terminal" && (
                 <>
-                  <Field
-                    label="终端程序"
-                    hint="只对新建的终端生效；已在运行的会话不受影响"
-                  >
-                    <TerminalShellSelect
-                      value={settings.terminalShell}
-                      onChange={(terminalShell) => update({ terminalShell })}
-                    />
-                  </Field>
-                  <Field
-                    label="配色主题"
-                    hint="默认跟界面的深/浅色走；选了具体主题就固定下来"
-                  >
-                    <TerminalThemeSelect
-                      value={settings.terminalTheme}
-                      fallback={theme}
-                      preference={palette}
-                      onChange={(terminalTheme) => update({ terminalTheme })}
-                    />
-                  </Field>
-                  <Field
-                    label="GPU 加速"
-                    hint="用 WebGL 渲染终端，重输出时更省 CPU；个别显卡 / 驱动上会出现花屏（输出过程中画面花掉、得调一下布局才恢复），关掉即退回内置渲染器。只对新建的终端生效"
-                  >
-                    <BoolToggle
-                      value={settings.terminalGpuAcceleration}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(terminalGpuAcceleration) =>
-                        update({ terminalGpuAcceleration })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="等待提示"
-                    hint="终端里 AI CLI 停在需要输入的提示上、或一轮任务跑完回到空闲时，在标签和侧栏标出来；靠输出特征判断，可能误报"
-                  >
-                    <BoolToggle
-                      value={settings.terminalWaitHint}
-                      options={VISIBLE_OPTIONS}
-                      onChange={(terminalWaitHint) => update({ terminalWaitHint })}
-                    />
-                  </Field>
-                  <Field
-                    label="AI CLI"
+                  <Section title="终端" hint="只影响新建的终端；已在运行的会话保持原样">
+                    <Field label="终端程序">
+                      <TerminalShellSelect
+                        value={settings.terminalShell}
+                        onChange={(terminalShell) => update({ terminalShell })}
+                      />
+                    </Field>
+                    <Field
+                      label="配色主题"
+                      hint="默认跟界面的深/浅色走；选了具体主题就固定下来"
+                    >
+                      <TerminalThemeSelect
+                        value={settings.terminalTheme}
+                        fallback={theme}
+                        preference={palette}
+                        onChange={(terminalTheme) => update({ terminalTheme })}
+                      />
+                    </Field>
+                    <Field
+                      label="GPU 加速"
+                      hint="用 WebGL 渲染终端，重输出时更省 CPU；个别显卡 / 驱动上会出现花屏（输出过程中画面花掉、得调一下布局才恢复），关掉即退回内置渲染器。只对新建的终端生效"
+                    >
+                      <BoolToggle
+                        value={settings.terminalGpuAcceleration}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(terminalGpuAcceleration) =>
+                          update({ terminalGpuAcceleration })
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="等待提示"
+                      hint="终端里 AI CLI 停在需要输入的提示上、或一轮任务跑完回到空闲时，在标签和侧栏标出来；靠输出特征判断，可能误报"
+                    >
+                      <BoolToggle
+                        value={settings.terminalWaitHint}
+                        options={VISIBLE_OPTIONS}
+                        onChange={(terminalWaitHint) => update({ terminalWaitHint })}
+                      />
+                    </Field>
+                  </Section>
+                  <Section
+                    title="AI CLI"
                     hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中。按住左侧把手可拖动调整顺序"
                     action={
                       <button
@@ -2354,113 +2428,119 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       commands={settings.aiCommands}
                       onChange={(aiCommands) => update({ aiCommands })}
                     />
-                  </Field>
+                  </Section>
                 </>
               )}
 
               {tab === "editor" && (
                 <>
-                  <Field
-                    label="缩进宽度"
-                    hint="按文件内容自动探测是 Monaco 的默认行为；选了具体宽度就固定下来"
-                  >
-                    <Select
-                      value={settings.editorIndent}
-                      options={INDENT_OPTIONS}
-                      onChange={(editorIndent) => update({ editorIndent })}
-                    />
-                  </Field>
-                  <Field label="缩略图" hint="编辑器右侧的 minimap（代码缩略图）">
-                    <BoolToggle
-                      value={settings.editorMinimap}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(editorMinimap) => update({ editorMinimap })}
-                    />
-                  </Field>
-                  <Field label="自动换行" hint="长行在编辑器里自动折行；关掉后按原样横向滚动">
-                    <BoolToggle
-                      value={settings.editorWordWrap}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(editorWordWrap) => update({ editorWordWrap })}
-                    />
-                  </Field>
-                  <Field label="行号" hint="编辑器左侧的行号栏。差异视图同样跟着变">
-                    <BoolToggle
-                      value={settings.editorLineNumbers}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(editorLineNumbers) => update({ editorLineNumbers })}
-                    />
-                  </Field>
-                  <Field
-                    label="当前行高亮"
-                    hint="把光标所在的那一行（连同行号）标出来；关掉后编辑区更干净，但不好定位光标"
-                  >
-                    <BoolToggle
-                      value={settings.editorHighlightActiveLine}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(editorHighlightActiveLine) =>
-                        update({ editorHighlightActiveLine })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="行高"
-                    hint="存的是倍数，按「字号 × 倍数」交给 Monaco，所以改字号时行距跟着一起变；Monaco 自己的默认约为 1.35（Windows / Linux）/ 1.5（macOS）"
-                  >
-                    <Select
-                      value={settings.editorLineHeight}
-                      options={LINE_HEIGHT_OPTIONS}
-                      onChange={(editorLineHeight) => update({ editorLineHeight })}
-                    />
-                  </Field>
-                  <Field
-                    label="自动保存"
-                    hint="四种时机照 VS Code 来；有未保存改动的文件都会写回磁盘"
-                  >
-                    <Select
-                      value={settings.editorAutoSave}
-                      options={AUTO_SAVE_OPTIONS}
-                      onChange={(editorAutoSave) => update({ editorAutoSave })}
-                    />
-                  </Field>
-                  {settings.editorAutoSave === "afterDelay" && (
-                    <Field label="自动保存延迟" hint="停手多久之后落盘">
-                      <input
-                        type="number"
-                        min={AUTOSAVE_DELAY_MIN}
-                        max={AUTOSAVE_DELAY_MAX}
-                        step={100}
-                        value={settings.editorAutoSaveDelay}
-                        onChange={(event) =>
-                          update({
-                            editorAutoSaveDelay: Number(event.target.value),
-                          })
-                        }
-                        className={TEXT_INPUT}
+                  <Section title="排版">
+                    <Field
+                      label="缩进宽度"
+                      hint="按文件内容自动探测是 Monaco 的默认行为；选了具体宽度就固定下来"
+                    >
+                      <Select
+                        value={settings.editorIndent}
+                        options={INDENT_OPTIONS}
+                        onChange={(editorIndent) => update({ editorIndent })}
                       />
-                      <span className="shrink-0 text-[12px] text-fg-dim">毫秒</span>
                     </Field>
-                  )}
-                  <Field
-                    label="保存时格式化"
-                    hint="落盘前先用 Prettier 格式化一遍；当前文件类型不被 Prettier 支持、或格式化失败时按原内容保存"
-                  >
-                    <BoolToggle
-                      value={settings.editorFormatOnSave}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(editorFormatOnSave) => update({ editorFormatOnSave })}
-                    />
-                  </Field>
-                  <Field
-                    label="保存前检查语法"
-                    hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析"
-                  >
-                    <BoolToggle
-                      value={settings.editorCheckSyntaxOnSave}
-                      options={ON_OFF_OPTIONS}
-                      onChange={(editorCheckSyntaxOnSave) => update({ editorCheckSyntaxOnSave })}
-                    />
-                  </Field>
+                    <Field label="缩略图" hint="编辑器右侧的 minimap（代码缩略图）">
+                      <BoolToggle
+                        value={settings.editorMinimap}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(editorMinimap) => update({ editorMinimap })}
+                      />
+                    </Field>
+                    <Field label="自动换行" hint="长行在编辑器里自动折行；关掉后按原样横向滚动">
+                      <BoolToggle
+                        value={settings.editorWordWrap}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(editorWordWrap) => update({ editorWordWrap })}
+                      />
+                    </Field>
+                    <Field label="行号" hint="编辑器左侧的行号栏。差异视图同样跟着变">
+                      <BoolToggle
+                        value={settings.editorLineNumbers}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(editorLineNumbers) => update({ editorLineNumbers })}
+                      />
+                    </Field>
+                    <Field
+                      label="当前行高亮"
+                      hint="把光标所在的那一行（连同行号）标出来；关掉后编辑区更干净，但不好定位光标"
+                    >
+                      <BoolToggle
+                        value={settings.editorHighlightActiveLine}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(editorHighlightActiveLine) =>
+                          update({ editorHighlightActiveLine })
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="行高"
+                      hint="存的是倍数，按「字号 × 倍数」交给 Monaco，所以改字号时行距跟着一起变；Monaco 自己的默认约为 1.35（Windows / Linux）/ 1.5（macOS）"
+                    >
+                      <Select
+                        value={settings.editorLineHeight}
+                        options={LINE_HEIGHT_OPTIONS}
+                        onChange={(editorLineHeight) => update({ editorLineHeight })}
+                      />
+                    </Field>
+                  </Section>
+                  <Section title="保存">
+                    <Field
+                      label="自动保存"
+                      hint="四种时机照 VS Code 来；有未保存改动的文件都会写回磁盘"
+                    >
+                      <Select
+                        value={settings.editorAutoSave}
+                        options={AUTO_SAVE_OPTIONS}
+                        onChange={(editorAutoSave) => update({ editorAutoSave })}
+                      />
+                    </Field>
+                    {settings.editorAutoSave === "afterDelay" && (
+                      <Field label="自动保存延迟" hint="停手多久之后落盘">
+                        <input
+                          type="number"
+                          min={AUTOSAVE_DELAY_MIN}
+                          max={AUTOSAVE_DELAY_MAX}
+                          step={100}
+                          value={settings.editorAutoSaveDelay}
+                          onChange={(event) =>
+                            update({
+                              editorAutoSaveDelay: Number(event.target.value),
+                            })
+                          }
+                          className={TEXT_INPUT}
+                        />
+                        <span className="shrink-0 text-[12px] text-fg-dim">毫秒</span>
+                      </Field>
+                    )}
+                    <Field
+                      label="保存时格式化"
+                      hint="落盘前先用 Prettier 格式化一遍；当前文件类型不被 Prettier 支持、或格式化失败时按原内容保存"
+                    >
+                      <BoolToggle
+                        value={settings.editorFormatOnSave}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(editorFormatOnSave) => update({ editorFormatOnSave })}
+                      />
+                    </Field>
+                    <Field
+                      label="保存前检查语法"
+                      hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析"
+                    >
+                      <BoolToggle
+                        value={settings.editorCheckSyntaxOnSave}
+                        options={ON_OFF_OPTIONS}
+                        onChange={(editorCheckSyntaxOnSave) =>
+                          update({ editorCheckSyntaxOnSave })
+                        }
+                      />
+                    </Field>
+                  </Section>
                 </>
               )}
 
@@ -2479,7 +2559,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                           type="button"
                           disabled={settings.shortcuts[command.id] === command.defaultCombo}
                           onClick={() => applyShortcut(command.id, command.defaultCombo)}
-                          className="rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:text-fg-muted"
+                          className="rounded-md border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted transition-colors hover:border-line-hover hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:bg-transparent disabled:hover:text-fg-muted"
                         >
                           恢复默认
                         </button>
@@ -2610,9 +2690,17 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   >
                     <div className="flex w-full flex-col gap-2">
                       {settings.aiProviders.length === 0 ? (
-                        <p className="text-[11px] text-fg-faint">
-                          还没有提供商。点右上角的加号加一条，填好接口地址和至少一个模型。
-                        </p>
+                        <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-6 text-center">
+                          <IconBot className="h-5 w-5 text-fg-faint" />
+                          <p className="text-[12px] text-fg-muted">还没有提供商</p>
+                          <p className="max-w-[320px] text-[11px] leading-relaxed text-fg-faint">
+                            填好接口地址和至少一个模型就能用；应用助手、文档翻译和提交信息生成都读这里。
+                          </p>
+                          <button type="button" onClick={addProvider} className={BUTTON}>
+                            <IconPlus className="h-3 w-3" />
+                            添加提供商
+                          </button>
+                        </div>
                       ) : (
                         settings.aiProviders.map((provider, index) => (
                           <ProviderEditor
@@ -2724,10 +2812,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
         {/* 恢复默认沉在底部：本页那个跟随当前分类，全部那个整块回厂。
             左上角顺手显示版本，装完能自己核对（dev 构建额外带个标记） */}
-        <footer className="flex h-12 shrink-0 items-center justify-between border-t border-line px-4">
-          <span className="select-text text-[11px] text-fg-faint">
+        <footer className="flex h-14 shrink-0 items-center justify-between border-t border-line bg-panel/20 px-5">
+          <span className="select-text rounded-full border border-line px-2 py-0.5 text-[10px] tracking-wide text-fg-faint">
             CodeDock v{__APP_VERSION__}
-            {import.meta.env.DEV ? " (dev)" : ""}
+            {import.meta.env.DEV ? " · dev" : ""}
           </span>
           <div className="flex items-center gap-2">
             {isResettableTab(tab) && (
