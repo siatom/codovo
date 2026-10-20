@@ -88,6 +88,8 @@ interface FilesPaneProps {
   onBeforeReplace: () => Promise<boolean>;
   /** 替换后让编辑器重新从磁盘加载这些文件 */
   onAfterReplace: (paths: string[]) => void;
+  /** 「打开所在目录」的请求：切到完整文件树并在树里展开到这个文件 */
+  reveal?: { path: string; nonce: number } | null;
 }
 
 /**
@@ -116,6 +118,7 @@ export function FilesPane({
   onEntryDeleted,
   onBeforeReplace,
   onAfterReplace,
+  reveal,
 }: FilesPaneProps) {
   const [mode, setMode] = useState<SearchMode>("name");
   const [query, setQuery] = useState("");
@@ -147,6 +150,21 @@ export function FilesPane({
   const activeQuery = query.trim();
   /** 树和内容搜索各自只在对应模式下接关键词，另一个模式不跑后端 */
   const treeQuery = mode === "name" ? query : "";
+
+  /** 交给树的定位请求。等过滤态真的退掉之后再给，见下面那个 effect */
+  const [treeReveal, setTreeReveal] = useState<{ path: string; nonce: number } | null>(null);
+
+  /**
+   * 收到「打开所在目录」：先回到完整的文件树（切回名称模式、清掉关键词），
+   * 再把请求交给树。两件事在同一次更新里落地，树拿到请求时过滤态已经退掉，
+   * 展开与聚焦才落在真实的树上（过滤模式下只显示命中项，定位没有意义）。
+   */
+  useEffect(() => {
+    if (!reveal) return;
+    setMode("name");
+    setQuery("");
+    setTreeReveal(reveal);
+  }, [reveal]);
 
   /** 清空关键词与替换内容，回到「还没搜过」的样子 */
   const clearSearch = useCallback(() => {
@@ -393,6 +411,7 @@ export function FilesPane({
           onDeleted={onEntryDeleted}
           query={treeQuery}
           onClearQuery={clearQuery}
+          reveal={treeReveal}
         />
       </div>
       <div className={mode === "content" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>

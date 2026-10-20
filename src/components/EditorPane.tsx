@@ -13,6 +13,8 @@ import {
 import { monaco, monacoThemeFor } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   canFormatTab,
   errorText,
@@ -32,6 +34,7 @@ import {
   ownerRoot,
   pathKey,
   pathsExist,
+  pickOpenPath,
   pickSavePath,
   readFile,
   readImage,
@@ -39,7 +42,7 @@ import {
   writeFile,
 } from "../lib/fs";
 import type { GitMark } from "../lib/git";
-import { useSettings, resolveFont, type EditorIndent } from "../lib/settings";
+import { useSettings, resolveFont, type EditorIndent, type EditorLineHeight } from "../lib/settings";
 import { useTabReorder } from "../lib/use-tab-reorder";
 import {
   fileTabKey,
@@ -76,6 +79,7 @@ import {
   IconMore,
   IconPencil,
   IconPlus,
+  IconSearch,
   IconTerminal,
   IconWand,
 } from "./icons";
@@ -206,6 +210,8 @@ interface ViewInfo {
   eol: Eol;
   tabSize: number;
   insertSpaces: boolean;
+  /** 当前选区的长度（UTF-16 单位）；空选区是 0，状态栏据此才显示「已选」 */
+  selectionLength: number;
 }
 
 /** 两个视图信息是否完全一样，用来省掉光标没动时的无谓 setState */
@@ -216,7 +222,8 @@ function sameViewInfo(a: ViewInfo, b: ViewInfo): boolean {
     a.language === b.language &&
     a.eol === b.eol &&
     a.tabSize === b.tabSize &&
-    a.insertSpaces === b.insertSpaces
+    a.insertSpaces === b.insertSpaces &&
+    a.selectionLength === b.selectionLength
   );
 }
 
@@ -292,6 +299,46 @@ function toMonacoKeybinding(combo: string): number | null {
   return mods | code;
 }
 
+/**
+ * 外观三项（行号 / 当前行高亮 / 行高）拼成 Monaco 选项，创建实例与热更新共用同一份口径。
+ *
+ * 行高直接给**倍数**：Monaco 的 `lineHeight` 小于 8 时按「字号 × 该值」解释（em 语义，
+ * 见 monaco 的 BareFontInfo），于是字号一变行高自己跟着变，这里不用再乘一次字号。
+ * `renderLineHighlight` 取 `all`（行内 + 行号栏一起亮）而不是 `line`，后者在高亮当前行时
+ * 行号栏那片会显得断开。
+ */
+function appearanceOptions(
+  lineNumbers: boolean,
+  activeLine: boolean,
+  lineHeight: EditorLineHeight,
+): monaco.editor.IEditorOptions {
+  return {
+    lineNumbers: lineNumbers ? "on" : "off",
+    renderLineHighlight: activeLine ? "all" : "none",
+    lineHeight: Number(lineHeight),
+  };
+}
+
+/**
+ * Monaco find widget 贡献对象里我们用到的那两个成员。`editor.contrib.findController`
+ * 是内部 API，版本锁在 package.json（见 monaco-editor），所以这里只声明用到的签名，
+ * 取不到就由调用方退回 DOM 判断，不会因为上游改名直接崩掉。
+ */
+interface FindControllerLike {
+  getState?: () => { isRevealed?: boolean } | null;
+}
+
+/** find widget 现在是不是开着。工具栏按钮要按它决定「打开还是收起」 */
+function isFindWidgetVisible(editor: monaco.editor.IStandaloneCodeEditor): boolean {
+  const controller = editor.getContribution("editor.contrib.findController") as
+    | FindControllerLike
+    | null;
+  const state = controller?.getState?.();
+  if (state && typeof state.isRevealed === "boolean") return state.isRevealed;
+  // 兜底：widget 的 DOM 在展开时会带上 visible 类（见 monaco 的 findWidget）
+  return editor.getDomNode()?.querySelector(".find-widget.visible") !== null;
+}
+
 interface EditorPaneProps {
   /** 已打开的标签，按打开顺序 */
   tabs: Tab[];
@@ -310,6 +357,10 @@ interface EditorPaneProps {
   onNewUntitled: () => void;
   /** 改标签元数据：另存为改路径、外部变更改标记 */
   onPatchTab: (tab: Tab, patch: TabPatch) => void;
+  /** 打开一个工作区内的文件（快捷键 Ctrl+O 走它，标签由 WorkspacePane 管） */
+  onOpenPath: (path: string) => void;
+  /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
+  onRevealInFiles: (path: string) => void;
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -598,6 +649,8 @@ export function EditorPane({
   onCloseOthers,
   onNewUntitled,
   onPatchTab,
+  onOpenPath,
+  onRevealInFiles,
   fullscreen,
   onToggleFullscreen,
   onSendToTerminal,
@@ -610,6 +663,14 @@ export function EditorPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelsRef = useRef(new Map<string, CachedModel>());
+  /**
+   * 每个标签的视图状态（滚动位置、光标、选区）。Monaco 只给「此刻挂着的那个 model」
+   * 记住这些，而切标签、切到差异、进图片 / PDF 预览都会把 model 摘下来，不自己存就丢了。
+   * 关标签时由 forgetKeys 清掉，不跟着会话泄漏。
+   */
+  const viewStatesRef = useRef(new Map<string, monaco.editor.ICodeEditorViewState | null>());
+  /** 编辑器此刻挂着的 model 属于哪个标签（tabKey）；null = 没挂文本 model（差异 / 图片 / 空态） */
+  const shownKeyRef = useRef<string | null>(null);
 
   // 差异视图：另一套编辑器 + 另一套 model，和上面那套彻底分开——
   // 这样"只读"就是结构性保证，persist 根本看不到它
@@ -761,6 +822,13 @@ export function EditorPane({
   wordWrapRef.current = settings.editorWordWrap;
   const indentRef = useRef(settings.editorIndent);
   indentRef.current = settings.editorIndent;
+  // 行号 / 当前行高亮 / 行高同理：editor 只建一次，建的那一刻要拿到最新设置
+  const lineNumbersRef = useRef(settings.editorLineNumbers);
+  lineNumbersRef.current = settings.editorLineNumbers;
+  const activeLineRef = useRef(settings.editorHighlightActiveLine);
+  activeLineRef.current = settings.editorHighlightActiveLine;
+  const lineHeightRef = useRef(settings.editorLineHeight);
+  lineHeightRef.current = settings.editorLineHeight;
   // 差异编辑器只在第一次要看差异时建，建实例那一刻闭包里拿不到最新 state，
   // 所以排布偏好也走 ref（和 fontSizeRef 同一套路）
   const diffSideBySideRef = useRef(diffSideBySide);
@@ -849,6 +917,7 @@ export function EditorPane({
     }
     const position = editor.getPosition();
     const modelOptions = model.getOptions();
+    const selection = editor.getSelection();
     const next: ViewInfo = {
       line: position?.lineNumber ?? 1,
       column: position?.column ?? 1,
@@ -858,9 +927,60 @@ export function EditorPane({
       eol: cached?.eol ?? (model.getEOL() === "\r\n" ? "CRLF" : "LF"),
       tabSize: modelOptions.tabSize,
       insertSpaces: modelOptions.insertSpaces,
+      // 选区长度按 UTF-16 单位算，和 Monaco 的行列口径一致
+      selectionLength:
+        selection && !selection.isEmpty() ? model.getValueLengthInRange(selection) : 0,
     };
     setViewInfo((prev) => (prev && sameViewInfo(prev, next) ? prev : next));
   }, []);
+
+  /**
+   * 把某个标签的 model 挂到编辑器上，并恢复它上次的视图状态（滚动位置 / 光标 / 选区）。
+   * 与 saveCurrentViewState 配套：换 model 之前先存旧的，挂上之后恢复新的。
+   */
+  const attachModel = useCallback((key: string, model: monaco.editor.ITextModel) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.setModel(model);
+    shownKeyRef.current = key;
+    const state = viewStatesRef.current.get(key);
+    if (state) editor.restoreViewState(state);
+  }, []);
+
+  /** 存下当前挂着的这个 model 的视图状态。切标签 / 切差异 / 进图片预览之前都要调 */
+  const saveCurrentViewState = useCallback(() => {
+    const editor = editorRef.current;
+    const key = shownKeyRef.current;
+    if (!editor || key === null || !editor.getModel()) return;
+    viewStatesRef.current.set(key, editor.saveViewState());
+  }, []);
+
+  /** 工具栏按钮与 editor.find：开着就收起，关着就打开（对齐 CodeLite 的切换语义） */
+  const toggleFind = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor || !editor.getModel()) return;
+    if (isFindWidgetVisible(editor)) {
+      editor.trigger("codedock", "closeFindWidget", null);
+      editor.focus();
+      return;
+    }
+    editor.trigger("codedock", "actions.find", null);
+  }, []);
+
+  /** 按标签栏顺序切到下一个 / 上一个标签（含差异标签），到头绕回 */
+  const stepTab = useCallback(
+    (delta: number) => {
+      const list = tabsRef.current;
+      if (list.length === 0) return;
+      const current = activeRef.current;
+      const index = current ? list.findIndex((item) => sameTab(item, current)) : -1;
+      // 找不到当前标签（列表刚被换掉）时从第一个开始往 delta 的方向走
+      const base = index >= 0 ? index : 0;
+      const next = list[(base + delta + list.length) % list.length];
+      if (next && (!current || !sameTab(next, current))) onActivate(next);
+    },
+    [onActivate],
+  );
 
   /**
    * 按条件丢掉缓存里的 model，普通文件和差异（成对的）一起处理。返回被丢掉的
@@ -909,6 +1029,11 @@ export function EditorPane({
     setDirtyPaths(prune);
     setPreviewPaths(prune);
     setSplitPaths(prune);
+    // 视图状态跟着标签走：标签关了、文件改了名就把对应那份丢掉，不让它一直留在 Map 里
+    for (const key of keys) viewStatesRef.current.delete(key);
+    if (shownKeyRef.current !== null && keys.includes(shownKeyRef.current)) {
+      shownKeyRef.current = null;
+    }
     // 顺手把「默认模式」的记账也清掉，重开这个文件时重新按扩展名决定
     for (const key of keys) seededRef.current.delete(key);
     // 语法提示的去重记账跟着标签走：关掉再开是同一个文件的新一次会话
@@ -1176,6 +1301,13 @@ export function EditorPane({
       const nextKey = fileTabKey(target);
       modelsRef.current.set(nextKey, cached);
       rekeyedRef.current.set(key, { key: nextKey, path: target });
+      // 视图状态跟着换 key：另存为不该把滚动位置、光标丢掉
+      const movedView = viewStatesRef.current.get(key);
+      if (movedView !== undefined) {
+        viewStatesRef.current.delete(key);
+        viewStatesRef.current.set(nextKey, movedView);
+      }
+      if (shownKeyRef.current === key) shownKeyRef.current = nextKey;
       // 旧 key 的派生状态一起搬走（脏标记除外：刚保存完，新 key 是干净的）
       const prune = (prev: ReadonlySet<string>) => {
         if (!prev.has(key)) return prev;
@@ -1222,6 +1354,47 @@ export function EditorPane({
     },
     [persist, pushNotice, saveAs],
   );
+
+  /**
+   * Ctrl+O / 工具栏入口：选一个文件打开。**只能开当前工作区里的文件**——
+   * 工作区外的单文件打开（临时工作区）属于后面的事，这里如实拒绝而不是悄悄失败。
+   */
+  const openFromDisk = useCallback(async () => {
+    const target = await pickOpenPath();
+    if (target === null) return;
+    if (ownerRoot(rootsRef.current, target) === null) {
+      pushNotice("只能打开当前工作区内的文件", "error");
+      return;
+    }
+    onOpenPath(target);
+  }, [onOpenPath, pushNotice]);
+
+  /** 标签右键「打开所在目录」：右栏切到「文件」模块并在树里定位这个文件 */
+  const revealInFiles = useCallback(
+    (path: string) => onRevealInFiles(path),
+    [onRevealInFiles],
+  );
+
+  /** 标签右键「在文件管理器中显示」：交给系统文件管理器，并选中这个文件 */
+  const revealInSystem = useCallback(
+    (path: string) => {
+      void revealItemInDir(path).catch(() => pushNotice("无法在文件管理器中显示", "error"));
+    },
+    [pushNotice],
+  );
+
+  /**
+   * 状态栏点路径：复制绝对路径。走 Tauri 的 clipboard 插件而不是 `navigator.clipboard`，
+   * 理由同 ExplorerPane（WebView2 会弹系统授权框）。
+   */
+  const copyActivePath = useCallback(() => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file" || current.path === null) return;
+    void writeText(current.path).then(
+      () => pushNotice(`已复制路径 ${current.path}`),
+      () => pushNotice("复制路径失败", "error"),
+    );
+  }, [pushNotice]);
 
   /**
    * 放弃某个标签的未保存改动：已落盘的文件从磁盘重读，未命名缓冲区回到最近一次
@@ -1477,14 +1650,14 @@ export function EditorPane({
         if (!existing && (language === "json5" || language === "jsonc")) {
           reindentModelOnOpen(model);
         }
-        editor?.setModel(model);
+        if (editor) attachModel(key, model);
         applyCapabilities();
       }
       setStatus({ kind: "ready" });
       syncDirty();
       refreshViewInfo();
     },
-    [applyCapabilities, applyLoadedContent, refreshViewInfo, rootFor, syncDirty],
+    [applyCapabilities, applyLoadedContent, refreshViewInfo, rootFor, syncDirty, attachModel],
   );
 
   /** 状态栏里选了某个编码：脏标签先确认（会丢掉未保存的改动），干净的直接切 */
@@ -1793,6 +1966,12 @@ export function EditorPane({
       renderWhitespace: "selection",
       renderOverviewRuler: false,
       padding: { top: 8 },
+      // 行号 / 当前行高亮 / 行高与主编辑器同一口径（改设置时两边一起热更新）
+      ...appearanceOptions(
+        lineNumbersRef.current,
+        activeLineRef.current,
+        lineHeightRef.current,
+      ),
     });
     // 差异算完的那一刻才知道第一处改动在哪；顺带把块数量同步给状态栏
     diffRef.current.onDidUpdateDiff(() => {
@@ -1888,6 +2067,12 @@ export function EditorPane({
       renderWhitespace: "selection",
       tabSize: 2,
       padding: { top: 8 },
+      // 行号 / 当前行高亮 / 行高（见 appearanceOptions）
+      ...appearanceOptions(
+        lineNumbersRef.current,
+        activeLineRef.current,
+        lineHeightRef.current,
+      ),
     });
     editorRef.current = editor;
 
@@ -1901,9 +2086,11 @@ export function EditorPane({
       if (event.event.browserEvent.button !== 0) return;
       showFloatBar();
     });
-    // 选区被清空、或内容滚动了，浮窗的位置立刻失真，直接收起
+    // 选区被清空、或内容滚动了，浮窗的位置立刻失真，直接收起。
+    // 顺带刷新状态栏：选区长度就在这个事件里变，不刷的话「已选 N」不会更新
     const selectionSub = editor.onDidChangeCursorSelection((event) => {
       if (event.selection.isEmpty()) setFloatBar(null);
+      refreshViewInfo();
     });
     const scrollSub = editor.onDidScrollChange(() => setFloatBar(null));
 
@@ -1915,6 +2102,8 @@ export function EditorPane({
       scrollSub.dispose();
       editor.dispose();
       editorRef.current = null;
+      shownKeyRef.current = null;
+      viewStatesRef.current.clear();
       for (const cached of modelsRef.current.values()) cached.model.dispose();
       modelsRef.current.clear();
 
@@ -2000,6 +2189,22 @@ export function EditorPane({
     });
   }, [settings.editorWordWrap]);
 
+  // 行号 / 当前行高亮 / 行高：主编辑器与差异编辑器一起热更新。
+  // 行高给的是倍数（见 appearanceOptions），字号变化时 Monaco 自己会重算，这里不用跟着动
+  useEffect(() => {
+    const options = appearanceOptions(
+      settings.editorLineNumbers,
+      settings.editorHighlightActiveLine,
+      settings.editorLineHeight,
+    );
+    editorRef.current?.updateOptions(options);
+    diffRef.current?.updateOptions(options);
+  }, [
+    settings.editorLineNumbers,
+    settings.editorHighlightActiveLine,
+    settings.editorLineHeight,
+  ]);
+
   // 缩进宽度是 model 级选项：改了要把缓存里的所有 model 一起更新（含差异两侧），
   // 否则已打开的文件还是旧缩进，切回来才发现不一致
   useEffect(() => {
@@ -2063,6 +2268,11 @@ export function EditorPane({
     const editor = editorRef.current;
     if (!editor) return;
 
+    // 先把当前标签的视图状态存下来再换 model：下面几条分支（差异 / 图片 / PDF / 空态）
+    // 都会把 model 摘下来，而 Monaco 只给「此刻挂着的那个 model」记住滚动与选区
+    saveCurrentViewState();
+    shownKeyRef.current = null;
+
     if (!active) {
       editor.setModel(null);
       diffRef.current?.setModel(null);
@@ -2125,7 +2335,7 @@ export function EditorPane({
 
     const cached = modelsRef.current.get(key);
     if (cached) {
-      editor.setModel(cached.model);
+      attachModel(key, cached.model);
       setStatus({ kind: "ready" });
       syncDirty();
       applyCapabilities();
@@ -2155,7 +2365,7 @@ export function EditorPane({
         isLarge: false,
         size: 0,
       });
-      editor.setModel(model);
+      attachModel(key, model);
       setStatus({ kind: "ready" });
       syncDirty();
       applyCapabilities();
@@ -2207,7 +2417,7 @@ export function EditorPane({
         if (!existing && (language === "json5" || language === "jsonc")) {
           reindentModelOnOpen(model);
         }
-        editor.setModel(model);
+        attachModel(key, model);
         setStatus({ kind: "ready" });
         syncDirty();
         applyCapabilities();
@@ -2225,6 +2435,8 @@ export function EditorPane({
   }, [
     active,
     applyCapabilities,
+    attachModel,
+    saveCurrentViewState,
     dropPendingFormat,
     flushPendingFormat,
     onPatchTab,
@@ -2450,12 +2662,15 @@ export function EditorPane({
   closeTabRef.current = closeTab;
 
   /**
-   * 关掉当前标签（文件标签和差异标签同一根标签栏，走同一套逻辑）。键位可配置，
-   * 默认 Ctrl/Cmd+W。
+   * 编辑器区内的命令分发：焦点在这一区（含标签栏、状态栏）时按下配置里的键就跑对应命令，
+   * 键位全部来自 `settings.shortcuts`（见 lib/shortcuts.ts 的命令表）。
    *
-   * 挂在编辑器区最外层、**捕获阶段**：焦点在标签栏按钮上、或落在 Monaco 里都收得到，
-   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。焦点在右侧面板里时另有一份处理
-   * （见 ToolPane），所以这里只管编辑器区内。
+   * 挂在最外层 section 的**捕获阶段**：焦点落在 Monaco 里、或落在标签栏按钮上都收得到，
+   * 而且抢在 Monaco 自己的按键处理之前把事件吃掉。几条刻意留白的边界：
+   * - 终端在另一个面板里，事件到不了这里，Ctrl+C/V/W 的 shell 语义不受影响；
+   * - 终端专属的键（Ctrl+B 这类 readline 键）在窗口级分发那边被 `isTypingTarget` 挡掉；
+   * - Monaco 自带的 Ctrl+H、撤销、多光标照旧由 Monaco 处理，只有本应用注册过的命令键
+   *   才被吃掉（`editor.find` 打开的就是 Monaco 同一个 find widget）。
    */
   const onPaneKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     const current = activeRef.current;
@@ -2475,11 +2690,46 @@ export function EditorPane({
       gotoDiff(diffChangeIndex + (event.shiftKey ? -1 : 1));
       return;
     }
-    if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
-    if (!current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    closeTabRef.current(current);
+
+    // Ctrl+PageDown / Ctrl+PageUp 是切标签的同义别名（对齐 VS Code / CodeLite）。
+    // 刻意不进命令表：单按 PageUp / PageDown 要留给翻页，录成键位后会和浏览器语义打架
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      !event.altKey &&
+      (event.key === "PageDown" || event.key === "PageUp")
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      stepTab(event.key === "PageDown" ? 1 : -1);
+      return;
+    }
+
+    // 顺序即匹配顺序；resolveShortcuts 保证了不会有两条命令占同一个键
+    const commands: [string, () => void][] = [
+      ["closeTab", () => current && closeTabRef.current(current)],
+      ["editor.save", () => saveRef.current()],
+      [
+        "editor.saveAs",
+        () => {
+          if (current?.kind === "file") void saveAs(tabKey(current));
+        },
+      ],
+      ["editor.newFile", onNewUntitled],
+      ["editor.openFile", () => void openFromDisk()],
+      ["editor.find", toggleFind],
+      ["editor.format", () => formatActiveRef.current()],
+      ["editor.togglePreview", togglePreview],
+      ["editor.nextTab", () => stepTab(1)],
+      ["editor.prevTab", () => stepTab(-1)],
+    ];
+    for (const [id, run] of commands) {
+      if (!matchesShortcut(event, settings.shortcuts[id])) continue;
+      event.preventDefault();
+      event.stopPropagation();
+      run();
+      return;
+    }
   };
 
   const isDiffTab = active?.kind === "diff";
@@ -2842,6 +3092,11 @@ export function EditorPane({
         <div
           ref={tabsScrollRef}
           onClickCapture={onClickCapture}
+          // 标签栏空白处双击新建未命名缓冲区（照 VS Code）；落在标签 / 关闭按钮上不触发
+          onDoubleClick={(event) => {
+            if ((event.target as HTMLElement).closest("[data-tab-item]")) return;
+            onNewUntitled();
+          }}
           className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
         >
           {tabs.length === 0 && (
@@ -2863,6 +3118,13 @@ export function EditorPane({
                 data-tab-item
                 data-tab-active={isActive ? "" : undefined}
                 onPointerDown={onTabDown(index)}
+                // 中键关闭：和 VS Code / 浏览器的习惯一致（左键拖动重排不受影响，
+                // onTabDown 只认左键）
+                onAuxClick={(event) => {
+                  if (event.button !== 1) return;
+                  event.preventDefault();
+                  closeTab(tab);
+                }}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   setTabMenu({ x: event.clientX, y: event.clientY, tab });
@@ -2910,15 +3172,23 @@ export function EditorPane({
                       {external === "conflict" ? "≠" : external === "deleted" ? "∅" : "↓"}
                     </span>
                   )}
-                  {/* 未保存的改动比 git 状态更要紧，两者只占同一个位置 */}
-                  {isDirty ? (
-                    <span className="ml-1 shrink-0 text-warn" title="有未保存的改动">
-                      ●
-                    </span>
-                  ) : (
-                    mark && <GitMarkBadge mark={mark} className="ml-1 text-[10px]" />
-                  )}
+                  {/* 未保存的改动比 git 状态更要紧，两者只占同一个位置：脏的时候下面那颗
+                      圆点按钮就是它的标记（点一下即保存），这里让位 */}
+                  {!isDirty && mark && <GitMarkBadge mark={mark} className="ml-1 text-[10px]" />}
                 </button>
+                {/* 脏标签的圆点即保存（照 VS Code / CodeLite）：点它是保存，不是关闭。
+                    关闭入口仍在右边，只是不再和「保存」抢同一个圆点的语义 */}
+                {isDirty && (
+                  <button
+                    type="button"
+                    data-tab-save
+                    onClick={() => void saveTab(key)}
+                    title={`保存（${formatShortcut(settings.shortcuts["editor.save"])}）`}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-warn hover:bg-hover"
+                  >
+                    <span className="h-2 w-2 rounded-full bg-current" />
+                  </button>
+                )}
                 <button
                   type="button"
                   data-tab-close
@@ -2932,11 +3202,11 @@ export function EditorPane({
             );
           })}
         </div>
-        {/* 新建未命名缓冲区。快捷键留给 WP3，这里先给一个可见入口 */}
+        {/* 新建未命名缓冲区。快捷键 Ctrl+N，标签栏空白处双击也能新建 */}
         <button
           type="button"
           onClick={onNewUntitled}
-          title="新建文件"
+          title={`新建文件（${formatShortcut(settings.shortcuts["editor.newFile"])}）`}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
         >
           <IconPlus className="h-3.5 w-3.5" />
@@ -3000,6 +3270,18 @@ export function EditorPane({
               </button>
             ))}
           </div>
+        )}
+        {/* 查找 / 替换：切换 Monaco 的 find widget（开着再点就收起）。
+            Ctrl+F 走命令分发打开同一个 widget，Ctrl+H 的替换仍是 Monaco 内置 */}
+        {activeFile && status.kind === "ready" && (
+          <button
+            type="button"
+            onClick={toggleFind}
+            title={`查找 / 替换（${formatShortcut(settings.shortcuts["editor.find"])}、Ctrl+H）`}
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+          >
+            <IconSearch className="h-3.5 w-3.5" />
+          </button>
         )}
         {/* 格式化：Prettier 覆盖的类型走 Prettier，其余退回缩进重排。
             只读 / 截断 / 大文件不给按（重写整篇正文对它们没有意义） */}
@@ -3099,7 +3381,8 @@ export function EditorPane({
         </>
       )}
 
-      {/* 标签右键菜单：文件生命周期动作 + 外部变更的处理入口 */}
+      {/* 标签右键菜单：定位文件（打开所在目录 / 在文件管理器中显示）+ 文件生命周期动作
+          + 外部变更的处理入口 */}
       {tabMenu && (
         <>
           <div className="fixed inset-0 z-30" onClick={() => setTabMenu(null)} />
@@ -3108,7 +3391,8 @@ export function EditorPane({
             style={{
               width: TAB_MENU_W,
               left: Math.min(tabMenu.x, window.innerWidth - TAB_MENU_W - 4),
-              top: Math.min(tabMenu.y, window.innerHeight - 190),
+              // 最多 7 项（定位 2 项 + 另存为 / 放弃变更 / 重载 / 保留 + 关闭），按每项 ~23px 估
+              top: Math.min(tabMenu.y, window.innerHeight - 250),
             }}
           >
             {tabMenu.tab.kind === "file" && (
@@ -3165,6 +3449,33 @@ export function EditorPane({
                 )}
               </>
             )}
+            {/* 打开所在目录 / 在文件管理器中显示：都用于「找到这个文件」，一个在应用内的
+                文件树里定位（右栏会切到「文件」模块并展开到它），一个交给系统文件管理器。
+                未命名缓冲区还没有路径，两项都禁用 */}
+            <button
+              type="button"
+              disabled={tabMenu.tab.path === null}
+              onClick={() => {
+                const path = tabMenu.tab.path;
+                setTabMenu(null);
+                if (path !== null) revealInFiles(path);
+              }}
+              className={TABS_MENU_ITEM}
+            >
+              打开所在目录
+            </button>
+            <button
+              type="button"
+              disabled={tabMenu.tab.path === null}
+              onClick={() => {
+                const path = tabMenu.tab.path;
+                setTabMenu(null);
+                if (path !== null) revealInSystem(path);
+              }}
+              className={TABS_MENU_ITEM}
+            >
+              在文件管理器中显示
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -3380,11 +3691,24 @@ export function EditorPane({
             )}
             {!showDiffBar && viewInfo && (
               <>
+                {/* 路径：点击复制绝对路径（只对已落盘的文件显示；未命名缓冲区没有路径）。
+                    窄面板里靠 max-w + truncate 收住，完整路径挂在 title 上 */}
+                {activeFile && activeFile.path !== null && (
+                  <button
+                    type="button"
+                    onClick={copyActivePath}
+                    title={`${toDisplayPath(activeFile.path)}\n点击复制路径`}
+                    className={`${STATUS_BUTTON} min-w-0 max-w-[45%]`}
+                  >
+                    <span className="truncate">{toDisplayPath(activeFile.path)}</span>
+                  </button>
+                )}
                 <span
                   title="光标位置"
                   className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
                 >
                   行 {viewInfo.line}，列 {viewInfo.column}
+                  {viewInfo.selectionLength > 0 && `（已选 ${viewInfo.selectionLength}）`}
                 </span>
                 <button
                   type="button"
@@ -3433,6 +3757,15 @@ export function EditorPane({
                     className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-warn"
                   >
                     大文件
+                  </span>
+                )}
+                {/* 文件大小：只在已落盘的文件上有意义（未命名缓冲区是 0） */}
+                {activeFile && activeFile.path !== null && activeCached && (
+                  <span
+                    title="文件大小（磁盘上的字节数）"
+                    className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
+                  >
+                    {formatSize(activeCached.size)}
                   </span>
                 )}
               </>

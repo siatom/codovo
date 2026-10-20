@@ -121,6 +121,13 @@ export function WorkspacePane({
   /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
   const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
   /**
+   * 「打开所在目录」的请求（编辑器标签右键发起）：带着 nonce 一路传给文件树，
+   * 树据此展开到这个文件。右栏同时切到「文件」模块。
+   */
+  const [filesReveal, setFilesReveal] = useState<{ path: string; nonce: number } | null>(null);
+  /** 上面那个请求的序号：同一条路径再点一次也要重新定位 */
+  const filesRevealNonceRef = useRef(0);
+  /**
    * 变更中心打开的审阅工作台。非空时以绝对定位盖住整个工作区，
    * 下面的终端 / 编辑器 / 文件树保持挂载和原尺寸，关闭后原样露出。
    */
@@ -326,6 +333,20 @@ export function WorkspacePane({
       onSendToAssistant(location);
     },
     [onSendToAssistant],
+  );
+
+  /**
+   * 编辑器标签右键「打开所在目录」：先把右栏切到「文件」模块，再把带序号的请求交给
+   * 文件树去展开定位。切模块不能走 pickTool——它在当前模块已选中时是「收起面板」
+   */
+  const revealInFiles = useCallback(
+    (path: string) => {
+      setTool("files");
+      saveTool(root, "files");
+      setRightOpen(true);
+      setFilesReveal({ path, nonce: (filesRevealNonceRef.current += 1) });
+    },
+    [root],
   );
 
   /** 已经开着的标签只切过去，不重复开——连点同一个改动项就是这个路径 */
@@ -603,6 +624,7 @@ export function WorkspacePane({
                       onEntryRenamed={renameOpenTabs}
                       onEntryDeleted={dropOpenTabs}
                       onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
+                      filesReveal={filesReveal}
                     />
                   }
                   second={
@@ -621,6 +643,8 @@ export function WorkspacePane({
                       onCloseOthers={closeOtherTabs}
                       onNewUntitled={newUntitled}
                       onPatchTab={patchOpenTab}
+                      onOpenPath={openFile}
+                      onRevealInFiles={revealInFiles}
                       fullscreen={rightFullscreen}
                       onToggleFullscreen={onToggleRightFullscreen}
                       onSendToTerminal={insertToTerminal}

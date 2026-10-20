@@ -52,8 +52,8 @@ export function useTabReorder(onReorder: (from: number, to: number) => void) {
   const onTabDown = (index: number) => (event: ReactPointerEvent<HTMLElement>) => {
     // 只认鼠标左键：触摸的横向拖动要留给标签栏滚动
     if (event.button !== 0 || event.pointerType !== "mouse") return;
-    // 关闭按钮不参与拖动，否则想关标签会变成拖行
-    if ((event.target as HTMLElement).closest("[data-tab-close]")) return;
+    // 关闭按钮与「未保存圆点」不参与拖动，否则想关标签 / 想保存会变成拖行
+    if ((event.target as HTMLElement).closest("[data-tab-close], [data-tab-save]")) return;
     swallowClickRef.current = false;
     dragRef.current = { from: index, startX: event.clientX, started: false };
     setPending(true);

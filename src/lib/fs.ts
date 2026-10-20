@@ -82,6 +82,17 @@ export async function pickSavePath(defaultName: string): Promise<string | null> 
   return typeof picked === "string" ? picked : null;
 }
 
+/**
+ * 弹「打开文件」选择框（单选），返回选中的绝对路径；用户取消时返回 null。
+ *
+ * 同 `pickSavePath`：只选路径，落不落在工作区里由调用方判断——工作区外的单文件
+ * 打开（临时工作区）还没做，见 EditorPane 里 `editor.openFile` 的处理。
+ */
+export async function pickOpenPath(): Promise<string | null> {
+  const picked = await open({ multiple: false, title: "打开文件" });
+  return typeof picked === "string" ? picked : null;
+}
+
 export function listDir(root: string, path: string): Promise<FileEntry[]> {
   return invoke<FileEntry[]>("fs_list_dir", { root, path });
 }

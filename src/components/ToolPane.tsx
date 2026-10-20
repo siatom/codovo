@@ -133,6 +133,8 @@ interface ToolPaneProps {
    * （含从「变更」打开的差异标签）。编辑器自己那份处理管的是焦点在编辑器区内的情形。
    */
   onRequestCloseTab: () => void;
+  /** 编辑器标签右键「打开所在目录」：切到完整文件树并在树里定位这个文件 */
+  filesReveal?: { path: string; nonce: number } | null;
 }
 
 /**
@@ -164,6 +166,7 @@ export function ToolPane({
   onEntryRenamed,
   onEntryDeleted,
   onRequestCloseTab,
+  filesReveal,
 }: ToolPaneProps) {
   const { settings } = useSettings();
   /** 变更模块的两个视图：总览（默认）/ 完整 Git 面板 */
@@ -243,6 +246,7 @@ export function ToolPane({
           onEntryDeleted={onEntryDeleted}
           onBeforeReplace={onBeforeReplace}
           onAfterReplace={onAfterReplace}
+          reveal={filesReveal}
         />
       </div>
       {/* 变更：每个工作目录一块，各挂一个完整的变更面板。多根时每块能整块收起、只留

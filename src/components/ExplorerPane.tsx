@@ -105,6 +105,11 @@ interface ExplorerPaneProps {
   query: string;
   /** 清掉过滤关键词（改名 / 删除 / 移动后过滤结果里的路径已经失效） */
   onClearQuery: () => void;
+  /**
+   * 「打开所在目录」的请求：把树展开到这个文件、把焦点落到它那一行。
+   * 编辑器标签右键发过来，`nonce` 用来区分「同一条路径又点了一次」。
+   */
+  reveal?: { path: string; nonce: number } | null;
   /** 模块标题栏要指挥树新建 / 重列；React 19 起 ref 可以直接当普通 prop 传 */
   ref?: Ref<ExplorerPaneHandle>;
 }
@@ -272,6 +277,7 @@ export function ExplorerPane({
   onDeleted,
   query,
   onClearQuery,
+  reveal,
   ref,
 }: ExplorerPaneProps) {
   /** 每个工作目录的顶层条目，按根分组 */
@@ -1283,6 +1289,67 @@ export function ExplorerPane({
       }
     });
   }, []);
+
+  /**
+   * 在树里展开到某个文件并把焦点落到它那一行（标签右键「打开所在目录」）。
+   *
+   * 逐层往下走：每一层先确保目录已列过（没列过就现列一次），再挑出「包含这个文件的
+   * 子目录」继续往下，直到走到它的父目录为止——父目录的展开由上一轮完成。
+   * 往下走用的是条目自己的路径（而不是按字符串拼），键的形式才和树里的展开集合一致
+   * （Windows 上拼出来的 `/` 和条目里的 `\` 会被当成两个目录）。
+   */
+  const revealPath = useCallback(
+    async (path: string) => {
+      const owner = ownerRoot(roots, path);
+      if (!owner) return;
+      // 整块收起的工作目录先展开，否则定位落在看不见的子树里
+      setCollapsedRoots((current) => {
+        const key = pathKey(owner);
+        if (!current.has(key)) return current;
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+
+      let dir = owner;
+      let list = entries.get(owner) ?? [];
+      // 深度上限只是防御：路径不可能有这么深，真出现环也不至于转不出来
+      for (let depth = 0; depth < 64; depth += 1) {
+        if (list.length === 0) {
+          try {
+            list = await listDir(owner, dir);
+          } catch {
+            break;
+          }
+          if (dir === owner) setEntries((current) => new Map(current).set(owner, list));
+          else setChildren((current) => new Map(current).set(dir, list));
+        }
+        const next = list.find((item) => item.isDir && isPathInside(path, item.path));
+        if (!next) break;
+        setExpanded((current) => new Set(current).add(next.path));
+        dir = next.path;
+        list = children.get(dir) ?? [];
+      }
+
+      // 定位到这一行：和点一下文件的效果一致（单选 + 焦点），滚动由浏览器 focus 顺手做
+      const key = pathKey(path);
+      setActiveRow(path);
+      anchorRef.current = key;
+      setSelection(
+        new Map([[key, { name: baseName(path), path, isDir: false, modified: 0 }]]),
+      );
+      focusRowByKey(path);
+    },
+    [roots, entries, children, focusRowByKey],
+  );
+
+  /** 收到「打开所在目录」请求（nonce 变了才算新的一次）就展开定位一次 */
+  const revealNonceRef = useRef(0);
+  useEffect(() => {
+    if (!reveal || revealNonceRef.current === reveal.nonce) return;
+    revealNonceRef.current = reveal.nonce;
+    void revealPath(reveal.path);
+  }, [reveal, revealPath]);
 
   /** 一行被点击：Shift 连选、Ctrl 切换、普通点击单选并打开（照 VS Code） */
   const handleRowClick = useCallback(
