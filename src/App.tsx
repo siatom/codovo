@@ -53,6 +53,7 @@ import {
   saveWorkspace,
   type Workspace,
 } from "./lib/workspaces";
+import { clearSession } from "./lib/session";
 import {
   useSettings,
   FONT_SIZE_MIN,
@@ -338,6 +339,8 @@ function Shell() {
         dropAgentSession(root);
         dropAttention(root);
       }
+      // 工作区实例要卸载了，它那份标签会话不再有用；下次打开从空标签开始
+      clearSession(workspace.id);
       handlesRef.current.delete(workspace.id);
 
       const rest = openedRef.current.filter((id) => id !== workspace.id);
@@ -372,6 +375,8 @@ function Shell() {
       if (openedRef.current.includes(workspace.id)) closeWorkspace(workspace);
       // 工作区没了，它那份「最近活动」记录也没用了（排序依据），一并清掉
       for (const root of workspace.roots) dropActivity(root);
+      // 没打开过的工作区不会走 closeWorkspace，这里补一次会话清理
+      clearSession(workspace.id);
       setWorkspaces(dropWorkspace(workspace.id));
     },
     [closeWorkspace, dropActivity],

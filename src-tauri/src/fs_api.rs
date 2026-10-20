@@ -332,6 +332,15 @@ pub fn paths_exist(paths: Vec<String>) -> Vec<bool> {
     paths.iter().map(|raw| Path::new(raw).is_dir()).collect()
 }
 
+/// 批量判断一批路径是否存在（文件 / 目录都算）。
+///
+/// 和 `paths_exist` 分开：那个只认目录，是工作区根的判据；编辑器恢复会话、打开最近
+/// 文件时校验的是文件路径，用 `is_dir` 会把所有文件都判成不存在。
+#[tauri::command]
+pub fn paths_present(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|raw| Path::new(raw).exists()).collect()
+}
+
 /// 列目录。抽出来是为了能在单元测试里直接验证过滤/排序规则。
 fn list_entries(dir: &Path) -> Result<Vec<Entry>, String> {
     let read = fs::read_dir(dir).map_err(|e| format!("读取目录失败 {}: {e}", display(dir)))?;

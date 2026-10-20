@@ -27,6 +27,7 @@ import {
 import { renderMarkdown } from "../lib/markdown";
 import { isDocumentPath } from "../lib/translate";
 import { clearTranslation } from "../lib/translate-store";
+import { addRecent } from "../lib/recent";
 import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
 import {
   ENCODINGS,
@@ -2330,6 +2331,7 @@ export function EditorPane({
             setStatus({ kind: "tooLarge" });
             return;
           }
+          addRecent(imagePath);
           setStatus({ kind: "image", src: content.data });
         })
         .catch((reason) => {
@@ -2435,6 +2437,8 @@ export function EditorPane({
         if (!existing && (language === "json5" || language === "jsonc")) {
           reindentModelOnOpen(model);
         }
+        // 读盘成功才算「打开成功」：路径不存在 / 二进制 / 超限的文件不进最近列表
+        addRecent(path);
         attachModel(key, model);
         setStatus({ kind: "ready" });
         syncDirty();

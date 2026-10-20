@@ -57,6 +57,15 @@ export function pathsExist(paths: string[]): Promise<boolean[]> {
   return invoke<boolean[]>("paths_exist", { paths });
 }
 
+/**
+ * 批量判断一批路径是否**存在（文件或目录都算）**。
+ * 编辑器恢复会话、打开最近文件时用它跳过已经被删掉的路径；
+ * 与 `pathsExist` 分开：那个只认目录，是工作区根专用的判据。
+ */
+export function pathsPresent(paths: string[]): Promise<boolean[]> {
+  return invoke<boolean[]>("paths_present", { paths });
+}
+
 /** 弹目录选择框（可多选），返回选中的路径数组；用户取消时返回空数组 */
 export async function pickFolder(): Promise<string[]> {
   const picked = await open({ directory: true, multiple: true, title: "选择工作目录" });

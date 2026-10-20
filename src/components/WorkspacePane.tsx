@@ -21,7 +21,8 @@ import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import type { ReviewTarget } from "../lib/workstreams";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
-import { isPathInside, ownerRoot, pathKey, toDisplayPath, type MovePair } from "../lib/fs";
+import { isPathInside, ownerRoot, pathKey, pathsPresent, samePath, toDisplayPath, type MovePair } from "../lib/fs";
+import { readSession, scheduleSessionSave } from "../lib/session";
 import {
   newUntitledTab,
   openFileTab,
@@ -117,6 +118,9 @@ export function WorkspacePane({
   // 标签身份是结构化的（文件 / 差异视图），不能只拿路径当键，见 lib/tabs.ts
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<Tab | null>(null);
+  /** 最新标签列表的快照：会话恢复是异步的，要能在读盘途中判断用户是否已经手动开了文件 */
+  const openTabsRef = useRef<Tab[]>([]);
+  openTabsRef.current = openTabs;
   /** 右栏看的是哪个模块（按活动根各记一份） */
   const [tool, setTool] = useState<ToolId>(() => readTool(root));
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
@@ -376,6 +380,79 @@ export function WorkspacePane({
     untitledSeqRef.current += 1;
     openTab(newUntitledTab(String(untitledSeqRef.current)));
   }, [openTab]);
+
+  // ---- 会话恢复 / 落盘 ----
+
+  /** 是否已经走过一次恢复。恢复完成前不写会话，免得把空标签列表覆盖上去 */
+  const sessionRestoredRef = useRef(false);
+
+  /**
+   * 实例挂载时恢复上次的标签。工作区根在 App 里已经 activate 成 canonical 路径，
+   * 这里只做过滤和读取；路径已被删掉（`paths_present` 为 false）的静默跳过。
+   *
+   * 只恢复普通文件标签：差异视图依赖当时的 git 状态，未命名缓冲区没有落盘内容。
+   */
+  useEffect(() => {
+    const session = readSession(workspace.id);
+    const candidates = session
+      ? session.paths.filter((path) => ownerRoot(workspace.roots, path) !== null)
+      : [];
+    if (!session || candidates.length === 0) {
+      sessionRestoredRef.current = true;
+      return;
+    }
+
+    let cancelled = false;
+    void pathsPresent(candidates)
+      .then((flags) => {
+        if (cancelled) return;
+        const valid = candidates.filter((_, index) => flags[index]);
+        // 读盘途中用户可能已经手动开了文件：不能拿旧会话把当前标签盖掉
+        if (valid.length > 0 && openTabsRef.current.length === 0) {
+          const tabs = valid.map((path) => openFileTab(path));
+          setOpenTabs(tabs);
+          const wanted = session.active;
+          const active =
+            (wanted !== null &&
+              tabs.find((tab) => tab.path !== null && samePath(tab.path, wanted))) ||
+            tabs[0];
+          setActiveTab(active);
+        }
+        sessionRestoredRef.current = true;
+      })
+      .catch(() => {
+        // 校验失败就当作没有可恢复的标签，不阻断正常使用
+        if (!cancelled) sessionRestoredRef.current = true;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // 只在实例挂载时恢复一次：roots 变化（编辑工作区）不该重建标签列表
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * 标签打开 / 关闭 / 激活 / 重排时防抖写入。只存已落盘的普通文件路径，
+   * 未命名缓冲区与差异视图不进会话；数组顺序就是标签顺序。
+   */
+  useEffect(() => {
+    if (!sessionRestoredRef.current) return;
+    const paths: string[] = [];
+    const seen = new Set<string>();
+    for (const tab of openTabs) {
+      if (tab.kind !== "file" || tab.path === null) continue;
+      const key = pathKey(tab.path);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      paths.push(tab.path);
+    }
+    scheduleSessionSave(workspace.id, {
+      paths,
+      active: activeTab?.kind === "file" ? activeTab.path : null,
+    });
+  }, [openTabs, activeTab, workspace.id]);
+
 
   /**
    * 改标签的元数据（另存为改路径、外部变更改标记）。匹配按**改之前**的 key：
