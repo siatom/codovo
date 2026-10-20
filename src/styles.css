@@ -396,11 +396,14 @@ body.codedock-dragging-list * {
   font-size: 13px;
   line-height: 1.7;
   padding: 16px 20px 40px;
+  /* 宽屏下把正文夹在 860px 内并居中：左右留白对称，窄屏退回 20px。
+     不能给 .markdown-body 设 max-width——它是滚动容器，限宽会把滚动条也缩进去；
+     也不能只靠子元素的 margin-inline: auto——h1 / p 自己的 margin 简写会把它盖掉。 */
+  padding-inline: max(20px, calc((100% - 860px) / 2));
   word-wrap: break-word;
 }
 
-/* 宽屏下行太长不好读，正文内容限宽居中。
-   不能直接给 .markdown-body 设 max-width——它是 absolute inset-0 的滚动容器 */
+/* 子元素的限宽仍然保留：上面的内边距已经算好，这里兜住单块超宽内容 */
 .markdown-body > * {
   max-width: 860px;
   margin-inline: auto;
