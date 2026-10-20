@@ -108,6 +108,8 @@ fn open_shell(
     cols: u16,
     rows: u16,
     shell: Option<&str>,
+    // 额外环境变量：AI CLI 的权限配置等，由前端按会话传进来
+    env: Option<&HashMap<String, String>>,
 ) -> Result<SpawnedShell, String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -141,6 +143,11 @@ fn open_shell(
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
+    if let Some(env) = env {
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+    }
 
     let child = pair
         .slave
@@ -175,9 +182,11 @@ pub fn pty_spawn(
     rows: u16,
     // 设置里选的 shell 候选 id；null 表示自动
     shell: Option<String>,
+    // 额外环境变量；null 表示不额外设置
+    env: Option<HashMap<String, String>>,
 ) -> Result<u32, String> {
     let owner = root;
-    let spawned = open_shell(cwd.as_deref(), cols, rows, shell.as_deref())?;
+    let spawned = open_shell(cwd.as_deref(), cols, rows, shell.as_deref(), env.as_ref())?;
     let killer = spawned.child.clone_killer();
     let master = spawned.master;
     let writer = spawned.writer;
@@ -295,7 +304,7 @@ mod tests {
     #[test]
     fn shell_roundtrip_through_pty() {
         let (program, _) = crate::shells::resolve_shell(None);
-        let mut shell = open_shell(None, 120, 30, None).expect("打开 PTY 失败");
+        let mut shell = open_shell(None, 120, 30, None, None).expect("打开 PTY 失败");
         let lower = program.to_lowercase();
         let is_cmd = lower.ends_with("cmd.exe");
         let is_pwsh = lower.ends_with("pwsh")

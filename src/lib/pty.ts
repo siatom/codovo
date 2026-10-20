@@ -29,6 +29,8 @@ export async function spawnPty(options: {
   cwd?: string;
   /** 选中的 shell 候选 id；不传走自动 */
   shell?: string;
+  /** 启动 shell 时额外设进进程环境的环境变量（AI CLI 的权限配置等） */
+  env?: Record<string, string>;
   cols: number;
   rows: number;
   onData: (bytes: Uint8Array) => void;
@@ -47,6 +49,7 @@ export async function spawnPty(options: {
     root: options.root,
     cwd: options.cwd ?? null,
     shell: options.shell ?? null,
+    env: options.env ?? null,
     cols: options.cols,
     rows: options.rows,
     onEvent: channel,
