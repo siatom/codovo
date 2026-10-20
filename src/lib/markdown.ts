@@ -7,6 +7,22 @@ import {
   type Tokens,
 } from "marked";
 import markedKatex from "marked-katex-extension";
+import { assetUrl } from "./asset-url";
+import { isPathInside } from "./fs";
+
+/** mermaid 代码块的 fence 语言名（`mmd` 是常见简写） */
+const MERMAID_LANGS = new Set(["mermaid", "mmd"]);
+
+/**
+ * mermaid 代码块先落成占位块，真正的出图交给预览层的异步 effect。
+ * 渲染正文必须是同步的，而 mermaid.render 是 Promise；源码留在 <pre> 里当兜底，
+ * 出图后由 MarkdownPreview 把它藏起来，语法错误时又能原样看到。
+ */
+function mermaidBlock({ text, lang }: Tokens.Code): string | null {
+  const name = (lang ?? "").trim().split(/\s+/)[0]?.toLowerCase();
+  if (!name || !MERMAID_LANGS.has(name)) return null;
+  return `<div class="md-mermaid" data-state="pending"><pre class="md-mermaid-src">${esc(text)}</pre></div>`;
+}
 
 /**
  * 预览用的 markdown 渲染器。
@@ -17,7 +33,15 @@ import markedKatex from "marked-katex-extension";
  * 技术文档里几乎没人会在公式两侧刻意留空格；代价是 `$5` 这类金额偶尔会被当成公式，
  * 但 `throwOnError: false` 会把它原样留下来，不至于把整篇预览搞崩。
  */
-const md = new Marked({ async: false, gfm: true });
+const md = new Marked({
+  async: false,
+  gfm: true,
+  renderer: {
+    code(token) {
+      return mermaidBlock(token) ?? false;
+    },
+  },
+});
 
 /**
  * 行号锚点要覆盖 KaTeX 的块级公式：它走 marked 的扩展渲染器，不经过 SourceLineRenderer。
@@ -57,8 +81,83 @@ const SANITIZE_OPTIONS = {
   FORBID_TAGS: ["style", "script", "iframe", "object", "embed", "form", "link", "meta", "base"],
 };
 
-function sanitize(html: string): string {
-  return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
+/**
+ * 相对图片路径的解析规则。
+ *
+ * markdown 里的 `![](./x.png)` 原样交给 WebView 会以应用自身的源为基准去找，必然 404。
+ * 这里按 markdown 文件所在目录补全，再换成 asset 协议地址；和 html / svg 预览共用同一套
+ * `assetUrl`（工作区根在工作区打开时已经加进 asset 白名单）。
+ *
+ * 只放行工作区里的文件：`../../etc/passwd` 这类越界路径不解析，留成坏图，
+ * 不能让预览变成读任意本地文件的入口。
+ */
+function normalizePath(path: string): string {
+  const unified = path.replace(/\\/g, "/");
+  const drive = /^[a-zA-Z]:/.exec(unified)?.[0] ?? "";
+  const rest = unified.slice(drive.length);
+  const absolute = rest.startsWith("/");
+  const parts: string[] = [];
+  for (const part of rest.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      // 已经到根就停在根上，别把 ../ 拼进最终路径
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return `${drive}${absolute ? "/" : ""}${parts.join("/")}`;
+}
+
+function resolveImageSource(src: string, filePath: string, roots: string[]): string | null {
+  const raw = src.trim();
+  // 空地址、页面内锚点、协议相对地址都不该按本地文件处理
+  if (!raw || raw.startsWith("#") || raw.startsWith("//")) return null;
+  // `data:` / `http(s):` 这类地址原样交给 WebView；Windows 盘符不是协议，单独放行
+  const windowsAbsolute = /^[a-zA-Z]:[\\/]/.test(raw);
+  if (!windowsAbsolute && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return null;
+  // UNC 路径不在工作区沙箱的语义里，直接当坏图
+  if (/^[\\/]{2}/.test(raw)) return null;
+
+  // 查询串 / 锚点不属于路径；文件名里真有 `#` 的情况只能靠 URL 编码，这里不额外兼容
+  const clean = raw.replace(/[?#].*$/, "");
+  let decoded = clean;
+  try {
+    decoded = decodeURIComponent(clean);
+  } catch {
+    // 非法百分号编码：按原样用，别让整篇预览跟着抛错
+  }
+
+  const base = filePath.replace(/\\/g, "/").replace(/\/[^/]*$/, "");
+  const full =
+    windowsAbsolute || decoded.startsWith("/")
+      ? normalizePath(decoded)
+      : normalizePath(`${base}/${decoded}`);
+
+  if (!roots.some((root) => isPathInside(full, root))) return null;
+  return assetUrl(full);
+}
+
+/**
+ * `resolveImage` 有值时才挂 hook。asset 协议在 macOS / Linux 是 `asset://`，
+ * 不在 DOMPurify 默认的协议白名单里，所以放在净化**之后**改写 src——
+ * 白名单不会把它剥掉，而写进去的地址也只可能是上面按沙箱规则拼出来的。
+ */
+function sanitize(html: string, resolveImage?: (src: string) => string | null): string {
+  if (!resolveImage) return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
+  const rewrite = (node: Element) => {
+    if (node.tagName !== "IMG") return;
+    const src = node.getAttribute("src");
+    if (!src) return;
+    const resolved = resolveImage(src);
+    if (resolved) node.setAttribute("src", resolved);
+  };
+  DOMPurify.addHook("afterSanitizeAttributes", rewrite);
+  try {
+    return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
+  } finally {
+    DOMPurify.removeHook("afterSanitizeAttributes");
+  }
 }
 
 /** 顶层块 token -> 源码里的起始行号；只给 markdown 对照滚动同步用 */
@@ -70,6 +169,15 @@ interface RenderOptions {
    * 默认不开：智能体气泡、解读弹窗这些地方用不上，省一次 token 遍历。
    */
   sourceLines?: boolean;
+  /**
+   * 当前 markdown 文件的绝对路径。给了它才解析相对图片：
+   * `![](./diagram.png)` 必须按文件所在目录补全，才能落到工作区里的真实文件上。
+   */
+  filePath?: string;
+  /**
+   * 工作区根。图片只允许从这些目录里读，越界的路径不解析。
+   */
+  roots?: string[];
 }
 
 function newlineCount(text: string): number {
@@ -150,7 +258,7 @@ class SourceLineRenderer extends Renderer {
   }
 
   code(token: Tokens.Code) {
-    return this.mark(token, super.code(token));
+    return this.mark(token, mermaidBlock(token) ?? super.code(token));
   }
 
   hr(token: Tokens.Hr) {
@@ -423,6 +531,11 @@ export function renderMarkdown(text: string, options: RenderOptions = {}): strin
   const fm = extractFrontmatter(text);
   const body = fm ? fm.body : text;
   const baseLine = fm ? fm.bodyLine : 1;
+  const { filePath, roots } = options;
+  const resolveImage =
+    filePath && roots && roots.length > 0
+      ? (src: string) => resolveImageSource(src, filePath, roots)
+      : undefined;
 
   let bodyHtml: string;
   if (options.sourceLines) {
@@ -438,8 +551,8 @@ export function renderMarkdown(text: string, options: RenderOptions = {}): strin
     bodyHtml = md.parse(body) as string;
   }
 
-  if (!fm) return sanitize(bodyHtml);
+  if (!fm) return sanitize(bodyHtml, resolveImage);
   const attr = options.sourceLines ? ' data-src-line="1"' : "";
   const block = `<div class="md-frontmatter"${attr}>${fm.nodes.map(renderNode).join("")}</div>`;
-  return sanitize(block + bodyHtml);
+  return sanitize(block + bodyHtml, resolveImage);
 }
