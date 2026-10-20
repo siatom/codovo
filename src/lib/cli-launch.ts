@@ -48,14 +48,16 @@ const ADDITIONAL_DIRS_SPECS: AdditionalDirsSpec[] = [
 /**
  * 工作区的附加目录 -> 启动命令 + 环境变量。
  *
- * 认不出是哪家 CLI、目录为空、或者用户自己已经在命令里写了同名参数时，
- * 原样返回——不猜、不重复注入。
+ * 认不出是哪家 CLI、没有附加目录、或者用户自己已经在命令里写了同名参数时，
+ * 原样返回——不猜、不重复注入。opencode 是例外：它没有 `--add-dir`，而且 V2
+ * 默认对外部目录全量放行，所以即使没有附加目录也要注入 ask 兜底，把单根工作区
+ * 的范围也收住。
  *
  * 路径一律加引号：附加目录可能带空格，命令是直接写进 shell 的，不引会被拆成两个词。
  */
 export function prepareLaunch(command: string, dirs: string[]): PreparedLaunch {
-  if (dirs.length === 0) return { command, env: {} };
   if (isOpencode(command)) return prepareOpencode(command, dirs);
+  if (dirs.length === 0) return { command, env: {} };
 
   const spec = specOf(command);
   if (!spec) return { command, env: {} };
@@ -73,7 +75,8 @@ function isOpencode(command: string): boolean {
  *
  * `external_directory` 的默认策略就是全量 allow，只写几个 allow 规则等于没写。
  * 要真正把范围收紧到工作区，必须先给 `*` 加一条 ask 兜底，再用工作区目录的 allow
- * 例外盖回来——规则按书写顺序匹配，后面的覆盖前面的。
+ * 例外盖回来——规则按书写顺序匹配，后面的覆盖前面的。`dirs` 为空时只剩 ask 兜底，
+ * 正好对应单根工作区：活动根是 Location，本来就不走 external_directory。
  *
  * 这里只兜底 `external_directory`：目录内的 read / edit 仍沿用用户自己的规则，
  * 不拿一个宽泛的 allow 把 `.env` 之类的 deny 盖掉。
