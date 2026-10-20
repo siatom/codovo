@@ -176,6 +176,25 @@ export const IconSun = icon(
 
 export const IconMoon = icon(<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />);
 
+/** 外观 / 配色：调色板，四个颜料点用实心圆，缩小后仍能认出是「配色」 */
+export const IconPalette = icon(
+  <>
+    <path d="M12 21a9 9 0 1 1 9-9c0 2.2-1.8 4-4 4h-1.6a1.9 1.9 0 0 0-1.5 3.1l.2.3A1.8 1.8 0 0 1 12.7 21Z" />
+    <circle cx="7.5" cy="11" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="9.8" cy="7.2" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="14.2" cy="7.2" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="16.8" cy="10.5" r="1.1" fill="currentColor" stroke="none" />
+  </>,
+);
+
+/** 快捷键：键盘轮廓 + 一排按键点 */
+export const IconKeyboard = icon(
+  <>
+    <rect x="2" y="5" width="20" height="14" rx="2.5" />
+    <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 13h.01M12 13h.01M16 13h.01M7.5 16h9" />
+  </>,
+);
+
 export const IconPanelCollapse = icon(
   <>
     <rect width="18" height="18" x="3" y="3" rx="2" />
