@@ -404,6 +404,18 @@ export function WorkspacePane({
     [root, workspace.roots],
   );
 
+  /**
+   * 文件树右键「格式化文档」：先把文件打开（已开则只切过去），再请编辑器格式化。
+   * 编辑器负责「model 还没就绪」的那段时间——见 EditorPane 的 formatPath。
+   */
+  const formatFile = useCallback(
+    (path: string) => {
+      openFile(path);
+      editorRef.current?.formatPath(path);
+    },
+    [openFile],
+  );
+
   /** 搜索结果里点一条：打开文件并把光标送到那一处 */
   const openMatch = useCallback(
     (path: string, line: number, column: number, length: number) => {
@@ -580,6 +592,7 @@ export function WorkspacePane({
                       gitReady={gitReady}
                       onSelectFile={openFile}
                       onOpenInBrowser={openInBrowser}
+                      onFormatFile={formatFile}
                       onOpenDiff={openDiff}
                       onOpenMatch={openMatch}
                       onPickWorktree={pickWorktree}

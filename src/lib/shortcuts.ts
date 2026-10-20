@@ -34,6 +34,9 @@ export const SHORTCUT_COMMANDS: ShortcutCommand[] = [
   // （展开 tasks），宿主抢了前台程序就没法用；Mod+Shift+T 是浏览器 / VS Code 的新建标签惯例
   { id: "newTab", label: "新建终端标签页", defaultCombo: "Mod+Shift+T", legacyDefault: "Mod+T" },
   { id: "editor.save", label: "保存文件", defaultCombo: "Mod+S" },
+  // 默认沿用 VS Code / Prettier 的惯例键；Monaco 自带的「格式化文档」只在注册过
+  // 格式化 provider 的语言（json5 / jsonc）上激活，本应用注册的动态键位排在它之后、优先生效
+  { id: "editor.format", label: "格式化文档", defaultCombo: "Shift+Alt+F" },
   { id: "git.commit", label: "提交（提交信息框内）", defaultCombo: "Mod+Enter" },
   // 文件树的复制 / 剪切 / 粘贴：只在树里某一行有焦点时生效（事件走行自己的 keydown，
   // 终端那边是兄弟子树、抢不到），所以和终端的 Ctrl+C 语义不冲突

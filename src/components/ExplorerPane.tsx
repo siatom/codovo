@@ -63,6 +63,7 @@ import {
   IconSparkle,
   IconTrash,
   IconTree,
+  IconWand,
 } from "./icons";
 
 /** 文件模块标题栏通过 ref 指挥树做两件事：新建与重列。树自己不知道标题栏长什么样 */
@@ -89,6 +90,8 @@ interface ExplorerPaneProps {
   onSelect: (path: string) => void;
   /** 右键网页文件（html / htm / svg）→ 在右栏的内置浏览器里打开它 */
   onOpenInBrowser: (path: string) => void;
+  /** 右键文件 → 格式化文档：已打开就直接格式化，否则先打开再格式化 */
+  onFormatFile: (path: string) => void;
   /** 改名前的落盘；返回 false 表示有文件没存成功，改名要中止 */
   onBeforeRename: () => Promise<boolean>;
   /** 改名 / 移动成功：编辑器里落在旧路径下的标签要跟着换到新路径 */
@@ -118,10 +121,10 @@ const EMPTY_MAP: ReadonlyMap<string, string> = new Map();
  * 左右内边距），贴着窗口边缘时用它往回收。窄了这一行就会折成两行。
  */
 const MENU_W = 168;
-// 菜单最多 12 项（含几处按条件出现的项）+ 最多 5 条分组分隔线；按每项 ~24px、
+// 菜单最多 13 项（含几处按条件出现的项）+ 最多 5 条分组分隔线；按每项 ~24px、
 // 每条分隔线 ~9px 估。宁可估大，估小了贴底的菜单会被窗口下沿裁掉
 // （这个值只用于把菜单顶回可视区）。
-const MENU_H = 380;
+const MENU_H = 400;
 /**
  * 根菜单（树里空白处 / 工作目录标题行）的高度：最多 6 项 + 2 条分隔线，按上面的估法
  * 约 170px。同样宁可估大，贴底右键时把菜单顶回可视区。
@@ -263,6 +266,7 @@ export function ExplorerPane({
   isRepo,
   onSelect,
   onOpenInBrowser,
+  onFormatFile,
   onBeforeRename,
   onRenamed,
   onDeleted,
@@ -1985,7 +1989,21 @@ export function ExplorerPane({
               </>
             )}
             <div className={MENU_DIVIDER} />
-            {/* 六、修改 */}
+            {/* 六、修改。格式化放最前：它只改内容、不动文件本身 */}
+            {!menu.entry.isDir && (
+              <button
+                type="button"
+                onClick={() => {
+                  const path = menu.entry.path;
+                  setMenu(null);
+                  onFormatFile(path);
+                }}
+                className={MENU_ITEM}
+              >
+                <IconWand className="h-3.5 w-3.5" />
+                格式化文档
+              </button>
+            )}
             <button
               type="button"
               onClick={() => startRename(menu.entry)}

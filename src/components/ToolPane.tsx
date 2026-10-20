@@ -105,6 +105,8 @@ interface ToolPaneProps {
   onSelectFile: (path: string) => void;
   /** 文件树里右键网页文件：在右栏的内置浏览器里打开它 */
   onOpenInBrowser: (path: string) => void;
+  /** 文件树里右键文件：格式化文档（已打开就直接格式化，否则先打开再格式化） */
+  onFormatFile: (path: string) => void;
   /** 改动列表 / 时间线里点一个文件：打开差异视图 */
   onOpenDiff: (path: string, source: DiffSource) => void;
   /**
@@ -151,6 +153,7 @@ export function ToolPane({
   gitReady,
   onSelectFile,
   onOpenInBrowser,
+  onFormatFile,
   onOpenDiff,
   onOpenMatch,
   onPickWorktree,
@@ -233,6 +236,7 @@ export function ToolPane({
           gitReady={gitReady}
           onSelectFile={onSelectFile}
           onOpenInBrowser={onOpenInBrowser}
+          onFormatFile={onFormatFile}
           onOpenMatch={onOpenMatch}
           onBeforeRename={onBeforeRename}
           onEntryRenamed={onEntryRenamed}

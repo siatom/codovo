@@ -141,6 +141,10 @@ export interface Settings {
   editorAutoSave: AutoSaveMode;
   /** afterDelay 模式下停手多久才落盘（毫秒） */
   editorAutoSaveDelay: number;
+  /** 保存时先用 Prettier 格式化一遍再落盘。默认关：不是所有项目都接受 Prettier 的风格 */
+  editorFormatOnSave: boolean;
+  /** 保存前用 Prettier 解析器做一次语法校验。默认开：配置文件写坏了能及时发现 */
+  editorCheckSyntaxOnSave: boolean;
   /**
    * 关窗口时直接收进托盘、不再问。开着工作区才用得着——没工作区时关闭就是退出。
    * 用户在某次确认框里勾了「不再提醒」就会置成 true
@@ -204,6 +208,8 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   editor: [
     "editorAutoSave",
     "editorAutoSaveDelay",
+    "editorFormatOnSave",
+    "editorCheckSyntaxOnSave",
     "editorMinimap",
     "editorWordWrap",
     "editorIndent",
@@ -294,6 +300,10 @@ const DEFAULTS: Settings = {
   editorIndent: "auto",
   editorAutoSave: "afterDelay",
   editorAutoSaveDelay: 1000,
+  // 默认关：Prettier 的风格不一定符合每个项目的习惯，得用户主动开
+  editorFormatOnSave: false,
+  // 默认开：写坏配置文件（少个括号、多个逗号）时提示一下，代价很低
+  editorCheckSyntaxOnSave: true,
   // 默认还是要问一句：第一次关窗口时得让用户知道工作区还在后台跑着
   closeToTray: false,
   // 默认接着上次的位置：用户上次停在哪就恢复到哪
@@ -545,6 +555,12 @@ function readSaved(): Settings {
     editorAutoSaveDelay: clampDelay(
       raw.editorAutoSaveDelay,
       DEFAULTS.editorAutoSaveDelay,
+    ),
+    // 这两个字段老版本的设置里没有：一个回落 false（默认不格式化）、一个回落 true（默认校验）
+    editorFormatOnSave: asBoolean(raw.editorFormatOnSave, DEFAULTS.editorFormatOnSave),
+    editorCheckSyntaxOnSave: asBoolean(
+      raw.editorCheckSyntaxOnSave,
+      DEFAULTS.editorCheckSyntaxOnSave,
     ),
     // 老版本的设置里没有这个字段，回落 false：默认仍然弹确认框
     closeToTray: asBoolean(raw.closeToTray, DEFAULTS.closeToTray),

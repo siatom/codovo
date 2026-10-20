@@ -75,7 +75,7 @@ type TabId = (typeof TABS)[number]["id"];
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
   terminal: "终端程序、配色，以及 AI CLI 列表",
-  editor: "缩进宽度、缩略图、自动换行和自动保存",
+  editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
   shortcuts: "全部快捷键键位",
   agent: "模型提供商、密钥，以及助手运行用的 opencode 与端口",
 };
@@ -2389,6 +2389,26 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       <span className="shrink-0 text-[12px] text-fg-dim">毫秒</span>
                     </Field>
                   )}
+                  <Field
+                    label="保存时格式化"
+                    hint="落盘前先用 Prettier 格式化一遍；当前文件类型不被 Prettier 支持、或格式化失败时按原内容保存"
+                  >
+                    <BoolToggle
+                      value={settings.editorFormatOnSave}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorFormatOnSave) => update({ editorFormatOnSave })}
+                    />
+                  </Field>
+                  <Field
+                    label="保存前检查语法"
+                    hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存只提示不打断"
+                  >
+                    <BoolToggle
+                      value={settings.editorCheckSyntaxOnSave}
+                      options={ON_OFF_OPTIONS}
+                      onChange={(editorCheckSyntaxOnSave) => update({ editorCheckSyntaxOnSave })}
+                    />
+                  </Field>
                 </>
               )}
 

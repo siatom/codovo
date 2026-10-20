@@ -74,6 +74,8 @@ interface FilesPaneProps {
   onSelectFile: (path: string) => void;
   /** 文件树里右键网页文件：在右栏的内置浏览器里打开它 */
   onOpenInBrowser: (path: string) => void;
+  /** 文件树里右键文件：格式化文档（已打开就直接格式化，否则先打开再格式化） */
+  onFormatFile: (path: string) => void;
   /** 内容搜索结果里点一条：打开文件并定位到那一行那一列 */
   onOpenMatch: (path: string, line: number, column: number, length: number) => void;
   /** 改名 / 移动前的落盘；返回 false 表示有文件没存成功，操作要中止 */
@@ -107,6 +109,7 @@ export function FilesPane({
   gitReady,
   onSelectFile,
   onOpenInBrowser,
+  onFormatFile,
   onOpenMatch,
   onBeforeRename,
   onEntryRenamed,
@@ -384,6 +387,7 @@ export function FilesPane({
           isRepo={gitReady}
           onSelect={onSelectFile}
           onOpenInBrowser={onOpenInBrowser}
+          onFormatFile={onFormatFile}
           onBeforeRename={onBeforeRename}
           onRenamed={onEntryRenamed}
           onDeleted={onEntryDeleted}
