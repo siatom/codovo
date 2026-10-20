@@ -976,6 +976,7 @@ function Shell() {
             onSendToAssistant={openAssistantAt}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
+            onOpenRecent={(path) => void openFileAnywhere(path)}
             onOpenFolder={() => void chooseFolder()}
             openRequest={openRequest}
             onOpenRequestHandled={handleOpenRequestHandled}

@@ -366,6 +366,8 @@ interface EditorPaneProps {
   onPatchTab: (tab: Tab, patch: TabPatch) => void;
   /** 打开一个文件：工作区内的直接开标签，工作区外的由上层建 / 复用临时工作区（Ctrl+O 走它） */
   onOpenPath: (path: string) => void;
+  /** 打开最近文件：始终先做存在性校验，失效记录提示并移除 */
+  onOpenRecent: (path: string) => void;
   /** 弹出目录选择框并把选中的文件夹打开为工作区（欢迎页入口） */
   onOpenFolder: () => void;
   /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
@@ -661,6 +663,7 @@ export function EditorPane({
   onNewUntitled,
   onPatchTab,
   onOpenPath,
+  onOpenRecent,
   onOpenFolder,
   onRevealInFiles,
   onOpenSettings,
@@ -2350,6 +2353,8 @@ export function EditorPane({
     // 和图片一样：打开即预览，判据只看扩展名，不必先把文件读进来
     if (isPdfPath(active.path)) {
       editor.setModel(null);
+      // PDF 打开后直接进预览，没有读盘成功回调；这里也算一次成功的打开
+      if (active.path !== null) addRecent(active.path);
       setStatus({ kind: "pdf" });
       dropPendingFormat(key);
       return;
@@ -3678,7 +3683,7 @@ export function EditorPane({
           <WelcomeScreen
             onOpenFile={() => void openFromDisk()}
             onOpenFolder={onOpenFolder}
-            onOpenRecent={onOpenPath}
+            onOpenRecent={onOpenRecent}
           />
         )}
         {/* 分栏的壳一直在：直接把 Monaco 的容器从「绝对铺满」改成「有宽度参与分栏」，
