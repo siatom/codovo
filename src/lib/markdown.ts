@@ -221,24 +221,74 @@ function withLine(html: string, line: number | undefined): string {
   return `${html.slice(0, match[0].length)} data-src-line="${line}"${html.slice(match[0].length)}`;
 }
 
-/**
- * 只在对照预览里用的 Renderer：给顶层块补行号锚点。
- * 嵌套块（引用 / 列表里的段落）不在 lineMap 里，走父级锚点，避免锚点过密。
- */
-class SourceLineRenderer extends Renderer {
-  private readonly lines: SourceLineMap;
+/** heading token 的纯文本：strong / em / link / codespan 都往下钻，图片取 alt */
+function plainText(tokens: Token[] | undefined): string {
+  if (!tokens) return "";
+  let out = "";
+  for (const token of tokens) {
+    const node = token as Token & { text?: string; tokens?: Token[] };
+    if (node.tokens && node.tokens.length > 0) out += plainText(node.tokens);
+    else if (typeof node.text === "string") out += node.text;
+  }
+  return out;
+}
 
-  constructor(lines: SourceLineMap) {
+/**
+ * 标题锚点。保留中文 / 日文等非 ASCII 字母与数字，空格换成连字符；
+ * 规则跟 CodeLite 的 slugify 保持一致，同一篇文档在两边生成的锚点相同。
+ */
+function slugify(text: string): string {
+  const slug = text
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .replace(/\s+/g, "-");
+  // 纯符号标题（例如 `### ---`）也得有个能跳的 id
+  return slug || "section";
+}
+
+/** 一次渲染内的标题 id 去重：重复标题依次追加 -1、-2… */
+class HeadingSlugger {
+  private readonly used = new Set<string>();
+
+  slug(text: string): string {
+    const base = slugify(text);
+    let id = base;
+    let suffix = 1;
+    while (this.used.has(id)) id = `${base}-${suffix++}`;
+    this.used.add(id);
+    return id;
+  }
+}
+
+/** 把 id 插进 heading 的开始标签，和 data-src-line 可以同时存在 */
+function withHeadingId(html: string, id: string): string {
+  const match = /^(\s*<h[1-6])(?=[\s>])/.exec(html);
+  if (!match) return html;
+  return `${html.slice(0, match[0].length)} id="${esc(id)}"${html.slice(match[0].length)}`;
+}
+
+/**
+ * 预览用的 Renderer：标题生成稳定 id，对照预览再给顶层块补行号锚点。
+ * 嵌套块（引用 / 列表里的段落）不在 lineMap 里，走父级锚点，避免锚点过密。
+ * 每次渲染新建一个实例，标题去重表不会串到上一篇文档。
+ */
+class PreviewRenderer extends Renderer {
+  private readonly lines: SourceLineMap | null;
+  private readonly slugs = new HeadingSlugger();
+
+  constructor(lines: SourceLineMap | null) {
     super();
     this.lines = lines;
   }
 
   private mark(token: object, html: string): string {
-    return withLine(html, this.lines.get(token));
+    return withLine(html, this.lines?.get(token));
   }
 
   heading(token: Tokens.Heading) {
-    return this.mark(token, super.heading(token));
+    const html = withHeadingId(super.heading(token), this.slugs.slug(plainText(token.tokens)));
+    return this.mark(token, html);
   }
 
   paragraph(token: Tokens.Paragraph) {
@@ -537,18 +587,15 @@ export function renderMarkdown(text: string, options: RenderOptions = {}): strin
       ? (src: string) => resolveImageSource(src, filePath, roots)
       : undefined;
 
+  const tokens = md.lexer(body);
+  const lineOf = options.sourceLines ? annotateTokens(tokens, body, baseLine) : null;
+  // KaTeX 扩展渲染器从 activeSourceLines 取公式块行号；普通预览时是 null，等于不处理
+  activeSourceLines = lineOf;
   let bodyHtml: string;
-  if (options.sourceLines) {
-    const tokens = md.lexer(body);
-    const lineOf = annotateTokens(tokens, body, baseLine);
-    activeSourceLines = lineOf;
-    try {
-      bodyHtml = md.parser(tokens, { ...md.defaults, renderer: new SourceLineRenderer(lineOf) });
-    } finally {
-      activeSourceLines = null;
-    }
-  } else {
-    bodyHtml = md.parse(body) as string;
+  try {
+    bodyHtml = md.parser(tokens, { ...md.defaults, renderer: new PreviewRenderer(lineOf) });
+  } finally {
+    activeSourceLines = null;
   }
 
   if (!fm) return sanitize(bodyHtml, resolveImage);

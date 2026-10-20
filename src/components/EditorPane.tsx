@@ -2759,6 +2759,9 @@ export function EditorPane({
   const isMarkdownFile = active?.kind === "file" && isMarkdownPath(active.path);
   /** 预览时按这个路径解析相对图片；diff / 非文件标签没有 */
   const previewSourcePath = active?.kind === "file" ? active.path : null;
+  // 当前文件在 model 缓存里的那条记录。直接从缓存里现取（每次渲染都算）：加载完成、
+  // 切标签、切编码都会走一次渲染，取到的自然是最新的；不用 state 单独存一份，省得两处对不上
+  const activeCached = activeKey ? modelsRef.current.get(activeKey) ?? null : null;
   /**
    * 左右分屏预览。只对 markdown 开：html / svg 的预览读磁盘、要整屏才够用。
    * 和整屏预览互斥（两个 toggle 各自会把对方摘掉），这里再兜一层：整屏优先
@@ -2786,10 +2789,10 @@ export function EditorPane({
   // 预览期间编辑器是 hidden 的、内容改不了，缓存里那份就是当前内容。
   const previewHtml = useMemo(() => {
     if (!isMarkdownPreview || activeKey === null || previewSourcePath === null) return "";
-    const model = modelsRef.current.get(activeKey)?.model;
-    return model
-      ? renderMarkdown(model.getValue(), { filePath: previewSourcePath, roots })
-      : "";
+    const cached = modelsRef.current.get(activeKey);
+    // 大文件不渲染全文：MarkdownPreview 会显示降级提示，编辑模式仍然可用
+    if (!cached || cached.isLarge) return "";
+    return renderMarkdown(cached.model.getValue(), { filePath: previewSourcePath, roots });
   }, [isMarkdownPreview, activeKey, previewNonce, previewSourcePath, roots]);
 
   /**
@@ -2812,11 +2815,13 @@ export function EditorPane({
       setSplitHtml("");
       return;
     }
-    const model = modelsRef.current.get(activeKey)?.model;
-    if (!model) {
+    const cached = modelsRef.current.get(activeKey);
+    // 大文件不渲染右侧正文：MarkdownPreview 只显示降级提示，避免整篇渲染卡住
+    if (!cached || cached.isLarge) {
       setSplitHtml("");
       return;
     }
+    const model = cached.model;
     // 进入分屏先同步渲染一次，右侧不留空白
     setSplitHtml(
       renderMarkdown(model.getValue(), {
@@ -2845,7 +2850,7 @@ export function EditorPane({
       sub.dispose();
       window.clearTimeout(timer);
     };
-  }, [isSplitPreview, activeKey, previewSourcePath, roots]);
+  }, [isSplitPreview, activeKey, activeCached?.isLarge, previewSourcePath, roots]);
 
   /**
    * 对照模式的滚动同步：顶部先按块锚点对齐，块内再按行数插值。
@@ -2934,9 +2939,6 @@ export function EditorPane({
     }
   }, [activeKey]);
 
-  // 当前文件在 model 缓存里的那条记录。直接从缓存里现取（每次渲染都算）：加载完成、
-  // 切标签、切编码都会走一次渲染，取到的自然是最新的；不用 state 单独存一份，省得两处对不上
-  const activeCached = activeKey ? modelsRef.current.get(activeKey) ?? null : null;
   const activeEncoding = activeCached?.encoding || null;
   /**
    * 另存为的可用性：截断文件写出去只会得到残缺内容，直接禁掉。
@@ -3576,7 +3578,9 @@ export function EditorPane({
             // 右侧渲染预览。MarkdownPreview 是 absolute inset-0，得给它一个定位父级；
             // 滚动同步通过这个外壳找到里面真正的滚动容器
             <div ref={splitPreviewRef} className="relative h-full w-full">
-              {isSplitPreview && <MarkdownPreview html={splitHtml} />}
+              {isSplitPreview && (
+                <MarkdownPreview html={splitHtml} isLarge={activeCached?.isLarge ?? false} />
+              )}
             </div>
           }
         />
@@ -3585,7 +3589,9 @@ export function EditorPane({
           className={isDiffTab ? "absolute inset-0" : "hidden"}
         />
 
-        {isMarkdownPreview && <MarkdownPreview html={previewHtml} />}
+        {isMarkdownPreview && (
+          <MarkdownPreview html={previewHtml} isLarge={activeCached?.isLarge ?? false} />
+        )}
         {/* html / htm / svg 预览：iframe 走 asset 协议读磁盘，相对路径的 css / js / 图片一并生效 */}
         {isHtmlPreview && activeFile && activeFile.path !== null && (
           <HtmlPreview path={activeFile.path} nonce={previewNonce} />
