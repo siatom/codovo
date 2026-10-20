@@ -80,6 +80,7 @@ import {
   IconEye,
   IconLayoutColumns,
   IconLayoutSingle,
+  IconList,
   IconMore,
   IconTerminal,
   IconTranslate,
@@ -193,6 +194,20 @@ function readDiffSideBySide(): boolean {
     return window.sessionStorage.getItem(DIFF_SIDE_BY_SIDE_KEY) === "1";
   } catch {
     // 读不到就用默认的内联
+    return false;
+  }
+}
+
+/**
+ * markdown 预览的大纲开关，窗口级偏好存 sessionStorage。
+ * 默认关：只在需要跳章节时从标题栏打开，不默认占掉正文右侧的宽度。
+ */
+const MARKDOWN_OUTLINE_KEY = "codedock.markdownOutline";
+
+function readMarkdownOutline(): boolean {
+  try {
+    return window.sessionStorage.getItem(MARKDOWN_OUTLINE_KEY) === "1";
+  } catch {
     return false;
   }
 }
@@ -730,6 +745,8 @@ export function EditorPane({
   const [diffStatus, setDiffStatus] = useState<Status>({ kind: "idle" });
   /** 差异视图的排布偏好（内联 / 并排），窗口级；初值从 sessionStorage 读 */
   const [diffSideBySide, setDiffSideBySide] = useState(readDiffSideBySide);
+  /** markdown 预览右侧大纲的开关，窗口级偏好 */
+  const [markdownOutline, setMarkdownOutline] = useState(readMarkdownOutline);
   /** 当前差异的改动块数量与所处块序号（0 基），驱动状态栏的「第 x / N 处」与按钮禁用态 */
   const [diffChangeCount, setDiffChangeCount] = useState(0);
   const [diffChangeIndex, setDiffChangeIndex] = useState(0);
@@ -2123,6 +2140,19 @@ export function EditorPane({
     requestAnimationFrame(() => diffRef.current?.layout());
   }, []);
 
+  /** markdown 预览 / 对照的大纲开关；窗口级偏好，写回 sessionStorage 下次打开沿用 */
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(MARKDOWN_OUTLINE_KEY, markdownOutline ? "1" : "0");
+    } catch {
+      // 存不进去也无所谓，只是下次不记得选择
+    }
+  }, [markdownOutline]);
+
+  const toggleMarkdownOutline = useCallback(() => {
+    setMarkdownOutline((open) => !open);
+  }, []);
+
   // 差异编辑器只在第一次真的要看差异时才建：省一份初始化，
   // 也避免在 hidden（0 尺寸）的容器上建实例
   const ensureDiffEditor = useCallback(() => {
@@ -3161,6 +3191,14 @@ export function EditorPane({
   }, [isSplitPreview, activeKey, activeCached?.isLarge, previewSourcePath, roots]);
 
   /**
+   * 当前预览正文里有没有标题。没有标题就不显示大纲开关，免得点开一个空面板。
+   * 代码块里的 `<h1>` 会被 marked 转义成 `&lt;h1&gt;`，这个正则不会误判。
+   */
+  const hasMarkdownHeadings =
+    (isMarkdownPreview && /<h[1-6][\s>]/i.test(previewHtml)) ||
+    (isSplitPreview && /<h[1-6][\s>]/i.test(splitHtml));
+
+  /**
    * 对照模式的滚动同步：顶部先按块锚点对齐，块内再按行数插值。
    * 只监听真正可见的那一侧的用户滚动，程序化滚动用 syncGuard 吃掉回声。
    */
@@ -3219,7 +3257,8 @@ export function EditorPane({
       window.clearTimeout(syncGuardTimerRef.current);
       syncGuardRef.current = null;
     };
-  }, [isSplitPreview, splitHtml]);
+    // markdownOutline 参与依赖：开关大纲会让正文宽度和标题位置一起变，重跑一次重新对齐
+  }, [isSplitPreview, splitHtml, markdownOutline]);
 
   // 预览或差异视图下 Monaco 容器是 hidden 的、量不到尺寸，切回可见得补一次 layout，
   // 否则行号栏宽度和滚动位置还是按 0 尺寸算出来的；工作区从后台切回来时同理。
@@ -3567,6 +3606,26 @@ export function EditorPane({
             ))}
           </div>
         )}
+        {/* 文档大纲：只对能渲染出标题的预览 / 对照给出入口，编辑与翻译本来就没有大纲 */}
+        {isMarkdownFile &&
+          status.kind === "ready" &&
+          hasMarkdownHeadings &&
+          (markdownMode === "preview" || markdownMode === "split") && (
+            <button
+              type="button"
+              onClick={toggleMarkdownOutline}
+              aria-label="文档大纲"
+              aria-pressed={markdownOutline}
+              title={markdownOutline ? "隐藏文档大纲" : "显示文档大纲"}
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
+                markdownOutline
+                  ? "bg-selected text-fg"
+                  : "text-fg-dim hover:bg-hover hover:text-fg"
+              }`}
+            >
+              <IconList className="h-3.5 w-3.5" />
+            </button>
+          )}
         {/* 纯文本 / 日志等文档：markdown 走上面的四态分组，这里给一个独立的翻译开关 */}
         {activeFile && status.kind === "ready" && !isMarkdownFile && canTranslate && (
           <button
@@ -3835,7 +3894,11 @@ export function EditorPane({
             // 滚动同步通过这个外壳找到里面真正的滚动容器
             <div ref={splitPreviewRef} className="relative h-full w-full">
               {isSplitPreview && (
-                <MarkdownPreview html={splitHtml} isLarge={activeCached?.isLarge ?? false} />
+                <MarkdownPreview
+                  html={splitHtml}
+                  isLarge={activeCached?.isLarge ?? false}
+                  outline={markdownOutline}
+                />
               )}
             </div>
           }
@@ -3846,7 +3909,11 @@ export function EditorPane({
         />
 
         {isMarkdownPreview && (
-          <MarkdownPreview html={previewHtml} isLarge={activeCached?.isLarge ?? false} />
+          <MarkdownPreview
+            html={previewHtml}
+            isLarge={activeCached?.isLarge ?? false}
+            outline={markdownOutline}
+          />
         )}
         {/* 翻译视图：左原文右译文，正文取编辑器当前内容（含未保存改动），不写回文件 */}
         {isTranslate && status.kind === "ready" && activeKey !== null && activeFile && activeCached && (
