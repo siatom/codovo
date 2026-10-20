@@ -363,7 +363,7 @@ interface EditorPaneProps {
   onNewUntitled: () => void;
   /** 改标签元数据：另存为改路径、外部变更改标记 */
   onPatchTab: (tab: Tab, patch: TabPatch) => void;
-  /** 打开一个工作区内的文件（快捷键 Ctrl+O 走它，标签由 WorkspacePane 管） */
+  /** 打开一个文件：工作区内的直接开标签，工作区外的由上层建 / 复用临时工作区（Ctrl+O 走它） */
   onOpenPath: (path: string) => void;
   /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
   onRevealInFiles: (path: string) => void;
@@ -1375,18 +1375,16 @@ export function EditorPane({
   );
 
   /**
-   * Ctrl+O / 工具栏入口：选一个文件打开。**只能开当前工作区里的文件**——
-   * 工作区外的单文件打开（临时工作区）属于后面的事，这里如实拒绝而不是悄悄失败。
+   * Ctrl+O / 欢迎页入口：选一个文件打开。
+   *
+   * 这里不判断文件在不在当前工作区——交给 `onOpenPath` 的上层路由：工作区内的直接开标签，
+   * 工作区外的以文件所在目录建 / 复用临时工作区，沙箱仍然由后端的 root 校验把关。
    */
   const openFromDisk = useCallback(async () => {
     const target = await pickOpenPath();
     if (target === null) return;
-    if (ownerRoot(rootsRef.current, target) === null) {
-      pushNotice("只能打开当前工作区内的文件", "error");
-      return;
-    }
     onOpenPath(target);
-  }, [onOpenPath, pushNotice]);
+  }, [onOpenPath]);
 
   /** 标签右键「打开所在目录」：右栏切到「文件」模块并在树里定位这个文件 */
   const revealInFiles = useCallback(

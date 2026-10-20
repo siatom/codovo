@@ -89,6 +89,17 @@ interface WorkspacePaneProps {
   onSendToAssistant: (location: EditorLocation) => void;
   /** 打开设置面板（编辑器翻译视图里的「设置」入口） */
   onOpenSettings: () => void;
+  /**
+   * 打开一个不落在本工作区任何根下的文件。Ctrl+O、最近文件、系统拖放都可能指向
+   * 工作区外的文件，由 App 建 / 复用临时工作区后把请求转回来。
+   */
+  onOpenFileAnywhere: (path: string) => void;
+  /**
+   * 交给本工作区打开的跨工作区请求（App 建好临时工作区后回填）。nonce 保证同一条
+   * 路径连点两次也能重新执行；处理完由 `onOpenRequestHandled` 清掉。
+   */
+  openRequest: { workspaceId: string; path: string; nonce: number } | null;
+  onOpenRequestHandled: () => void;
 }
 
 /**
@@ -110,6 +121,9 @@ export function WorkspacePane({
   onHandles,
   onSendToAssistant,
   onOpenSettings,
+  onOpenFileAnywhere,
+  openRequest,
+  onOpenRequestHandled,
 }: WorkspacePaneProps) {
   /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
   const root = workspace.activeRoot;
@@ -366,9 +380,15 @@ export function WorkspacePane({
 
   const openFile = useCallback(
     (path: string) => {
+      // 不在本工作区任何根下的文件走 App：由它建 / 复用临时工作区再转回来，
+      // 沙箱不在这里放宽，真正的读写仍由后端按白名单校验
+      if (ownerRoot(workspace.roots, path) === null) {
+        onOpenFileAnywhere(path);
+        return;
+      }
       openTab(openFileTab(path));
     },
-    [openTab],
+    [onOpenFileAnywhere, openTab, workspace.roots],
   );
 
   /**
@@ -453,6 +473,14 @@ export function WorkspacePane({
     });
   }, [openTabs, activeTab, workspace.id]);
 
+  /** App 建好 / 切好临时工作区后转回来的单文件请求 */
+  useEffect(() => {
+    if (!openRequest || openRequest.workspaceId !== workspace.id) return;
+    if (ownerRoot(workspace.roots, openRequest.path) !== null) {
+      openFile(openRequest.path);
+    }
+    onOpenRequestHandled();
+  }, [openRequest, workspace.id, workspace.roots, openFile, onOpenRequestHandled]);
 
   /**
    * 改标签的元数据（另存为改路径、外部变更改标记）。匹配按**改之前**的 key：

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { WorkspaceDialog } from "./components/WorkspaceDialog";
 import { Sidebar, readSidebarCollapsed, saveSidebarCollapsed } from "./components/Sidebar";
@@ -37,14 +38,18 @@ import {
   onFilesChanged,
   pathKey,
   pathsExist,
+  pathsPresent,
+  pickOpenPath,
   workspaceActivate,
   workspaceClose,
   workspaceRegister,
   samePath,
+  toDisplayPath,
 } from "./lib/fs";
 import {
   clearLastWorkspaceId,
   dropWorkspace,
+  folderName,
   migrateWorkspaces,
   newWorkspaceId,
   onWorkspacesChanged,
@@ -54,6 +59,7 @@ import {
   type Workspace,
 } from "./lib/workspaces";
 import { clearSession } from "./lib/session";
+import { removeRecent } from "./lib/recent";
 import {
   useSettings,
   FONT_SIZE_MIN,
@@ -67,6 +73,18 @@ import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
 /** 新建 / 编辑工作区对话框的状态 */
 type DialogState = { mode: "create" } | { mode: "edit"; workspace: Workspace };
+
+/**
+ * 文件所在目录。路径分隔符两种都认；盘符根（`C:`）补回分隔符，
+ * 否则 `C:\a.txt` 会得到 `C:`，后端不把它当目录。
+ */
+function parentDir(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+  if (index <= 0) return "";
+  const dir = trimmed.slice(0, index);
+  return /^[A-Za-z]:$/.test(dir) ? `${dir}\\` : dir;
+}
 
 /**
  * 应用助手桥的轮询间隔。后端 MCP 子进程只能把请求写成文件，没有推送通道，
@@ -118,6 +136,18 @@ function Shell() {
    * 面板本体仍渲染在 Sidebar 里（它的入口按钮在那里）。
    */
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 系统拖放文件 / 文件夹进窗口时显示遮罩 */
+  const [dropActive, setDropActive] = useState(false);
+  /**
+   * 跨工作区打开文件的请求：App 找到（或新建）目标工作区后，把路径交给那个实例。
+   * nonce 让同一条路径连点两次也能再执行一次。
+   */
+  const [openRequest, setOpenRequest] = useState<{
+    workspaceId: string;
+    path: string;
+    nonce: number;
+  } | null>(null);
+  const openRequestNonceRef = useRef(0);
 
   /** 关工作区时要把它那份会话状态一起丢掉，下次打开是干净的 */
   const dropAgentSession = useDropAgentSession();
@@ -143,6 +173,8 @@ function Shell() {
   editorFontSizeRef.current = settings.editorFontSize;
   const sidebarCollapsedRef = useRef(sidebarCollapsed);
   sidebarCollapsedRef.current = sidebarCollapsed;
+  /** Ctrl+O 的窗口级处理。定义在后面的 chooseFile 经 ref 兜住，监听只注册一次 */
+  const chooseFileRef = useRef<() => void>(() => {});
   const { preference: themePreference, setPreference: setTheme } = useTheme();
   /** 关窗口的确认框：开着工作区、又还没记住选择时才弹 */
   const [closePrompt, setClosePrompt] = useState(false);
@@ -297,6 +329,131 @@ function Shell() {
   );
 
   /**
+   * 把一组文件夹作为工作区打开。同一目录已经在某个工作区里时只切过去，
+   * 不重复创建；多个文件夹按现有规则合成一个多根工作区（和新建对话框一致）。
+   */
+  const openFolders = useCallback(
+    async (roots: string[]) => {
+      const unique: string[] = [];
+      const seen = new Set<string>();
+      for (const root of roots) {
+        const key = pathKey(root);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        unique.push(root);
+      }
+      if (unique.length === 0) return;
+
+      const existing =
+        unique.length === 1
+          ? workspacesRef.current.find((ws) => ws.roots.some((root) => samePath(root, unique[0])))
+          : workspacesRef.current.find((ws) =>
+              unique.every((root) => ws.roots.some((item) => samePath(item, root))),
+            );
+      if (existing) {
+        await openWorkspace(existing);
+        return;
+      }
+
+      // 拖入 / 选择是明确动作，记一次活动，让它排到非置顶组最前
+      touchActivity(unique[0]);
+      await openWorkspace({
+        id: newWorkspaceId(),
+        name: folderName(unique[0]),
+        roots: unique,
+        activeRoot: unique[0],
+      });
+    },
+    [openWorkspace, touchActivity],
+  );
+
+  /**
+   * 打开任意路径上的一个文件：
+   * - 落在某个已记录工作区的根里 → 切到那个工作区再开标签；
+   * - 不在任何工作区里 → 以文件所在目录为根建 / 复用临时工作区后打开。
+   *
+   * 沙箱没有放宽：新工作区的根会经 `workspace_activate` 登记，读写仍由后端校验。
+   * 文件已被删掉时只提示并从最近列表移除，不改变当前工作区。
+   */
+  const openFileAnywhere = useCallback(
+    async (path: string) => {
+      if (!path) return;
+      try {
+        const [present] = await pathsPresent([path]);
+        if (!present) {
+          removeRecent(path);
+          setToast(`文件不存在：${toDisplayPath(path)}`);
+          return;
+        }
+      } catch {
+        // 存在性校验失败不拦着打开，真正的错误由读盘给出
+      }
+
+      const owner = workspacesRef.current.find((ws) =>
+        ws.roots.some((root) => isPathInside(path, root)),
+      );
+      if (owner) {
+        if (activeIdRef.current !== owner.id) {
+          const next = await openWorkspace(owner);
+          if (!next) return;
+        }
+        setOpenRequest({
+          workspaceId: owner.id,
+          path,
+          nonce: (openRequestNonceRef.current += 1),
+        });
+        return;
+      }
+
+      const dir = parentDir(path);
+      if (!dir) {
+        setToast(`打不开这个路径：${toDisplayPath(path)}`);
+        return;
+      }
+      const reusable = workspacesRef.current.find((ws) =>
+        ws.roots.some((root) => samePath(root, dir)),
+      );
+      if (reusable) {
+        if (activeIdRef.current !== reusable.id) {
+          const next = await openWorkspace(reusable);
+          if (!next) return;
+        }
+        setOpenRequest({
+          workspaceId: reusable.id,
+          path,
+          nonce: (openRequestNonceRef.current += 1),
+        });
+        return;
+      }
+
+      touchActivity(dir);
+      const next = await openWorkspace({
+        id: newWorkspaceId(),
+        name: folderName(dir),
+        roots: [dir],
+        activeRoot: dir,
+      });
+      if (!next) return;
+      setOpenRequest({ workspaceId: next.id, path, nonce: (openRequestNonceRef.current += 1) });
+    },
+    [openWorkspace, touchActivity],
+  );
+
+  /** 全局 Ctrl+O：没有工作区时也能选文件，选完由 `openFileAnywhere` 决定落到哪 */
+  const chooseFile = useCallback(async () => {
+    try {
+      const target = await pickOpenPath();
+      if (target !== null) await openFileAnywhere(target);
+    } catch (reason) {
+      setToast(`选择文件失败：${reason}`);
+    }
+  }, [openFileAnywhere]);
+  chooseFileRef.current = chooseFile;
+
+  /** 目标工作区处理完单文件请求后清掉，免得实例重挂载时又打开一次 */
+  const handleOpenRequestHandled = useCallback(() => setOpenRequest(null), []);
+
+  /**
    * 「编辑工作区」提交：改名字与工作目录。
    *
    * 开着的工作区要顺手把新根登记进后端，否则文件树读不到；但**只有当前工作区**才整体
@@ -429,6 +586,9 @@ function Shell() {
       const commands: [string, () => void][] = [
         ["app.settings", () => setSettingsOpen(true)],
         ["app.toggleSidebar", () => applySidebarCollapsed(!sidebarCollapsedRef.current)],
+        // Ctrl+O 是窗口级入口：没有打开任何工作区时也要能选文件（选完建临时工作区）。
+        // 捕获阶段先吃掉，避免编辑器区域内再弹一次同一个对话框
+        ["editor.openFile", () => chooseFileRef.current()],
         ["editor.zoomIn", () => zoom(1)],
         ["editor.zoomOut", () => zoom(-1)],
         ["editor.zoomReset", () => update({ editorFontSize: DEFAULT_EDITOR_FONT_SIZE })],
@@ -679,6 +839,53 @@ function Shell() {
     };
   }, []);
 
+  /**
+   * 系统拖放。和文件树内部的 HTML5 拖拽是两回事：这里只接窗口级的文件 / 文件夹，
+   * 由 Tauri 的 `onDragDropEvent` 送来。
+   *
+   * 判定目录 / 文件复用后端的 `paths_exist`（只认目录），其余按文件走单文件规则。
+   * 多次拖放串行处理：并行调用 `openWorkspace` 会互相抢后端的目录监听。
+   */
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    let queue = Promise.resolve();
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDropActive(true);
+          return;
+        }
+        if (payload.type === "leave") {
+          setDropActive(false);
+          return;
+        }
+        setDropActive(false);
+        const dropped = payload.paths;
+        if (dropped.length === 0) return;
+        queue = queue.then(async () => {
+          try {
+            const flags = await pathsExist(dropped);
+            const folders = dropped.filter((_, index) => flags[index]);
+            const files = dropped.filter((_, index) => !flags[index]);
+            if (folders.length > 0) await openFolders(folders);
+            for (const file of files) await openFileAnywhere(file);
+          } catch (reason) {
+            setToast(`打开拖入的内容失败：${reason}`);
+          }
+        });
+      })
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [openFileAnywhere, openFolders]);
+
   // Esc 退出全屏。拿不到焦点在 iframe 里敲的 Esc（跨域事件不会冒出来），那种情况只能用按钮
   useEffect(() => {
     if (fullscreen === "none") return;
@@ -757,6 +964,9 @@ function Shell() {
             onHandles={onHandles}
             onSendToAssistant={openAssistantAt}
             onOpenSettings={() => setSettingsOpen(true)}
+            onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
+            openRequest={openRequest}
+            onOpenRequestHandled={handleOpenRequestHandled}
           />
         );
       })}
@@ -843,6 +1053,18 @@ function Shell() {
           // 按 Esc / 点遮罩是「反悔」：只收起弹窗，窗口、终端、智能体都不动
           onDismiss={() => setClosePrompt(false)}
         />
+      )}
+
+      {/* 系统拖放遮罩：只做视觉反馈，不拦截事件（pointer-events-none），松手后由监听器处理 */}
+      {dropActive && (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-app/70 backdrop-blur-sm">
+          <div className="rounded-xl border border-dashed border-accent-strong bg-raised px-10 py-7 text-center shadow-xl">
+            <p className="text-[14px] font-medium text-fg">松开以打开</p>
+            <p className="mt-1.5 text-[12px] text-fg-faint">
+              文件夹会作为工作区打开，文件会直接进入编辑器
+            </p>
+          </div>
+        </div>
       )}
 
       {/* 操作反馈条：不打断操作地飘在右下角，几秒后自己消失 */}
