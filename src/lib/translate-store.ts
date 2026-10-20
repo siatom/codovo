@@ -42,6 +42,11 @@ type TranslationSnapshot = Readonly<Record<string, TranslationRun>>;
 let snapshot: TranslationSnapshot = {};
 const listeners = new Set<() => void>();
 let runSeq = 0;
+/**
+ * 运行中的翻译当前挂在哪个标签 key 上。另存为会换 key，但已经发出的分段请求
+ * 仍按原 runId 返回，靠这张表把它们写回新 key，而不是让进度卡在旧 key 上。
+ */
+const runKeys = new Map<number, string>();
 
 function emit(next: TranslationSnapshot): void {
   snapshot = next;
@@ -310,13 +315,16 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
   }
 
   const runId = ++runSeq;
+  // 另存为可能在翻译途中换 key；后续读写都以这张表里的最新 key 为准
+  runKeys.set(runId, tabKey);
+  const currentKey = () => runKeys.get(runId) ?? tabKey;
   const fail = (error: string) => {
-    const previous = snapshot[tabKey];
+    const previous = snapshot[currentKey()];
     if (!previous || previous.runId !== runId) return;
-    setRun(tabKey, { ...previous, status: "error", error });
+    setRun(currentKey(), { ...previous, status: "error", error });
   };
   const invalid = (error: string): void => {
-    setRun(tabKey, {
+    setRun(currentKey(), {
       status: "error",
       target,
       signature,
@@ -352,7 +360,7 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
     return;
   }
 
-  setRun(tabKey, {
+  setRun(currentKey(), {
     status: "loading",
     target,
     signature,
@@ -366,7 +374,7 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
   });
 
   const parts: string[] = [];
-  const isCurrent = () => snapshot[tabKey]?.runId === runId;
+  const isCurrent = () => snapshot[currentKey()]?.runId === runId;
 
   for (let index = 0; index < prepared.chunks.length; index++) {
     if (!isCurrent()) return;
@@ -396,9 +404,9 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
     }
 
     parts.push(text.trim());
-    const previous = snapshot[tabKey];
+    const previous = snapshot[currentKey()];
     if (!previous || previous.runId !== runId) return;
-    setRun(tabKey, {
+    setRun(currentKey(), {
       ...previous,
       partial: [...parts],
       progress: { done: index + 1, total: prepared.chunks.length },
@@ -410,9 +418,9 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
   try {
     const translated = assembleTranslation(parts, prepared.blocks);
     cacheTranslation(path, signature, target, modelRef, translated);
-    const previous = snapshot[tabKey];
+    const previous = snapshot[currentKey()];
     if (!previous || previous.runId !== runId) return;
-    setRun(tabKey, {
+    setRun(currentKey(), {
       ...previous,
       status: "done",
       translated,
@@ -442,7 +450,28 @@ export function cancelTranslation(tabKey: string): void {
 /** 关标签时清理运行状态；缓存仍留在 localStorage，重新打开还能命中 */
 export function clearTranslation(tabKey: string): void {
   if (!(tabKey in snapshot)) return;
+  const run = snapshot[tabKey];
+  if (run) runKeys.delete(run.runId);
   const next = { ...snapshot };
   delete next[tabKey];
+  emit(next);
+}
+
+/**
+ * 另存为把标签换成新路径时，把翻译运行状态一起搬到新 key。
+ *
+ * 只改 key、不重建 run：正在进行的分段请求仍用原来的 runId 写回，
+ * 切回编辑再进翻译视图也能直接看到刚才的译文。缓存本身按路径索引，
+ * 新路径没有缓存命中，下次重新翻译会重新请求。
+ */
+export function rekeyTranslation(oldKey: string, newKey: string): void {
+  if (oldKey === newKey) return;
+  const run = snapshot[oldKey];
+  if (!run) return;
+  // 正在跑的分段循环按 runId 找当前 key，跟着搬到新 key 才能继续写进度
+  runKeys.set(run.runId, newKey);
+  const next = { ...snapshot };
+  delete next[oldKey];
+  next[newKey] = run;
   emit(next);
 }
