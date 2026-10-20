@@ -58,6 +58,7 @@ import {
 } from "../lib/installer";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
+import type { TranslateTarget } from "../lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { IconCheck, IconChevronDown, IconClose, IconCopy, IconDownload, IconGripVertical, IconPlus } from "./icons";
 
@@ -83,7 +84,7 @@ const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   terminal: "终端程序、配色，以及 AI CLI 列表",
   editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
   shortcuts: "全部快捷键键位",
-  agent: "模型提供商、密钥，以及助手运行用的 opencode 与端口",
+  agent: "模型提供商、密钥、文档翻译目标语言，以及助手运行用的 opencode 与端口",
 };
 
 /** 依赖页只有环境检测与安装，没有可恢复的设置项 */
@@ -140,6 +141,12 @@ const AUTO_SAVE_OPTIONS: { value: AutoSaveMode; label: string }[] = [
   { value: "afterDelay", label: "延迟后" },
   { value: "onFocusChange", label: "焦点离开编辑器时" },
   { value: "onWindowChange", label: "窗口失焦时" },
+];
+
+/** 文档翻译目标语言；只支持中英，翻译视图里也能切换 */
+const TRANSLATE_TARGET_OPTIONS: { value: TranslateTarget; label: string }[] = [
+  { value: "zh", label: "简体中文" },
+  { value: "en", label: "English" },
 ];
 
 /** 编辑器缩进宽度；auto 交回 Monaco 按文件内容探测 */
@@ -2655,6 +2662,24 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                           ...modelRefOptions(settings),
                         ]}
                         onChange={(next) => updateDefaultModel(next)}
+                      />
+                    </Field>
+                  </Section>
+
+                  <Section
+                    title="文档翻译"
+                    hint="Markdown / 纯文本文档的翻译复用上面的全局默认模型，不需要单独配置接口和密钥"
+                  >
+                    <Field
+                      label="目标语言"
+                      hint="切换后翻译视图会按新语言重新翻译；也可以在翻译视图里直接切换"
+                    >
+                      <Select
+                        value={settings.translateTarget}
+                        options={TRANSLATE_TARGET_OPTIONS}
+                        onChange={(next) =>
+                          update({ translateTarget: next as TranslateTarget })
+                        }
                       />
                     </Field>
                   </Section>

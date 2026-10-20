@@ -8,6 +8,7 @@ import {
 } from "react";
 import { secretStatus, setSecret } from "./secrets";
 import { defaultShortcuts, resolveShortcuts } from "./shortcuts";
+import type { TranslateTarget } from "./types";
 
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
@@ -102,6 +103,11 @@ export interface Settings {
   aiDefaultProvider: string;
   /** 全局默认模型 id；空或失效时回落到该提供商的第一个启用模型 */
   aiDefaultModel: string;
+  /**
+   * 文档翻译的目标语言。翻译复用上面的默认模型与钥匙串里的密钥，
+   * 不单独存接口地址 / 模型 / API Key。
+   */
+  translateTarget: TranslateTarget;
   /** opencode 可执行文件；裸命令名会去 PATH 里找。应用助手（右栏抽屉）与数据库 / 预览助手共用它 */
   agentCommand: string;
   /** 助手服务监听的端口；0 表示自动挑一个空闲的 */
@@ -240,6 +246,8 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "aiProviders",
     "aiDefaultProvider",
     "aiDefaultModel",
+    // 翻译复用 AI 默认模型，放在「AI」分类里恢复默认更符合用户直觉
+    "translateTarget",
     "agentCommand",
     "agentPort",
     "agentWorkspaces",
@@ -298,6 +306,8 @@ const DEFAULTS: Settings = {
   aiProviders: [],
   aiDefaultProvider: "",
   aiDefaultModel: "",
+  // 默认译成简体中文；用户可以在设置或翻译视图里随时切换
+  translateTarget: "zh",
   agentCommand: "opencode",
   agentPort: 0,
   agentWorkspaces: {},
@@ -368,6 +378,11 @@ function asAutoSave(value: unknown): AutoSaveMode {
 }
 
 const EDITOR_INDENTS: EditorIndent[] = ["auto", "2", "4", "8"];
+
+/** 翻译目标语言只有中英两种，读坏了（含老版本没有这个字段）回落默认 */
+function asTranslateTarget(value: unknown): TranslateTarget {
+  return value === "en" ? "en" : DEFAULTS.translateTarget;
+}
 
 /** 缩进宽度同理：值域固定，读坏了回落 auto */
 function asEditorIndent(value: unknown): EditorIndent {
@@ -558,6 +573,8 @@ function readSaved(): Settings {
     aiProviders,
     aiDefaultProvider: asString(raw.aiDefaultProvider, DEFAULTS.aiDefaultProvider),
     aiDefaultModel: asString(raw.aiDefaultModel, DEFAULTS.aiDefaultModel),
+    // 老版本的设置里没有这一项，回落 zh
+    translateTarget: asTranslateTarget(raw.translateTarget),
     // 老版本的设置里没有这两个字段，asBoolean 回落 true 就是默认开着
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
