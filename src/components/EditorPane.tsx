@@ -1372,8 +1372,10 @@ export function EditorPane({
         return false;
       }
 
-      // 写盘期间标签被关掉 / model 已销毁：文件已经写好，但不能再动缓存或标签
-      if (writable.model.isDisposed()) return true;
+      // 写盘期间标签被关掉 / model 已销毁：文件已经写好，但不能再动缓存或标签。
+      // 同时也确认缓存还挂在原 key 上，避免并发另存为把别人的 model 又搬一次
+      const afterWrite = modelsRef.current.get(key);
+      if (!afterWrite || afterWrite !== writable || writable.model.isDisposed()) return true;
 
       // 写盘已成功，这里才开始改标签与缓存：顺序反过来会让失败留下一个不可用的路径。
       // model 的 URI 改不了，只把语法切到新扩展名对应的语言（大文件仍保持 plaintext）。
