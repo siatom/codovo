@@ -298,6 +298,51 @@ function splitBlocks(source: string): string[] {
   return blocks;
 }
 
+/** 单行里所有占位符的 [start, end) 区间，用来避免硬切时把占位符切成两半 */
+function markerSpans(line: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  // MARKER_RE 带 g 标志，先归零 lastIndex，避免沿用上一次匹配的位置
+  MARKER_RE.lastIndex = 0;
+  for (const match of line.matchAll(MARKER_RE)) {
+    const start = match.index ?? 0;
+    spans.push([start, start + match[0].length]);
+  }
+  MARKER_RE.lastIndex = 0;
+  return spans;
+}
+
+/**
+ * 给超长行找一个不切断占位符的切点。
+ *
+ * 首选离 `limit` 最近的边界；如果落点正好在 `⟦CODEDOCK_CODE_n⟧` 里，就退到
+ * 占位符起点或进到终点，二者取偏离上限更小的那个——退得太靠前会让片段明显
+ * 变短，进得太多又可能超过上下文限制，折中即可。
+ */
+function safeLineEnd(line: string, start: number, limit: number, spans: Array<[number, number]>): number {
+  let end = Math.min(line.length, start + limit);
+  // 不要把一个 surrogate pair 切成两半
+  if (end < line.length && /[\uD800-\uDBFF]/.test(line[end - 1])) end -= 1;
+
+  if (end < line.length) {
+    const hit = spans.find(([from, to]) => end > from && end < to);
+    if (hit) {
+      const [from, to] = hit;
+      const canRetreat = from > start;
+      const canAdvance = to <= line.length;
+      if (canRetreat && canAdvance) {
+        end = limit - (from - start) <= to - start - limit ? from : to;
+      } else if (canRetreat) {
+        end = from;
+      } else if (canAdvance) {
+        end = to;
+      }
+    }
+  }
+
+  // 极端情况下（占位符正好从 start 开始、或上限比一个占位符还短）至少保证往前走
+  return end > start ? end : Math.min(line.length, start + limit);
+}
+
 /** 单行/单段超过上限时按行、再按字符硬切，保证每块都能塞进上下文 */
 function splitOversized(block: string, limit: number): string[] {
   const out: string[] = [];
@@ -311,12 +356,15 @@ function splitOversized(block: string, limit: number): string[] {
   for (const line of block.split("\n")) {
     if (line.length > limit) {
       flush();
-      for (let start = 0; start < line.length; start += limit) {
-        let end = Math.min(line.length, start + limit);
-        // 不要把一个 surrogate pair 切成两半
-        if (end < line.length && /[\uD800-\uDBFF]/.test(line[end - 1])) end -= 1;
+      const spans = markerSpans(line);
+      let start = 0;
+      while (start < line.length) {
+        const end = safeLineEnd(line, start, limit, spans);
         const part = line.slice(start, end).trim();
         if (part) out.push(part);
+        // 上一段若退到了占位符起点，下一段从那里开始、完整包住它；进到终点时
+        // 下一段也从终点开始。两种情况都不会让 start 落在占位符内部。
+        start = end;
       }
       continue;
     }

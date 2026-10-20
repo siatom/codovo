@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "gen:file-icons": "node scripts/gen-file-icons.mjs",
+    "test:translate": "node scripts/test-translate-split.mjs",
     "postinstall": "node scripts/gen-file-icons.mjs"
   },
   "dependencies": {
