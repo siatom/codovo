@@ -317,118 +317,123 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
   const runId = ++runSeq;
   // 另存为可能在翻译途中换 key；后续读写都以这张表里的最新 key 为准
   runKeys.set(runId, tabKey);
-  const currentKey = () => runKeys.get(runId) ?? tabKey;
-  const fail = (error: string) => {
-    const previous = snapshot[currentKey()];
-    if (!previous || previous.runId !== runId) return;
-    setRun(currentKey(), { ...previous, status: "error", error });
-  };
-  const invalid = (error: string): void => {
+  try {
+    const currentKey = () => runKeys.get(runId) ?? tabKey;
+    const fail = (error: string) => {
+      const previous = snapshot[currentKey()];
+      if (!previous || previous.runId !== runId) return;
+      setRun(currentKey(), { ...previous, status: "error", error });
+    };
+    const invalid = (error: string): void => {
+      setRun(currentKey(), {
+        status: "error",
+        target,
+        signature,
+        translated: "",
+        partial: [],
+        blocks: [],
+        progress: { done: 0, total: 0 },
+        error,
+        runId,
+        fromCache: false,
+      });
+    };
+
+    if (!content.trim()) {
+      invalid("文档内容为空，没有可翻译的文本");
+      return;
+    }
+    if (content.length > MAX_TRANSLATE_CHARS) {
+      invalid(`文档超过 ${Math.floor(MAX_TRANSLATE_CHARS / 1000)}k 字符，暂不支持整篇翻译`);
+      return;
+    }
+
+    let prepared: PreparedDocument;
+    try {
+      prepared = prepareDocument(content);
+    } catch (error) {
+      invalid(errorMessage(error));
+      return;
+    }
+
+    if (prepared.chunks.length === 0 || !hasTranslatableProse(prepared.chunks)) {
+      invalid("文档主要由代码、目录结构或空白组成，没有需要翻译的正文");
+      return;
+    }
+
     setRun(currentKey(), {
-      status: "error",
+      status: "loading",
       target,
       signature,
       translated: "",
       partial: [],
-      blocks: [],
-      progress: { done: 0, total: 0 },
-      error,
+      blocks: prepared.blocks,
+      progress: { done: 0, total: prepared.chunks.length },
+      error: null,
       runId,
       fromCache: false,
     });
-  };
 
-  if (!content.trim()) {
-    invalid("文档内容为空，没有可翻译的文本");
-    return;
-  }
-  if (content.length > MAX_TRANSLATE_CHARS) {
-    invalid(`文档超过 ${Math.floor(MAX_TRANSLATE_CHARS / 1000)}k 字符，暂不支持整篇翻译`);
-    return;
-  }
+    const parts: string[] = [];
+    const isCurrent = () => snapshot[currentKey()]?.runId === runId;
 
-  let prepared: PreparedDocument;
-  try {
-    prepared = prepareDocument(content);
-  } catch (error) {
-    invalid(errorMessage(error));
-    return;
-  }
+    for (let index = 0; index < prepared.chunks.length; index++) {
+      if (!isCurrent()) return;
 
-  if (prepared.chunks.length === 0 || !hasTranslatableProse(prepared.chunks)) {
-    invalid("文档主要由代码、目录结构或空白组成，没有需要翻译的正文");
-    return;
-  }
-
-  setRun(currentKey(), {
-    status: "loading",
-    target,
-    signature,
-    translated: "",
-    partial: [],
-    blocks: prepared.blocks,
-    progress: { done: 0, total: prepared.chunks.length },
-    error: null,
-    runId,
-    fromCache: false,
-  });
-
-  const parts: string[] = [];
-  const isCurrent = () => snapshot[currentKey()]?.runId === runId;
-
-  for (let index = 0; index < prepared.chunks.length; index++) {
-    if (!isCurrent()) return;
-
-    let text = "";
-    let lastError: unknown = null;
-    // 网络抖动 / 限流时重试一次；鉴权等确定性错误重试也无害
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        text = await translateText(config, target, prepared.chunks[index], title || null);
-        break;
-      } catch (error) {
-        lastError = error;
-        if (!isCurrent()) return;
-        if (attempt === 0) await wait(700);
+      let text = "";
+      let lastError: unknown = null;
+      // 网络抖动 / 限流时重试一次；鉴权等确定性错误重试也无害
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          text = await translateText(config, target, prepared.chunks[index], title || null);
+          break;
+        } catch (error) {
+          lastError = error;
+          if (!isCurrent()) return;
+          if (attempt === 0) await wait(700);
+        }
       }
+
+      if (!isCurrent()) return;
+      if (!text) {
+        fail(
+          prepared.chunks.length > 1
+            ? `第 ${index + 1}/${prepared.chunks.length} 段翻译失败：${errorMessage(lastError)}`
+            : errorMessage(lastError),
+        );
+        return;
+      }
+
+      parts.push(text.trim());
+      const previous = snapshot[currentKey()];
+      if (!previous || previous.runId !== runId) return;
+      setRun(currentKey(), {
+        ...previous,
+        partial: [...parts],
+        progress: { done: index + 1, total: prepared.chunks.length },
+      });
     }
 
     if (!isCurrent()) return;
-    if (!text) {
-      fail(
-        prepared.chunks.length > 1
-          ? `第 ${index + 1}/${prepared.chunks.length} 段翻译失败：${errorMessage(lastError)}`
-          : errorMessage(lastError),
-      );
-      return;
+
+    try {
+      const translated = assembleTranslation(parts, prepared.blocks);
+      cacheTranslation(path, signature, target, modelRef, translated);
+      const previous = snapshot[currentKey()];
+      if (!previous || previous.runId !== runId) return;
+      setRun(currentKey(), {
+        ...previous,
+        status: "done",
+        translated,
+        error: null,
+        fromCache: false,
+      });
+    } catch (error) {
+      fail(errorMessage(error));
     }
-
-    parts.push(text.trim());
-    const previous = snapshot[currentKey()];
-    if (!previous || previous.runId !== runId) return;
-    setRun(currentKey(), {
-      ...previous,
-      partial: [...parts],
-      progress: { done: index + 1, total: prepared.chunks.length },
-    });
-  }
-
-  if (!isCurrent()) return;
-
-  try {
-    const translated = assembleTranslation(parts, prepared.blocks);
-    cacheTranslation(path, signature, target, modelRef, translated);
-    const previous = snapshot[currentKey()];
-    if (!previous || previous.runId !== runId) return;
-    setRun(currentKey(), {
-      ...previous,
-      status: "done",
-      translated,
-      error: null,
-      fromCache: false,
-    });
-  } catch (error) {
-    fail(errorMessage(error));
+  } finally {
+    // 成功、失败、提前 return 都清理 key 映射；另存为 rekey 后也不会残留旧映射
+    runKeys.delete(runId);
   }
 }
 
@@ -439,6 +444,8 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
 export function cancelTranslation(tabKey: string): void {
   const run = snapshot[tabKey];
   if (!run || run.status !== "loading") return;
+  // 旧 runId 不会再回来写状态，映射一并清掉，免得 runKeys 只增不减
+  runKeys.delete(run.runId);
   setRun(tabKey, {
     ...run,
     status: "error",
