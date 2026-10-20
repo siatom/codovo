@@ -297,6 +297,6 @@ git diff --check
 | WP2 编辑器生命周期 | 已完成 | 7729683 | 外部冲突 / 未命名缓冲区 / 另存为 / 放弃变更 / 关闭保存 / 大文件与只读标记 / CR 回写；新建与关闭快捷键、标签中键与双击空白留给 WP3 |
 | WP3 编辑效率与标签交互 | 已完成 | 19b50e2（格式化/校验）+ befb6a9（快捷键/设置）+ 16a9863（标签/状态栏） | 前半：Prettier 一键格式化 / 保存时格式化 / 文件树右键格式化，保存前用 Prettier 解析器做语法校验（交互式可「仍然保存 / 取消」，自动保存只提示并按 message+行+列去重），新增 `editorFormatOnSave=false` / `editorCheckSyntaxOnSave=true`；后半：每标签滚动/选区恢复、工具栏查找入口、标签中键关闭 / 空白双击新建 / 脏圆点独立保存、右键「打开所在目录 / 在文件管理器中显示 / 放弃变更」、`Ctrl+Tab` 与 `Ctrl+PageUp/PageDown` 切标签、快捷键全量扩展（编辑器区 + 窗口级两级作用域，终端与输入框放行）、状态栏文件大小 / 选区长度 / 点击复制路径、编辑器设置新增行号 / 当前行高亮 / 行高。`pnpm build` 通过；Markdown 预览与链接（WP4）仍待做 |
 | WP4 Markdown 预览 | 已完成 | abdfe23 | 标题生成支持中文 / 日文的稳定 id 并按 `-1`、`-2` 去重（`data-src-line` 同时保留）；页内锚点滚动、`http(s)` / `mailto` 走系统浏览器、相对路径不导航 WebView；整屏与对照预览复用 Monaco 围栏高亮并随主题重新着色，失败保留原始 `<pre><code>`；`isLarge` 文件跳过预览正文并显示降级提示，对照右侧同样不渲染。`pnpm build` 通过 |
-| WP5 文档翻译 | 待开始 | | |
+| WP5 文档翻译 | 已完成 | 708c579（Rust 命令）+ 62369a5（前端翻译）+ a8dc52f（设置） | 新增 `ai_translate_text`，复用默认模型与钥匙串密钥；前端移植 CodeLite 的占位符保护（frontmatter / 围栏代码 / HTML pre·code·注释·nav / 缩进代码 / 目录树·路径清单·TOC / 链接引用 / 徽章 / 行内代码），按约 6000 字符分段、表格整块发送，占位符缺失、重复、越界或乱序都报错重试；每标签独立 run 支持进度 / 停止 / 重试 / 复制，localStorage 按路径 + 内容签名 + 目标语言 + 模型 ref 缓存并做 LRU（24 条 / 60 万字符）；翻译视图左原文右译文、Markdown 渲染与纯文本 `<pre>`、比例滚动同步，与预览 / 对照互斥，关闭标签清理运行状态；设置新增 `translateTarget`（默认 zh，归入 AI 分类）。`pnpm build`、`cargo test --lib`（359 passed）、`cargo clippy`（仅 WP1 `encoding.rs` 既有 warning）通过 |
 | WP6 文件入口、会话与最近文件 | 待开始 | | |
 | WP7 集成验证 | 待开始 | | |
