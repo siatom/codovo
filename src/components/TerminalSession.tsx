@@ -242,6 +242,11 @@ interface TerminalSessionProps {
   /** shell 起来后自动敲进去的一条命令（resume 会话用）。只在建实例那一次生效 */
   initialCommand?: string;
   /**
+   * 启动 shell 时额外设进进程环境的环境变量（opencode 的权限配置走这个）。
+   * 和 initialCommand 一样只在建实例那一次生效，重启会话时沿用原值。
+   */
+  initialEnv?: Record<string, string>;
+  /**
    * 这个会话指定的 shell 候选 id。undefined = 用设置里的默认；空串 = 明确要「自动」
    * （由后端按平台挑）。两者得分开，否则在下拉里点「自动」会被设置里的具体 shell 顶掉。
    */
@@ -282,6 +287,7 @@ export const TerminalSession = forwardRef<
     active,
     visible = active,
     initialCommand,
+    initialEnv,
     shell,
     onRequestClose,
     onRequestNew,
@@ -348,6 +354,8 @@ export const TerminalSession = forwardRef<
   // resume）。**不能用 ref + 在 effect 里清空**：StrictMode 会立刻重挂一次，清空
   // 发生在那一轮，第二轮的 effect 就读到空了，命令会被悄悄丢掉。
   const [bootCommand] = useState(initialCommand);
+  // 环境变量同样只在创建时定死：之后改设置或切工作区都不该换掉这个会话的权限配置
+  const [bootEnv] = useState(initialEnv);
 
   useImperativeHandle(
     ref,
@@ -541,6 +549,7 @@ export const TerminalSession = forwardRef<
       const handle = await spawnPty({
         root,
         cwd: root,
+        env: bootEnv,
         // 刻意读闭包里的值、且不放进下面的依赖数组：改了 shell 只该影响之后新建的
         // 会话，不能把正在跑的终端重建掉（那会打断命令和 AI CLI）。
         shell: (shell ?? settings.terminalShell) || undefined,

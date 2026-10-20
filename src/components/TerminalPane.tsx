@@ -12,7 +12,7 @@ import {
   type TerminalSessionHandle,
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
-import { withAdditionalDirs } from "../lib/cli-launch";
+import { prepareLaunch } from "../lib/cli-launch";
 import { samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
@@ -129,6 +129,8 @@ export function TerminalPane({
   const hintByIdRef = useRef(new Map<number, string>());
   /** 实际敲进终端的完整命令（带注入的附加目录参数），只用于标签的 hover 提示 */
   const launchCommandByIdRef = useRef(new Map<number, string>());
+  /** 某些 CLI 的附加目录要靠环境变量传（opencode），按会话记一份，PTY 启动时设进去 */
+  const launchEnvByIdRef = useRef(new Map<number, Record<string, string>>());
   const addButtonRef = useRef<HTMLDivElement>(null);
   /** 并列布局的容器：拖分隔条时按它的尺寸换算比例 */
   const splitRef = useRef<HTMLDivElement>(null);
@@ -284,9 +286,12 @@ export function TerminalPane({
     customTitleByIdRef.current.set(id, title);
     // 顶栏匹配用原始命令；实际敲进去的命令带上工作区的附加目录
     hintByIdRef.current.set(id, command);
-    const launched = withAdditionalDirs(command, additionalRootsRef.current);
-    launchCommandByIdRef.current.set(id, launched);
-    setLaunchFor({ id, command: launched });
+    const prepared = prepareLaunch(command, additionalRootsRef.current);
+    launchCommandByIdRef.current.set(id, prepared.command);
+    if (Object.keys(prepared.env).length > 0) {
+      launchEnvByIdRef.current.set(id, prepared.env);
+    }
+    setLaunchFor({ id, command: prepared.command });
     setSessions((list) => [...list, id]);
     setActiveId(id);
   }, []);
@@ -583,6 +588,8 @@ export function TerminalPane({
                   onRequestNew={() => addSession()}
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
+                  // opencode 这类把附加目录放在环境变量里的 CLI，启动 shell 时一起设进去
+                  initialEnv={launchEnvByIdRef.current.get(id)}
                   // 启发式判出「在等用户」（等回应 / 任务完成）时上抛，写进全局 store
                   onAttentionChange={(next) => {
                     const target = terminalTarget(id);

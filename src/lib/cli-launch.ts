@@ -1,6 +1,15 @@
 import { cliKey } from "./cli-sessions";
 
 /**
+ * 启动 AI CLI 前算出来的东西：实际要跑的命令，以及要额外给这个终端进程设的环境变量。
+ * 环境变量走 PTY spawn，不拼进 shell 命令——路径和 JSON 里的引号跨平台太难伺候。
+ */
+export interface PreparedLaunch {
+  command: string;
+  env: Record<string, string>;
+}
+
+/**
  * 一家 AI CLI 怎么接受「附加工作目录」。
  *
  * 参数与形态都按各家官方文档（2026-10 核对）：
@@ -9,8 +18,7 @@ import { cliKey } from "./cli-sessions";
  * - GitHub Copilot CLI：`--add-dir=<dir>`，每个目录重复一次
  * - Gemini CLI / Qwen Code / iFlow CLI：`--include-directories <dir>`，每个目录重复一次
  *
- * opencode 目前没有等价的启动参数（只有配置里的 `permission.external_directory`），
- * 所以不在表里；认不出来的一律原样启动。
+ * opencode 走配置而不是启动参数，见 prepareOpencode；认不出来的一律原样启动。
  */
 interface AdditionalDirsSpec {
   /** 命令里的可执行文件名 / 别名，经 cliKey 归一化后比较 */
@@ -38,21 +46,67 @@ const ADDITIONAL_DIRS_SPECS: AdditionalDirsSpec[] = [
 ];
 
 /**
- * 工作区的附加目录 -> 启动参数。
+ * 工作区的附加目录 -> 启动命令 + 环境变量。
  *
- * 返回拼好的完整命令；调用方拿它去新开终端。认不出是哪家 CLI、目录为空、
- * 或者用户自己已经在命令里写了同名参数时，原样返回——不猜、不重复注入。
+ * 认不出是哪家 CLI、目录为空、或者用户自己已经在命令里写了同名参数时，
+ * 原样返回——不猜、不重复注入。
  *
  * 路径一律加引号：附加目录可能带空格，命令是直接写进 shell 的，不引会被拆成两个词。
  */
-export function withAdditionalDirs(command: string, dirs: string[]): string {
-  if (dirs.length === 0) return command;
+export function prepareLaunch(command: string, dirs: string[]): PreparedLaunch {
+  if (dirs.length === 0) return { command, env: {} };
+  if (isOpencode(command)) return prepareOpencode(command, dirs);
 
   const spec = specOf(command);
-  if (!spec) return command;
-  if (hasFlag(command, spec.flag)) return command;
+  if (!spec) return { command, env: {} };
+  if (hasFlag(command, spec.flag)) return { command, env: {} };
 
-  return insertArgs(command, formatArgs(spec, dirs));
+  return { command: insertArgs(command, formatArgs(spec, dirs)), env: {} };
+}
+
+function isOpencode(command: string): boolean {
+  return command.trim().split(/\s+/).map(cliKey).includes("opencode");
+}
+
+/**
+ * opencode 没有 `--add-dir`，权限写在配置里（v1 的 `permission` 对象；
+ * v2 启动时会把它迁移成 `permissions` 数组，所以同一份 JSON 两边都能用）。
+ *
+ * 这里只放 `external_directory` 的 allow：目录外的 read / edit 仍沿用用户自己的规则，
+ * 不拿一个宽泛的 allow 把 `.env` 之类的 deny 盖掉。
+ *
+ * v2 默认连接用户级共享服务，客户端的环境变量传不过去；加 `--standalone`
+ * 让本次终端自己起一个私有服务，配置才会生效。用户显式指定 `--server` 时连的是
+ * 外部服务，既传不了配置也不能同时加 `--standalone`，此时不注入。
+ */
+function prepareOpencode(command: string, dirs: string[]): PreparedLaunch {
+  if (hasFlag(command, "--server")) return { command, env: {} };
+
+  const external = Object.fromEntries(
+    dirs.map((dir) => [permissionResource(dir), "allow" as const]),
+  );
+  const env = {
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({
+      permission: { external_directory: external },
+    }),
+  };
+
+  const launched = hasFlag(command, "--standalone")
+    ? command
+    : insertArgs(command, "--standalone");
+
+  return { command: launched, env };
+}
+
+/**
+ * `external_directory` 的 resource 是目录边界：正常目录用 `<dir>/**`，
+ * 盘符根 / 文件系统根不能用 `<dir>/**`（会拼出 `D://**`），单独退一格。
+ */
+function permissionResource(path: string): string {
+  const base = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!base) return "/**";
+  if (/^[a-zA-Z]:$/.test(base)) return `${base}/*`;
+  return `${base}/**`;
 }
 
 function specOf(command: string): AdditionalDirsSpec | null {

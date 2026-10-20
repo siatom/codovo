@@ -2405,7 +2405,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   </Section>
                   <Section
                     title="AI CLI"
-                    hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中。启动时会把工作区的其他目录按 CLI 支持的参数自动注入；按住左侧把手可拖动调整顺序"
+                    hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中。启动时会把工作区的其他目录按 CLI 支持的参数或配置自动注入；按住左侧把手可拖动调整顺序"
                     action={
                       <button
                         type="button"
