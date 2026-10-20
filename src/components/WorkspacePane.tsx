@@ -94,6 +94,8 @@ interface WorkspacePaneProps {
    * 工作区外的文件，由 App 建 / 复用临时工作区后把请求转回来。
    */
   onOpenFileAnywhere: (path: string) => void;
+  /** 弹出目录选择框并打开为工作区（编辑器欢迎页入口） */
+  onOpenFolder: () => void;
   /**
    * 交给本工作区打开的跨工作区请求（App 建好临时工作区后回填）。nonce 保证同一条
    * 路径连点两次也能重新执行；处理完由 `onOpenRequestHandled` 清掉。
@@ -122,6 +124,7 @@ export function WorkspacePane({
   onSendToAssistant,
   onOpenSettings,
   onOpenFileAnywhere,
+  onOpenFolder,
   openRequest,
   onOpenRequestHandled,
 }: WorkspacePaneProps) {
@@ -752,6 +755,7 @@ export function WorkspacePane({
                       onNewUntitled={newUntitled}
                       onPatchTab={patchOpenTab}
                       onOpenPath={openFile}
+                      onOpenFolder={onOpenFolder}
                       onRevealInFiles={revealInFiles}
                       fullscreen={rightFullscreen}
                       onToggleFullscreen={onToggleRightFullscreen}

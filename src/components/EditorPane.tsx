@@ -68,6 +68,7 @@ import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { TranslationView } from "./TranslationView";
 import { PdfPreview } from "./PdfPreview";
+import { WelcomeScreen } from "./WelcomeScreen";
 import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -365,6 +366,8 @@ interface EditorPaneProps {
   onPatchTab: (tab: Tab, patch: TabPatch) => void;
   /** 打开一个文件：工作区内的直接开标签，工作区外的由上层建 / 复用临时工作区（Ctrl+O 走它） */
   onOpenPath: (path: string) => void;
+  /** 弹出目录选择框并把选中的文件夹打开为工作区（欢迎页入口） */
+  onOpenFolder: () => void;
   /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
   onRevealInFiles: (path: string) => void;
   /** 翻译视图里的「设置」入口：打开设置面板的 AI 页 */
@@ -658,6 +661,7 @@ export function EditorPane({
   onNewUntitled,
   onPatchTab,
   onOpenPath,
+  onOpenFolder,
   onRevealInFiles,
   onOpenSettings,
   fullscreen,
@@ -3669,6 +3673,14 @@ export function EditorPane({
       {/* relative 给下面的绝对定位预览层（图片 / 整屏预览 / 加载遮罩）当定位父级；
           flex 让 SplitPane 的 flex-1 撑满 */}
       <div className="relative flex min-h-0 flex-1">
+        {/* 没有标签时整块让给欢迎页：最近文件 + 打开入口。它铺满这层，把下面的空 Monaco 盖住 */}
+        {tabs.length === 0 && (
+          <WelcomeScreen
+            onOpenFile={() => void openFromDisk()}
+            onOpenFolder={onOpenFolder}
+            onOpenRecent={onOpenPath}
+          />
+        )}
         {/* 分栏的壳一直在：直接把 Monaco 的容器从「绝对铺满」改成「有宽度参与分栏」，
             切分屏时才会重新挂载（Monaco 实例只建一次，重挂载会让它挂到脱离的节点上）。
             不分屏时收起第二块，第一块自动撑满，和以前一个样 */}
@@ -3734,7 +3746,11 @@ export function EditorPane({
           </div>
         )}
 
-        {overlay.kind !== "ready" && overlay.kind !== "image" && overlay.kind !== "pdf" && (
+        {overlay.kind !== "ready" &&
+          overlay.kind !== "image" &&
+          overlay.kind !== "pdf" &&
+          // 没有标签时上面已经铺了欢迎页，这里不再叠一句「从左侧文件树选一个文件」
+          !(tabs.length === 0 && overlay.kind === "idle") && (
           <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
             {overlay.kind === "idle" && (
               <p className="text-[12px] text-fg-faint">

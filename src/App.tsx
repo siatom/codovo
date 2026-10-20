@@ -39,6 +39,7 @@ import {
   pathKey,
   pathsExist,
   pathsPresent,
+  pickFolder,
   pickOpenPath,
   workspaceActivate,
   workspaceClose,
@@ -438,6 +439,16 @@ function Shell() {
     },
     [openWorkspace, touchActivity],
   );
+
+  /** 欢迎页 / 菜单里的「打开文件夹」：选完按工作区规则打开 */
+  const chooseFolder = useCallback(async () => {
+    try {
+      const picked = await pickFolder();
+      if (picked.length > 0) await openFolders(picked);
+    } catch (reason) {
+      setToast(`选择文件夹失败：${reason}`);
+    }
+  }, [openFolders]);
 
   /** 全局 Ctrl+O：没有工作区时也能选文件，选完由 `openFileAnywhere` 决定落到哪 */
   const chooseFile = useCallback(async () => {
@@ -965,6 +976,7 @@ function Shell() {
             onSendToAssistant={openAssistantAt}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
+            onOpenFolder={() => void chooseFolder()}
             openRequest={openRequest}
             onOpenRequestHandled={handleOpenRequestHandled}
           />
