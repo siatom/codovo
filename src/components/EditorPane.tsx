@@ -722,6 +722,11 @@ export function EditorPane({
    */
   const rekeyedRef = useRef(new Map<string, { key: string; path: string; tab: Tab }>());
   /**
+   * 正在另存为的 key。快捷键 / 按钮 / 右键可能同时触发同一次另存为，
+   * 两次流程各自 delete(key) + set(新 key) 会留下两个 key 指向同一个 model。
+   */
+  const saveAsBusyRef = useRef(new Set<string>());
+  /**
    * 关标签的实现要经 ref 暴露成 `closeActiveTab` 句柄（右侧面板也用它）。它定义在
    * useImperativeHandle 之后，塞不进那个依赖数组，只能用 ref 兜住最新那份。
    */
@@ -1212,6 +1217,10 @@ export function EditorPane({
         for (const [key, cached] of targets) {
           const path = cached.path;
           if (path === null) continue;
+          // 这段流程里每个 await 都可能让标签被关掉、model 被销毁；之后再动缓存就会
+          // 写错文件或抛 disposed model。静默跳过这一份，别中止其它文件的保存。
+          const stillCached = () =>
+            modelsRef.current.get(key) === cached && !cached.model.isDisposed();
 
           // 1) 保存时格式化：结果直接落到 model，随后的写盘与 savedVersionId 都以它为准。
           //    内容签名和上次格式化结果一致时跳过——默认 1 秒自动保存没必要反复解析整份文件
@@ -1222,9 +1231,11 @@ export function EditorPane({
                 const outcome = await formatText(cached.model.getValue(), path, {
                   tabWidth: indentWidthOf(cached.model, indentRef.current),
                 });
+                if (!stillCached()) continue;
                 applyFormatToModel(cached.model, outcome.text);
                 formattedSignatureRef.current.set(key, contentSignature(cached.model.getValue()));
               } catch (reason) {
+                if (!stillCached()) continue;
                 pushNotice(
                   `「${baseNameOf(path)}」格式化失败，已按原内容保存：${errorText(reason)}`,
                   "error",
@@ -1233,16 +1244,18 @@ export function EditorPane({
             }
           }
 
-          // 2) 保存前语法校验。自动保存跳过：大文件每秒全量解析会直接把输入拖卡，
-          //    「自动保存只提示不打断」的语义也不靠它。空内容、不覆盖的类型同样不拦
+          // 2) 保存前语法校验。自动保存跳过：大文件每秒全量解析会直接把输入拖卡。
+          //    空内容、不覆盖的类型同样不拦
           if (!silent && editorCheckSyntaxOnSave && canFormatTab(cached)) {
             const text = cached.model.getValue();
             if (text.trim() !== "") {
               const issue = await validateText(text, path);
+              if (!stillCached()) continue;
               if (issue) {
                 const name = baseNameOf(path);
                 const where = formatIssueLocation(issue);
                 const proceed = await askSyntaxProceed(name, `${issue.message}${where}`);
+                if (!stillCached()) continue;
                 if (!proceed) {
                   // 用户选「取消」：这个文件不落盘（关闭流程据此中止）
                   ok = false;
@@ -1260,6 +1273,8 @@ export function EditorPane({
             cached.eol,
             cached.hasBom,
           );
+          // 写盘期间标签被关掉：文件已经写好，但缓存 / 脏标记不该再回写
+          if (!stillCached()) continue;
           cached.savedVersionId = cached.model.getAlternativeVersionId();
           cached.savedText = cached.model.getValue();
           cached.savedEol = cached.eol;
@@ -1292,147 +1307,158 @@ export function EditorPane({
   /** 另存为：选路径 → 写盘 → 成功后才改标签。失败 / 取消时标签保持原样 */
   const saveAs = useCallback(
     async (key: string): Promise<boolean> => {
-      const cached = modelsRef.current.get(key);
-      if (!cached) return false;
-      if (cached.truncated) {
-        pushNotice("文件已截断，不能另存为", "error");
-        return false;
-      }
-      const current = tabsRef.current.find((item) => tabKey(item) === key);
-      const defaultName =
-        cached.path ??
-        (current ? `${tabName(current)}.txt` : "未命名.txt");
-      const target = await pickSavePath(defaultName);
-      if (target === null) return false;
-
-      // 弹框期间标签可能已经关了 / model 被丢弃，别拿旧缓存继续写
-      const targetCached = modelsRef.current.get(key);
-      if (!targetCached || targetCached !== cached || cached.model.isDisposed()) return false;
-      const targetTab = tabsRef.current.find((item) => tabKey(item) === key);
-      if (!targetTab || targetTab.kind !== "file") return false;
-
-      const targetRoot = ownerRoot(rootsRef.current, target);
-      if (targetRoot === null) {
-        pushNotice("另存为的目标不在当前工作区内", "error");
-        return false;
-      }
-      // 目标已经开在另一个标签里就不写：写进去会得到两个同 key 的标签，缓存也会打架
-      const opened = tabsRef.current.find(
-        (item) =>
-          item.kind === "file" &&
-          item.path !== null &&
-          tabKey(item) !== key &&
-          pathKey(item.path) === pathKey(target),
-      );
-      if (opened) {
-        pushNotice("目标文件已经在另一个标签中打开", "error");
-        return false;
-      }
-
-      // 覆盖已有文件时沿用**目标文件**的编码 / EOL / BOM：源是 GBK、目标是 UTF-8
-      // 时不能把目标改成源编码；反过来也不能把 GBK 目标写成 UTF-8。
-      // 二进制 / 过大 / 读不回来一律中止，不拿半份内容覆盖。
-      let encoding = targetCached.encoding;
-      let eol = targetCached.eol;
-      let hasBom = targetCached.hasBom;
-      const [targetExists] = await pathsPresent([target]);
-      if (targetExists) {
-        let existing: FileContent;
-        try {
-          existing = await readFile(targetRoot, target);
-        } catch (reason) {
-          pushNotice(`目标文件无法读取，已取消另存为：${reason}`, "error");
-          return false;
-        }
-        if (existing.isBinary || existing.tooLarge || existing.truncated || existing.isLarge) {
-          pushNotice("目标文件不是可覆盖的文本文件，已取消另存为", "error");
-          return false;
-        }
-        encoding = existing.encoding;
-        eol = existing.eol;
-        hasBom = existing.hasBom;
-      }
-
-      // 读目标元数据期间同样可能关标签 / 另存为到别处
-      const writable = modelsRef.current.get(key);
-      if (!writable || writable !== targetCached || writable.model.isDisposed()) return false;
-
-      let writtenBytes: number;
+      if (saveAsBusyRef.current.has(key)) return false;
+      saveAsBusyRef.current.add(key);
       try {
-        writtenBytes = await writeFile(
-          targetRoot,
-          target,
-          writable.model.getValue(),
-          encoding,
-          eol,
-          hasBom,
+        const cached = modelsRef.current.get(key);
+        if (!cached) return false;
+        if (cached.truncated) {
+          pushNotice("文件已截断，不能另存为", "error");
+          return false;
+        }
+        const current = tabsRef.current.find((item) => tabKey(item) === key);
+        const defaultName =
+          cached.path ??
+          (current ? `${tabName(current)}.txt` : "未命名.txt");
+        const target = await pickSavePath(defaultName);
+        if (target === null) return false;
+
+        // 弹框期间标签可能已经关了 / model 被丢弃，别拿旧缓存继续写
+        const targetCached = modelsRef.current.get(key);
+        if (!targetCached || targetCached !== cached || cached.model.isDisposed()) return false;
+        const targetTab = tabsRef.current.find((item) => tabKey(item) === key);
+        if (!targetTab || targetTab.kind !== "file") return false;
+
+        const targetRoot = ownerRoot(rootsRef.current, target);
+        if (targetRoot === null) {
+          pushNotice("另存为的目标不在当前工作区内", "error");
+          return false;
+        }
+        // 目标已经开在另一个标签里就不写：写进去会得到两个同 key 的标签，缓存也会打架
+        const opened = tabsRef.current.find(
+          (item) =>
+            item.kind === "file" &&
+            item.path !== null &&
+            tabKey(item) !== key &&
+            pathKey(item.path) === pathKey(target),
         );
-      } catch (reason) {
-        pushNotice(`保存失败：${reason}`, "error");
-        return false;
-      }
+        if (opened) {
+          pushNotice("目标文件已经在另一个标签中打开", "error");
+          return false;
+        }
 
-      // 写盘期间标签被关掉 / model 已销毁：文件已经写好，但不能再动缓存或标签。
-      // 同时也确认缓存还挂在原 key 上，避免并发另存为把别人的 model 又搬一次
-      const afterWrite = modelsRef.current.get(key);
-      if (!afterWrite || afterWrite !== writable || writable.model.isDisposed()) return true;
+        // 覆盖已有文件时沿用**目标文件**的编码 / EOL / BOM：源是 GBK、目标是 UTF-8
+        // 时不能把目标改成源编码；反过来也不能把 GBK 目标写成 UTF-8。
+        // 二进制 / 过大 / 读不回来一律中止，不拿半份内容覆盖。
+        let encoding = targetCached.encoding;
+        let eol = targetCached.eol;
+        let hasBom = targetCached.hasBom;
+        const [targetExists] = await pathsPresent([target]);
+        if (targetExists) {
+          let existing: FileContent;
+          try {
+            existing = await readFile(targetRoot, target);
+          } catch (reason) {
+            pushNotice(`目标文件无法读取，已取消另存为：${reason}`, "error");
+            return false;
+          }
+          if (existing.isBinary) {
+            pushNotice("目标文件不是可覆盖的文本文件，已取消另存为", "error");
+            return false;
+          }
+          // 大文件 / 截断仍是文本，只是不能安全覆盖：如实说大小问题，别谎称不是文本
+          if (existing.tooLarge || existing.truncated || existing.isLarge) {
+            pushNotice("目标文件过大，请换一个文件名", "error");
+            return false;
+          }
+          encoding = existing.encoding;
+          eol = existing.eol;
+          hasBom = existing.hasBom;
+        }
 
-      // 写盘已成功，这里才开始改标签与缓存：顺序反过来会让失败留下一个不可用的路径。
-      // model 的 URI 改不了，只把语法切到新扩展名对应的语言（大文件仍保持 plaintext）。
-      monaco.editor.setModelLanguage(writable.model, effectiveLanguage(target, writable.isLarge));
-      writable.path = target;
-      writable.savedVersionId = writable.model.getAlternativeVersionId();
-      writable.savedText = writable.model.getValue();
-      writable.eol = eol;
-      writable.savedEol = eol;
-      writable.encoding = encoding;
-      writable.hasBom = hasBom;
-      writable.readOnly = false;
-      writable.truncated = false;
-      writable.size = writtenBytes;
-      modelsRef.current.delete(key);
-      const nextKey = fileTabKey(target);
-      modelsRef.current.set(nextKey, writable);
-      rekeyedRef.current.set(key, {
-        key: nextKey,
-        path: target,
-        // 记的是打补丁**之前**的标签对象，关闭流程拿 request.tab 做同一性判断
-        tab: targetTab,
-      });
-      // 视图状态跟着换 key：另存为不该把滚动位置、光标丢掉
-      const movedView = viewStatesRef.current.get(key);
-      if (movedView !== undefined) {
-        viewStatesRef.current.delete(key);
-        viewStatesRef.current.set(nextKey, movedView);
+        // 读目标元数据期间同样可能关标签 / 另存为到别处
+        const writable = modelsRef.current.get(key);
+        if (!writable || writable !== targetCached || writable.model.isDisposed()) return false;
+
+        let writtenBytes: number;
+        try {
+          writtenBytes = await writeFile(
+            targetRoot,
+            target,
+            writable.model.getValue(),
+            encoding,
+            eol,
+            hasBom,
+          );
+        } catch (reason) {
+          pushNotice(`保存失败：${reason}`, "error");
+          return false;
+        }
+
+        // 写盘期间标签被关掉 / model 已销毁：文件已经写好，但不能再动缓存或标签。
+        // 同时也确认缓存还挂在原 key 上，避免并发另存为把别人的 model 又搬一次
+        const afterWrite = modelsRef.current.get(key);
+        if (!afterWrite || afterWrite !== writable || writable.model.isDisposed()) return true;
+
+        // 写盘已成功，这里才开始改标签与缓存：顺序反过来会让失败留下一个不可用的路径。
+        // model 的 URI 改不了，只把语法切到新扩展名对应的语言（大文件仍保持 plaintext）。
+        monaco.editor.setModelLanguage(writable.model, effectiveLanguage(target, writable.isLarge));
+        writable.path = target;
+        writable.savedVersionId = writable.model.getAlternativeVersionId();
+        writable.savedText = writable.model.getValue();
+        writable.eol = eol;
+        writable.savedEol = eol;
+        writable.encoding = encoding;
+        writable.hasBom = hasBom;
+        writable.readOnly = false;
+        writable.truncated = false;
+        writable.size = writtenBytes;
+        modelsRef.current.delete(key);
+        const nextKey = fileTabKey(target);
+        modelsRef.current.set(nextKey, writable);
+        rekeyedRef.current.set(key, {
+          key: nextKey,
+          path: target,
+          // 记的是打补丁**之前**的标签对象，关闭流程拿 request.tab 做同一性判断
+          tab: targetTab,
+        });
+        // 视图状态跟着换 key：另存为不该把滚动位置、光标丢掉
+        const movedView = viewStatesRef.current.get(key);
+        if (movedView !== undefined) {
+          viewStatesRef.current.delete(key);
+          viewStatesRef.current.set(nextKey, movedView);
+        }
+        if (shownKeyRef.current === key) shownKeyRef.current = nextKey;
+        // 旧 key 的派生状态一起搬走（脏标记除外：刚保存完，新 key 是干净的）
+        const prune = (prev: ReadonlySet<string>) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          next.add(nextKey);
+          return next;
+        };
+        setPreviewPaths(prune);
+        setSplitPaths(prune);
+        setTranslationPaths(prune);
+        // 翻译 run 也搬到新 key：正在跑的分段请求继续写回，切回翻译视图不丢进度
+        rekeyTranslation(key, nextKey);
+        setDirtyPaths((prev) => {
+          if (!prev.has(key)) return prev;
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+        seededRef.current.delete(key);
+        // 新路径不再按扩展名重新播种视图模式：另存为不该把用户正在编辑的窗口切成预览
+        seededRef.current.add(nextKey);
+        if (targetTab.kind === "file") {
+          onPatchTab(targetTab, { path: target, externalState: "none" });
+        }
+        pushNotice(`已保存 ${target.replace(/\\/g, "/").split("/").pop() ?? target}`);
+        return true;
+      } finally {
+        saveAsBusyRef.current.delete(key);
       }
-      if (shownKeyRef.current === key) shownKeyRef.current = nextKey;
-      // 旧 key 的派生状态一起搬走（脏标记除外：刚保存完，新 key 是干净的）
-      const prune = (prev: ReadonlySet<string>) => {
-        if (!prev.has(key)) return prev;
-        const next = new Set(prev);
-        next.delete(key);
-        next.add(nextKey);
-        return next;
-      };
-      setPreviewPaths(prune);
-      setSplitPaths(prune);
-      setTranslationPaths(prune);
-      // 翻译 run 也搬到新 key：正在跑的分段请求继续写回，切回翻译视图不丢进度
-      rekeyTranslation(key, nextKey);
-      setDirtyPaths((prev) => {
-        if (!prev.has(key)) return prev;
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-      seededRef.current.delete(key);
-      // 新路径不再按扩展名重新播种视图模式：另存为不该把用户正在编辑的窗口切成预览
-      seededRef.current.add(nextKey);
-      if (targetTab.kind === "file") {
-        onPatchTab(targetTab, { path: target, externalState: "none" });
-      }
-      pushNotice(`已保存 ${target.replace(/\\/g, "/").split("/").pop() ?? target}`);
-      return true;
     },
     [onPatchTab, pushNotice],
   );
@@ -1514,6 +1540,8 @@ export function EditorPane({
       } else {
         try {
           const content = await readFile(rootFor(cached.path), cached.path, cached.encoding);
+          // 读盘期间标签被关掉或缓存被替换：这份结果已经没有归属，静默丢弃
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
           if (content.isBinary || content.tooLarge) {
             pushNotice("文件无法作为文本重新读取，未放弃改动", "error");
             return;
@@ -1522,6 +1550,7 @@ export function EditorPane({
           applyCapabilities();
           pushNotice("已放弃未保存的修改");
         } catch (reason) {
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
           pushNotice(`放弃改动失败：${reason}`, "error");
           return;
         }
@@ -1591,8 +1620,16 @@ export function EditorPane({
             tabWidth: indentWidthOf(cached.model, indentRef.current),
             cursorOffset,
           });
+          // 解析期间标签可能被关掉，或者编辑器已经切到别的 model：这时候再改
+          // cached.model / live 就会动错文件，直接放弃本次格式化。
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
           const changed = applyFormatToModel(cached.model, outcome.text);
-          if (live && changed && outcome.cursorOffset !== null) {
+          if (
+            live &&
+            changed &&
+            outcome.cursorOffset !== null &&
+            editor.getModel() === cached.model
+          ) {
             live.setPosition(cached.model.getPositionAt(outcome.cursorOffset));
           }
           pushNotice(changed ? `已格式化 ${name}` : "内容已符合格式化规范");
@@ -1600,11 +1637,14 @@ export function EditorPane({
           refreshViewInfo();
           return;
         } catch (reason) {
+          if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
           pushNotice(`格式化失败：${errorText(reason)}，已改用缩进重排`, "error");
         }
       }
 
       if (live) {
+        // await 期间编辑器可能已经切走；只有当前仍挂着这个 model 才能做光标 / 重排
+        if (editor.getModel() !== cached.model) return;
         // 未命名缓冲区没有扩展名，判断不了语言；退回缩进重排对纯文本也没有意义，
         // 如实说明而不是假装做过了
         if (cached.path === null) {
