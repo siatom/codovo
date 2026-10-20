@@ -20,12 +20,12 @@ import {
 import { MarkdownPreview } from "./MarkdownPreview";
 import {
   IconAlert,
-  IconArrowsLeftRight,
   IconCheck,
   IconCopy,
   IconRefresh,
   IconSettings,
   IconStop,
+  IconTranslate,
 } from "./icons";
 
 interface TranslationViewProps {
@@ -203,7 +203,7 @@ export function TranslationView({
     <div className="absolute inset-0 flex flex-col bg-surface">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
         <span className="flex shrink-0 items-center gap-1 text-[11px] text-fg-muted">
-          <IconArrowsLeftRight className="h-3.5 w-3.5" />
+          <IconTranslate className="h-3.5 w-3.5" />
           文档翻译
         </span>
         <div
@@ -333,7 +333,7 @@ export function TranslationView({
               </div>
             ) : !ready ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
-                <IconArrowsLeftRight className="h-6 w-6 text-fg-faint" />
+                <IconTranslate className="h-6 w-6 text-fg-faint" />
                 <p className="text-[13px] text-fg">尚未配置翻译模型</p>
                 <p className="max-w-[320px] text-[12px] leading-relaxed text-fg-faint">
                   文档翻译复用「设置 → AI」里的全局默认模型。填好接口地址、模型和 API

@@ -71,7 +71,6 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import {
   IconArrowDown,
   IconArrowUp,
-  IconArrowsLeftRight,
   IconBot,
   IconCheck,
   IconChevronDown,
@@ -82,6 +81,7 @@ import {
   IconMore,
   IconPencil,
   IconTerminal,
+  IconTranslate,
   IconWand,
 } from "./icons";
 
@@ -99,7 +99,7 @@ const MARKDOWN_MODES = [
   { id: "preview", label: "预览", icon: IconEye, hint: "预览渲染后的效果" },
   { id: "edit", label: "编辑", icon: IconPencil, hint: "编辑 Markdown 源码" },
   { id: "split", label: "对照", icon: IconLayoutColumns, hint: "左边源码，右边渲染" },
-  { id: "translate", label: "翻译", icon: IconArrowsLeftRight, hint: "左原文、右译文的文档翻译" },
+  { id: "translate", label: "翻译", icon: IconTranslate, hint: "左原文、右译文的文档翻译" },
 ] as const;
 type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
 
@@ -3525,7 +3525,7 @@ export function EditorPane({
                 : "text-fg-dim hover:bg-hover hover:text-fg"
             }`}
           >
-            <IconArrowsLeftRight className="h-3.5 w-3.5" />
+            <IconTranslate className="h-3.5 w-3.5" />
           </button>
         )}
         {/* 格式化：Prettier 覆盖的类型走 Prettier，其余退回缩进重排。
