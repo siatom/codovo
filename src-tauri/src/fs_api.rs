@@ -11,8 +11,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::encoding::{self, FileEncoding};
 
-/// 文本类操作（读文件、看差异）的大小上限，两个模块共用
+/// 文本类操作（内容搜索、看差异）的大小上限，两个模块共用
 pub(crate) const MAX_TEXT_SIZE: u64 = 2 * 1024 * 1024;
+
+/// 超过这个大小标记 `isLarge`：编辑器据此关闭语法解析、Markdown 预览等高成本能力。
+/// 和 CodeLite 对齐，8MB。
+pub(crate) const LARGE_FILE_SIZE: u64 = 8 * 1024 * 1024;
+
+/// 超过这个大小只读前 8MB：整份读进来会白白吃掉几百 MB 内存，编辑器也用不上。
+pub(crate) const TRUNCATE_FILE_SIZE: u64 = 64 * 1024 * 1024;
+
+/// 截断读取时实际读多少字节。
+pub(crate) const TRUNCATE_READ_SIZE: usize = 8 * 1024 * 1024;
 
 /// 图片预览的体积上限。比文本宽松得多——图片只能整张加载，没有"读一段"的说法；
 /// 但 base64 还要再涨三分之一，再大就别让 IPC 扛了。
@@ -183,10 +193,41 @@ pub struct Entry {
 pub struct FileContent {
     text: String,
     is_binary: bool,
+    /// 兼容旧前端：新逻辑不再因为「文件大」置位，只有真正读不了的情况才用
     too_large: bool,
     /// 检测到的编码标签（如 `gbk`）。前端保存时原样回传给 `fs_write_file`，
-    /// 才能按原编码写回；二进制 / 超限时为空串。
+    /// 才能按原编码写回；二进制 / 读不了时为空串。
     encoding: String,
+    /// 文件实际大小（字节）。截断时这里是完整大小，不是读进来的那一段
+    size: u64,
+    /// 只读文件，或内容已被截断（截断后保存会把文件毁成半截，必须禁写）
+    read_only: bool,
+    /// 文件超过 `TRUNCATE_FILE_SIZE`，`text` 只是前 8MB
+    truncated: bool,
+    /// 文件超过 `LARGE_FILE_SIZE`，前端据此关掉语法解析 / Markdown 预览
+    is_large: bool,
+    /// 原文件的换行风格：`LF` / `CRLF` / `CR`。WP1 只上报，不改写正文
+    eol: String,
+    /// 原文件开头是否带 BOM。保存时原样回传，由后端决定补不补
+    has_bom: bool,
+}
+
+impl FileContent {
+    /// 二进制 / 读不了时的统一形状：正文为空、没有编码信息
+    fn unreadable(size: u64, is_binary: bool, read_only: bool, truncated: bool) -> Self {
+        Self {
+            text: String::new(),
+            is_binary,
+            too_large: false,
+            encoding: String::new(),
+            size,
+            read_only,
+            truncated,
+            is_large: size > LARGE_FILE_SIZE,
+            eol: "LF".to_string(),
+            has_bom: false,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -464,6 +505,100 @@ fn search_files(root: &Path, query: &str) -> Vec<String> {
     hits
 }
 
+/// 读取文件头部最多 `limit` 字节。超大文件只用它，避免一次性把内存打满。
+fn read_head(file: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let mut handle =
+        fs::File::open(file).map_err(|e| format!("读取文件失败 {}: {e}", display(file)))?;
+    let mut buffer = vec![0u8; limit];
+    let mut filled = 0usize;
+    while filled < buffer.len() {
+        match handle.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            // 信号中断不是错误，接着读剩下的
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(format!("读取文件失败 {}: {error}", display(file))),
+        }
+    }
+    buffer.truncate(filled);
+    Ok(buffer)
+}
+
+/// 按文件大小决定怎么读：返回 `(读取上限, 是否截断)`。
+///
+/// `None` 表示整份读；`Some(n)` 表示只读前 n 字节。抽成纯函数是为了单测能直接
+/// 验 8MB / 64MB 边界，不用真的造一个 64MB 文件。
+pub(crate) fn read_plan(size: u64) -> (Option<usize>, bool) {
+    if size > TRUNCATE_FILE_SIZE {
+        (Some(TRUNCATE_READ_SIZE), true)
+    } else {
+        (None, false)
+    }
+}
+
+/// 把已经读出来的字节解成 `FileContent`。抽出来是为了单测能直接构造
+/// 「文件很大 / 已截断」的场景，而不用落一块 64MB 的磁盘文件。
+fn decode_file_content(
+    bytes: &[u8],
+    encoding: Option<&str>,
+    size: u64,
+    read_only: bool,
+    truncated: bool,
+    name: &str,
+) -> Result<FileContent, String> {
+    let read_only = read_only || truncated;
+
+    // 截断后的读写都按「只读」对待：编辑器要是允许保存，就会把 8MB 写回 70MB 的文件
+    // 二进制判定只在自动检测时做：用户明确指定了编码（比如无 BOM 的 UTF-16）就按他说的解
+    if encoding.is_none()
+        && encoding::detect_bom(bytes).is_none()
+        && looks_binary(bytes)
+    {
+        return Ok(FileContent::unreadable(size, true, read_only, truncated));
+    }
+
+    let explicit = encoding.is_some();
+    let file_encoding = match encoding {
+        Some(label) => {
+            FileEncoding::from_label(label).ok_or_else(|| format!("不支持的编码: {label}"))?
+        }
+        None => encoding::detect(bytes).ok_or_else(|| {
+            format!(
+                "无法识别文件编码（支持 UTF-8 / UTF-16 / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR / windows-1252）: {name}"
+            )
+        })?,
+    };
+
+    let decoded = if truncated {
+        // 只读文件头时最后一个字符可能被切成半截，裁掉尾巴而不是整份失败
+        encoding::decode_truncated(bytes, file_encoding)
+    } else {
+        encoding::decode(bytes, file_encoding)
+    };
+
+    match decoded {
+        Ok(text) => Ok(FileContent {
+            eol: encoding::detect_eol(&text).to_string(),
+            text,
+            is_binary: false,
+            too_large: false,
+            encoding: file_encoding.label().to_string(),
+            size,
+            read_only,
+            truncated,
+            is_large: size > LARGE_FILE_SIZE,
+            has_bom: encoding::has_bom(bytes),
+        }),
+        // 用户指定了编码却解不干净：把原因说清楚，别含糊地报「二进制文件」
+        Err(message) if explicit => Err(message),
+        // 自动检测猜出来的编码解不干净（多半是二进制被猜成了 GBK）：按二进制处理更安全，
+        // 绝不让编辑器拿着一份带替换字符的内容去保存
+        Err(_) => Ok(FileContent::unreadable(size, true, read_only, truncated)),
+    }
+}
+
 /// 读一个文本文件并按编码解码。抽出来是为了单测能直接跑（`tauri::State` 在测试里造不出来）。
 ///
 /// `encoding` 为空 = 自动检测；给了标签 = 按这个编码解、不再嗅探——编辑器里用户手动切换
@@ -475,61 +610,20 @@ fn read_text_content(
 ) -> Result<FileContent, String> {
     let file = resolve(root, path)?;
     let meta = fs::metadata(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
-
-    if meta.len() > MAX_TEXT_SIZE {
-        return Ok(FileContent {
-            text: String::new(),
-            is_binary: false,
-            too_large: true,
-            encoding: String::new(),
-        });
+    // 目录当成文件读时给一句人话（`fs::read` 的系统报错在各平台上都不太好懂）
+    if meta.is_dir() {
+        return Err(format!("这是一个文件夹，无法作为文本打开: {}", display(&file)));
     }
 
-    let bytes = fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?;
-
-    let explicit = encoding.is_some();
-    let encoding = match encoding {
-        Some(label) => FileEncoding::from_label(label)
-            .ok_or_else(|| format!("不支持的编码: {label}"))?,
-        None => {
-            // UTF-16 文本里到处是 NUL，会被 `looks_binary` 误判成二进制，所以先认一遍 BOM
-            if encoding::detect_bom(&bytes).is_none() && looks_binary(&bytes) {
-                return Ok(FileContent {
-                    text: String::new(),
-                    is_binary: true,
-                    too_large: false,
-                    encoding: String::new(),
-                });
-            }
-            // 按检测到的编码解码。认不出编码就明确报错，不拿 lossy 的结果蒙混过去——
-            // 那正是「非 UTF-8 文件保存即损坏」的成因。
-            encoding::detect(&bytes).ok_or_else(|| {
-                format!(
-                    "无法识别文件编码（支持 UTF-8 / UTF-16 / GBK / Big5）: {}",
-                    display(&file)
-                )
-            })?
-        }
+    let size = meta.len();
+    let read_only = meta.permissions().readonly();
+    let (limit, truncated) = read_plan(size);
+    let bytes = match limit {
+        Some(limit) => read_head(&file, limit)?,
+        None => fs::read(&file).map_err(|e| format!("读取文件失败 {}: {e}", display(&file)))?,
     };
 
-    match encoding::decode(&bytes, encoding) {
-        Ok(text) => Ok(FileContent {
-            text,
-            is_binary: false,
-            too_large: false,
-            encoding: encoding.label().to_string(),
-        }),
-        // 用户指定了编码却解不干净：把原因说清楚，别含糊地报「二进制文件」
-        Err(message) if explicit => Err(message),
-        // 自动检测猜出来的编码解不干净（多半是二进制被猜成了 GBK）：按二进制处理更安全，
-        // 绝不让编辑器拿着一份带替换字符的内容去保存
-        Err(_) => Ok(FileContent {
-            text: String::new(),
-            is_binary: true,
-            too_large: false,
-            encoding: String::new(),
-        }),
-    }
+    decode_file_content(&bytes, encoding, size, read_only, truncated, &display(&file))
 }
 
 #[tauri::command]
@@ -620,6 +714,46 @@ pub fn fs_read_image(
 /// （新建文件，或非编辑器调用），这时只允许写 UTF-8；已有文件若不是 UTF-8，
 /// 宁可报错也不能按 UTF-8 覆盖——那正是原编码被冲掉的成因。
 fn write_text_file(file: &Path, text: &str, encoding: Option<&str>) -> Result<(), String> {
+    write_text_file_with(file, text, encoding, None, None)
+}
+
+/// 保存前的前置检查：只读文件和「只加载了前 8MB 的超大文件」都不许直接写回。
+///
+/// 抽成纯函数是为了单测能直接验，不用真造一个 64MB 的文件。
+fn ensure_writable(size: u64, read_only: bool, name: &str) -> Result<(), String> {
+    if read_only {
+        // Windows 上直接写会得到一句 Access denied，Unix 上则是权限位报错，
+        // 都不如这里说清楚「文件是只读的」
+        return Err(format!(
+            "{name} 是只读文件，无法保存。请先在文件属性里取消只读"
+        ));
+    }
+    if size > TRUNCATE_FILE_SIZE {
+        // 编辑器手里只有前 8MB，写回会把文件毁成半截。前端也会禁用保存按钮，
+        // 这里再拦一道，任何绕过前端的写入路径都不能突破。
+        return Err(format!(
+            "{name} 超过 64MB，编辑器只加载了前 8MB，已禁止直接保存；请用「另存为」写入新文件"
+        ));
+    }
+    Ok(())
+}
+
+/// 写入的完整版本：在编码之外再带上换行风格与 BOM 策略。
+///
+/// `eol` / `has_bom` 都没给时行为和旧版完全一致（新建文件仍是 UTF-8 无 BOM），
+/// 所以现有调用方不用改。给了就按指定风格写回：编辑器状态栏切了 EOL、或用户
+/// 明确要求去掉 BOM 时走这条。
+fn write_text_file_with(
+    file: &Path,
+    text: &str,
+    encoding: Option<&str>,
+    eol: Option<&str>,
+    has_bom: Option<bool>,
+) -> Result<(), String> {
+    if let Ok(meta) = fs::metadata(file) {
+        ensure_writable(meta.len(), meta.permissions().readonly(), &display(file))?;
+    }
+
     let encoding = match encoding {
         Some(label) => FileEncoding::from_label(label)
             .ok_or_else(|| format!("不支持的编码: {label}"))?,
@@ -635,7 +769,7 @@ fn write_text_file(file: &Path, text: &str, encoding: Option<&str>) -> Result<()
             FileEncoding::Utf8
         }
     };
-    let bytes = encoding::encode(text, encoding)?;
+    let bytes = encoding::encode_with(text, encoding, eol, has_bom)?;
     write_atomic(file, &bytes)
 }
 
@@ -688,9 +822,23 @@ pub fn fs_write_file(
     path: String,
     text: String,
     encoding: Option<String>,
+    // 目标换行风格：`LF` / `CRLF` / `CR`。不传就原样写（旧行为）
+    eol: Option<String>,
+    // 是否写 BOM；不传沿用编码标签本身的默认语义
+    has_bom: Option<bool>,
 ) -> Result<(), String> {
     let file = resolve(&state.checked_root(&root)?, &path)?;
-    write_text_file(&file, &text, encoding.as_deref())
+    // 不传 eol / hasBom 时走旧路径，行为和以前完全一致
+    match (eol.as_deref(), has_bom) {
+        (None, None) => write_text_file(&file, &text, encoding.as_deref()),
+        _ => write_text_file_with(
+            &file,
+            &text,
+            encoding.as_deref(),
+            eol.as_deref(),
+            has_bom,
+        ),
+    }
 }
 
 /// 名称校验：只能是一段名字，不能是空 / `.` / `..`，也不许夹分隔符。
@@ -2761,6 +2909,240 @@ mod tests {
         let image = read_image_at(&workspace_root(&state), big.to_str().unwrap()).unwrap();
         assert!(image.too_large);
         assert!(image.data.is_empty(), "超限就别把内容编码出来");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 把只读位改回来。Windows 上 remove_dir_all 删不掉只读文件，测试收尾必须先复位。
+    fn set_readonly(file: &Path, readonly: bool) {
+        let mut permissions = fs::metadata(file).unwrap().permissions();
+        permissions.set_readonly(readonly);
+        fs::set_permissions(file, permissions).unwrap();
+    }
+
+    #[test]
+    fn large_file_thresholds_use_size_not_content() {
+        // 8MB 边界：等于不算大，多 1 字节才算
+        let large = decode_file_content(
+            b"x",
+            None,
+            LARGE_FILE_SIZE + 1,
+            false,
+            false,
+            "large.txt",
+        )
+        .unwrap();
+        assert!(large.is_large, "超过 8MB 要标记 isLarge");
+        assert!(!large.truncated, "8MB~64MB 仍然是完整读取");
+        assert!(!large.read_only);
+
+        let exact = decode_file_content(b"x", None, LARGE_FILE_SIZE, false, false, "ok.txt").unwrap();
+        assert!(!exact.is_large, "正好 8MB 不算大文件");
+
+        // 64MB 边界：等于还是整份读，超过才截断
+        assert_eq!(read_plan(TRUNCATE_FILE_SIZE), (None, false));
+        assert_eq!(
+            read_plan(TRUNCATE_FILE_SIZE + 1),
+            (Some(TRUNCATE_READ_SIZE), true)
+        );
+    }
+
+    #[test]
+    fn truncated_files_report_full_size_and_force_read_only() {
+        let content = decode_file_content(
+            "截断后的正文".as_bytes(),
+            None,
+            TRUNCATE_FILE_SIZE + 1,
+            false,
+            true,
+            "big.txt",
+        )
+        .unwrap();
+
+        assert!(content.truncated);
+        assert!(content.read_only, "截断文件必须只读，否则保存会把文件写残");
+        assert!(content.is_large);
+        assert_eq!(content.size, TRUNCATE_FILE_SIZE + 1, "size 是完整大小");
+        assert_eq!(content.text, "截断后的正文");
+        assert!(!content.too_large, "新逻辑不再用 tooLarge 表示文件大");
+        assert!(!content.is_binary);
+    }
+
+    #[test]
+    fn truncated_utf16_is_cut_on_a_character_boundary() {
+        let bytes = encoding::encode("前文好", FileEncoding::Utf16Le).unwrap();
+        // 截在最后一个字符中间：直接严格解会报「长度不是偶数」
+        let cut = &bytes[..bytes.len() - 1];
+        let content = decode_file_content(
+            cut,
+            Some("utf-16le"),
+            TRUNCATE_FILE_SIZE + 1,
+            false,
+            true,
+            "big.txt",
+        )
+        .unwrap();
+        assert_eq!(content.text, "前文", "尾部半个字符要安全裁掉，不能 panic");
+        assert_eq!(content.encoding, "utf-16le");
+        assert!(content.read_only);
+    }
+
+    #[test]
+    fn read_head_stops_at_the_limit() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("a.txt");
+        fs::write(&file, b"0123456789").unwrap();
+
+        assert_eq!(read_head(&file, 4).unwrap(), b"0123");
+        // 文件比上限短：读到结尾就停
+        assert_eq!(read_head(&file, 99).unwrap(), b"0123456789");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn detects_and_writes_back_cr_line_endings() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("cr.txt");
+        fs::write(&file, "one\rtwo\r").unwrap();
+
+        let content = read_text_content(&workspace, "cr.txt", None).unwrap();
+        assert_eq!(content.eol, "CR");
+        assert_eq!(
+            content.text, "one\rtwo\r",
+            "WP1 保持正文原样，CRLF/CR 的归一化留给 WP2"
+        );
+
+        // 前端状态栏切到 CR 后保存：正文里的 LF 要还原成 CR
+        write_text_file_with(&file, "one\ntwo\n", Some("utf-8"), Some("CR"), None).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\rtwo\r");
+
+        // 不传 eol 时保持旧行为：原样写
+        write_text_file_with(&file, "one\ntwo\n", Some("utf-8"), None, None).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "one\ntwo\n");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn read_only_files_are_flagged_and_refused_on_save() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("locked.txt");
+        fs::write(&file, "locked").unwrap();
+        set_readonly(&file, true);
+
+        let content = read_text_content(&workspace, "locked.txt", None).unwrap();
+        assert!(content.read_only, "只读权限要上报给编辑器");
+        assert!(!content.truncated);
+
+        let error =
+            write_text_file_with(&file, "changed", Some("utf-8"), None, None).unwrap_err();
+        assert!(error.contains("只读"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "locked", "拒绝时不能动原文件");
+
+        set_readonly(&file, false);
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn refuses_to_save_read_only_or_truncated_files() {
+        // 只读：说清楚为什么
+        let error = ensure_writable(10, true, "locked.txt").unwrap_err();
+        assert!(error.contains("只读"), "{error}");
+
+        // 超过 64MB：内容只是前 8MB，直接写回等于把文件毁掉
+        let error = ensure_writable(TRUNCATE_FILE_SIZE + 1, false, "big.txt").unwrap_err();
+        assert!(error.contains("64MB"), "{error}");
+        assert!(error.contains("另存为"), "{error}");
+
+        // 正好 64MB 仍然可写（截断读的判据也是 `>`）
+        assert!(ensure_writable(TRUNCATE_FILE_SIZE, false, "ok.txt").is_ok());
+    }
+
+    #[test]
+    fn round_trips_the_new_encodings_through_disk() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let cases: [(&str, FileEncoding, &str); 5] = [
+            (
+                "gb18030.txt",
+                FileEncoding::Gb18030,
+                "GB18030 扩展字符：𠀀（四字节序列）",
+            ),
+            (
+                "sjis.txt",
+                FileEncoding::ShiftJis,
+                "これは日本語のテキストです。",
+            ),
+            ("euckr.txt", FileEncoding::EucKr, "이것은 한국어 텍스트입니다."),
+            (
+                "cp1252.txt",
+                FileEncoding::Windows1252,
+                "Café déjà vu : naïve façade",
+            ),
+            (
+                "latin1.txt",
+                FileEncoding::Iso88591,
+                "Café déjà vu : naïve façade",
+            ),
+        ];
+
+        for (name, enc, text) in cases {
+            let original = encoding::encode(text, enc).unwrap();
+            fs::write(workspace.join(name), &original).unwrap();
+
+            // 用户在下拉里明确选了这个编码：按它解、不嗅探
+            let content = read_text_content(&workspace, name, Some(enc.label())).unwrap();
+            assert_eq!(content.text, text, "{name} 解码结果不对");
+            assert_eq!(content.encoding, enc.label(), "{name} 标签要原样带出");
+
+            // 保存回同一编码：字节必须和原文件完全一致（而不是偷偷写成 UTF-8）
+            write_text_file_with(
+                &workspace.join(name),
+                &content.text,
+                Some(&content.encoding),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(workspace.join(name)).unwrap(),
+                original,
+                "{name} 保存后编码被破坏了"
+            );
+        }
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn keeps_or_strips_the_bom_on_request() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("bom.txt");
+        let mut original = vec![0xEFu8, 0xBB, 0xBF];
+        original.extend_from_slice("hi".as_bytes());
+        fs::write(&file, &original).unwrap();
+
+        let content = read_text_content(&workspace, "bom.txt", None).unwrap();
+        assert_eq!(content.encoding, "utf-8-bom");
+        assert!(content.has_bom);
+        assert_eq!(content.text, "hi", "BOM 不能混进正文");
+
+        // 原样保留 BOM
+        write_text_file_with(&file, "hey", Some("utf-8-bom"), None, Some(true)).unwrap();
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            [&[0xEFu8, 0xBB, 0xBF][..], b"hey"].concat()
+        );
+
+        // 用户明确要求去掉 BOM：写成普通 UTF-8
+        write_text_file_with(&file, "hey", Some("utf-8-bom"), None, Some(false)).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"hey");
+
+        // 不传 hasBom 时保持旧行为：utf-8-bom 标签自带 BOM
+        write_text_file_with(&file, "hey", Some("utf-8-bom"), None, None).unwrap();
+        assert!(fs::read(&file).unwrap().starts_with(&[0xEF, 0xBB, 0xBF]));
         fs::remove_dir_all(&root).ok();
     }
 }

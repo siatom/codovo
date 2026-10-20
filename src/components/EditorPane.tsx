@@ -16,6 +16,8 @@ import { reindentModelOnOpen } from "../lib/json5";
 import { renderMarkdown } from "../lib/markdown";
 import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
 import {
+  ENCODINGS,
+  encodingName,
   gitFileDiff,
   isPathInside,
   ownerRoot,
@@ -218,22 +220,9 @@ interface StatusMenuItem {
 }
 
 /**
- * 可切换的编码，顺序即下拉顺序。label 必须和后端 `Encoding::from_label` 一一对应，
- * 保存时原样回传给后端；name 只是给人看的显示名。
+ * 可切换的编码列表由 `lib/fs.ts` 统一维护（后端支持的标签只能有一份），
+ * 这里只负责把它渲染到状态栏菜单里。
  */
-const ENCODINGS: { label: string; name: string }[] = [
-  { label: "utf-8", name: "UTF-8" },
-  { label: "utf-8-bom", name: "UTF-8 with BOM" },
-  { label: "utf-16le", name: "UTF-16 LE" },
-  { label: "utf-16be", name: "UTF-16 BE" },
-  { label: "gbk", name: "GBK" },
-  { label: "big5", name: "Big5" },
-];
-
-/** 后端编码标签 -> 显示名；认不出就原样显示，不吞掉信息 */
-function encodingName(label: string): string {
-  return ENCODINGS.find((item) => item.label === label)?.name ?? label;
-}
 
 /** Monaco 的键名和 DOM 的 event.key 有几处对不上，别名一下 */
 const MONACO_KEY_ALIASES: Record<string, string> = {

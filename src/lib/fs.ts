@@ -5,6 +5,7 @@ import type { DiffSource } from "./tabs";
 import type {
   CloneProgress,
   DiscardSource,
+  Eol,
   FileContent,
   FileDiff,
   FileEntry,
@@ -118,8 +119,41 @@ export function replaceAll(request: {
 }
 
 /**
+ * 可切换的编码，顺序即下拉顺序。`label` 必须和后端 `FileEncoding::from_label`
+ * 一一对应，保存时原样回传给后端；`name` 只是给人看的显示名。
+ *
+ * 前端所有编码下拉都从这里取，避免 EditorPane 与后端各维护一份、加一种编码就漏一边。
+ */
+export interface EncodingOption {
+  label: string;
+  name: string;
+}
+
+export const ENCODINGS: readonly EncodingOption[] = [
+  { label: "utf-8", name: "UTF-8" },
+  { label: "utf-8-bom", name: "UTF-8 with BOM" },
+  { label: "utf-16le", name: "UTF-16 LE" },
+  { label: "utf-16be", name: "UTF-16 BE" },
+  { label: "gbk", name: "GBK" },
+  { label: "gb18030", name: "GB18030" },
+  { label: "big5", name: "Big5" },
+  { label: "shift_jis", name: "Shift_JIS" },
+  { label: "euc-kr", name: "EUC-KR" },
+  { label: "windows-1252", name: "windows-1252" },
+  { label: "iso-8859-1", name: "ISO-8859-1" },
+];
+
+/** 后端编码标签 -> 显示名；认不出就原样显示，不吞掉信息 */
+export function encodingName(label: string): string {
+  return ENCODINGS.find((item) => item.label === label)?.name ?? label;
+}
+
+/**
  * 读一个文本文件。不传 `encoding` 时后端自动嗅探；传了 `encoding` 标签（如 `gbk`）就按
  * 指定编码解码、不再嗅探——编辑器里用户手动切换编码走的就是这条。
+ *
+ * 返回值除了正文，还带 `size` / `readOnly` / `truncated` / `isLarge` / `eol` / `hasBom`：
+ * 大文件与只读状态由调用方决定怎么提示、怎么禁写。
  */
 export function readFile(root: string, path: string, encoding?: string): Promise<FileContent> {
   return invoke<FileContent>("fs_read_file", { root, path, encoding: encoding ?? null });
@@ -137,14 +171,27 @@ export function readImage(root: string, path: string): Promise<ImageContent> {
  * 写回文件内容。`encoding` 是打开时 `readFile` 检测到的编码标签，必须原样回传：
  * 后端按它把文本编回原编码，非 UTF-8 的老工程（GBK / Big5 / UTF-16）才不会被
  * UTF-8 覆盖而损坏。不传（新建文件等）就按 UTF-8 写。
+ *
+ * `eol` / `hasBom` 选自 `FileContent` 的同名字段：传了才按指定换行风格 / BOM 写回，
+ * 不传保持旧行为（原样写正文，BOM 随编码标签）。`hasBom` 要显式传 `false` 才能去掉
+ * UTF-8 BOM；传 `undefined` 只会被当成「没要求」。
  */
 export function writeFile(
   root: string,
   path: string,
   text: string,
   encoding?: string,
+  eol?: Eol,
+  hasBom?: boolean,
 ): Promise<void> {
-  return invoke("fs_write_file", { root, path, text, encoding: encoding ?? null });
+  return invoke("fs_write_file", {
+    root,
+    path,
+    text,
+    encoding: encoding ?? null,
+    eol: eol ?? null,
+    hasBom: hasBom ?? null,
+  });
 }
 
 export function createFile(root: string, path: string): Promise<void> {
