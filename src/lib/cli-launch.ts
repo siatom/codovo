@@ -69,10 +69,13 @@ function isOpencode(command: string): boolean {
 }
 
 /**
- * opencode 没有 `--add-dir`，权限写在配置里（v1 的 `permission` 对象；
- * v2 启动时会把它迁移成 `permissions` 数组，所以同一份 JSON 两边都能用）。
+ * opencode 没有 `--add-dir`，权限写在 V2 的 `permissions` 数组里。
  *
- * 这里只放 `external_directory` 的 allow：目录外的 read / edit 仍沿用用户自己的规则，
+ * `external_directory` 的默认策略就是全量 allow，只写几个 allow 规则等于没写。
+ * 要真正把范围收紧到工作区，必须先给 `*` 加一条 ask 兜底，再用工作区目录的 allow
+ * 例外盖回来——规则按书写顺序匹配，后面的覆盖前面的。
+ *
+ * 这里只兜底 `external_directory`：目录内的 read / edit 仍沿用用户自己的规则，
  * 不拿一个宽泛的 allow 把 `.env` 之类的 deny 盖掉。
  *
  * v2 默认连接用户级共享服务，客户端的环境变量传不过去；加 `--standalone`
@@ -82,13 +85,16 @@ function isOpencode(command: string): boolean {
 function prepareOpencode(command: string, dirs: string[]): PreparedLaunch {
   if (hasFlag(command, "--server")) return { command, env: {} };
 
-  const external = Object.fromEntries(
-    dirs.map((dir) => [permissionResource(dir), "allow" as const]),
-  );
+  const permissions = [
+    { action: "external_directory", resource: "*", effect: "ask" as const },
+    ...dirs.map((dir) => ({
+      action: "external_directory",
+      resource: permissionResource(dir),
+      effect: "allow" as const,
+    })),
+  ];
   const env = {
-    OPENCODE_CONFIG_CONTENT: JSON.stringify({
-      permission: { external_directory: external },
-    }),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ permissions }),
   };
 
   const launched = hasFlag(command, "--standalone")
@@ -99,14 +105,14 @@ function prepareOpencode(command: string, dirs: string[]): PreparedLaunch {
 }
 
 /**
- * `external_directory` 的 resource 是目录边界：正常目录用 `<dir>/**`，
- * 盘符根 / 文件系统根不能用 `<dir>/**`（会拼出 `D://**`），单独退一格。
+ * `external_directory` 的 resource 是目录边界，规范形式是 `<dir>/*`。
+ * 匹配里的 `*` 本身能跨 `/`，所以一条规则就覆盖整棵子树；
+ * 盘符根 / 文件系统根会自然拼成 `D:/*`、`/*`，不用特殊处理。
  */
 function permissionResource(path: string): string {
   const base = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  if (!base) return "/**";
-  if (/^[a-zA-Z]:$/.test(base)) return `${base}/*`;
-  return `${base}/**`;
+  if (!base) return "/*";
+  return `${base}/*`;
 }
 
 function specOf(command: string): AdditionalDirsSpec | null {
