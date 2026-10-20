@@ -2453,7 +2453,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   </Field>
                   <Field
                     label="保存前检查语法"
-                    hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存只提示不打断"
+                    hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析"
                   >
                     <BoolToggle
                       value={settings.editorCheckSyntaxOnSave}

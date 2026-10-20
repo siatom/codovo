@@ -234,11 +234,6 @@ export function formatIssueLocation(issue: SyntaxIssue): string {
   return `（第 ${issue.line} 行${column}）`;
 }
 
-/** 同一标签的同一个问题只提示一次：按 message + 行 + 列去重（见 EditorPane 的自动保存提示） */
-export function issueSignature(issue: SyntaxIssue): string {
-  return `${issue.message}|${issue.line}|${issue.column}`;
-}
-
 /** Prettier 的报错常带一段 codeframe，只取首行给用户看 */
 export function errorText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);

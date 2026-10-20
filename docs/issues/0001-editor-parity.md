@@ -144,7 +144,7 @@ CodeDock 的 Monaco 编辑内核、Markdown 三态预览、Mermaid / KaTeX / HTM
    - 格式化保留光标位置，可撤销；失败不阻断保存。
 2. 保存前语法校验：
    - 复用 Prettier 解析器；JSON/JSONC/YAML/JS/TS/CSS/HTML/Markdown/GraphQL。
-   - 交互式保存弹「仍然保存 / 取消」；自动保存只提示不打断，并按问题签名去重。
+   - 交互式保存弹「仍然保存 / 取消」；自动保存跳过校验，避免每秒全量解析拖慢输入。
    - 增加 `formatOnSave`、`checkSyntaxOnSave` 设置项。
 3. 每标签视图状态：
    - 用 `editor.saveViewState()` / `restoreViewState()` 保存滚动位置、光标、选区。
@@ -295,7 +295,7 @@ git diff --check
 | --- | --- | --- | --- |
 | WP1 文件系统与编码底座 | 已完成 | 69f53e3 | 大文件截断 / 扩展编码 / EOL 与 BOM 元数据；EOL 正文归一化留给 WP2 |
 | WP2 编辑器生命周期 | 已完成 | 7729683 | 外部冲突 / 未命名缓冲区 / 另存为 / 放弃变更 / 关闭保存 / 大文件与只读标记 / CR 回写；新建与关闭快捷键、标签中键与双击空白留给 WP3 |
-| WP3 编辑效率与标签交互 | 已完成 | 19b50e2（格式化/校验）+ befb6a9（快捷键/设置）+ 16a9863（标签/状态栏） | 前半：Prettier 一键格式化 / 保存时格式化 / 文件树右键格式化，保存前用 Prettier 解析器做语法校验（交互式可「仍然保存 / 取消」，自动保存只提示并按 message+行+列去重），新增 `editorFormatOnSave=false` / `editorCheckSyntaxOnSave=true`；后半：每标签滚动/选区恢复、工具栏查找入口、标签中键关闭 / 空白双击新建 / 脏圆点独立保存、右键「打开所在目录 / 在文件管理器中显示 / 放弃变更」、`Ctrl+Tab` 与 `Ctrl+PageUp/PageDown` 切标签、快捷键全量扩展（编辑器区 + 窗口级两级作用域，终端与输入框放行）、状态栏文件大小 / 选区长度 / 点击复制路径、编辑器设置新增行号 / 当前行高亮 / 行高。`pnpm build` 通过；Markdown 预览与链接（WP4）仍待做 |
+| WP3 编辑效率与标签交互 | 已完成 | 19b50e2（格式化/校验）+ befb6a9（快捷键/设置）+ 16a9863（标签/状态栏） | 前半：Prettier 一键格式化 / 保存时格式化 / 文件树右键格式化，保存前用 Prettier 解析器做语法校验（交互式可「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析），新增 `editorFormatOnSave=false` / `editorCheckSyntaxOnSave=true`；后半：每标签滚动/选区恢复、工具栏查找入口、标签中键关闭 / 空白双击新建 / 脏圆点独立保存、右键「打开所在目录 / 在文件管理器中显示 / 放弃变更」、`Ctrl+Tab` 与 `Ctrl+PageUp/PageDown` 切标签、快捷键全量扩展（编辑器区 + 窗口级两级作用域，终端与输入框放行）、状态栏文件大小 / 选区长度 / 点击复制路径、编辑器设置新增行号 / 当前行高亮 / 行高。`pnpm build` 通过；Markdown 预览与链接（WP4）仍待做 |
 | WP4 Markdown 预览 | 已完成 | abdfe23 | 标题生成支持中文 / 日文的稳定 id 并按 `-1`、`-2` 去重（`data-src-line` 同时保留）；页内锚点滚动、`http(s)` / `mailto` 走系统浏览器、相对路径不导航 WebView；整屏与对照预览复用 Monaco 围栏高亮并随主题重新着色，失败保留原始 `<pre><code>`；`isLarge` 文件跳过预览正文并显示降级提示，对照右侧同样不渲染。`pnpm build` 通过 |
 | WP5 文档翻译 | 已完成 | 708c579（Rust 命令）+ 62369a5（前端翻译）+ a8dc52f（设置） | 新增 `ai_translate_text`，复用默认模型与钥匙串密钥；前端移植 CodeLite 的占位符保护（frontmatter / 围栏代码 / HTML pre·code·注释·nav / 缩进代码 / 目录树·路径清单·TOC / 链接引用 / 徽章 / 行内代码），按约 6000 字符分段、表格整块发送，占位符缺失、重复、越界或乱序都报错重试；每标签独立 run 支持进度 / 停止 / 重试 / 复制，localStorage 按路径 + 内容签名 + 目标语言 + 模型 ref 缓存并做 LRU（24 条 / 60 万字符）；翻译视图左原文右译文、Markdown 渲染与纯文本 `<pre>`、比例滚动同步，与预览 / 对照互斥，关闭标签清理运行状态；设置新增 `translateTarget`（默认 zh，归入 AI 分类）。`pnpm build`、`cargo test --lib`（359 passed）、`cargo clippy`（仅 WP1 `encoding.rs` 既有 warning）通过 |
 | WP6 文件入口、会话与最近文件 | 已完成 | 0938fed（会话/最近文件）+ 5bef952（单文件/拖放）+ b517a6d（欢迎页）+ d8130e9（最近文件校验） | 按工作区 id 持久化普通文件标签、顺序与激活项，恢复时用 `paths_present` 静默跳过已删除路径；最近文件全局去重、上限 50，编辑器欢迎页可点击重开，缺失文件提示并移除。Ctrl+O 提升为窗口级入口，工作区外文件以所在目录建 / 复用临时工作区；Tauri 系统拖放文件夹作工作区、文件按单文件规则打开，连续拖放串行处理。未持久化 Monaco 滚动 / 选区（会话只恢复标签与激活项）；关闭 / 移除工作区会清理该工作区会话记录。`pnpm build` 通过；`cargo check` 因本机 MSVC `cl.exe` D8050（aws-lc-sys 编译）未能完成，新增 Rust 命令仅一行路径判断 |
