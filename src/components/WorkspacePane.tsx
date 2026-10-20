@@ -86,6 +86,8 @@ interface WorkspacePaneProps {
   onHandles: (workspaceId: string, handles: WorkspaceHandles) => void;
   /** 编辑器浮窗「送给助手」：由 App 展开助手抽屉并插入位置引用 */
   onSendToAssistant: (location: EditorLocation) => void;
+  /** 打开设置面板（编辑器翻译视图里的「设置」入口） */
+  onOpenSettings: () => void;
 }
 
 /**
@@ -106,6 +108,7 @@ export function WorkspacePane({
   onExitFullscreen,
   onHandles,
   onSendToAssistant,
+  onOpenSettings,
 }: WorkspacePaneProps) {
   /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
   const root = workspace.activeRoot;
@@ -649,6 +652,7 @@ export function WorkspacePane({
                       onToggleFullscreen={onToggleRightFullscreen}
                       onSendToTerminal={insertToTerminal}
                       onSendToAssistant={insertToAssistant}
+                      onOpenSettings={onOpenSettings}
                     />
                   }
                 />

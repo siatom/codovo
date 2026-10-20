@@ -33,6 +33,9 @@ export interface FileContent {
   hasBom: boolean;
 }
 
+/** 文档翻译目标语言；设置里的 translateTarget 与翻译视图共用 */
+export type TranslateTarget = "zh" | "en";
+
 /** 文件换行风格，和后端 `eol` 字段一一对应 */
 export type Eol = "LF" | "CRLF" | "CR";
 

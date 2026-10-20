@@ -25,6 +25,8 @@ import {
   validateText,
 } from "../lib/formatter";
 import { renderMarkdown } from "../lib/markdown";
+import { isDocumentPath } from "../lib/translate";
+import { clearTranslation } from "../lib/translate-store";
 import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
 import {
   ENCODINGS,
@@ -63,12 +65,14 @@ import { GitMarkBadge } from "./GitMarkBadge";
 import { FullscreenButton } from "./FullscreenButton";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { TranslationView } from "./TranslationView";
 import { PdfPreview } from "./PdfPreview";
 import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   IconArrowDown,
   IconArrowUp,
+  IconArrowsLeftRight,
   IconBot,
   IconCheck,
   IconChevronDown,
@@ -93,11 +97,12 @@ const TABS_MENU_W = 112;
 /** 标签右键菜单的宽度：里面有「重新加载（放弃我的修改）」这种长文案 */
 const TAB_MENU_W = 190;
 
-/** markdown 的三种查看方式，顺序也是标题栏按钮的顺序 */
+/** markdown 的四种查看方式，顺序也是标题栏按钮的顺序 */
 const MARKDOWN_MODES = [
   { id: "preview", label: "预览" },
   { id: "edit", label: "编辑" },
   { id: "split", label: "对照" },
+  { id: "translate", label: "翻译" },
 ] as const;
 type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
 
@@ -361,6 +366,8 @@ interface EditorPaneProps {
   onOpenPath: (path: string) => void;
   /** 在右栏文件树里定位到这个文件（标签右键「打开所在目录」） */
   onRevealInFiles: (path: string) => void;
+  /** 翻译视图里的「设置」入口：打开设置面板的 AI 页 */
+  onOpenSettings: () => void;
   /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -651,6 +658,7 @@ export function EditorPane({
   onPatchTab,
   onOpenPath,
   onRevealInFiles,
+  onOpenSettings,
   fullscreen,
   onToggleFullscreen,
   onSendToTerminal,
@@ -748,6 +756,13 @@ export function EditorPane({
    * 不适合同屏边改边看。与 previewPaths 互斥（同一个标签不会既整屏预览又分屏）
    */
   const [splitPaths, setSplitPaths] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * 正处在翻译视图的标签（存 tabKey）。和 previewPaths / splitPaths 互斥，
+   * 翻译运行状态本身放在 translate-store 里，切标签不丢进度。
+   */
+  const [translationPaths, setTranslationPaths] = useState<ReadonlySet<string>>(new Set());
+  const translationPathsRef = useRef(translationPaths);
+  translationPathsRef.current = translationPaths;
   const [saving, setSaving] = useState(false);
   /** 选中文本浮窗的视口坐标；null = 不显示 */
   const [floatBar, setFloatBar] = useState<{ top: number; left: number } | null>(null);
@@ -1029,6 +1044,9 @@ export function EditorPane({
     setDirtyPaths(prune);
     setPreviewPaths(prune);
     setSplitPaths(prune);
+    setTranslationPaths(prune);
+    // 翻译运行状态按标签隔离，关标签就清掉；译文缓存仍留在 localStorage
+    for (const key of keys) clearTranslation(key);
     // 视图状态跟着标签走：标签关了、文件改了名就把对应那份丢掉，不让它一直留在 Map 里
     for (const key of keys) viewStatesRef.current.delete(key);
     if (shownKeyRef.current !== null && keys.includes(shownKeyRef.current)) {
@@ -2477,6 +2495,13 @@ export function EditorPane({
       next.delete(key);
       return next;
     });
+    // 翻译视图同样把编辑器藏起来了，定位前也退出去
+    setTranslationPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
 
     editor.setSelection(
       new monaco.Range(
@@ -2516,6 +2541,13 @@ export function EditorPane({
         next.delete(key);
         return next;
       });
+      // 翻译视图也是整块替换内容，和预览互斥
+      setTranslationPaths((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     };
     if (!isHtmlPreviewPath(current.path)) {
       enter();
@@ -2530,9 +2562,9 @@ export function EditorPane({
   }, []);
 
   /**
-   * 切换 markdown 的三种查看方式：预览 / 编辑 / 对照。
-   * 「预览」与「对照」互斥，「编辑」会把两者都摘掉——同一份内容只在一处显示。
-   * 内容变化后右侧的重渲染由下面的防抖 effect 驱动。
+   * 切换 markdown 的查看方式：预览 / 编辑 / 对照 / 翻译。
+   * 同一份内容只在一处显示，所以每次进入一种模式都把其余集合摘掉。
+   * 翻译视图的内容变化由内容签名驱动，切回编辑后译文仍留在 store 里。
    */
   const setMarkdownMode = useCallback((mode: MarkdownMode) => {
     const current = activeRef.current;
@@ -2544,18 +2576,58 @@ export function EditorPane({
       next.delete(key);
       return next;
     };
+    const add = (prev: ReadonlySet<string>) =>
+      prev.has(key) ? prev : new Set(prev).add(key);
     if (mode === "edit") {
       setPreviewPaths(without);
       setSplitPaths(without);
+      setTranslationPaths(without);
       return;
     }
     if (mode === "preview") {
-      setPreviewPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+      setPreviewPaths(add);
       setSplitPaths(without);
+      setTranslationPaths(without);
       return;
     }
-    setSplitPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    if (mode === "split") {
+      setSplitPaths(add);
+      setPreviewPaths(without);
+      setTranslationPaths(without);
+      return;
+    }
+    setTranslationPaths(add);
     setPreviewPaths(without);
+    setSplitPaths(without);
+  }, []);
+
+  /** 纯文本等非 markdown 文档的翻译入口：再点一次回到编辑 */
+  const toggleTranslation = useCallback(() => {
+    const current = activeRef.current;
+    if (!current || current.kind !== "file") return;
+    const key = tabKey(current);
+    if (translationPathsRef.current.has(key)) {
+      setTranslationPaths((prev) => {
+        if (!prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+      return;
+    }
+    setTranslationPaths((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    setPreviewPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    setSplitPaths((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   }, []);
 
   /**
@@ -2770,16 +2842,31 @@ export function EditorPane({
     canPreview && activeKey !== null && isMarkdownFile && splitPaths.has(activeKey) && !isPreview;
 
   /**
+   * 翻译视图：只对文档扩展名开放（源码 / 脚本 / 配置不给入口），
+   * 大文件、二进制、空内容都不进。翻译与预览 / 对照互斥。
+   */
+  const isTranslate = activeKey !== null && translationPaths.has(activeKey);
+  const canTranslate =
+    status.kind === "ready" &&
+    activeFile !== null &&
+    activeCached !== null &&
+    isDocumentPath(activeFile.path) &&
+    !activeCached.isLarge &&
+    activeCached.model.getValue().trim() !== "";
+
+  /**
    * 当前 markdown 标签的查看方式。默认由 previewsOnOpen 播种成「预览」；
-   * 之后只认用户点的那三个按钮，切走再切回来保持原样。
+   * 之后只认用户点的那几个按钮，切走再切回来保持原样。
    */
   const markdownMode: MarkdownMode | null = !isMarkdownFile
     ? null
-    : isPreview
-      ? "preview"
-      : isSplitPreview
-        ? "split"
-        : "edit";
+    : isTranslate
+      ? "translate"
+      : isPreview
+        ? "preview"
+        : isSplitPreview
+          ? "split"
+          : "edit";
 
   // 进预览时同步渲染一次：放在渲染期算完，就不会先闪一帧空白。
   // 内容按 activeKey 从缓存里取，**不能**读编辑器当前挂着的 model：换 model 的
@@ -3255,23 +3342,43 @@ export function EditorPane({
                 type="button"
                 onClick={() => setMarkdownMode(id)}
                 aria-pressed={markdownMode === id}
+                disabled={id === "translate" && !canTranslate}
                 title={
                   id === "preview"
                     ? "预览渲染后的效果"
                     : id === "edit"
                       ? "编辑 Markdown 源码"
-                      : "左边源码，右边渲染"
+                      : id === "split"
+                        ? "左边源码，右边渲染"
+                        : "左原文、右译文的文档翻译"
                 }
                 className={`rounded px-2 py-0.5 text-[11px] ${
                   markdownMode === id
                     ? "bg-selected text-fg"
                     : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim`}
               >
                 {label}
               </button>
             ))}
           </div>
+        )}
+        {/* 纯文本 / 日志等文档：markdown 走上面的四态分组，这里给一个独立的翻译开关 */}
+        {activeFile && status.kind === "ready" && !isMarkdownFile && canTranslate && (
+          <button
+            type="button"
+            onClick={toggleTranslation}
+            aria-pressed={isTranslate}
+            title={isTranslate ? "回到编辑" : "文档翻译（左原文、右译文）"}
+            className={`flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] ${
+              isTranslate
+                ? "bg-selected text-fg"
+                : "text-fg-dim hover:bg-hover hover:text-fg"
+            }`}
+          >
+            <IconArrowsLeftRight className="h-3.5 w-3.5" />
+            翻译
+          </button>
         )}
         {/* 查找 / 替换：切换 Monaco 的 find widget（开着再点就收起）。
             Ctrl+F 走命令分发打开同一个 widget，Ctrl+H 的替换仍是 Monaco 内置 */}
@@ -3571,7 +3678,7 @@ export function EditorPane({
           first={
             <div
               ref={containerRef}
-              className={isPreview || isDiffTab || isImageTab || isPdfTab ? "hidden" : "h-full w-full"}
+              className={isPreview || isDiffTab || isImageTab || isPdfTab || isTranslate ? "hidden" : "h-full w-full"}
             />
           }
           second={
@@ -3591,6 +3698,18 @@ export function EditorPane({
 
         {isMarkdownPreview && (
           <MarkdownPreview html={previewHtml} isLarge={activeCached?.isLarge ?? false} />
+        )}
+        {/* 翻译视图：左原文右译文，正文取编辑器当前内容（含未保存改动），不写回文件 */}
+        {isTranslate && status.kind === "ready" && activeKey !== null && activeFile && activeCached && (
+          <TranslationView
+            tabKey={activeKey}
+            path={activeFile.path}
+            title={tabName(activeFile)}
+            content={activeCached.model.getValue()}
+            roots={roots}
+            isLarge={activeCached.isLarge}
+            onOpenSettings={onOpenSettings}
+          />
         )}
         {/* html / htm / svg 预览：iframe 走 asset 协议读磁盘，相对路径的 css / js / 图片一并生效 */}
         {isHtmlPreview && activeFile && activeFile.path !== null && (

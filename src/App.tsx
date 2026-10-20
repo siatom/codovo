@@ -751,6 +751,7 @@ function Shell() {
             onExitFullscreen={exitFullscreen}
             onHandles={onHandles}
             onSendToAssistant={openAssistantAt}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         );
       })}
