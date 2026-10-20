@@ -27,6 +27,7 @@ import { renderMarkdown } from "../lib/markdown";
 import { isDocumentPath, contentSignature } from "../lib/translate";
 import { clearTranslation, rekeyTranslation } from "../lib/translate-store";
 import { parseShortcut, matchesShortcut, formatShortcut } from "../lib/shortcuts";
+import { isTypingTarget } from "../lib/dom";
 import {
   ENCODINGS,
   encodingName,
@@ -672,7 +673,15 @@ export function EditorPane({
   ref,
 }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  /** 整个编辑器区域（标题栏 + 编辑区 + 状态栏），用来判断焦点是不是还在这一块 */
+  const paneRef = useRef<HTMLElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  /**
+   * 焦点最近是不是在 Monaco / 差异编辑器里。关掉当前标签、切到预览后，浏览器会把焦点
+   * 退回 body，DOM 上已经找不到「还在编辑器里」的证据；连续按 Ctrl+W 得靠这个状态
+   * 继续关下一个标签。
+   */
+  const editorFocusRef = useRef(false);
   const modelsRef = useRef(new Map<string, CachedModel>());
   /**
    * 每个标签的视图状态（滚动位置、光标、选区）。Monaco 只给「此刻挂着的那个 model」
@@ -2973,18 +2982,21 @@ export function EditorPane({
    * section。这里用窗口级原生捕获监听补一条：焦点确实在文本 / 差异编辑器里时，按
    * `closeTab` 关闭当前标签。窗口捕获先于 Monaco 和 React 的合成事件，能稳定生效；
    * 终端、输入框不在这些容器里，不受影响。
+   *
+   * 关掉第一个标签后焦点会退回 body，所以除了「事件目标在编辑器里」，还认
+   * `editorFocusRef`（最近一次焦点所在）——否则第二次 Ctrl+W 就找不到落点了。
+   * 只在当前可见的工作区实例上生效，隐藏工作区的监听不能跟着抢键。
    */
   useEffect(() => {
+    if (!visible) return;
     const onEditorKeyDown = (event: globalThis.KeyboardEvent) => {
       if (closeRequest || syntaxPrompt) return;
+      // 弹窗打开时不关背后的标签；终端 / 普通输入框也保留自己的 Ctrl+W
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (isTypingTarget(event)) return;
       const target = event.target;
-      if (
-        !(target instanceof Node) ||
-        (!(containerRef.current?.contains(target) ?? false) &&
-          !(diffContainerRef.current?.contains(target) ?? false))
-      ) {
-        return;
-      }
+      const inEditor = target instanceof Node && (paneRef.current?.contains(target) ?? false);
+      if (!inEditor && !editorFocusRef.current) return;
       if (!matchesShortcut(event, settings.shortcuts["closeTab"])) return;
       event.preventDefault();
       event.stopPropagation();
@@ -2993,7 +3005,25 @@ export function EditorPane({
     };
     window.addEventListener("keydown", onEditorKeyDown, true);
     return () => window.removeEventListener("keydown", onEditorKeyDown, true);
-  }, [closeRequest, syntaxPrompt, settings.shortcuts]);
+  }, [closeRequest, syntaxPrompt, settings.shortcuts, visible]);
+
+  // 记录焦点是否还在编辑器区域里。焦点退回 body（关标签 / 点预览后常见）时保留上一次
+  // 的判断，这样连续 Ctrl+W 仍能继续关下一个；落到终端、输入框或侧栏就撤销。
+  // 弹窗里的焦点不算「离开编辑器」：关掉确认框后还要能接着按。
+  useEffect(() => {
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (paneRef.current?.contains(target)) {
+        editorFocusRef.current = true;
+        return;
+      }
+      if (target instanceof Element && target.closest('[role="dialog"][aria-modal="true"]')) return;
+      if (target !== document.body) editorFocusRef.current = false;
+    };
+    document.addEventListener("focusin", onFocusIn, true);
+    return () => document.removeEventListener("focusin", onFocusIn, true);
+  }, []);
 
   const isDiffTab = active?.kind === "diff";
   const activeKey = active ? tabKey(active) : null;
@@ -3366,7 +3396,7 @@ export function EditorPane({
   ];
 
   return (
-    <section className="relative flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
+    <section ref={paneRef} className="relative flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
         <div
           ref={tabsScrollRef}
