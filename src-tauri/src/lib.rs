@@ -158,6 +158,7 @@ pub fn run() {
             ai::ai_suggest_cicd_config,
             ai::ai_diagnose_cicd,
             ai::ai_diagnose_preview,
+            ai::ai_translate_text,
             secrets::secret_set,
             secrets::secret_delete,
             secrets::secret_status,
