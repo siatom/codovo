@@ -324,7 +324,8 @@ const DEFAULTS: Settings = {
   uiMonoFontFamily: "",
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   editorFontBold: true,
-  editorMinimap: true,
+  // 默认收起：窄面板里 minimap 会挤占正文宽度；需要时在设置里打开
+  editorMinimap: false,
   // 默认开着：长注释和文档不用横向滚动，窄面板里读起来更顺
   editorWordWrap: true,
   // 默认按文件内容探测（Monaco 原行为），别一上来就强行统一缩进
