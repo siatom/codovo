@@ -297,6 +297,7 @@ export function RemoteTerminal({
 
     /** 面板收放动画期间先不 fit，等动画落定补一次（见 lib/layout-motion） */
     let resizeTimer: number | undefined;
+    let settleFallback: number | undefined;
     let resizedDuringMotion = false;
     const fitOnce = () => {
       if (isLayoutAnimating()) {
@@ -315,6 +316,9 @@ export function RemoteTerminal({
       window.clearTimeout(resizeTimer);
       if (isLayoutAnimating()) {
         resizedDuringMotion = true;
+        // 兜底：结束信号没送到时也不能一直不 fit
+        window.clearTimeout(settleFallback);
+        settleFallback = window.setTimeout(fitOnce, 500);
         return;
       }
       resizeTimer = window.setTimeout(fitOnce, 100);
@@ -324,6 +328,7 @@ export function RemoteTerminal({
       if (!resizedDuringMotion) return;
       resizedDuringMotion = false;
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(settleFallback);
       fitOnce();
     });
 
@@ -331,6 +336,7 @@ export function RemoteTerminal({
       cancelled = true;
       window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(settleFallback);
       stopSettled();
       observer.disconnect();
       dataDisposable.dispose();
