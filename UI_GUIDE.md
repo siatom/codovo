@@ -200,6 +200,12 @@ dev 保留方便调试。
 - **不用 `window.confirm` / `prompt` / `alert`**（WKWebView 静默失效）。
 - **屏蔽原生右键菜单**，见第二节。
 - **屏蔽浏览器快捷键**（正式版），见第五节。
+- **窗口用自绘标题栏**（`tauri.conf.json` 里 `decorations: false`，组件是 `TitleBar.tsx`）：
+  拖动与双击最大化交给 `data-tauri-drag-region`（走原生 `start_dragging` / `internal_toggle_maximize`，
+  贴边分屏、拖回还原才留得住）；最小化 / 最大化 / 关闭、右键系统菜单走 `lib/window.ts` 包的自研命令。
+  **关闭按钮只调 `window_close`**（就是一条 `WM_CLOSE`），别直接 `app_quit`——收托盘还是退出由
+  `CloseRequested` 那套逻辑判断。标题栏 36px、`bg-panel`、窗口按钮 46px 宽；品牌只在标题栏里出现，
+  侧栏不要再放一份。
 - **路径 / 进程 / 快捷键 / 界面行为先想三端差异**。踩过的具体坑：Windows 的 socket 错误文本
   是**本地化中文**，只认英文 `refused` 认不出来，要中英 + Winsock 错误码一起判（`remote.rs`）。
 

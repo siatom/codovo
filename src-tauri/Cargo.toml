@@ -88,6 +88,14 @@ uuid = "1"
 rust_xlsxwriter = "0.99"
 
 
+# 自绘标题栏的右键要弹系统菜单（GetSystemMenu / TrackPopupMenuEx）。只用得到几个
+# user32 函数，用 windows-sys 这套原始绑定就够，不必引完整的 windows crate。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

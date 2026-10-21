@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "CodeDock 主窗口权限：仅放行自研 command、文件夹选择、读写系统剪贴板、用系统程序打开 http(s) 链接与本地路径（打开 / 在文件管理器中定位）",
+  "description": "CodeDock 主窗口权限：仅放行自研 command、文件夹选择、读写系统剪贴板、用系统程序打开 http(s) 链接与本地路径（打开 / 在文件管理器中定位），以及自绘标题栏拖动窗口（start-dragging）",
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
     "dialog:allow-open",
     "dialog:allow-save",
     "clipboard-manager:allow-write-text",

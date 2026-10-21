@@ -39,12 +39,6 @@ import {
   IconSun,
   IconTrash,
 } from "./icons";
-// 应用图标。直接用 tauri 打包用的那份，省得在前端再存一份重复资源。
-// dev 构建用琥珀橙那套（src-tauri/icons/dev/），跟 exe / 托盘图标的区分保持一致
-import appLogoRelease from "../../src-tauri/icons/128x128.png";
-import appLogoDev from "../../src-tauri/icons/dev/128x128.png";
-
-const appLogo = import.meta.env.DEV ? appLogoDev : appLogoRelease;
 
 interface SidebarProps {
   /** 全部工作区，按存储顺序（新建的插在最前）；列表展示时另行按置顶 + 最近活动排序 */
@@ -311,20 +305,15 @@ export function Sidebar({
 
   // 收起后留一个图标宽的竖条：常用入口（新建工作区、主题）仍然够得着，
   // 顶上那个按钮负责展开。
-  // 每段的上下留白都照展开态来（头部同高、导航行同高、底部同边距），
+  // 每段的上下留白都照展开态来（导航行同高、底部同边距），
   // 这样来回切换时图标只横向挪位，不会上下跳。
   if (collapsed) {
     return (
       <div
         className="flex h-full w-11 shrink-0 flex-col bg-panel"
       >
-        {/* 收起后这里只剩个空挡太素，摆上应用 logo。高度仍与展开态头部一致，
-            这样来回切换时下面的图标只横向挪位、不上下跳 */}
-        <div className="flex h-11 shrink-0 items-center justify-center">
-          <img src={appLogo} alt="CodeDock" className="h-6 w-6" />
-        </div>
-
-        <div className="flex shrink-0 flex-col px-2 pb-1">
+        {/* 顶部不再摆 logo：品牌已经挪到窗口标题栏，这里直接进常用入口 */}
+        <div className="flex shrink-0 flex-col px-2 pt-2 pb-1">
           <button
             type="button"
             onClick={onCreate}
@@ -424,21 +413,8 @@ export function Sidebar({
       className="relative flex h-full shrink-0 flex-col bg-panel"
       style={{ width }}
     >
-      {/* 标题栏只放 CodeDock，顶部高度与右侧保持一致 */}
-      <header className="flex h-11 shrink-0 items-center px-2">
-        <span className="shrink-0 px-2 text-[16px] font-semibold text-fg">
-          CodeDock
-          {/* dev 构建挂一枚 dev 上标（内联元素靠相对位移浮到右上角）：和装好的正式版
-              同时开着时，不用翻设置也一眼分得清 */}
-          {import.meta.env.DEV && (
-            <span className="relative -top-2 ml-1 rounded border border-warn-line-strong px-1 text-[9px] font-medium leading-[13px] text-warn">
-              dev
-            </span>
-          )}
-        </span>
-      </header>
-
-      <nav className="flex shrink-0 flex-col gap-0.5 px-2 pb-1">
+      {/* 品牌与 dev 标记都在窗口标题栏里，这里直接进常用入口 */}
+      <nav className="flex shrink-0 flex-col gap-0.5 px-2 pt-2 pb-1">
         <button type="button" onClick={onCreate} className={ROW}>
           <IconFolderPlus />
           <span className="truncate">新建工作区</span>

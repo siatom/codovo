@@ -10,6 +10,7 @@ import {
   type WorkspaceHandles,
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
+import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
 import { AppAssistantDrawer, type AppAssistantDrawerHandle } from "./components/AppAssistantDrawer";
 import {
@@ -916,69 +917,77 @@ function Shell() {
   }, [assistantOpen]);
 
   if (booting) {
+    // 启动期也挂标题栏：系统标题栏已经去掉了，没有它这块窗口就拖不动
     return (
-      <div className="flex h-full items-center justify-center text-[12px] text-fg-faint">
-        正在恢复上次的工作区…
+      <div className="flex h-full w-full flex-col overflow-hidden bg-app">
+        <TitleBar workspace={null} />
+        <div className="flex flex-1 items-center justify-center text-[12px] text-fg-faint">
+          正在恢复上次的工作区…
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-app">
-      {/* 全屏时侧边栏整块藏起来。用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
-      <div className={fullscreen !== "none" ? "hidden" : "contents"}>
-        <Sidebar
-          workspaces={workspaces}
-          currentId={activeId}
-          activeRoot={activeRoot}
-          opened={opened}
-          missingRoots={missingRoots}
-          onSelect={(workspace) => void openWorkspace(workspace)}
-          onCreate={() => setDialog({ mode: "create" })}
-          onEdit={(workspace) => setDialog({ mode: "edit", workspace })}
-          onRemove={setPendingRemove}
-          onClose={closeWorkspace}
-          onTogglePin={togglePin}
-          onResumeSession={resumeSession}
-          onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
-          onOpenAppAgent={openAppAgent}
-          collapsed={sidebarCollapsed}
-          onSetCollapsed={applySidebarCollapsed}
-          settingsOpen={settingsOpen}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onCloseSettings={() => setSettingsOpen(false)}
-        />
-      </div>
-      {/* 每个打开的工作区挂一个实例：非当前的 hidden 藏着不卸载，切回来是原样 */}
-      {opened.map((id) => {
-        const workspace = workspaces.find((item) => item.id === id);
-        if (!workspace) return null;
-        return (
-          <WorkspacePane
-            key={id}
-            workspace={workspace}
-            visible={id === activeId}
-            fullscreen={fullscreen}
-            onToggleRightFullscreen={toggleRightFullscreen}
-            onToggleLeftFullscreen={toggleLeftFullscreen}
-            onExitFullscreen={exitFullscreen}
-            onHandles={onHandles}
-            onSendToAssistant={openAssistantAt}
+    <div className="flex h-full w-full flex-col overflow-hidden bg-app">
+      {/* 自绘标题栏横跨整个窗口：窗口按钮固定在右上角，和系统标题栏的位置一致 */}
+      <TitleBar workspace={activeName} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* 全屏时侧边栏整块藏起来。用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
+        <div className={fullscreen !== "none" ? "hidden" : "contents"}>
+          <Sidebar
+            workspaces={workspaces}
+            currentId={activeId}
+            activeRoot={activeRoot}
+            opened={opened}
+            missingRoots={missingRoots}
+            onSelect={(workspace) => void openWorkspace(workspace)}
+            onCreate={() => setDialog({ mode: "create" })}
+            onEdit={(workspace) => setDialog({ mode: "edit", workspace })}
+            onRemove={setPendingRemove}
+            onClose={closeWorkspace}
+            onTogglePin={togglePin}
+            onResumeSession={resumeSession}
+            onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
+            onOpenAppAgent={openAppAgent}
+            collapsed={sidebarCollapsed}
+            onSetCollapsed={applySidebarCollapsed}
+            settingsOpen={settingsOpen}
             onOpenSettings={() => setSettingsOpen(true)}
-            onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
-            openRequests={openRequests}
-            onOpenRequestHandled={handleOpenRequestHandled}
+            onCloseSettings={() => setSettingsOpen(false)}
           />
-        );
-      })}
-      {opened.length === 0 && (
-        <WorkspaceEmpty
-          error={notice}
-          onPick={() => {
-            setDialog({ mode: "create" });
-          }}
-        />
-      )}
+        </div>
+        {/* 每个打开的工作区挂一个实例：非当前的 hidden 藏着不卸载，切回来是原样 */}
+        {opened.map((id) => {
+          const workspace = workspaces.find((item) => item.id === id);
+          if (!workspace) return null;
+          return (
+            <WorkspacePane
+              key={id}
+              workspace={workspace}
+              visible={id === activeId}
+              fullscreen={fullscreen}
+              onToggleRightFullscreen={toggleRightFullscreen}
+              onToggleLeftFullscreen={toggleLeftFullscreen}
+              onExitFullscreen={exitFullscreen}
+              onHandles={onHandles}
+              onSendToAssistant={openAssistantAt}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
+              openRequests={openRequests}
+              onOpenRequestHandled={handleOpenRequestHandled}
+            />
+          );
+        })}
+        {opened.length === 0 && (
+          <WorkspaceEmpty
+            error={notice}
+            onPick={() => {
+              setDialog({ mode: "create" });
+            }}
+          />
+        )}
+      </div>
 
       {/* 应用助手抽屉：窗口级，跟着当前工作区换 root；没工作区时不渲染。
           收起只是滑出视口，对话与滚动状态留着，再展开是原样 */}

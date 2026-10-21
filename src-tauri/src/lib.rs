@@ -22,6 +22,7 @@ mod remote;
 mod secrets;
 mod shell_env;
 mod shells;
+mod titlebar;
 mod tray;
 mod watcher;
 
@@ -228,6 +229,11 @@ pub fn run() {
             agent_config::agent_config_write,
             tray::app_quit,
             tray::app_hide_to_tray,
+            titlebar::window_minimize,
+            titlebar::window_toggle_maximize,
+            titlebar::window_is_maximized,
+            titlebar::window_close,
+            titlebar::window_show_system_menu,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
