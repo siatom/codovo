@@ -16,6 +16,7 @@ import {
   type RemoteHost,
 } from "../lib/remote";
 import { resolveFont, useSettings } from "../lib/settings";
+import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
 import { IconArrowDownToLine } from "./icons";
@@ -185,6 +186,8 @@ export function RemoteTerminal({
     let cancelled = false;
     // 句柄就绪前先攒着的输入（和 TerminalSession 同理：应答可能比 await 先到）
     let pendingInput: string[] = [];
+    // 全屏程序退出（切回主屏）时兜底复位它可能漏关的终端模式，见 lib/terminal-modes
+    const altScreenExit = watchAltScreenExit();
 
     const writeInput = (data: string) => {
       const handle = handleRef.current;
@@ -200,6 +203,8 @@ export function RemoteTerminal({
         onData: (bytes) => {
           if (cancelled) return;
           term.write(bytes);
+          // 远端跑 opencode 这类 TUI 退出时会漏关鼠标 / 焦点上报，提示符上会不断冒乱码
+          if (altScreenExit(bytes)) term.write(TUI_MODE_RESET);
         },
         onExit: (message) => {
           if (cancelled) return;

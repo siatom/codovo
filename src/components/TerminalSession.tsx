@@ -18,6 +18,7 @@ import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
+import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
 import { IconArrowDownToLine } from "./icons";
@@ -493,6 +494,9 @@ export const TerminalSession = forwardRef<
     // 句柄就绪前先攒着的输入，见 writeInput
     let pendingInput: string[] = [];
 
+    // 全屏程序退出（切回主屏）时兜底复位它可能漏关的终端模式，见 lib/terminal-modes
+    const altScreenExit = watchAltScreenExit();
+
     // 待敲的启动命令。每次 effect 跑起来都重新待命：StrictMode 的第一轮是作废的
     // 那一轮，它写出去的命令会随 shell 一起被 kill，第二轮要重新写一遍；
     // 用户点「重开」时也是重新拉起同一个会话，顺带把 resume 再执行一次
@@ -560,6 +564,8 @@ export const TerminalSession = forwardRef<
         onData: (bytes) => {
           if (cancelled) return;
           term.write(bytes);
+          // 全屏程序退出时复位它可能漏关的 TUI 专用模式；write 是排队处理的，顺序有保证
+          if (altScreenExit(bytes)) term.write(TUI_MODE_RESET);
           // 只有「已经在用」的会话才把输出算作活动：新 shell 的启动提示符不算，
           // 否则打开 / 切换工作区就会把顺序改掉
           if (engaged) onActivityRef.current?.();
