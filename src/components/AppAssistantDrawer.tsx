@@ -116,8 +116,9 @@ export function AppAssistantDrawer({
   return (
     <aside
       // z-40：压在常规界面上，但低于设置 / 确认框那一层的 z-50，助手弹确认框不会被它盖住。
-      // top-9：给自绘标题栏（36px）让位，否则抽屉一展开就把右上角的窗口按钮盖住
-      className={`fixed top-9 bottom-0 right-0 z-40 flex flex-col border-l border-line bg-panel shadow-2xl transition-transform duration-200 ease-out ${
+      // top-9：给自绘标题栏（36px）让位，否则抽屉一展开就把右上角的窗口按钮盖住。
+      // 缓动和左右两侧栏共用 ease-dock；用 translate 做位移，不改 transform/布局
+      className={`fixed top-9 bottom-0 right-0 z-40 flex flex-col border-l border-line bg-panel shadow-2xl transition-[translate] duration-300 ease-dock motion-reduce:transition-none ${
         open ? "translate-x-0" : "pointer-events-none translate-x-full"
       }`}
       style={{ width }}

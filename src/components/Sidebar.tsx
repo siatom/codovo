@@ -124,6 +124,12 @@ function clampWidth(value: number): number {
 /** 导航行的固定高度：展开态和收起态共用，来回切换时图标不会上下跳 */
 const ROW_H = "h-[34px]";
 
+/** 收起态竖条宽度（对应 w-11）。作为收放动画的宽度落点，和右侧图标条同宽 */
+const COLLAPSED_WIDTH = 44;
+
+/** 侧栏收放共用的缓动（styles.css 的 --ease-dock）。Tailwind v4 的位移属性是 translate，过渡里要单独写上 */
+const SLIDE_EASE = "ease-dock";
+
 /** 一行导航/列表项的统一样式，只靠调用处追加选中态 */
 const ROW = `flex w-full ${ROW_H} items-center gap-2.5 rounded-lg px-2 text-left text-[13px] text-fg-muted hover:bg-hover hover:text-fg`;
 
@@ -246,6 +252,11 @@ export function Sidebar({
     }
   }, [workspaces.length]);
 
+  // 收起后展开态只是淡出、不卸载，别让「⋯」菜单重新展开时莫名冒出来
+  useEffect(() => {
+    if (collapsed) setMenu(null);
+  }, [collapsed]);
+
   /** 选 CLI：改状态并按活动根落盘。工作区行的 + 和底部选择器共用它 */
   const pickCli = (command: string) => {
     setCliChoice(command);
@@ -303,14 +314,277 @@ export function Sidebar({
     setMenu({ workspace, x: rect.right, y: rect.bottom });
   };
 
-  // 收起后留一个图标宽的竖条：常用入口（新建工作区、主题）仍然够得着，
-  // 顶上那个按钮负责展开。
-  // 每段的上下留白都照展开态来（导航行同高、底部同边距），
-  // 这样来回切换时图标只横向挪位，不会上下跳。
-  if (collapsed) {
-    return (
+  /*
+   * 排序：置顶组固定在前，组内按「最近活动」（终端 / 智能体用过才算）倒序。
+   * 一个工作区挂多个根时取其中最新的活动时间；没记录过的算 0。活动时间相同时靠
+   * sort 的稳定性（ES2019 起）保持列表原有顺序（= 新建插最前）。
+   *
+   * 显式 `=== true` 归一：新建 / 迁移出来的工作区没有 pinned 字段，直接 Number(undefined)
+   * 是 NaN，比较器返回 NaN 会被当 0，新工作区反而不让位、留在置顶项上面。
+   *
+   * 这里用普通表达式而不是 useMemo：列表也小，排序开销可忽略。
+   */
+  const activityOf = (workspace: Workspace): number =>
+    Math.max(0, ...workspace.roots.map((root) => activityByRoot[pathKey(root)] ?? 0));
+  const ordered = [...workspaces].sort((a, b) => {
+    const pin = Number(b.pinned === true) - Number(a.pinned === true);
+    return pin !== 0 ? pin : activityOf(b) - activityOf(a);
+  });
+
+  // 过滤只是渲染层的子集：名字、或任一工作目录的末级目录名命中即可（统一小写比，
+  // 与平台的大小写敏感性无关——这里筛的是给人看的名字，不是路径）
+  const query = wsQuery.trim().toLowerCase();
+  const visible = query
+    ? ordered.filter((workspace) =>
+        [workspace.name, ...workspace.roots.map((root) => baseName(root))]
+          .join("\n")
+          .toLowerCase()
+          .includes(query),
+      )
+    : ordered;
+
+  return (
+    <div
+      // 宽度走过渡：收起不是把 DOM 换掉，而是把整块裁到一条图标栏宽，
+      // 内容跟着淡出、竖条跟着淡入，来回切换不会闪一下。
+      // 拖拽调宽时不做过渡，否则指针跟手会变成橡皮筋。
+      className={`relative h-full shrink-0 overflow-hidden bg-panel ${
+        resizing
+          ? ""
+          : "transition-[width] duration-300 motion-reduce:transition-none " + SLIDE_EASE
+      }`}
+      style={{ width: collapsed ? COLLAPSED_WIDTH : width }}
+    >
+      {/* 展开态：宽度按用户拖出来的像素固定住，外框收窄时被裁切而不是重新排版。
+          收起后仍留在场上（inert），这样展开回来搜索词、滚动位置都还在原处。
+          只做 opacity 过渡、不碰 translate：这一层里有 fixed 定位的菜单，
+          一旦带上位移就会变成它们的包含块，菜单会错位 */}
       <div
-        className="flex h-full w-11 shrink-0 flex-col bg-panel"
+        inert={collapsed}
+        className={`flex h-full flex-col transition-opacity motion-reduce:transition-none ${SLIDE_EASE} ${
+          collapsed
+            ? "pointer-events-none opacity-0 duration-150"
+            : "opacity-100 duration-200 delay-75"
+        }`}
+        style={{ width }}
+      >
+        {/* 品牌与 dev 标记都在窗口标题栏里，这里直接进常用入口 */}
+        <nav className="flex shrink-0 flex-col gap-0.5 px-2 pt-2 pb-1">
+          <button type="button" onClick={onCreate} className={ROW}>
+            <IconFolderPlus />
+            <span className="truncate">新建工作区</span>
+          </button>
+        </nav>
+
+        {/* 工作区标题行：名字多了才给过滤入口，默认收成一个搜索图标，点开才出现输入框 */}
+        <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-1">
+          <span className="shrink-0 text-[13px] font-semibold tracking-wide text-fg-faint">
+            工作区
+          </span>
+          {workspaces.length > 1 &&
+            (wsSearchOpen ? (
+              <input
+                autoFocus
+                value={wsQuery}
+                onChange={(event) => setWsQuery(event.target.value)}
+                // Esc 清词并收起：这是它唯一的关闭方式，所以顺带把过滤态一起清掉
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  setWsQuery("");
+                  setWsSearchOpen(false);
+                }}
+                // 点了别处：没敲东西就收起，敲了东西留着（否则过滤还生效、输入框却不见了）
+                onBlur={() => {
+                  if (!wsQuery.trim()) setWsSearchOpen(false);
+                }}
+                placeholder="过滤"
+                spellCheck={false}
+                className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setWsSearchOpen(true)}
+                title="过滤工作区"
+                className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg"
+              >
+                <IconSearch className="h-3.5 w-3.5" />
+              </button>
+            ))}
+        </div>
+        <ul className="min-h-0 flex-1 overflow-auto px-2 py-1">
+          {ordered.length === 0 && (
+            <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
+          )}
+          {ordered.length > 0 && visible.length === 0 && (
+            <li className="px-2 py-1 text-[12px] text-fg-faint">没有匹配的工作区</li>
+          )}
+          {visible.map((workspace) => {
+            const isCurrent = workspace.id === currentId;
+            // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
+            const isOpen = opened.includes(workspace.id);
+            // 任一工作目录失效（被删 / 换盘）就在行上标一枚警告：点开必然失败，先给个预警
+            const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
+            // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
+            const waiting = firstWaitingTarget(attentionByRoot, workspace);
+            const waitingTitle =
+              waiting?.kind === "done"
+                ? "有 AI 会话任务已完成，点击跳过去"
+                : "有 AI 会话在等你输入，点击跳过去";
+            return (
+              <li key={workspace.id} data-ws-row className="relative">
+                {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
+                <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
+                  <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
+                    <button
+                      type="button"
+                      onClick={() => onSelect(workspace)}
+                      title={workspace.roots.map((root) => toDisplayPath(root)).join("\n")}
+                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                    >
+                      {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
+                      {isOpen ? <IconFolderOpen /> : <IconFolder />}
+                      <span className="truncate">{workspace.name}</span>
+                      {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区）。
+                          非当前工作区额外挂一枚文字徽章——橙点太小，视线不在侧栏时容易漏看；
+                          当前工作区已经能在终端标签上看到脉冲点，不必再加文字 */}
+                      {waiting && (
+                        <span
+                          title={waitingTitle}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            onFocusAttention(workspace, waiting.target);
+                          }}
+                          className="flex shrink-0 cursor-pointer items-center gap-1"
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
+                          {!isCurrent && (
+                            <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
+                              {waiting.kind === "done" ? "已完成" : "等待输入"}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                      {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
+                      {broken && (
+                        <span
+                          title="工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除"
+                          className="shrink-0 text-warn"
+                        >
+                          <IconAlert className="h-3.5 w-3.5" />
+                        </span>
+                      )}
+                      {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
+                      {workspace.roots.length > 1 && (
+                        <span
+                          title={`包含 ${workspace.roots.length} 个工作目录`}
+                          className="shrink-0 rounded bg-active px-1 text-[10px] leading-4 text-fg-faint"
+                        >
+                          {workspace.roots.length}
+                        </span>
+                      )}
+                      {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
+                      {workspace.pinned && (
+                        <span title="已置顶" className="shrink-0 text-fg-faint">
+                          <IconPin className="h-3 w-3" />
+                        </span>
+                      )}
+                      {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
+                      {isOpen && (
+                        <span
+                          title="工作区已打开"
+                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
+                        />
+                      )}
+                    </button>
+                    {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(event) => openMenu(workspace, event.currentTarget)}
+                        title="更多操作"
+                        className={ROW_ACTION}
+                      >
+                        <IconMore className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+
+        {/* 当前 AI CLI 的会话历史。启动 CLI 在中间区顶栏，这里只负责翻历史、点一条 resume */}
+        {activeRoot && aiCommands.length > 0 && (
+          <CliHistory
+            cwd={activeRoot}
+            commands={aiCommands}
+            value={activeCliCommand}
+            onChange={pickCli}
+            onResume={onResumeSession}
+          />
+        )}
+
+        {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面工作区列表的空间 */}
+        <footer className="flex shrink-0 items-center gap-1 border-t border-line px-2 py-2">
+          <button
+            type="button"
+            onClick={toggle}
+            title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+            className={FOOTER_BUTTON}
+          >
+            {theme === "dark" ? <IconSun /> : <IconMoon />}
+          </button>
+          <button
+            type="button"
+            onClick={() => setFeedbackOpen(true)}
+            title="意见反馈"
+            className={FOOTER_BUTTON}
+          >
+            <IconFeedback />
+          </button>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            title="设置"
+            className={FOOTER_BUTTON}
+          >
+            <IconSettings />
+          </button>
+          {/* 应用助手：问答 CodeDock 用法、按指令改设置 / 工作区 / 界面布局 */}
+          <button
+            type="button"
+            onClick={onOpenAppAgent}
+            title="应用助手"
+            className={FOOTER_BUTTON}
+          >
+            <IconSparkle />
+          </button>
+          {/* 收起按钮跟着主题、设置一起沉到底部，头部只留标题 */}
+          <button
+            type="button"
+            onClick={() => onSetCollapsed(true)}
+            title="收起侧边栏"
+            className={`${FOOTER_BUTTON} ml-auto`}
+          >
+            <IconPanelCollapse />
+          </button>
+        </footer>
+      </div>
+
+      {/* 收起态竖条：常用入口（新建工作区、主题、反馈、设置、助手、展开）仍然够得着。
+          每段留白照展开态来（导航行同高、底部同边距），图标只横向挪位、不上下跳。
+          绝对定位压在展开态上面，收起时用它盖住被裁剩的那 44px */}
+      <div
+        inert={!collapsed}
+        className={`absolute inset-y-0 left-0 flex w-11 flex-col bg-panel transition-[opacity,translate] motion-reduce:transition-none ${SLIDE_EASE} ${
+          collapsed
+            ? "translate-x-0 opacity-100 duration-200 delay-75"
+            : "pointer-events-none translate-x-2 opacity-0 duration-150"
+        }`}
       >
         {/* 顶部不再摆 logo：品牌已经挪到窗口标题栏，这里直接进常用入口 */}
         <div className="flex shrink-0 flex-col px-2 pt-2 pb-1">
@@ -367,261 +641,10 @@ export function Sidebar({
             <IconPanelExpand />
           </button>
         </div>
-
-        {settingsOpen && (
-          <SettingsDialog onClose={onCloseSettings} />
-        )}
-        {feedbackOpen && (
-          <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
-        )}
       </div>
-    );
-  }
 
-  /*
-   * 排序：置顶组固定在前，组内按「最近活动」（终端 / 智能体用过才算）倒序。
-   * 一个工作区挂多个根时取其中最新的活动时间；没记录过的算 0。活动时间相同时靠
-   * sort 的稳定性（ES2019 起）保持列表原有顺序（= 新建插最前）。
-   *
-   * 显式 `=== true` 归一：新建 / 迁移出来的工作区没有 pinned 字段，直接 Number(undefined)
-   * 是 NaN，比较器返回 NaN 会被当 0，新工作区反而不让位、留在置顶项上面。
-   *
-   * 这里用普通表达式而不是 useMemo：上面的收起态分支会提前 return，把 hook 放到这之后
-   * 会触发「条件调用 hook」；列表也小，排序开销可忽略。
-   */
-  const activityOf = (workspace: Workspace): number =>
-    Math.max(0, ...workspace.roots.map((root) => activityByRoot[pathKey(root)] ?? 0));
-  const ordered = [...workspaces].sort((a, b) => {
-    const pin = Number(b.pinned === true) - Number(a.pinned === true);
-    return pin !== 0 ? pin : activityOf(b) - activityOf(a);
-  });
-
-  // 过滤只是渲染层的子集：名字、或任一工作目录的末级目录名命中即可（统一小写比，
-  // 与平台的大小写敏感性无关——这里筛的是给人看的名字，不是路径）
-  const query = wsQuery.trim().toLowerCase();
-  const visible = query
-    ? ordered.filter((workspace) =>
-        [workspace.name, ...workspace.roots.map((root) => baseName(root))]
-          .join("\n")
-          .toLowerCase()
-          .includes(query),
-      )
-    : ordered;
-
-  return (
-    <div
-      className="relative flex h-full shrink-0 flex-col bg-panel"
-      style={{ width }}
-    >
-      {/* 品牌与 dev 标记都在窗口标题栏里，这里直接进常用入口 */}
-      <nav className="flex shrink-0 flex-col gap-0.5 px-2 pt-2 pb-1">
-        <button type="button" onClick={onCreate} className={ROW}>
-          <IconFolderPlus />
-          <span className="truncate">新建工作区</span>
-        </button>
-      </nav>
-
-      {/* 工作区标题行：名字多了才给过滤入口，默认收成一个搜索图标，点开才出现输入框 */}
-      <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-1">
-        <span className="shrink-0 text-[13px] font-semibold tracking-wide text-fg-faint">
-          工作区
-        </span>
-        {workspaces.length > 1 &&
-          (wsSearchOpen ? (
-            <input
-              autoFocus
-              value={wsQuery}
-              onChange={(event) => setWsQuery(event.target.value)}
-              // Esc 清词并收起：这是它唯一的关闭方式，所以顺带把过滤态一起清掉
-              onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
-                event.preventDefault();
-                setWsQuery("");
-                setWsSearchOpen(false);
-              }}
-              // 点了别处：没敲东西就收起，敲了东西留着（否则过滤还生效、输入框却不见了）
-              onBlur={() => {
-                if (!wsQuery.trim()) setWsSearchOpen(false);
-              }}
-              placeholder="过滤"
-              spellCheck={false}
-              className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
-            />
-          ) : (
-            <button
-              type="button"
-              onClick={() => setWsSearchOpen(true)}
-              title="过滤工作区"
-              className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg"
-            >
-              <IconSearch className="h-3.5 w-3.5" />
-            </button>
-          ))}
-      </div>
-      <ul className="min-h-0 flex-1 overflow-auto px-2 py-1">
-        {ordered.length === 0 && (
-          <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
-        )}
-        {ordered.length > 0 && visible.length === 0 && (
-          <li className="px-2 py-1 text-[12px] text-fg-faint">没有匹配的工作区</li>
-        )}
-        {visible.map((workspace) => {
-          const isCurrent = workspace.id === currentId;
-          // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
-          const isOpen = opened.includes(workspace.id);
-          // 任一工作目录失效（被删 / 换盘）就在行上标一枚警告：点开必然失败，先给个预警
-          const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
-          // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
-          const waiting = firstWaitingTarget(attentionByRoot, workspace);
-          const waitingTitle =
-            waiting?.kind === "done"
-              ? "有 AI 会话任务已完成，点击跳过去"
-              : "有 AI 会话在等你输入，点击跳过去";
-          return (
-            <li key={workspace.id} data-ws-row className="relative">
-              {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
-              <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
-                <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(workspace)}
-                    title={workspace.roots.map((root) => toDisplayPath(root)).join("\n")}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                  >
-                    {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
-                    {isOpen ? <IconFolderOpen /> : <IconFolder />}
-                    <span className="truncate">{workspace.name}</span>
-                    {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区）。
-                        非当前工作区额外挂一枚文字徽章——橙点太小，视线不在侧栏时容易漏看；
-                        当前工作区已经能在终端标签上看到脉冲点，不必再加文字 */}
-                    {waiting && (
-                      <span
-                        title={waitingTitle}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          onFocusAttention(workspace, waiting.target);
-                        }}
-                        className="flex shrink-0 cursor-pointer items-center gap-1"
-                      >
-                        <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
-                        {!isCurrent && (
-                          <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
-                            {waiting.kind === "done" ? "已完成" : "等待输入"}
-                          </span>
-                        )}
-                      </span>
-                    )}
-                    {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
-                    {broken && (
-                      <span
-                        title="工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除"
-                        className="shrink-0 text-warn"
-                      >
-                        <IconAlert className="h-3.5 w-3.5" />
-                      </span>
-                    )}
-                    {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
-                    {workspace.roots.length > 1 && (
-                      <span
-                        title={`包含 ${workspace.roots.length} 个工作目录`}
-                        className="shrink-0 rounded bg-active px-1 text-[10px] leading-4 text-fg-faint"
-                      >
-                        {workspace.roots.length}
-                      </span>
-                    )}
-                    {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
-                    {workspace.pinned && (
-                      <span title="已置顶" className="shrink-0 text-fg-faint">
-                        <IconPin className="h-3 w-3" />
-                      </span>
-                    )}
-                    {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
-                    {isOpen && (
-                      <span
-                        title="工作区已打开"
-                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
-                      />
-                    )}
-                  </button>
-                  {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={(event) => openMenu(workspace, event.currentTarget)}
-                      title="更多操作"
-                      className={ROW_ACTION}
-                    >
-                      <IconMore className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-
-      {/* 当前 AI CLI 的会话历史。启动 CLI 在中间区顶栏，这里只负责翻历史、点一条 resume */}
-      {activeRoot && aiCommands.length > 0 && (
-        <CliHistory
-          cwd={activeRoot}
-          commands={aiCommands}
-          value={activeCliCommand}
-          onChange={pickCli}
-          onResume={onResumeSession}
-        />
-      )}
-
-      {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面工作区列表的空间 */}
-      <footer className="flex shrink-0 items-center gap-1 border-t border-line px-2 py-2">
-        <button
-          type="button"
-          onClick={toggle}
-          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-          className={FOOTER_BUTTON}
-        >
-          {theme === "dark" ? <IconSun /> : <IconMoon />}
-        </button>
-        <button
-          type="button"
-          onClick={() => setFeedbackOpen(true)}
-          title="意见反馈"
-          className={FOOTER_BUTTON}
-        >
-          <IconFeedback />
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          title="设置"
-          className={FOOTER_BUTTON}
-        >
-          <IconSettings />
-        </button>
-        {/* 应用助手：问答 CodeDock 用法、按指令改设置 / 工作区 / 界面布局 */}
-        <button
-          type="button"
-          onClick={onOpenAppAgent}
-          title="应用助手"
-          className={FOOTER_BUTTON}
-        >
-          <IconSparkle />
-        </button>
-        {/* 收起按钮跟着主题、设置一起沉到底部，头部只留标题 */}
-        <button
-          type="button"
-          onClick={() => onSetCollapsed(true)}
-          title="收起侧边栏"
-          className={`${FOOTER_BUTTON} ml-auto`}
-        >
-          <IconPanelCollapse />
-        </button>
-      </footer>
-
-      {settingsOpen && (
-          <SettingsDialog onClose={onCloseSettings} />
-        )}
+      {/* 设置 / 反馈的弹窗放在两个状态之外：收起动画期间它们不该跟着一起被裁掉 */}
+      {settingsOpen && <SettingsDialog onClose={onCloseSettings} />}
 
       {feedbackOpen && (
         <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
@@ -728,23 +751,25 @@ export function Sidebar({
         </>
       )}
 
-      {/* 拖宽分隔条：命中区往外挂 4px，压住右边工作区的左沿一点点（和 SplitPane 一个路子）；
+      {/* 拖宽分隔条：命中区往内挂 4px（外框要裁切宽度动画，不能挂到外面），
           画出来的仍是原本那条 1px 右边框，悬停/拖动才染色。收起态不画，宽度是死的 */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={onResizeDown}
-        onPointerMove={onResizeMove}
-        onPointerUp={stopResize}
-        onPointerCancel={stopResize}
-        className="group absolute inset-y-0 -right-px z-10 w-1 cursor-col-resize"
-      >
-        <span
-          className={`absolute inset-y-0 left-0 w-px ${
-            resizing ? "bg-accent-strong" : "group-hover:bg-line-hover"
-          }`}
-        />
-      </div>
+      {!collapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          onPointerDown={onResizeDown}
+          onPointerMove={onResizeMove}
+          onPointerUp={stopResize}
+          onPointerCancel={stopResize}
+          className="group absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize"
+        >
+          <span
+            className={`absolute inset-y-0 left-0 w-px ${
+              resizing ? "bg-accent-strong" : "group-hover:bg-line-hover"
+            }`}
+          />
+        </div>
+      )}
     </div>
   );
 }

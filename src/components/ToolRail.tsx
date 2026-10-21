@@ -18,6 +18,9 @@ import {
     挨着的内容面板用 --c-content 略浅一档，靠这点差把图标栏和内容分开。 */
 const RAIL = "flex h-full w-11 shrink-0 flex-col items-center gap-1 bg-panel py-2";
 
+/** 图标条宽度（对应 w-11）。右栏内容面板收起时的落点，SplitPane 的收放动画要按它算 */
+export const RAIL_WIDTH = 44;
+
 // relative 是给「变更」角标定位用的，放在这行省得每个按钮各写一遍
 const BUTTON =
   "relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg";

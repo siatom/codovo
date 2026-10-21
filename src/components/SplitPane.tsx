@@ -30,6 +30,14 @@ interface SplitPaneProps {
    * 才会改第一块的宽度。右栏里的「文件/变更 : 编辑器」走这个，全屏时侧栏不会跟着翻倍。
    */
   keepFirstWidth?: boolean;
+  /**
+   * 第二块收起 / 展开时用宽度动画过渡（主分栏的右边栏用）。收起后的宽度由
+   * `collapsedSecondWidth` 指定——第二块里还留着一条图标栏，不能归零。
+   * 动画只改 flex-basis：窗口本身缩放时百分比不变，不会像按帧量宽那样拖泥带水。
+   */
+  animateCollapse?: boolean;
+  /** 收起态第二块的像素宽度，只在 animateCollapse 时生效（右侧图标条 w-11 = 44） */
+  collapsedSecondWidth?: number;
 }
 
 export function SplitPane({
@@ -42,6 +50,8 @@ export function SplitPane({
   firstCollapsed = false,
   resetOnDoubleClick = false,
   keepFirstWidth = false,
+  animateCollapse = false,
+  collapsedSecondWidth = 0,
 }: SplitPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(initial);
@@ -50,6 +60,8 @@ export function SplitPane({
    * 容器缩放——百分比写法下容器一宽，侧栏就跟着变宽，全屏时尤其明显。
    */
   const [firstWidth, setFirstWidth] = useState<number | null>(null);
+  /** firstWidth 的最新值。ResizeObserver 回调里判断「有没有量过」，避免依赖 state 的旧闭包 */
+  const firstWidthRef = useRef<number | null>(null);
   const [dragging, setDragging] = useState(false);
 
   // 右栏收起 / 停在浏览器等模块时容器宽度是 0，只能等它真正有宽度了再折算像素值。
@@ -58,13 +70,33 @@ export function SplitPane({
     if (!keepFirstWidth) return;
     const element = containerRef.current;
     if (!element) return;
+    /**
+     * 首次量宽可能正赶上右栏的展开动画（宽度每帧都在变），第一帧取到的是中间值，
+     * 折算出来会让侧栏永远只有几像素。等宽度稳定 160ms 后再落定；量过之后不再更新。
+     */
+    let settle: number | null = null;
     const observer = new ResizeObserver(() => {
+      if (settle !== null) {
+        window.clearTimeout(settle);
+        settle = null;
+      }
       const width = element.getBoundingClientRect().width;
-      if (width <= 0) return;
-      setFirstWidth((current) => current ?? (width * initial) / 100);
+      if (width <= 0 || firstWidthRef.current !== null) return;
+      settle = window.setTimeout(() => {
+        settle = null;
+        if (firstWidthRef.current !== null) return;
+        const measured = element.getBoundingClientRect().width;
+        if (measured <= 0) return;
+        const next = (measured * initial) / 100;
+        firstWidthRef.current = next;
+        setFirstWidth(next);
+      }, 160);
     });
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {
+      if (settle !== null) window.clearTimeout(settle);
+      observer.disconnect();
+    };
   }, [keepFirstWidth, initial]);
 
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -85,6 +117,7 @@ export function SplitPane({
         Math.max((rect.width * min) / 100, event.clientX - rect.left),
       );
       if (keepFirstWidth) {
+        firstWidthRef.current = next;
         setFirstWidth(next);
         return;
       }
@@ -97,7 +130,9 @@ export function SplitPane({
   const resetRatio = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (keepFirstWidth && rect && rect.width > 0) {
-      setFirstWidth((rect.width * Math.min(max, Math.max(min, 50))) / 100);
+      const next = (rect.width * Math.min(max, Math.max(min, 50))) / 100;
+      firstWidthRef.current = next;
+      setFirstWidth(next);
       return;
     }
     setRatio(Math.min(max, Math.max(min, 50)));
@@ -116,10 +151,11 @@ export function SplitPane({
       <div
         className="flex min-h-0 min-w-0 flex-col overflow-hidden"
         style={
-          // 第二块收起时没有别的兄弟去占位，第一块得自己撑满，否则右边留一片空白
+          // 第二块收起时没有别的兄弟去占位，第一块得自己撑满，否则右边留一片空白。
+          // 有动画时同理：第二块从百分比落到图标条宽度，第一块一路 grow 吃掉差额
           firstCollapsed
             ? { flexBasis: 0, flexGrow: 0, flexShrink: 0 }
-            : secondCollapsed
+            : animateCollapse || secondCollapsed
               ? { flexBasis: 0, flexGrow: 1, flexShrink: 1 }
               : keepFirstWidth
                 ? {
@@ -159,10 +195,25 @@ export function SplitPane({
       )}
 
       <div
-        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+        className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
+          // 拖动中不做过渡：每帧都改 flex-basis，跟上指针才不会有橡皮筋感
+          animateCollapse && !dragging ? "codedock-split-anim" : ""
+        }`}
         style={
-          // 收起时按内容宽度收（flexBasis auto），不是归零——右栏里那条图标条得留着
-          secondCollapsed ? { flexBasis: "auto", flexGrow: 0, flexShrink: 0 } : undefined
+          // 收起时按内容宽度收（flexBasis auto），不是归零——右栏里那条图标条得留着。
+          // 有动画时落到约定的图标条宽度；展开回到「剩余比例」，百分比让窗口缩放保持跟手。
+          // firstCollapsed（右栏全屏）时第二块仍然 flex-1 铺满，走最下面那支
+          firstCollapsed
+            ? undefined
+            : animateCollapse
+              ? {
+                  flexBasis: secondCollapsed ? `${collapsedSecondWidth}px` : `${100 - ratio}%`,
+                  flexGrow: 0,
+                  flexShrink: 0,
+                }
+              : secondCollapsed
+                ? { flexBasis: "auto", flexGrow: 0, flexShrink: 0 }
+                : undefined
         }
       >
         {second}
