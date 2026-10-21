@@ -14,7 +14,11 @@ import {
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
 import type { AttentionKind } from "../lib/attention";
-import { isLayoutAnimating, onLayoutSettled } from "../lib/layout-motion";
+import {
+  isLayoutAnimating,
+  onLayoutAnimationStart,
+  onLayoutSettled,
+} from "../lib/layout-motion";
 import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
@@ -22,6 +26,7 @@ import { resolveFont, useSettings } from "../lib/settings";
 import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
+import { pauseDevicePixelSync } from "../lib/xterm-webgl";
 import { IconArrowDownToLine } from "./icons";
 
 /**
@@ -397,16 +402,19 @@ export const TerminalSession = forwardRef<
     term.loadAddon(fit);
     term.open(container);
 
+    let webgl: WebglAddon | null = null;
     try {
       // WebGL 渲染器在重输出 + TUI（如 opencode）下会因字形纹理图集出错而花屏，
       // 关掉 GPU 加速就退回 xterm 内置的 DOM 渲染器（慢些，但不受这个 bug 影响）
       if (gpuAccelRef.current) {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => addon.dispose());
+        term.loadAddon(addon);
+        webgl = addon;
       }
     } catch {
       // WebGL 不可用时 xterm 会留在默认渲染器上，不影响使用
+      webgl = null;
     }
 
     try {
@@ -696,6 +704,16 @@ export const TerminalSession = forwardRef<
     let resizeTimer: number | undefined;
     let settleFallback: number | undefined;
     let resizedDuringMotion = false;
+    /** 面板动画期间暂停 WebGL 的设备像素回调；动画结束或兜底时恢复 */
+    let resumeWebglSync: (() => void) | null = null;
+    const resumeWebgl = () => {
+      if (!resumeWebglSync) return;
+      resumeWebglSync();
+      resumeWebglSync = null;
+    };
+    const stopWebglMotion = onLayoutAnimationStart(() => {
+      if (webgl && !resumeWebglSync) resumeWebglSync = pauseDevicePixelSync(webgl);
+    });
     const fitOnce = () => {
       if (isLayoutAnimating()) {
         resizedDuringMotion = true;
@@ -716,13 +734,17 @@ export const TerminalSession = forwardRef<
         resizedDuringMotion = true;
         // 兜底：万一结束信号没送到（例如开发态 HMR 换了模块实例），也不能一直不 fit
         window.clearTimeout(settleFallback);
-        settleFallback = window.setTimeout(fitOnce, 500);
+        settleFallback = window.setTimeout(() => {
+          resumeWebgl();
+          fitOnce();
+        }, 500);
         return;
       }
       resizeTimer = window.setTimeout(fitOnce, 100);
     });
     observer.observe(container);
     const stopSettled = onLayoutSettled(() => {
+      resumeWebgl();
       if (!resizedDuringMotion) return;
       resizedDuringMotion = false;
       window.clearTimeout(resizeTimer);
@@ -739,6 +761,8 @@ export const TerminalSession = forwardRef<
       // 会话没了就别留着标记：StrictMode 的第一轮也会走到这儿，报一次 null 是无害的
       report(null);
       seenRef.current = null;
+      resumeWebgl();
+      stopWebglMotion();
       stopSettled();
       observer.disconnect();
       dataDisposable.dispose();

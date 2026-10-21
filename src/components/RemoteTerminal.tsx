@@ -7,7 +7,11 @@ import {
   readText,
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
-import { isLayoutAnimating, onLayoutSettled } from "../lib/layout-motion";
+import {
+  isLayoutAnimating,
+  onLayoutAnimationStart,
+  onLayoutSettled,
+} from "../lib/layout-motion";
 import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import {
@@ -20,6 +24,7 @@ import { resolveFont, useSettings } from "../lib/settings";
 import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
+import { pauseDevicePixelSync } from "../lib/xterm-webgl";
 import { IconArrowDownToLine } from "./icons";
 
 /**
@@ -158,15 +163,18 @@ export function RemoteTerminal({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(container);
+    let webgl: WebglAddon | null = null;
     try {
       // 和本地终端同理：WebGL 渲染器在重输出下会花屏，关掉 GPU 加速退回 DOM 渲染器
       if (gpuAccelRef.current) {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => addon.dispose());
+        term.loadAddon(addon);
+        webgl = addon;
       }
     } catch {
       // WebGL 不可用时 xterm 会留在默认渲染器上
+      webgl = null;
     }
     try {
       fit.fit();
@@ -299,6 +307,16 @@ export function RemoteTerminal({
     let resizeTimer: number | undefined;
     let settleFallback: number | undefined;
     let resizedDuringMotion = false;
+    /** 面板动画期间暂停 WebGL 的设备像素回调；动画结束或兜底时恢复 */
+    let resumeWebglSync: (() => void) | null = null;
+    const resumeWebgl = () => {
+      if (!resumeWebglSync) return;
+      resumeWebglSync();
+      resumeWebglSync = null;
+    };
+    const stopWebglMotion = onLayoutAnimationStart(() => {
+      if (webgl && !resumeWebglSync) resumeWebglSync = pauseDevicePixelSync(webgl);
+    });
     const fitOnce = () => {
       if (isLayoutAnimating()) {
         resizedDuringMotion = true;
@@ -318,13 +336,17 @@ export function RemoteTerminal({
         resizedDuringMotion = true;
         // 兜底：结束信号没送到时也不能一直不 fit
         window.clearTimeout(settleFallback);
-        settleFallback = window.setTimeout(fitOnce, 500);
+        settleFallback = window.setTimeout(() => {
+          resumeWebgl();
+          fitOnce();
+        }, 500);
         return;
       }
       resizeTimer = window.setTimeout(fitOnce, 100);
     });
     observer.observe(container);
     const stopSettled = onLayoutSettled(() => {
+      resumeWebgl();
       if (!resizedDuringMotion) return;
       resizedDuringMotion = false;
       window.clearTimeout(resizeTimer);
@@ -337,6 +359,8 @@ export function RemoteTerminal({
       window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
       window.clearTimeout(settleFallback);
+      resumeWebgl();
+      stopWebglMotion();
       stopSettled();
       observer.disconnect();
       dataDisposable.dispose();
