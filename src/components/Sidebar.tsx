@@ -1,6 +1,7 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -13,6 +14,11 @@ import {
 } from "../lib/attention";
 import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import { pathKey, toDisplayPath } from "../lib/fs";
+import {
+  alignToDevice,
+  devicePixelStep,
+  easeDock,
+} from "../lib/layout-motion";
 import type { Workspace } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
@@ -176,11 +182,11 @@ export function readSidebarCollapsed(): boolean {
 function readWidth(): number {
   try {
     const raw = Number(window.sessionStorage.getItem(WIDTH_KEY));
-    if (Number.isFinite(raw) && raw > 0) return clampWidth(raw);
+    if (Number.isFinite(raw) && raw > 0) return alignToDevice(clampWidth(raw));
   } catch {
     // 读不到就用默认宽度
   }
-  return clampWidth(DEFAULT_WIDTH);
+  return alignToDevice(clampWidth(DEFAULT_WIDTH));
 }
 
 export function Sidebar({
@@ -209,6 +215,69 @@ export function Sidebar({
   /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
   const resizeRef = useRef<{ startX: number; startWidth: number; width: number } | null>(null);
   const [resizing, setResizing] = useState(false);
+  /** 侧栏外框：宽度动画直接写 style，避免每帧 setState 把整个列表重渲染一遍 */
+  const rootRef = useRef<HTMLDivElement>(null);
+  const widthRafRef = useRef<number | null>(null);
+  /** 首帧不播动画，直接落到当前状态（含刷新后恢复的收起态） */
+  const widthMountedRef = useRef(false);
+
+  /**
+   * 宽度自己跑 rAF，不用 CSS transition：中间帧按设备像素对齐（见 lib/layout-motion）。
+   *
+   * 不对齐的话，终端跟着侧栏每帧移动小数像素，xterm 的 WebGL 渲染器会误判 canvas
+   * 尺寸在相邻设备像素之间变化，整块终端每帧重绘（实测 10~25ms/帧），看起来就是
+   * 内容在抖。收起 / 展开的落点也提前对齐过，所以动画结束时不会再多抖一下。
+   * 拖动分隔条时不走动画，直接跟手。
+   */
+  useLayoutEffect(() => {
+    const element = rootRef.current;
+    if (!element) return;
+    const target = collapsed ? COLLAPSED_WIDTH : width;
+    const stop = () => {
+      if (widthRafRef.current !== null) {
+        cancelAnimationFrame(widthRafRef.current);
+        widthRafRef.current = null;
+      }
+    };
+
+    // 首帧、拖动中、或者系统要求减少动态效果：直接落位
+    if (
+      !widthMountedRef.current ||
+      resizing ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      widthMountedRef.current = true;
+      stop();
+      element.style.width = `${target}px`;
+      return;
+    }
+
+    const from = element.getBoundingClientRect().width;
+    if (Math.abs(from - target) < 0.5) {
+      stop();
+      element.style.width = `${target}px`;
+      return;
+    }
+
+    // 收起 / 展开：从当前视觉宽度出发，快速反向切换也不会跳
+    stop();
+    const step = devicePixelStep();
+    const startedAt = performance.now();
+    const duration = 300;
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const raw = from + (target - from) * easeDock(progress);
+      // 最后一帧用精确落点，避免中间帧的取整把展开宽度改掉
+      element.style.width = `${progress === 1 ? target : alignToDevice(raw, step)}px`;
+      if (progress < 1) {
+        widthRafRef.current = requestAnimationFrame(tick);
+      } else {
+        widthRafRef.current = null;
+      }
+    };
+    widthRafRef.current = requestAnimationFrame(tick);
+    return stop;
+  }, [collapsed, width, resizing]);
   /** 意见反馈弹窗；和设置一样挂在侧边栏底部按钮上 */
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   /** 工作区名过滤词。纯展示层：只影响渲染哪些行，不动列表的存储顺序 */
@@ -279,7 +348,8 @@ export function Sidebar({
   const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = resizeRef.current;
     if (!drag) return;
-    const next = clampWidth(drag.startWidth + event.clientX - drag.startX);
+    // 对齐设备像素：拖动时终端也跟着变宽，落点带小数会触发 xterm 整块重绘
+    const next = alignToDevice(clampWidth(drag.startWidth + event.clientX - drag.startX));
     drag.width = next;
     setWidth(next);
   };
@@ -345,15 +415,9 @@ export function Sidebar({
 
   return (
     <div
-      // 宽度走过渡：收起不是把 DOM 换掉，而是把整块裁到一条图标栏宽，
-      // 内容跟着淡出、竖条跟着淡入，来回切换不会闪一下。
-      // 拖拽调宽时不做过渡，否则指针跟手会变成橡皮筋。
-      className={`relative h-full shrink-0 overflow-hidden bg-panel ${
-        resizing
-          ? ""
-          : "transition-[width] duration-300 motion-reduce:transition-none " + SLIDE_EASE
-      }`}
-      style={{ width: collapsed ? COLLAPSED_WIDTH : width }}
+      ref={rootRef}
+      // 宽度由下面的 useLayoutEffect 直接写 style；这里不放 transition，动画自己跑 rAF
+      className="relative h-full shrink-0 overflow-hidden bg-panel"
     >
       {/* 展开态：宽度按用户拖出来的像素固定住，外框收窄时被裁切而不是重新排版。
           收起后仍留在场上（inert），这样展开回来搜索词、滚动位置都还在原处。

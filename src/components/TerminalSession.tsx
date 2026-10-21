@@ -694,6 +694,7 @@ export const TerminalSession = forwardRef<
      * 动画由 lib/layout-motion 统一标记，结束时会回调 fitOnce 补一次。
      */
     let resizeTimer: number | undefined;
+    let settleFallback: number | undefined;
     let resizedDuringMotion = false;
     const fitOnce = () => {
       if (isLayoutAnimating()) {
@@ -711,8 +712,11 @@ export const TerminalSession = forwardRef<
     const observer = new ResizeObserver(() => {
       window.clearTimeout(resizeTimer);
       if (isLayoutAnimating()) {
-        // 先记下来，等动画落定统一补；这里不排定时器，免得动画中途弹出来
+        // 先记下来，等动画落定统一补；这里不排短定时器，免得动画中途弹出来
         resizedDuringMotion = true;
+        // 兜底：万一结束信号没送到（例如开发态 HMR 换了模块实例），也不能一直不 fit
+        window.clearTimeout(settleFallback);
+        settleFallback = window.setTimeout(fitOnce, 500);
         return;
       }
       resizeTimer = window.setTimeout(fitOnce, 100);
@@ -722,6 +726,7 @@ export const TerminalSession = forwardRef<
       if (!resizedDuringMotion) return;
       resizedDuringMotion = false;
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(settleFallback);
       fitOnce();
     });
 
@@ -729,6 +734,7 @@ export const TerminalSession = forwardRef<
       cancelled = true;
       window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
+      window.clearTimeout(settleFallback);
       window.clearTimeout(waitTimer);
       // 会话没了就别留着标记：StrictMode 的第一轮也会走到这儿，报一次 null 是无害的
       report(null);
