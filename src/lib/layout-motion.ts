@@ -1,16 +1,18 @@
 /**
  * 面板收放动画的全局标记。
  *
- * 侧栏 / 右栏收放会连续改变中间终端、编辑器的宽度。终端这类「按容器尺寸重新排版」
- * 的组件如果在动画中间去 fit，画面会反复重排，看起来就是内容在抖。这里统一标出
- * 动画时段：终端先别量尺寸，等动画结束的信号再补一次。
+ * 侧栏 / 右栏收放会连续改变中间终端、编辑器的宽度。终端在动画中间做两件事会抖：
+ * 一是 fit（整屏重排），二是 WebGL 渲染器观察 canvas 设备像素尺寸的回调（位置带
+ * 小数时每帧都重建画布、重绘整屏）。这里统一标出动画时段：开始时通知终端暂停
+ * 设备像素回调，结束时统一补一次 fit，并恢复回调。
  *
- * 只用 body class + 定时器，不引入跨组件的状态订阅；动画时长变化时改这里的
+ * 只用 body class + 窗口事件，不引入跨组件的状态订阅；动画时长变化时改这里的
  * SETTLE_MS 即可（比 styles.css 里最长的 300ms 多留一点余量）。
  */
 const ANIMATING_CLASS = "codedock-layout-animating";
 
-/** 动画落定的窗口级事件：用事件而不是模块内的 Set，开发态 HMR 换了模块实例也还能收到 */
+/** 动画开始 / 落定的窗口级事件：用事件而不是模块内的 Set，开发态 HMR 换了模块实例也还能收到 */
+const START_EVENT = "codedock:layout-start";
 const SETTLED_EVENT = "codedock:layout-settled";
 
 /** 动画结束后的余量：留一帧给最后一帧布局落定 */
@@ -21,6 +23,7 @@ let timer: number | undefined;
 /** 面板开始收放时调用（同一轮里多次调用只会延长同一次标记） */
 export function beginLayoutAnimation(): void {
   document.body.classList.add(ANIMATING_CLASS);
+  window.dispatchEvent(new Event(START_EVENT));
   window.clearTimeout(timer);
   timer = window.setTimeout(() => {
     timer = undefined;
@@ -32,6 +35,12 @@ export function beginLayoutAnimation(): void {
 /** 这一帧是不是还在面板收放动画里 */
 export function isLayoutAnimating(): boolean {
   return document.body.classList.contains(ANIMATING_CLASS);
+}
+
+/** 面板开始收放：终端借此暂停 WebGL 的设备像素回调，别跟着小数像素每帧重绘 */
+export function onLayoutAnimationStart(listener: () => void): () => void {
+  window.addEventListener(START_EVENT, listener);
+  return () => window.removeEventListener(START_EVENT, listener);
 }
 
 /** 动画落定后统一补一次尺寸校正。返回退订函数 */
