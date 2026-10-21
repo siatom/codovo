@@ -346,6 +346,10 @@ body.codedock-dragging-list * {
 /* xterm 自己算尺寸，容器不能给它留内边距 */
 .xterm .xterm-viewport {
   background-color: transparent !important;
+  /* xterm 的屏幕按列数固定成像素宽度：容器被拖窄、或在侧栏收放动画中间比它窄时，
+     浏览器会自动冒出横向滚动条，把可视高度吃掉几像素，终端画面跟着抖一下。
+     终端永远按列换行，不需要横向滚动，直接切掉 */
+  overflow-x: hidden;
 }
 
 /* 终端标签栏：标签多了要能横向滚，但不该占一条滚动条的高度 */

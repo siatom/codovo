@@ -7,6 +7,7 @@ import {
   readText,
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
+import { isLayoutAnimating, onLayoutSettled } from "../lib/layout-motion";
 import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import {
@@ -294,25 +295,43 @@ export function RemoteTerminal({
     };
     container.addEventListener("contextmenu", onContextMenu);
 
+    /** 面板收放动画期间先不 fit，等动画落定补一次（见 lib/layout-motion） */
     let resizeTimer: number | undefined;
+    let resizedDuringMotion = false;
+    const fitOnce = () => {
+      if (isLayoutAnimating()) {
+        resizedDuringMotion = true;
+        return;
+      }
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      handleRef.current?.resize(term.cols, term.rows);
+    };
     const observer = new ResizeObserver(() => {
       window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(() => {
-        if (container.clientWidth === 0 || container.clientHeight === 0) return;
-        try {
-          fit.fit();
-        } catch {
-          return;
-        }
-        handleRef.current?.resize(term.cols, term.rows);
-      }, 100);
+      if (isLayoutAnimating()) {
+        resizedDuringMotion = true;
+        return;
+      }
+      resizeTimer = window.setTimeout(fitOnce, 100);
     });
     observer.observe(container);
+    const stopSettled = onLayoutSettled(() => {
+      if (!resizedDuringMotion) return;
+      resizedDuringMotion = false;
+      window.clearTimeout(resizeTimer);
+      fitOnce();
+    });
 
     return () => {
       cancelled = true;
       window.clearTimeout(startTimer);
       window.clearTimeout(resizeTimer);
+      stopSettled();
       observer.disconnect();
       dataDisposable.dispose();
       scrollDisposable.dispose();

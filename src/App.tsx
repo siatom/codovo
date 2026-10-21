@@ -68,6 +68,7 @@ import {
 } from "./lib/settings";
 import { matchesShortcut, isShortcutRecording } from "./lib/shortcuts";
 import { isTypingTarget } from "./lib/dom";
+import { beginLayoutAnimation } from "./lib/layout-motion";
 import type { EditorLocation } from "./lib/types";
 import { hideToTray, onCloseRequested, quitApp } from "./lib/window";
 
@@ -562,6 +563,8 @@ function Shell() {
 
   /** 收起 / 展开侧边栏：状态在 App 上，落盘一并做（Ctrl+B 与侧栏里的按钮共用） */
   const applySidebarCollapsed = useCallback((next: boolean) => {
+    // 侧栏宽度动画会连续改变终端宽度，先标记一下，让终端等动画结束再 fit
+    beginLayoutAnimation();
     setSidebarCollapsed(next);
     saveSidebarCollapsed(next);
   }, []);
