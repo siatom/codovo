@@ -252,6 +252,10 @@
      让部署配置框、Git 面板等界面等宽文本和终端/编辑器的兜底字体用同一栈 */
   --font-mono: "Cascadia Mono", Consolas, "JetBrains Mono", Menlo, monospace;
 
+  /* 侧栏 / 抽屉收放的统一缓动：起步略快、尾段收得柔，接近系统面板的手感。
+     组件里写 ease-dock；换手感只改这一处 */
+  --ease-dock: cubic-bezier(0.22, 1, 0.36, 1);
+
   --color-app: var(--c-app);
   --color-panel: var(--c-panel);
   --color-surface: var(--c-surface);
@@ -884,12 +888,22 @@ body.codedock-dragging-list * {
   animation: codedock-tab-in 140ms ease-out;
 }
 
+/* 主分栏右侧内容面板的收放：只过渡 flex-basis，第一块同步 grow 吃掉差额。
+   缓动和左侧栏共用一套（起步略快、尾段收柔），两条边看起来才是一个节奏 */
+.codedock-split-anim {
+  transition: flex-basis 280ms var(--ease-dock);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .codedock-overlay-in,
   .codedock-dialog-in,
   .codedock-tab-in,
   .codedock-range::-webkit-slider-thumb {
     animation: none;
+    transition: none;
+  }
+
+  .codedock-split-anim {
     transition: none;
   }
 }

@@ -9,7 +9,7 @@ import {
 import { SplitPane } from "./SplitPane";
 import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
 import { ToolPane, readTool, saveTool, type ToolId } from "./ToolPane";
-import { RIGHT_TOOLS, ToolRail } from "./ToolRail";
+import { RIGHT_TOOLS, RAIL_WIDTH, ToolRail } from "./ToolRail";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { BrowserPane } from "./BrowserPane";
 import { DatabasePane } from "./DatabasePane";
@@ -664,6 +664,9 @@ export function WorkspacePane({
         resetOnDoubleClick
         // 左栏全屏时右栏整列让位（连图标条一起）；平时收起右栏仍是原来的窄条状态
         secondCollapsed={rightCollapsed || leftFullscreen}
+        // 右栏收放走宽度动画；收起后落到一条图标条的宽度（左栏全屏时整列归零）
+        animateCollapse
+        collapsedSecondWidth={leftFullscreen ? 0 : RAIL_WIDTH}
         firstCollapsed={rightFullscreen}
         first={
           <TerminalPane
@@ -689,150 +692,159 @@ export function WorkspacePane({
                 onToggleRight={toggleRight}
                 onBlankClick={onBlankClick}
               />
-              {/* 浏览器 / 远程连接 / 数据库选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
-                  Monaco 的撤销历史和文件树的展开态都留得住。
-                  收起面板时整块内容一起藏起来，图标条单独留着。
-                  全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
+              {/* 内容面板整体淡出 / 淡入：收起时宽度动画在跑，内容半透明地退场，
+                  不留半截内容，也不再吃键盘焦点。只做 opacity：这一层里有 fixed
+                  定位的右键菜单，带上 translate 会让它们改以这里为包含块 */}
               <div
-                className={
-                  rightOpen &&
-                  activeTool !== "browser" &&
-                  activeTool !== "remote" &&
-                  activeTool !== "database" &&
-                  activeTool !== "preview" &&
-                  activeTool !== "deploy"
-                    ? "flex min-h-0 min-w-0 flex-1"
-                    : "hidden"
-                }
+                inert={!rightOpen}
+                className={`flex min-h-0 min-w-0 flex-1 overflow-hidden transition-opacity ease-dock motion-reduce:transition-none ${
+                  rightOpen ? "opacity-100 duration-200 delay-75" : "opacity-0 duration-150"
+                }`}
               >
-                <SplitPane
-                  initial={32}
-                  min={12}
-                  max={45}
-                  // 侧栏（文件 / 变更）保持像素宽度：右栏全屏、拖窗口边缘、拖外层分隔条时
-                  // 只有编辑器那一列变宽，侧栏不会跟着按比例放大
-                  keepFirstWidth
-                  first={
-                    <ToolPane
-                      tool={activeTool}
-                      roots={workspace.roots}
-                      activeRoot={root}
-                      visible={visible}
-                      filesVisible={filesVisible}
-                      changesVisible={changesVisible}
-                      selected={activeTab?.kind === "file" ? activeTab.path : null}
-                      gitByRoot={gitByRoot}
-                      gitTargets={wtMap}
-                      gitMarks={git.marks}
-                      gitReady={gitReady}
-                      onSelectFile={openFile}
-                      onOpenInBrowser={openInBrowser}
-                      onFormatFile={formatFile}
-                      onOpenDiff={openDiff}
-                      onOpenMatch={openMatch}
-                      onPickWorktree={pickWorktree}
-                      onReview={setReview}
-                      onBeforeReplace={saveAllEdits}
-                      onAfterReplace={reloadAfterReplace}
-                      onBeforeRename={saveAllEdits}
-                      onEntryRenamed={renameOpenTabs}
-                      onEntryDeleted={dropOpenTabs}
-                      onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
-                      filesReveal={filesReveal}
-                    />
+                {/* 浏览器 / 远程连接 / 数据库选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
+                    Monaco 的撤销历史和文件树的展开态都留得住。
+                    收起面板时整块内容一起藏起来，图标条单独留着。
+                    全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
+                <div
+                  className={
+                    activeTool !== "browser" &&
+                    activeTool !== "remote" &&
+                    activeTool !== "database" &&
+                    activeTool !== "preview" &&
+                    activeTool !== "deploy"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
                   }
-                  second={
-                    <EditorPane
-                      ref={setEditorHandle}
-                      root={root}
-                      roots={pollRoots}
-                      visible={visible}
-                      tabs={openTabs}
-                      active={activeTab}
-                      gitMarks={git.marks}
-                      onActivate={setActiveTab}
-                      onClose={closeTab}
-                      onReorder={reorderTabs}
-                      onCloseAll={closeAllTabs}
-                      onCloseOthers={closeOtherTabs}
-                      onNewUntitled={newUntitled}
-                      onPatchTab={patchOpenTab}
-                      onOpenPath={openFile}
-                      onRevealInFiles={revealInFiles}
-                      fullscreen={rightFullscreen}
-                      onToggleFullscreen={onToggleRightFullscreen}
-                      onSendToTerminal={insertToTerminal}
-                      onSendToAssistant={insertToAssistant}
-                      onOpenSettings={onOpenSettings}
-                    />
+                >
+                  <SplitPane
+                    initial={32}
+                    min={12}
+                    max={45}
+                    // 侧栏（文件 / 变更）保持像素宽度：右栏全屏、拖窗口边缘、拖外层分隔条时
+                    // 只有编辑器那一列变宽，侧栏不会跟着按比例放大
+                    keepFirstWidth
+                    first={
+                      <ToolPane
+                        tool={activeTool}
+                        roots={workspace.roots}
+                        activeRoot={root}
+                        visible={visible}
+                        filesVisible={filesVisible}
+                        changesVisible={changesVisible}
+                        selected={activeTab?.kind === "file" ? activeTab.path : null}
+                        gitByRoot={gitByRoot}
+                        gitTargets={wtMap}
+                        gitMarks={git.marks}
+                        gitReady={gitReady}
+                        onSelectFile={openFile}
+                        onOpenInBrowser={openInBrowser}
+                        onFormatFile={formatFile}
+                        onOpenDiff={openDiff}
+                        onOpenMatch={openMatch}
+                        onPickWorktree={pickWorktree}
+                        onReview={setReview}
+                        onBeforeReplace={saveAllEdits}
+                        onAfterReplace={reloadAfterReplace}
+                        onBeforeRename={saveAllEdits}
+                        onEntryRenamed={renameOpenTabs}
+                        onEntryDeleted={dropOpenTabs}
+                        onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
+                        filesReveal={filesReveal}
+                      />
+                    }
+                    second={
+                      <EditorPane
+                        ref={setEditorHandle}
+                        root={root}
+                        roots={pollRoots}
+                        visible={visible}
+                        tabs={openTabs}
+                        active={activeTab}
+                        gitMarks={git.marks}
+                        onActivate={setActiveTab}
+                        onClose={closeTab}
+                        onReorder={reorderTabs}
+                        onCloseAll={closeAllTabs}
+                        onCloseOthers={closeOtherTabs}
+                        onNewUntitled={newUntitled}
+                        onPatchTab={patchOpenTab}
+                        onOpenPath={openFile}
+                        onRevealInFiles={revealInFiles}
+                        fullscreen={rightFullscreen}
+                        onToggleFullscreen={onToggleRightFullscreen}
+                        onSendToTerminal={insertToTerminal}
+                        onSendToAssistant={insertToAssistant}
+                        onOpenSettings={onOpenSettings}
+                      />
+                    }
+                  />
+                </div>
+                <div
+                  className={
+                    activeTool === "browser"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
                   }
-                />
-              </div>
-              <div
-                className={
-                  rightOpen && activeTool === "browser"
-                    ? "flex min-h-0 min-w-0 flex-1"
-                    : "hidden"
-                }
-              >
-                <BrowserPane
-                  root={root}
-                  request={browserFile}
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
-                />
-              </div>
-              <div
-                className={
-                  rightOpen && activeTool === "remote"
-                    ? "flex min-h-0 min-w-0 flex-1"
-                    : "hidden"
-                }
-              >
-                <RemotePane
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
-                />
-              </div>
-              <div
-                className={
-                  rightOpen && activeTool === "database"
-                    ? "flex min-h-0 min-w-0 flex-1"
-                    : "hidden"
-                }
-              >
-                <DatabasePane
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
-                />
-              </div>
-              <div
-                className={
-                  rightOpen && activeTool === "preview"
-                    ? "flex min-h-0 min-w-0 flex-1"
-                    : "hidden"
-                }
-              >
-                <PreviewPane
-                  root={root}
-                  visible={rightOpen && activeTool === "preview"}
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
-                />
-              </div>
-              <div
-                className={
-                  rightOpen && activeTool === "deploy"
-                    ? "flex min-h-0 min-w-0 flex-1"
-                    : "hidden"
-                }
-              >
-                <DeployPane
-                  root={root}
-                  visible={rightOpen && activeTool === "deploy"}
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
-                />
+                >
+                  <BrowserPane
+                    root={root}
+                    request={browserFile}
+                    fullscreen={rightFullscreen}
+                    onToggleFullscreen={onToggleRightFullscreen}
+                  />
+                </div>
+                <div
+                  className={
+                    activeTool === "remote"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
+                  }
+                >
+                  <RemotePane
+                    fullscreen={rightFullscreen}
+                    onToggleFullscreen={onToggleRightFullscreen}
+                  />
+                </div>
+                <div
+                  className={
+                    activeTool === "database"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
+                  }
+                >
+                  <DatabasePane
+                    fullscreen={rightFullscreen}
+                    onToggleFullscreen={onToggleRightFullscreen}
+                  />
+                </div>
+                <div
+                  className={
+                    activeTool === "preview"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
+                  }
+                >
+                  <PreviewPane
+                    root={root}
+                    visible={rightOpen && activeTool === "preview"}
+                    fullscreen={rightFullscreen}
+                    onToggleFullscreen={onToggleRightFullscreen}
+                  />
+                </div>
+                <div
+                  className={
+                    activeTool === "deploy"
+                      ? "flex min-h-0 min-w-0 flex-1"
+                      : "hidden"
+                  }
+                >
+                  <DeployPane
+                    root={root}
+                    visible={rightOpen && activeTool === "deploy"}
+                    fullscreen={rightFullscreen}
+                    onToggleFullscreen={onToggleRightFullscreen}
+                  />
+                </div>
               </div>
             </div>
           </div>
