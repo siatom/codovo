@@ -14,6 +14,7 @@ import {
   writeText,
 } from "@tauri-apps/plugin-clipboard-manager";
 import type { AttentionKind } from "../lib/attention";
+import { isLayoutAnimating, onLayoutSettled } from "../lib/layout-motion";
 import { isPrimaryModifier } from "../lib/keys";
 import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
@@ -686,20 +687,43 @@ export const TerminalSession = forwardRef<
     };
     container.addEventListener("contextmenu", onContextMenu);
 
+    /**
+     * 按容器尺寸重新 fit，并把行列数告诉 PTY。
+     *
+     * 面板收放动画期间不调：宽度每帧都在变，中途 fit 会让终端内容反复重排（看上去在抖）。
+     * 动画由 lib/layout-motion 统一标记，结束时会回调 fitOnce 补一次。
+     */
     let resizeTimer: number | undefined;
+    let resizedDuringMotion = false;
+    const fitOnce = () => {
+      if (isLayoutAnimating()) {
+        resizedDuringMotion = true;
+        return;
+      }
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      ptyRef.current?.resize(term.cols, term.rows);
+    };
     const observer = new ResizeObserver(() => {
       window.clearTimeout(resizeTimer);
-      resizeTimer = window.setTimeout(() => {
-        if (container.clientWidth === 0 || container.clientHeight === 0) return;
-        try {
-          fit.fit();
-        } catch {
-          return;
-        }
-        ptyRef.current?.resize(term.cols, term.rows);
-      }, 100);
+      if (isLayoutAnimating()) {
+        // 先记下来，等动画落定统一补；这里不排定时器，免得动画中途弹出来
+        resizedDuringMotion = true;
+        return;
+      }
+      resizeTimer = window.setTimeout(fitOnce, 100);
     });
     observer.observe(container);
+    const stopSettled = onLayoutSettled(() => {
+      if (!resizedDuringMotion) return;
+      resizedDuringMotion = false;
+      window.clearTimeout(resizeTimer);
+      fitOnce();
+    });
 
     return () => {
       cancelled = true;
@@ -709,6 +733,7 @@ export const TerminalSession = forwardRef<
       // 会话没了就别留着标记：StrictMode 的第一轮也会走到这儿，报一次 null 是无害的
       report(null);
       seenRef.current = null;
+      stopSettled();
       observer.disconnect();
       dataDisposable.dispose();
       scrollDisposable.dispose();

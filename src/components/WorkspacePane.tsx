@@ -21,6 +21,7 @@ import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import type { ReviewTarget } from "../lib/workstreams";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
+import { beginLayoutAnimation } from "../lib/layout-motion";
 import { isPathInside, ownerRoot, pathKey, pathsPresent, samePath, toDisplayPath, type MovePair } from "../lib/fs";
 import { readSession, scheduleSessionSave } from "../lib/session";
 import {
@@ -255,6 +256,20 @@ export function WorkspacePane({
   // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
   const rightFullscreen = fullscreen === "right";
   const leftFullscreen = fullscreen === "left";
+
+  /**
+   * 右栏收放、左栏全屏都会连续改变中间终端 / 编辑器的宽度。先标记动画时段，
+   * 终端和编辑器据此把 fit / layout 推后到动画结束（见 lib/layout-motion）。
+   * 用快照比较而不是「跳过第一次」：StrictMode 会把 effect 跑两遍，跳过第一次
+   * 会在启动时误标一次动画。
+   */
+  const layoutMotionRef = useRef({ rightOpen, leftFullscreen });
+  useEffect(() => {
+    const prev = layoutMotionRef.current;
+    if (prev.rightOpen === rightOpen && prev.leftFullscreen === leftFullscreen) return;
+    layoutMotionRef.current = { rightOpen, leftFullscreen };
+    beginLayoutAnimation();
+  }, [rightOpen, leftFullscreen]);
 
   const pickTool = useCallback(
     (id: ToolId) => {
