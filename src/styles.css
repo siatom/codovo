@@ -564,6 +564,11 @@ body.codedock-dragging-list * {
   text-decoration: none;
 }
 
+/* file: 链接的 href 会被净化器去掉，仍要给出可点击的指针反馈 */
+.markdown-body a[data-md-href] {
+  cursor: pointer;
+}
+
 .markdown-body a:hover {
   text-decoration: underline;
 }

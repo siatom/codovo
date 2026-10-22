@@ -1,4 +1,4 @@
-import DOMPurify from "dompurify";
+import DOMPurify, { type UponSanitizeAttributeHookEvent } from "dompurify";
 import {
   Marked,
   Renderer,
@@ -8,7 +8,7 @@ import {
 } from "marked";
 import markedKatex from "marked-katex-extension";
 import { assetUrl } from "./asset-url";
-import { isPathInside } from "./fs";
+import { isPathInside, ownerRoot, pathKey } from "./fs";
 
 /** mermaid 代码块的 fence 语言名（`mmd` 是常见简写） */
 const MERMAID_LANGS = new Set(["mermaid", "mmd"]);
@@ -139,24 +139,143 @@ function resolveImageSource(src: string, filePath: string, roots: string[]): str
 }
 
 /**
+ * 本地文件链接的解析结果。`fragment` 是链接里的 `#...`，同文件跳转时用它滚到锚点。
+ */
+export interface MarkdownLinkTarget {
+  /** 已归一化的绝对路径；调用方还需校验文件是否存在 */
+  path: string;
+  fragment: string;
+}
+
+/** 拆掉链接里的查询串与锚点。文件名里真有 `#` / `?` 只能靠 URL 编码，这里不额外兼容 */
+function splitLinkSuffix(raw: string): { path: string; fragment: string } {
+  const hash = raw.indexOf("#");
+  const fragment = hash >= 0 ? raw.slice(hash + 1) : "";
+  const withoutHash = hash >= 0 ? raw.slice(0, hash) : raw;
+  const query = withoutHash.indexOf("?");
+  return { path: query >= 0 ? withoutHash.slice(0, query) : withoutHash, fragment };
+}
+
+/**
+ * 把 markdown 里的本地链接解析成工作区内的候选绝对路径。
+ *
+ * 支持相对路径（按 markdown 文件所在目录补全）、Windows 盘符路径和 `file:` URL。
+ * 前导 `/` 按 VS Code 的习惯优先理解成「工作区根相对」，同时保留文件系统绝对路径
+ * 作为候选：调用方按顺序做存在性检查，两种写法都能命中。
+ *
+ * 和相对图片一样只返回工作区根内的路径，越界的一律丢掉——预览不能变成读任意
+ * 本地文件的入口。协议地址（http / mailto 等）不在这里处理，由预览层交给系统。
+ */
+export function resolveLocalLink(
+  href: string,
+  filePath: string,
+  roots: string[],
+): MarkdownLinkTarget[] {
+  const raw = href.trim();
+  if (!raw || raw.startsWith("#")) return [];
+  // UNC 路径不在工作区沙箱的语义里
+  if (/^[\\/]{2}/.test(raw)) return [];
+
+  let decoded: string;
+  let fragment: string;
+  let candidates: string[];
+  if (/^file:/i.test(raw)) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      return [];
+    }
+    // file://server/share 是远程 / UNC 路径，不解析
+    if (url.hostname && url.hostname.toLowerCase() !== "localhost") return [];
+    let pathname = url.pathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch {
+      // 非法百分号编码：按原样用
+    }
+    // Windows 上 file:///D:/x 的 pathname 是 /D:/x，去掉盘符前多出来的斜杠
+    if (/^\/[a-zA-Z]:[\\/]/.test(pathname)) pathname = pathname.slice(1);
+    decoded = pathname;
+    if (!decoded) return [];
+    fragment = url.hash.startsWith("#") ? url.hash.slice(1) : "";
+    candidates = [normalizePath(decoded)];
+  } else {
+    // Windows 盘符不是协议；其他带协议的地址不按本地文件处理
+    const windowsAbsolute = /^[a-zA-Z]:[\\/]/.test(raw);
+    if (!windowsAbsolute && /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)) return [];
+    const split = splitLinkSuffix(raw);
+    fragment = split.fragment;
+    try {
+      decoded = decodeURIComponent(split.path);
+    } catch {
+      decoded = split.path;
+    }
+    if (!decoded) return [];
+
+    const base = filePath.replace(/\\/g, "/").replace(/\/[^/]*$/, "");
+    if (!windowsAbsolute && decoded.startsWith("/")) {
+      // 先按当前文件所属的根解析，再试其他根，最后退回文件系统绝对路径
+      const owner = ownerRoot(roots, filePath);
+      const ordered = owner
+        ? [owner, ...roots.filter((root) => root !== owner)]
+        : roots;
+      candidates = [
+        ...ordered.map((root) => normalizePath(`${root}/${decoded.replace(/^\/+/, "")}`)),
+        normalizePath(decoded),
+      ];
+    } else if (windowsAbsolute) {
+      candidates = [normalizePath(decoded)];
+    } else {
+      candidates = [normalizePath(`${base}/${decoded}`)];
+    }
+  }
+
+  const targets: MarkdownLinkTarget[] = [];
+  const seen = new Set<string>();
+  for (const path of candidates) {
+    const key = pathKey(path);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!roots.some((root) => isPathInside(path, root))) continue;
+    targets.push({ path, fragment });
+  }
+  return targets;
+}
+
+/**
  * `resolveImage` 有值时才挂 hook。asset 协议在 macOS / Linux 是 `asset://`，
  * 不在 DOMPurify 默认的协议白名单里，所以放在净化**之后**改写 src——
  * 白名单不会把它剥掉，而写进去的地址也只可能是上面按沙箱规则拼出来的。
+ *
+ * 链接统一把原始 href 另存到 `data-md-href`：`file:` 不在 DOMPurify 默认的协议
+ * 白名单里，净化后 href 会被删掉，预览层就再也拿不到点击目标了。
  */
 function sanitize(html: string, resolveImage?: (src: string) => string | null): string {
-  if (!resolveImage) return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
-  const rewrite = (node: Element) => {
+  const annotateLink = (
+    node: Element,
+    data: UponSanitizeAttributeHookEvent,
+  ) => {
+    if (data.attrName !== "href" || node.tagName !== "A" || !data.attrValue) return;
+    // 危险协议本来就会被净化器删掉，不把原始值留在 data 属性里
+    if (/^\s*(?:javascript|vbscript|data):/i.test(data.attrValue)) return;
+    node.setAttribute("data-md-href", data.attrValue);
+  };
+  const rewriteImage = (node: Element) => {
     if (node.tagName !== "IMG") return;
     const src = node.getAttribute("src");
     if (!src) return;
-    const resolved = resolveImage(src);
+    const resolved = resolveImage?.(src);
     if (resolved) node.setAttribute("src", resolved);
   };
-  DOMPurify.addHook("afterSanitizeAttributes", rewrite);
+
+  DOMPurify.addHook("uponSanitizeAttribute", annotateLink);
+  if (resolveImage) DOMPurify.addHook("afterSanitizeAttributes", rewriteImage);
   try {
     return DOMPurify.sanitize(html, SANITIZE_OPTIONS);
   } finally {
-    DOMPurify.removeHook("afterSanitizeAttributes");
+    DOMPurify.removeHook("uponSanitizeAttribute");
+    if (resolveImage) DOMPurify.removeHook("afterSanitizeAttributes");
   }
 }
 
