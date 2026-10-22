@@ -106,13 +106,13 @@ $actual = (Select-String -Path dist/assets/*.js -Pattern '[0-9]+\.[0-9]+\.[0-9]+
 
 识别发布版进程（别误伤 dev 版）：
 
-- **Windows（PowerShell）**：按 CommandLine 区分，只有 `C:\Users\xiang\AppData\Local\CodeDock\codedock.exe` 是发布版；`src-tauri\target\debug\codedock.exe` 是 dev 版，**别动**。关闭用 `(Get-Process -Id <pid>).CloseMainWindow()`（子进程会被回收，比 taskkill 干净）。
-- **macOS（Bash）**：`pgrep -f 'CodeDock.app/Contents/MacOS'`。关闭用 `osascript -e 'quit app "CodeDock"'`。
-- **Linux（Bash）**：`pgrep -af codedock`，过滤掉路径里带 `target/debug` 的 dev 版。关闭用 `pkill -TERM -f '/usr/bin/codedock|codedock.AppImage'`。
+- **Windows（PowerShell）**：按 CommandLine 区分，只有 `C:\Users\xiang\AppData\Local\Codovo\codovo.exe` 是发布版；`src-tauri\target\debug\codovo.exe` 是 dev 版，**别动**。关闭用 `(Get-Process -Id <pid>).CloseMainWindow()`（子进程会被回收，比 taskkill 干净）。
+- **macOS（Bash）**：`pgrep -f 'Codovo.app/Contents/MacOS'`。关闭用 `osascript -e 'quit app "Codovo"'`。
+- **Linux（Bash）**：`pgrep -af codovo`，过滤掉路径里带 `target/debug` 的 dev 版。关闭用 `pkill -TERM -f '/usr/bin/codovo|codovo.AppImage'`。
 
 ### 2b. Windows
 
-产物：`src-tauri/target/release/bundle/nsis/CodeDock_<version>_x64-setup.exe`（x64 以外架构文件名里的后缀不同，按实际取）。
+产物：`src-tauri/target/release/bundle/nsis/Codovo_<version>_x64-setup.exe`（x64 以外架构文件名里的后缀不同，按实际取）。
 
 静默安装（安装器是 currentUser 模式，不弹 UAC）。用 **PowerShell 工具**执行（Windows 一律走 PowerShell，别用 Bash）：
 
@@ -123,49 +123,49 @@ $actual = (Select-String -Path dist/assets/*.js -Pattern '[0-9]+\.[0-9]+\.[0-9]+
 等它结束并确认退出码为 0（`$LASTEXITCODE`）。
 用 PowerShell 不必管 `MSYS_NO_PATHCONV`；之所以强调别用 Git Bash，就是 Git Bash 会把 `/S` 当路径转成 `C:/Program Files/Git/S`，安装器收不到静默参数、弹出图形安装界面卡住。
 
-安装位置：`%LOCALAPPDATA%\CodeDock\codedock.exe`。
+安装位置：`%LOCALAPPDATA%\Codovo\codovo.exe`。
 
 ### 2c. macOS
 
-产物：`src-tauri/target/release/bundle/macos/CodeDock.app`。
+产物：`src-tauri/target/release/bundle/macos/Codovo.app`。
 
 在 **Bash** 里执行（macOS 上包 `zsh -lc`）：
 
 ```
-src="src-tauri/target/release/bundle/macos/CodeDock.app"
-dst="/Applications/CodeDock.app"
+src="src-tauri/target/release/bundle/macos/Codovo.app"
+dst="/Applications/Codovo.app"
 rm -rf "$dst" && cp -R "$src" "$dst"
 # 本地包没签名，不去隔离属性 Gatekeeper 会直接拦下不让开
 xattr -dr com.apple.quarantine "$dst"
 ```
 
-- `rm -rf "$dst"` 只针对 `/Applications/CodeDock.app` 这一个路径，且前置条件已确认进程退出；**不要**把变量换成 `/Applications`。
-- 覆盖安装前若 `/Applications/CodeDock.app` 不存在，`rm -rf` 是空操作，不用特判。
-- 安装位置：`/Applications/CodeDock.app`。
+- `rm -rf "$dst"` 只针对 `/Applications/Codovo.app` 这一个路径，且前置条件已确认进程退出；**不要**把变量换成 `/Applications`。
+- 覆盖安装前若 `/Applications/Codovo.app` 不存在，`rm -rf` 是空操作，不用特判。
+- 安装位置：`/Applications/Codovo.app`。
 
 ### 2d. Linux
 
 按 1b 选定的 `bundle` 走对应分支。**deb / rpm 走系统包管理器、需要 sudo**（会提示输密码，别静默吞掉失败）；AppImage 不需要 sudo。
 
-- **deb**（产物 `src-tauri/target/release/bundle/deb/CodeDock_<version>_<arch>.deb`）：
+- **deb**（产物 `src-tauri/target/release/bundle/deb/Codovo_<version>_<arch>.deb`）：
   ```
-  sudo dpkg -i src-tauri/target/release/bundle/deb/CodeDock_<version>_<arch>.deb
+  sudo dpkg -i src-tauri/target/release/bundle/deb/Codovo_<version>_<arch>.deb
   # 缺依赖时补装，再确认一遍
   sudo apt-get -f install -y
   ```
-- **rpm**（产物 `src-tauri/target/release/bundle/rpm/CodeDock-<version>-1.<arch>.rpm`）：
+- **rpm**（产物 `src-tauri/target/release/bundle/rpm/Codovo-<version>-1.<arch>.rpm`）：
   ```
-  sudo dnf install -y src-tauri/target/release/bundle/rpm/CodeDock-<version>-1.<arch>.rpm
+  sudo dnf install -y src-tauri/target/release/bundle/rpm/Codovo-<version>-1.<arch>.rpm
   ```
   没有 dnf 的发行版换 `sudo rpm -Uvh --replacepkgs <包>`。
-- **appimage**（产物 `src-tauri/target/release/bundle/appimage/CodeDock_<version>_<arch>.AppImage`）：
+- **appimage**（产物 `src-tauri/target/release/bundle/appimage/Codovo_<version>_<arch>.AppImage`）：
   ```
-  install -Dm755 src-tauri/target/release/bundle/appimage/CodeDock_<version>_<arch>.AppImage \
-    ~/.local/bin/codedock.AppImage
+  install -Dm755 src-tauri/target/release/bundle/appimage/Codovo_<version>_<arch>.AppImage \
+    ~/.local/bin/codovo.AppImage
   ```
   确认 `~/.local/bin` 在 PATH 里；不在就提示用户（本命令**不改**用户的 shell 配置）。
 
-- 安装位置：deb / rpm 装到 `/usr/bin/codedock`，AppImage 是 `~/.local/bin/codedock.AppImage`。
+- 安装位置：deb / rpm 装到 `/usr/bin/codovo`，AppImage 是 `~/.local/bin/codovo.AppImage`。
 
 ### 2e. 报告
 

@@ -45,4 +45,4 @@ git pull --ff-only
 ## 5. 收尾
 
 - 报告拉进来的 commit（`hash + 标题`）、当前分支与远端是否同步。
-- 提醒：拉下来的改动若动了 `src-tauri/*.rs`，dev 会自动重编重启；前端改动会触发 HMR 重载（终端重置、编辑器清空）——用 CodeDock 开发 CodeDock 时留意。
+- 提醒：拉下来的改动若动了 `src-tauri/*.rs`，dev 会自动重编重启；前端改动会触发 HMR 重载（终端重置、编辑器清空）——用 Codovo 开发 Codovo 时留意。

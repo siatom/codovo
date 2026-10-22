@@ -48,17 +48,17 @@ kill -TERM <pid>          # 赖着不走再：kill -KILL <pid>
 
 #### 1a-2. 已有的 dev 版进程（占着 5273 / 9222，还锁着可执行文件，必须先处理）
 
-Windows 上 dev 固定带 CDP（见 1b），所以**上一轮的 dev 必须先退掉再重起**——同 identifier 的 dev 受 `tauri-plugin-single-instance` 约束，旧实例不退，新起的这次不会新开窗口、只会把旧实例唤到前台，CDP 参数根本不生效。**只处理 dev 版**（`target\debug\codedock.exe`），安装版（`AppData\Local\CodeDock\codedock.exe`，macOS 的 `/Applications/CodeDock.app`、Linux 的 `/usr/bin/codedock`）一律别碰。
+Windows 上 dev 固定带 CDP（见 1b），所以**上一轮的 dev 必须先退掉再重起**——同 identifier 的 dev 受 `tauri-plugin-single-instance` 约束，旧实例不退，新起的这次不会新开窗口、只会把旧实例唤到前台，CDP 参数根本不生效。**只处理 dev 版**（`target\debug\codovo.exe`），安装版（`AppData\Local\Codovo\codovo.exe`，macOS 的 `/Applications/Codovo.app`、Linux 的 `/usr/bin/codovo`）一律别碰。
 
-**Windows（PowerShell 工具）**：按 CommandLine 找 `target\debug\codedock.exe`，分两种：
+**Windows（PowerShell 工具）**：按 CommandLine 找 `target\debug\codovo.exe`，分两种：
 - **有窗口**（`tasklist /V` 里 Window Title 不是 `N/A`）→ 是用户正在用的 dev 实例。**用 AskUserQuestion 问用户是否关闭它**：
-  - 同意 → 按 PID 关掉：`taskkill //F //PID <pid>`（dev 版没有可脚本化的优雅退出，`CloseMainWindow()` 只会把它收进托盘、退不掉）。**只杀 `target\debug` 那个 PID，别用 `//IM codedock.exe`**——那会连安装版一起杀。确认真退了再往下走。
+  - 同意 → 按 PID 关掉：`taskkill //F //PID <pid>`（dev 版没有可脚本化的优雅退出，`CloseMainWindow()` 只会把它收进托盘、退不掉）。**只杀 `target\debug` 那个 PID，别用 `//IM codovo.exe`**——那会连安装版一起杀。确认真退了再往下走。
   - 拒绝 → 停下报告，**不启动**。
 - **无窗口僵尸**（Window Title `N/A`）→ 没在用，直接停掉它。
 
 **macOS / Linux（Bash 工具）**：
 ```
-pgrep -af 'target/debug/codedock'         # 排除已安装版（路径在 /Applications、/usr/bin）
+pgrep -af 'target/debug/codovo'         # 排除已安装版（路径在 /Applications、/usr/bin）
 ```
 - **macOS**：用 `osascript -e 'tell application "System Events" to count windows of (first process whose unix id is <pid>)'` 数窗口。0 就是残留，直接停；非 0 或**脚本报错（没授权辅助功能）**都按「在用」处理，**用 AskUserQuestion 问用户是否关闭**，同意才停。
 - **Linux**：没有统一的、可依赖的窗口检测手段（`xdotool` / `wmctrl` 未必装），**一律按「可能在用」处理**——报告 PID 和命令行后**用 AskUserQuestion 问用户是否关闭**；同意才 `kill -TERM <pid>`。
@@ -73,18 +73,18 @@ pgrep -af 'target/debug/codedock'         # 排除已安装版（路径在 /Appl
 
 **Windows（Bash 工具）**——固定带 CDP（远程调试端口 9222），方便之后用 `scripts/cdp-check.cjs` 做界面验证：
 ```
-WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup bash scripts/dev-local.sh > "$TEMP/codedock-dev.log" 2>&1 &
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" nohup bash scripts/dev-local.sh > "$TEMP/codovo-dev.log" 2>&1 &
 ```
 9222 被别的程序占了就换成别的端口（如 9223），之后调 `cdp-check.cjs` 时带上 `"port":"9223"`。
 
 **macOS（Bash 工具，包 `zsh -lc` 让脚本里的 pnpm 拿到 login PATH）**：
 ```
-nohup zsh -lc 'bash scripts/dev-local.sh' > "${TMPDIR:-/tmp}/codedock-dev.log" 2>&1 &
+nohup zsh -lc 'bash scripts/dev-local.sh' > "${TMPDIR:-/tmp}/codovo-dev.log" 2>&1 &
 ```
 
 **Linux（Bash 工具）**：
 ```
-nohup bash scripts/dev-local.sh > "${TMPDIR:-/tmp}/codedock-dev.log" 2>&1 &
+nohup bash scripts/dev-local.sh > "${TMPDIR:-/tmp}/codovo-dev.log" 2>&1 &
 ```
 
 **不要**直接 `nohup pnpm tauri dev ... &`——那样窗口一关就没人收尾，残留的 vite 会让下一次启动失败。
@@ -102,15 +102,15 @@ vite 在监听（**macOS / Linux**）：
 lsof -nP -iTCP:5273 -sTCP:LISTEN          # 没装 lsof 就退到：ss -ltnp | grep ':5273'
 ```
 
-再用对应工具确认 dev 版进程在跑，**别错认成已安装版**（Windows 的 `AppData\Local\CodeDock\codedock.exe`、macOS 的 `/Applications/CodeDock.app`、Linux 的 `/usr/bin/codedock`）：
-- **Windows（PowerShell 工具）**：查 `target\debug\codedock.exe` 进程。
-- **macOS / Linux（Bash 工具）**：`pgrep -af 'target/debug/codedock'`。
+再用对应工具确认 dev 版进程在跑，**别错认成已安装版**（Windows 的 `AppData\Local\Codovo\codovo.exe`、macOS 的 `/Applications/Codovo.app`、Linux 的 `/usr/bin/codovo`）：
+- **Windows（PowerShell 工具）**：查 `target\debug\codovo.exe` 进程。
+- **macOS / Linux（Bash 工具）**：`pgrep -af 'target/debug/codovo'`。
 
 **Windows 再确认 CDP 真的起来了**（这一条是 Windows 专有的第三个判据）：`netstat -ano | grep ":9222" | grep LISTENING` 有输出才算可用；没监听多半是启动时漏了 1b 的 CDP 参数。
 
 **别读它的退出码**：cargo 报错时应用也可能已经正常起来了，判断起没起来只看上面这些检查。
 
-超过 3 分钟还没起来，就读日志（`Read` 日志文件：Windows `$TEMP/codedock-dev.log`、macOS / Linux `${TMPDIR:-/tmp}/codedock-dev.log`）定位，按下表修完**重试一次**——只重试一次，还失败就停下报告，别无限循环：
+超过 3 分钟还没起来，就读日志（`Read` 日志文件：Windows `$TEMP/codovo-dev.log`、macOS / Linux `${TMPDIR:-/tmp}/codovo-dev.log`）定位，按下表修完**重试一次**——只重试一次，还失败就停下报告，别无限循环：
 
 | 日志症状 | 原因 | 处理 |
 |---|---|---|
@@ -125,5 +125,5 @@ lsof -nP -iTCP:5273 -sTCP:LISTEN          # 没装 lsof 就退到：ss -ltnp | g
 
 另外两条已知坑：
 
-- **CDP 调试端口只在 Windows 可用**：Windows 上 dev 已经固定带 `--remote-debugging-port=9222`（见 1b），`scripts/cdp-check.cjs` 直接连即可（用法见 `.codebuddy/skills/cdp-verify/`）。macOS 是 WKWebView、Linux 是 WebKitGTK，都没有这套 CDP 端口，该脚本在两端跑不通，改界面要么换回 Windows 验证，要么用各平台自带的开发者工具。**安装版和 dev 天然并存、互不影响**：两者 identifier 不同（`com.codedock` vs `com.codedock.dev`），WebView2 的 user data folder 各归各，9222 只属于 dev 那组——所以**安装版开着照样能连 CDP，别去 taskkill 它、也别叫用户关**。
-- 本项目常是「用 CodeDock 开发 CodeDock」：dev 模式下改工作区内任意文件都会触发 HMR 重载（终端重置、编辑器清空），要在这上面开发就先换个工作区。
+- **CDP 调试端口只在 Windows 可用**：Windows 上 dev 已经固定带 `--remote-debugging-port=9222`（见 1b），`scripts/cdp-check.cjs` 直接连即可（用法见 `.codebuddy/skills/cdp-verify/`）。macOS 是 WKWebView、Linux 是 WebKitGTK，都没有这套 CDP 端口，该脚本在两端跑不通，改界面要么换回 Windows 验证，要么用各平台自带的开发者工具。**安装版和 dev 天然并存、互不影响**：两者 identifier 不同（`com.codovo` vs `com.codovo.dev`），WebView2 的 user data folder 各归各，9222 只属于 dev 那组——所以**安装版开着照样能连 CDP，别去 taskkill 它、也别叫用户关**。
+- 本项目常是「用 Codovo 开发 Codovo」：dev 模式下改工作区内任意文件都会触发 HMR 重载（终端重置、编辑器清空），要在这上面开发就先换个工作区。

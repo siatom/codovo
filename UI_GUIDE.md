@@ -1,6 +1,6 @@
 # UI_GUIDE.md
 
-CodeDock 界面开发规范。**每一条都是踩过坑才定下来的**，动手前对着查一遍；ADR 式的
+Codovo 界面开发规范。**每一条都是踩过坑才定下来的**，动手前对着查一遍；ADR 式的
 「为什么」写在条目里，改之前先弄清原因。代码位置以文件为准，行号会漂。
 
 栈：React 19 + TS + Tailwind 4 + Monaco + xterm，外壳 Tauri 2（Windows WebView2 /
@@ -68,7 +68,7 @@ React 17+ 的事件委托挂在 `#root`、比 document 先跑，所以**自己�
 **同理，内容面板一律 `hidden` / `display:none` 藏着，别条件渲染。** 多工作区、多终端会话、右边栏各模块，全是这个套路。**注意界面分开 ≠ 卸载**：切走的那个留在 DOM 里，否则终端的 shell 会被杀。应用助手抽屉也一样——收起时只是滑出视口，对话与滚动状态原样留着（`AppAssistantDrawer.tsx`）。
 
 **「收起」这个词有歧义，先问清。** 「收成一条常驻窄条」和「整块隐藏 + 另给一个显式开关按钮」
-是两种东西，别按 VS Code 活动栏的习惯猜。CodeDock 的取向是**后者**：默认只留最核心的视图，
+是两种东西，别按 VS Code 活动栏的习惯猜。Codovo 的取向是**后者**：默认只留最核心的视图，
 其余按需召唤，开关是一个明确的按钮（右栏的入口是终端工具条最右那个按钮）。
 
 **从隐藏切回可见要补一次 `layout()`**，否则 Monaco 滚不动（隐藏期间容器尺寸是 0，
@@ -89,7 +89,7 @@ React 17+ 的事件委托挂在 `#root`、比 document 先跑，所以**自己�
   挂 `window`（指针移出行外也收得到），纵向越过 4px 才算拖动，拖完靠 `onClickCapture`
   吞掉浏览器补发的那次 click（`src/lib/use-tab-reorder.ts`、`SettingsDialog.tsx:177`）。
 
-**拖动期间给 `body` 挂光标 class**（`codedock-dragging` / `codedock-dragging-row`），
+**拖动期间给 `body` 挂光标 class**（`codovo-dragging` / `codovo-dragging-row`），
 别让指针在拖动中变回去。
 
 **手柄的命中区可以加宽，视觉仍是一条细线**：内嵌一个 `absolute inset-y-0 -left-1 -right-1`
@@ -223,7 +223,7 @@ dev 保留方便调试。
 - **`localStorage` 是用户真实状态，验证后必须还原**。测完临时数据（临时主机 / 临时连接 /
   被改的模块选中项）一并回滚。
 - **dev 下改工作区内任意文件会触发 HMR 重载**（终端重置、编辑器清空）——这是 dev server
-  的产物，不是 bug；用 CodeDock 开发 CodeDock 时记得换工作区，或把测试素材建在
+  的产物，不是 bug；用 Codovo 开发 Codovo 时记得换工作区，或把测试素材建在
   `node_modules/` 这类被忽略的目录下。
 
 ---

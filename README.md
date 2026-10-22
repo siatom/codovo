@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="src-tauri/icons/icon.svg" width="96" height="96" alt="CodeDock" />
+  <img src="src-tauri/icons/icon.svg" width="96" height="96" alt="Codovo" />
 </p>
 
-<h1 align="center">CodeDock</h1>
+<h1 align="center">Codovo · 码坞</h1>
 
 <p align="center"><b>把散落一地的开发现场，收拢进一个窗口。</b></p>
 
@@ -22,9 +22,9 @@
 
 一个终端跑着命令，一个编辑器改着文件，文件管理器找着路径，Git 客户端看着 diff，数据库工具连着库，SSH 客户端开着服务器，浏览器预览着页面……它们各自为政，彼此不通气。真正写代码的时间，被「找窗口」和「切上下文」吃掉了大半。
 
-CodeDock 想做的，是让这些各据一方的工具，重新回到同一片甲板上。
+Codovo 想做的，是让这些各据一方的工具，重新回到同一片甲板上。
 
-名字里的 **Dock** 是双关：它既是**船坞**——每个项目都能安稳靠岸，来回切换不必重启世界；也是**驾驶舱**——你坐在正中，一屏之内看清全局，伸手就是你要的一切。
+中文名**码坞**：**码**是代码，**坞**是船坞——每个项目都能安稳靠岸，来回切换不必重启世界；它同时也是**驾驶舱**——你坐在正中，一屏之内看清全局，伸手就是你要的一切。
 
 它不要求你登录，不替你把代码送上云，也不打算变成又一个需要你伺候的庞然大物。它只把该在一起的放在一起，然后把注意力还给你。
 
@@ -32,13 +32,13 @@ CodeDock 想做的，是让这些各据一方的工具，重新回到同一片�
 
 ## 几条不肯让步的取舍
 
-一份产品介绍，说到底是在交代它的取舍。以下是 CodeDock 的取舍。
+一份产品介绍，说到底是在交代它的取舍。以下是 Codovo 的取舍。
 
 **终端是一等公民。**
 不是 IDE 角落里那个「能跑命令的小窗」，而是真正的 PTY（Windows 上走 ConPTY）：多标签各自独立，可左右或上下并列，切走照跑。因为你真正的工作，多半就发生在命令行里。
 
 **注意力，是最不该被浪费的资源。**
-多工作区并行时，最容易出事的就是「后台的某个 AI CLI 停下了，而你没看见」。谁在跑、谁在等、谁已经跑完，CodeDock 都把标记亮在你眼睛会经过的地方。
+多工作区并行时，最容易出事的就是「后台的某个 AI CLI 停下了，而你没看见」。谁在跑、谁在等、谁已经跑完，Codovo 都把标记亮在你眼睛会经过的地方。
 
 **AI 是副驾驶，方向盘始终在你手里。**
 同一个工作区，终端里的 AI CLI 与右栏的应用助手共用一套现场，各司其职，改动都直接落盘。它替你打字，但你看得见每一步，也随时能接管。
@@ -54,7 +54,7 @@ CodeDock 想做的，是让这些各据一方的工具，重新回到同一片�
 ## 一屏之内
 
 <p align="center">
-  <img src="docs/screenshot-overview.png" alt="CodeDock 主界面：终端、文件树、编辑器与 Git 同屏" width="1200" />
+  <img src="docs/screenshot-overview.png" alt="Codovo 主界面：终端、文件树、编辑器与 Git 同屏" width="1200" />
 </p>
 
 <p align="center"><sub>终端、文件树、编辑器与 Git 同屏；分栏皆可拖动</sub></p>
@@ -69,7 +69,7 @@ CodeDock 想做的，是让这些各据一方的工具，重新回到同一片�
 
 一个工作区可以包含多个工作目录，文件树并列展示，文件名搜索、内容搜索与 Git 变更按目录分组；终端与助手使用工作区的活动根目录。从顶栏或会话历史启动 AI CLI 时，其余工作目录会按各家支持的参数（如 `--add-dir`、`--include-directories`）或配置（opencode 的 `external_directory`）注入，CLI 的权限范围与工作区保持一致。
 
-侧栏负责创建、编辑、切换、关闭和移除工作区，可置顶。列表按「最近活动」自动排序——终端与助手用得最多的排在最前，置顶的固定在最上。新建时可以直接打开本地目录，也可以从 Git 仓库克隆（可选分支、浅克隆，进度实时显示）。启动时回到上次的工作区；移除只删除 CodeDock 里的记录，不动磁盘文件。
+侧栏负责创建、编辑、切换、关闭和移除工作区，可置顶。列表按「最近活动」自动排序——终端与助手用得最多的排在最前，置顶的固定在最上。新建时可以直接打开本地目录，也可以从 Git 仓库克隆（可选分支、浅克隆，进度实时显示）。启动时回到上次的工作区；移除只删除 Codovo 里的记录，不动磁盘文件。
 
 **切换工作区不重启世界。** 终端不杀、助手不停，编辑器标签、撤销历史与文件树展开态原样保留；只有关闭工作区，才会真正结束它的终端与助手服务。
 
@@ -153,13 +153,13 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 
 部署不必先上一整套 CI 基建——配置驱动、单机单环境、失败即停，就是它的全部野心。
 
-### 应用助手 · 改 CodeDock 自己
+### 应用助手 · 改 Codovo 自己
 
-终端里的 AI CLI 负责读代码、改文件、跑命令；要改 CodeDock 自己的设置、工作区与界面布局时，用侧栏底部的**应用助手**。点开是右栏的一个抽屉，可以和终端、编辑器同屏——它改了什么，你当场看得见。
+终端里的 AI CLI 负责读代码、改文件、跑命令；要改 Codovo 自己的设置、工作区与界面布局时，用侧栏底部的**应用助手**。点开是右栏的一个抽屉，可以和终端、编辑器同屏——它改了什么，你当场看得见。
 
 抽屉里的对话由 **opencode** 驱动，内置 `app` agent 通过 MCP 工具执行改设置、加 / 删工作区、切右栏模块、切全屏等操作；不可逆操作会先弹确认。
 
-项目级的规则、记忆、技能与自定义 agent 仍以仓库根的 `.codedock/` 为准（`rules.md` / `memory.md` / `skills.json` / `agents.json`），随仓库走、能进 git，直接用编辑器改。
+项目级的规则、记忆、技能与自定义 agent 仍以仓库根的 `.codovo/` 为准（`rules.md` / `memory.md` / `skills.json` / `agents.json`），随仓库走、能进 git，直接用编辑器改。
 
 另外一位内置**预览助手**（点「启动」时在背后忙的那位）负责探测、启停、读日志、诊断纠错。它能看代码，但不改代码——要改，得你来。
 
@@ -175,7 +175,7 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 
 ## 写在最后
 
-工具越做越多，窗口越开越乱。CodeDock 不打算再添一个需要你伺候的窗口——它只是把已有的那些，摆回该在的位置。
+工具越做越多，窗口越开越乱。Codovo 不打算再添一个需要你伺候的窗口——它只是把已有的那些，摆回该在的位置。
 
 如果它能让你少找一次窗口、少丢一次上下文，那它就没有白做。
 
@@ -183,12 +183,12 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 
 ## 安装与运行
 
-已打包的版本在 [Gitee Releases](https://gitee.com/silicon-atom/code-dock/releases) 下载，使用它不需要 Rust 或 pnpm。
+已打包的版本在 [Gitee Releases](https://gitee.com/silicon-atom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。
 
 | 方式 | 适合谁 |
 | --- | --- |
-| **Windows 安装包** `CodeDock_<版本>_x64-setup.exe` | 常规安装，开始菜单与托盘 |
-| **macOS 安装包** `CodeDock_<版本>_aarch64.dmg` | Apple Silicon |
+| **Windows 安装包** `Codovo_<版本>_x64-setup.exe` | 常规安装，开始菜单与托盘 |
+| **macOS 安装包** `Codovo_<版本>_aarch64.dmg` | Apple Silicon |
 | **源码构建** | 想改它、或想自己打包的人 |
 
 ```bash
@@ -248,9 +248,9 @@ Windows 需要 WebView2 Runtime（Windows 11 自带）；Git 功能需要安装 
 
 ---
 
-## 关于 CodeDock 本身
+## 关于 Codovo 本身
 
-CodeDock 用 Rust + Tauri 2 构建，前端是 React + TypeScript + Tailwind，编辑器用 Monaco，终端用 xterm.js。没有账号，没有云同步，能离线就离线。
+Codovo 用 Rust + Tauri 2 构建，前端是 React + TypeScript + Tailwind，编辑器用 Monaco，终端用 xterm.js。没有账号，没有云同步，能离线就离线。
 
 <details>
 <summary>开发与验证</summary>
@@ -262,7 +262,7 @@ cargo test --lib                    # 后端单测
 cargo clippy                        # Rust 静态检查
 ```
 
-界面验证可使用 `scripts/cdp-check.cjs` 连接 WebView2 的 CDP 端口；指定窗口时用 `target` 标题片段。用 CodeDock 开发自身时，开发服务器的 HMR 会重载界面并重置终端与编辑器，建议在另一个工作区里运行开发命令。
+界面验证可使用 `scripts/cdp-check.cjs` 连接 WebView2 的 CDP 端口；指定窗口时用 `target` 标题片段。用 Codovo 开发自身时，开发服务器的 HMR 会重载界面并重置终端与编辑器，建议在另一个工作区里运行开发命令。
 
 版本号以 `package.json` 为来源，通过 `pnpm version patch|minor|major` 更新。界面显示 `<版本号>+<Git 短 hash>[.dirty]`，`.dirty` 表示构建包含未提交改动，安装包版本仍为纯数字。
 
