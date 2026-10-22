@@ -658,11 +658,11 @@ pub async fn sftp_list(
         })
         .collect();
 
-    // 目录优先，同类按名字排（大小写不敏感）
+    // 目录优先，同类按名字自然排序（大小写不敏感、数字按数值）
     entries.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| crate::natural_sort::compare(&a.name, &b.name))
     });
     Ok(entries)
 }

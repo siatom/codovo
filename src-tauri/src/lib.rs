@@ -15,6 +15,7 @@ mod fs_api;
 mod git;
 mod installer;
 mod local_fs;
+mod natural_sort;
 mod preview;
 mod preview_agent;
 mod pty;

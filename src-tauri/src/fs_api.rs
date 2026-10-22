@@ -370,7 +370,7 @@ fn list_entries(dir: &Path) -> Result<Vec<Entry>, String> {
     entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        _ => crate::natural_sort::compare(&a.name, &b.name),
     });
 
     Ok(entries)
