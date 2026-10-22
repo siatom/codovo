@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { highlightCodeFences, syncHighlightTheme } from "../lib/highlight";
+import { pathsExist, pathsPresent, samePath } from "../lib/fs";
+import { resolveLocalLink } from "../lib/markdown";
 import { useMermaidBlocks } from "../lib/mermaid";
 import { useTheme } from "../lib/theme";
 import { IconList } from "./icons";
@@ -15,6 +17,12 @@ interface MarkdownPreviewProps {
    * 没有标题时自动不显示。
    */
   outline?: boolean;
+  /** 当前 markdown 文件的绝对路径，用来解析文档里的相对文件链接 */
+  filePath?: string | null;
+  /** 工作区根。本地链接只允许打开这些目录里的文件 */
+  roots?: string[];
+  /** 打开工作区里的文件；由上层决定直接开标签还是先转临时工作区 */
+  onOpenPath?: (path: string) => void;
 }
 
 const HEADING_SELECTOR = "h1,h2,h3,h4,h5,h6";
@@ -71,7 +79,14 @@ function scrollToAnchor(container: HTMLElement | null, fragment: string): void {
 }
 
 /** 只读的 markdown 渲染结果；排版样式在 styles.css 的 .markdown-body 里 */
-export function MarkdownPreview({ html, isLarge = false, outline = false }: MarkdownPreviewProps) {
+export function MarkdownPreview({
+  html,
+  isLarge = false,
+  outline = false,
+  filePath = null,
+  roots,
+  onOpenPath,
+}: MarkdownPreviewProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const outlineNavRef = useRef<HTMLElement>(null);
   const { palette, theme } = useTheme();
@@ -185,24 +200,59 @@ export function MarkdownPreview({ html, isLarge = false, outline = false }: Mark
   }, []);
 
   // WebView2 里点 <a> 会把整个应用界面导航成那个网页（回不来），所以所有链接都先拦掉，
-  // 再按类型分流：页内锚点滚动、外链交给系统浏览器、相对路径暂不处理。
+  // 再按类型分流：页内锚点滚动、外链交给系统浏览器、本地文件按工作区边界解析后打开。
   const handleLinkClick = (event: MouseEvent<HTMLDivElement>) => {
     const anchor = (event.target as Element | null)?.closest("a");
     if (!(anchor instanceof HTMLAnchorElement)) return;
     event.preventDefault();
 
-    const href = (anchor.getAttribute("href") ?? "").trim();
+    // `data-md-href` 是净化前存下的原始地址：file: 链接的 href 会被 DOMPurify 删掉
+    const href = (
+      anchor.getAttribute("data-md-href") ??
+      anchor.getAttribute("href") ??
+      ""
+    ).trim();
     if (!href) return;
     if (href.startsWith("#")) {
       scrollToAnchor(bodyRef.current, href.slice(1));
       return;
     }
-    if (/^(https?:|mailto:)/i.test(href)) {
+    if (/^(https?:|ftp:|mailto:)/i.test(href)) {
       // 打不开就算了：阅读预览时弹一个错误提示反而打扰
       void openUrl(href).catch(() => {});
       return;
     }
-    // 相对路径 / file: 等本地链接不交给 WebView 导航；暂时没有「打开文件」入口，明确忽略
+    if (!filePath || !roots || roots.length === 0 || !onOpenPath) return;
+
+    const targets = resolveLocalLink(href, filePath, roots);
+    if (targets.length === 0) return;
+
+    // 同一篇文档里的 `./self.md#section`：标签已经开着，直接滚到锚点即可
+    const self = targets.find((target) => samePath(target.path, filePath));
+    if (self) {
+      if (self.fragment) scrollToAnchor(bodyRef.current, self.fragment);
+      return;
+    }
+
+    void (async () => {
+      const paths = targets.map((target) => target.path);
+      try {
+        const [present, directories] = await Promise.all([
+          pathsPresent(paths),
+          pathsExist(paths),
+        ]);
+        const index = present.findIndex(Boolean);
+        if (index < 0) return;
+        if (directories[index]) {
+          // 目录链接交给系统文件管理器；应用内没有「只开目录」的标签类型
+          await openPath(targets[index].path);
+          return;
+        }
+        onOpenPath(targets[index].path);
+      } catch {
+        // 检查 / 打开失败按「链接不可用」处理，不打断阅读
+      }
+    })();
   };
 
   const blockAuxClick = (event: MouseEvent<HTMLDivElement>) => {

@@ -41,6 +41,8 @@ interface TranslationViewProps {
   /** 超过 8MB 的文件不翻译 */
   isLarge: boolean;
   onOpenSettings: () => void;
+  /** 打开译文 / 原文里的本地文件链接：交给上层的标签路由 */
+  onOpenPath: (path: string) => void;
 }
 
 const TOOL_BUTTON =
@@ -68,6 +70,7 @@ export function TranslationView({
   roots,
   isLarge,
   onOpenSettings,
+  onOpenPath,
 }: TranslationViewProps) {
   const { settings, update } = useSettings();
   const { config, ready } = useEffectiveAiConfig();
@@ -302,7 +305,12 @@ export function TranslationView({
             {content.trim() === "" ? (
               <p className="px-4 py-3 text-[12px] text-fg-faint">文档为空</p>
             ) : markdown ? (
-              <MarkdownPreview html={originalHtml} />
+              <MarkdownPreview
+                html={originalHtml}
+                filePath={path}
+                roots={roots}
+                onOpenPath={onOpenPath}
+              />
             ) : (
               <pre className="whitespace-pre-wrap break-words px-4 py-3 text-[12.5px] leading-relaxed text-fg">
                 {content}
@@ -378,7 +386,12 @@ export function TranslationView({
                 </p>
               </div>
             ) : markdown ? (
-              <MarkdownPreview html={translatedHtml} />
+              <MarkdownPreview
+                html={translatedHtml}
+                filePath={path}
+                roots={roots}
+                onOpenPath={onOpenPath}
+              />
             ) : (
               <pre className="whitespace-pre-wrap break-words px-4 py-3 text-[12.5px] leading-relaxed text-fg">
                 {translatedText}

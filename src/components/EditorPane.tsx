@@ -3898,6 +3898,9 @@ export function EditorPane({
                   html={splitHtml}
                   isLarge={activeCached?.isLarge ?? false}
                   outline={markdownOutline}
+                  filePath={previewSourcePath}
+                  roots={roots}
+                  onOpenPath={onOpenPath}
                 />
               )}
             </div>
@@ -3913,6 +3916,9 @@ export function EditorPane({
             html={previewHtml}
             isLarge={activeCached?.isLarge ?? false}
             outline={markdownOutline}
+            filePath={previewSourcePath}
+            roots={roots}
+            onOpenPath={onOpenPath}
           />
         )}
         {/* 翻译视图：左原文右译文，正文取编辑器当前内容（含未保存改动），不写回文件 */}
@@ -3925,6 +3931,7 @@ export function EditorPane({
             roots={roots}
             isLarge={activeCached.isLarge}
             onOpenSettings={onOpenSettings}
+            onOpenPath={onOpenPath}
           />
         )}
         {/* html / htm / svg 预览：iframe 走 asset 协议读磁盘，相对路径的 css / js / 图片一并生效 */}
