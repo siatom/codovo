@@ -103,7 +103,7 @@ export function workstreamCreate(
 // 「稍后」只影响总览里的注意力队列，不改变工作树本身。按仓库 + 分支记，
 // 默认 24 小时；期间仍会出现在工作树列表里，只是不再占用「需要你」。
 
-const SNOOZE_KEY = "codedock.workstreamSnooze";
+const SNOOZE_KEY = "codovo.workstreamSnooze";
 
 function snoozeMap(): Record<string, number> {
   try {
@@ -145,7 +145,7 @@ export function snoozeWorkstream(root: string, branch: string, hours = 24) {
 // 只存本地 WebView 的 localStorage：审阅进度是个人状态，不该写进仓库、也不该
 // 跟着分支到处走。键里带「仓库 + 分支 + 文件」，提交号变化即自动失效。
 
-const REVIEW_KEY = "codedock.workstreamReviewed";
+const REVIEW_KEY = "codovo.workstreamReviewed";
 
 type ReviewStore = Record<string, string>;
 

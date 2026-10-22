@@ -102,7 +102,7 @@ export function TitleBar({ workspace }: TitleBarProps) {
     >
       <img src={appLogo} alt="" className="h-4 w-4 shrink-0" data-tauri-drag-region />
       <span className="shrink-0 text-[12px] font-semibold text-fg-muted" data-tauri-drag-region>
-        CodeDock
+        Codovo
       </span>
       {import.meta.env.DEV && (
         <span
@@ -112,9 +112,9 @@ export function TitleBar({ workspace }: TitleBarProps) {
           dev
         </span>
       )}
-      {/* 工作区名跟在应用名后面。工作区恰好也叫 CodeDock（本仓库自己就是）时不再重复一遍，
+      {/* 工作区名跟在应用名后面。工作区恰好也叫 Codovo（本仓库自己就是）时不再重复一遍，
           左侧永远只有一个名字 */}
-      {workspace && workspace !== "CodeDock" && (
+      {workspace && workspace !== "Codovo" && (
         <>
           <span className="shrink-0 text-[11px] text-fg-faint" data-tauri-drag-region>
             /

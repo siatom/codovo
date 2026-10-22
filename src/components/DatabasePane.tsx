@@ -34,8 +34,8 @@ import {
   IconPlus,
 } from "./icons";
 
-const ACTIVE_KEY = "codedock.dbActiveConnection";
-const TAB_KEY = "codedock.dbTab";
+const ACTIVE_KEY = "codovo.dbActiveConnection";
+const TAB_KEY = "codovo.dbTab";
 
 const PAGE_SIZE = 50;
 

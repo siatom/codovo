@@ -527,7 +527,7 @@ function Shell() {
   );
 
   /**
-   * 从列表里移除一个工作区。只动 CodeDock 自己的记录，不碰磁盘上的目录。
+   * 从列表里移除一个工作区。只动 Codovo 自己的记录，不碰磁盘上的目录。
    * 它还开着的话一并关掉——不然终端和 opencode 会一直在后台跑，用户却再也看不到。
    */
   const removeWorkspace = useCallback(
@@ -696,7 +696,7 @@ function Shell() {
 
   /**
    * 预览助手桥：和应用助手同一套（后端 MCP 子进程只能写请求文件），执行的是预览工具。
-   * 每条请求自带它所属的工作区路径（后端经 `CODEDOCK_PREVIEW_ROOT` 注入），
+   * 每条请求自带它所属的工作区路径（后端经 `CODOVO_PREVIEW_ROOT` 注入），
    * 所以这里不依赖「当前活动工作区」——后台工作区的预览助手也能正常执行。
    */
   useEffect(() => {
@@ -782,7 +782,7 @@ function Shell() {
   // 版本号本身保持纯数字——Windows 的 exe 版本资源不接受后缀。
   const activeName = activeWorkspace?.name ?? null;
   useEffect(() => {
-    const name = import.meta.env.DEV ? "CodeDock (dev)" : "CodeDock";
+    const name = import.meta.env.DEV ? "Codovo (dev)" : "Codovo";
     document.title = activeName ? `${name} — ${activeName}` : name;
   }, [activeName]);
 
@@ -1026,7 +1026,7 @@ function Shell() {
       {/* 移除工作区不可撤销（工作区配置会一起没），走自研确认框 */}
       {pendingRemove && (
         <ConfirmDialog
-          message={`从列表里移除工作区「${pendingRemove.name}」？只去掉 CodeDock 里的记录，不会动磁盘上的文件夹。`}
+          message={`从列表里移除工作区「${pendingRemove.name}」？只去掉 Codovo 里的记录，不会动磁盘上的文件夹。`}
           confirmLabel="移除"
           onConfirm={() => {
             removeWorkspace(pendingRemove);

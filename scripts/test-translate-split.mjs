@@ -3,7 +3,7 @@
  *
  *   node scripts/test-translate-split.mjs
  *
- * 重点验证超长行按字符硬切时不会把 `⟦CODEDOCK_CODE_n⟧` 占位符切成两半。
+ * 重点验证超长行按字符硬切时不会把 `⟦CODOVO_CODE_n⟧` 占位符切成两半。
  */
 import assert from "node:assert/strict";
 import { createServer } from "vite";
@@ -31,7 +31,7 @@ try {
   assert.equal(prepared.blocks.length, 1, "行内代码应被屏蔽成一个占位符");
   assert.ok(prepared.chunks.length >= 2, "超长行应该被拆成多段");
 
-  const marker = "⟦CODEDOCK_CODE_0⟧";
+  const marker = "⟦CODOVO_CODE_0⟧";
   assert.ok(
     prepared.chunks.some((chunk) => chunk.includes(marker)),
     "占位符应完整出现在某一段里",
@@ -43,9 +43,9 @@ try {
   );
 
   for (const chunk of prepared.chunks) {
-    const rest = chunk.replace(/⟦CODEDOCK_CODE_\d+⟧/g, "");
+    const rest = chunk.replace(/⟦CODOVO_CODE_\d+⟧/g, "");
     assert.ok(
-      !rest.includes("CODEDOCK_CODE") && !/[⟦⟧]/.test(rest),
+      !rest.includes("CODOVO_CODE") && !/[⟦⟧]/.test(rest),
       `片段里残留了被切断的占位符：${rest.slice(0, 80)}`,
     );
   }

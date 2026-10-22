@@ -57,7 +57,7 @@ export function renderMermaid(source: string, theme: ResolvedTheme): Promise<str
         theme: theme === "dark" ? "dark" : "default",
         fontFamily,
       });
-      const id = `codedock-mermaid-${(sequence += 1)}`;
+      const id = `codovo-mermaid-${(sequence += 1)}`;
       const { svg } = await mermaid.render(id, source);
       return { svg, id };
     });
@@ -76,7 +76,7 @@ export function renderMermaid(source: string, theme: ResolvedTheme): Promise<str
   // 缓存里是同一段 SVG，直接复用会出现重复的顶层 id / marker 引用；
   // 每次注入换一个实例 id，保证 DOM 里的 id 唯一。
   return cached.then(({ svg, id }) => {
-    const unique = `codedock-mermaid-view-${(instance += 1)}`;
+    const unique = `codovo-mermaid-view-${(instance += 1)}`;
     return svg.split(id).join(unique);
   });
 }

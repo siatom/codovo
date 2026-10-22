@@ -190,7 +190,7 @@ fn install_dependency_sync(id: &str) -> Result<InstallResult, String> {
         return result.map(|output| InstallResult {
             ok: true,
             message: if output.is_empty() {
-                "Git 安装完成，请重启 CodeDock 使 PATH 生效。".into()
+                "Git 安装完成，请重启 Codovo 使 PATH 生效。".into()
             } else {
                 format!("Git 安装完成。\n{output}")
             },
@@ -218,7 +218,7 @@ fn install_dependency_sync(id: &str) -> Result<InstallResult, String> {
         return result.map(|output| InstallResult {
             ok: true,
             message: if output.is_empty() {
-                "Node.js 安装完成，请重启 CodeDock 使 PATH 生效。".into()
+                "Node.js 安装完成，请重启 Codovo 使 PATH 生效。".into()
             } else {
                 format!("Node.js 安装完成。\n{output}")
             },

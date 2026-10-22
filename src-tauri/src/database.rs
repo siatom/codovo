@@ -8,7 +8,7 @@
 //! - **密码不回前端**。前端只存「有没有」布尔位，正文在后端按 conn_id 从系统钥匙串取
 //!   （与 ai.rs / agent.rs / remote.rs 同一套口径）。
 //! - **分页在服务端做**。可翻页的查询（SELECT 之类）包一层
-//!   `SELECT * FROM (<sql>) AS __codedock_pg LIMIT n OFFSET m`，多取一行来判断有没有下一页。
+//!   `SELECT * FROM (<sql>) AS __codovo_pg LIMIT n OFFSET m`，多取一行来判断有没有下一页。
 //!   写语句与 SHOW/EXPLAIN 这类一次性结果不分页。
 
 use std::collections::HashMap;
@@ -1969,7 +1969,7 @@ mod tests {
     fn appends_paging_without_derived_table() {
         let paged = append_paging("SELECT * FROM t ORDER BY id", 2, 50);
         // 不再包派生表：用户的 ORDER BY 必须留在最终结果上，否则 MySQL/PG 会丢排序
-        assert!(!paged.contains("__codedock_pg"));
+        assert!(!paged.contains("__codovo_pg"));
         assert!(paged.ends_with("LIMIT 51 OFFSET 100")); // 多取一行判断 has_more
         // 末尾是行注释时靠换行把 LIMIT 隔出来，不能被注释吃掉
         assert!(append_paging("SELECT 1 -- 说明", 0, 10).ends_with("\nLIMIT 11 OFFSET 0"));
@@ -2050,7 +2050,7 @@ mod tests {
 
     #[tokio::test]
     async fn sqlite_roundtrip_pages_and_writes() {
-        let path = std::env::temp_dir().join(format!("codedock-db-test-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("codovo-db-test-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
         let options = SqliteConnectOptions::new()
@@ -2131,7 +2131,7 @@ mod tests {
 
     #[test]
     fn writes_csv_file_with_utf8_bom() {
-        let path = std::env::temp_dir().join(format!("codedock-csv-test-{}.csv", std::process::id()));
+        let path = std::env::temp_dir().join(format!("codovo-csv-test-{}.csv", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let columns = vec!["名称".to_string()];
         let rows = vec![vec![Some("值".to_string())]];
@@ -2154,7 +2154,7 @@ mod tests {
 
     #[test]
     fn writes_xlsx_file() {
-        let path = std::env::temp_dir().join(format!("codedock-xlsx-test-{}.xlsx", std::process::id()));
+        let path = std::env::temp_dir().join(format!("codovo-xlsx-test-{}.xlsx", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let columns = vec!["id".to_string(), "name".to_string()];
         let rows = vec![
@@ -2194,7 +2194,7 @@ mod tests {
 
     #[tokio::test]
     async fn export_bypasses_cell_clamp_and_honors_scope() {
-        let path = std::env::temp_dir().join(format!("codedock-export-test-{}.db", std::process::id()));
+        let path = std::env::temp_dir().join(format!("codovo-export-test-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let options = SqliteConnectOptions::new()
             .filename(&path)
@@ -2257,7 +2257,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_table_structure_reports_columns_indexes_and_fk() {
         let path =
-            std::env::temp_dir().join(format!("codedock-db-struct-{}.db", std::process::id()));
+            std::env::temp_dir().join(format!("codovo-db-struct-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let options = SqliteConnectOptions::new()
             .filename(&path)

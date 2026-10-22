@@ -14,7 +14,7 @@ export function pauseDevicePixelSync(addon: unknown): () => void {
   if (!renderer) return () => {};
   const original = renderer._setCanvasDevicePixelDimensions;
   if (typeof original !== "function") return () => {};
-  const marker = "__codedockDevicePixelPaused";
+  const marker = "__codovoDevicePixelPaused";
   if (renderer[marker]) return () => {};
   let latest: [number, number] | null = null;
   renderer[marker] = true;

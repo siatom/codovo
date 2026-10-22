@@ -88,7 +88,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
     setFormatError("");
     if (after === before) return;
     // 走 executeEdits 而不是 setValue：进撤销栈，一次 Ctrl+Z 就能回到美化前
-    editor.executeEdits("codedock.beautifySql", [
+    editor.executeEdits("codovo.beautifySql", [
       { range: model.getFullModelRange(), text: after, forceMoveMarkers: true },
     ]);
     editor.pushUndoStop();
@@ -173,7 +173,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
     });
     // Shift+Alt+F 是 Monaco / VS Code 的格式化键位，这里绑到自己的美化上
     editor.addAction({
-      id: "codedock.beautifySql",
+      id: "codovo.beautifySql",
       label: "美化 SQL",
       keybindings: [monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF],
       run: () => beautifyRef.current(),
@@ -213,7 +213,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     draggingRef.current = true;
-    document.body.classList.add("codedock-dragging");
+    document.body.classList.add("codovo-dragging");
   };
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
@@ -227,7 +227,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     draggingRef.current = false;
-    document.body.classList.remove("codedock-dragging");
+    document.body.classList.remove("codovo-dragging");
   };
 
   return (

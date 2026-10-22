@@ -1,11 +1,11 @@
 version: 1
-# CodeDock —— Tauri 2 桌面应用（Rust 后端 + React 前端），无常驻服务。
+# Codovo —— Tauri 2 桌面应用（Rust 后端 + React 前端），无常驻服务。
 #
 # 与普通服务型项目的差异在 Deploy：
-#   * 桌面应用没有「停旧起新」的常驻进程，部署 = 把安装目录里的 codedock.exe 换成新构建；
+#   * 桌面应用没有「停旧起新」的常驻进程，部署 = 把安装目录里的 codovo.exe 换成新构建；
 #   * 不能用 NSIS 静默安装（/S）——它的 CheckIfAppIsRunning 宏会先 KillProcess 正在运行的
 #     实例（见 scripts/hot-update.sh 文件头注释），会打断用户正在用的会话；
-#   * 改用 scripts/hot-update.sh 热替换：把旧 exe 重命名成 codedock.exe.old（Windows 允许
+#   * 改用 scripts/hot-update.sh 热替换：把旧 exe 重命名成 codovo.exe.old（Windows 允许
 #     重命名运行中的 exe，进程继续用内存里的旧镜像跑），再把新 exe 放到原路径，下次启动生效。
 #
 # 注意：pnpm 的 corepack shim 在「无控制台的后台会话」里会因设置进程标题失败而崩
@@ -14,7 +14,7 @@ version: 1
 
 install: "pnpm install --frozen-lockfile"
 
-# 产出 src-tauri/target/release/codedock.exe（含 pnpm build + cargo release 编译）。
+# 产出 src-tauri/target/release/codovo.exe（含 pnpm build + cargo release 编译）。
 # --no-bundle 跳过 NSIS/MSI 打包，比出安装包快，产物即热替换所需的那份 exe。
 build: "pnpm tauri build --no-bundle"
 
@@ -26,8 +26,8 @@ deploy:
 
 verify:
   # 构建产物与安装版应逐字节一致；cmp -s 无输出且退出码 0 即通过。
-  command: "cmp -s src-tauri/target/release/codedock.exe \"$LOCALAPPDATA/CodeDock/codedock.exe\""
+  command: "cmp -s src-tauri/target/release/codovo.exe \"$LOCALAPPDATA/Codovo/codovo.exe\""
   # 运行中的实例不会因热替换而重启，因此额外确认它仍存活。
-  process: "codedock.exe"
+  process: "codovo.exe"
 
 env: {}

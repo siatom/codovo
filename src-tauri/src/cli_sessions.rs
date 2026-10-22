@@ -562,7 +562,7 @@ mod tests {
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let unique = SEQ.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "codedock-cli-sessions-{}-{unique}",
+            "codovo-cli-sessions-{}-{unique}",
             std::process::id()
         ));
         fs::create_dir_all(&root).unwrap();

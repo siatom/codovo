@@ -23,7 +23,7 @@ use crate::agent::{hide_console, resolve_launch, Launch};
 
 /// 反馈目标的仓库。换仓库只改这两行——网页兜底地址也由它们拼出来。
 const OWNER: &str = "silicon-atom";
-const REPO: &str = "code-dock";
+const REPO: &str = "codovo";
 
 /// 官方 CLI 的命令名，走 PATH 找（复用 agent 那套 Windows 后缀探测）。
 const CLI: &str = "gitee";
@@ -512,7 +512,7 @@ mod tests {
 
     #[test]
     fn store_round_trips_through_the_file() {
-        let dir = std::env::temp_dir().join("codedock-feedback-test");
+        let dir = std::env::temp_dir().join("codovo-feedback-test");
         let path = dir.join("feedback.json");
         let _ = std::fs::remove_file(&path);
 
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn read_from_reports_a_corrupted_file_instead_of_emptying_it() {
-        let dir = std::env::temp_dir().join("codedock-feedback-test-corrupt");
+        let dir = std::env::temp_dir().join("codovo-feedback-test-corrupt");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("feedback.json");
         std::fs::write(&path, "{ 这不是 json").unwrap();
@@ -553,9 +553,9 @@ mod tests {
         // 换仓库时改的是上面两行常量，这条把「改了但没改全」钉住
         let target = feedback_target();
         assert_eq!(target.owner, "silicon-atom");
-        assert_eq!(target.repo, "code-dock");
+        assert_eq!(target.repo, "codovo");
         assert!(target
             .web_new_issue
-            .ends_with("/silicon-atom/code-dock/issues/new"));
+            .ends_with("/silicon-atom/codovo/issues/new"));
     }
 }

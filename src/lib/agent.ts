@@ -104,7 +104,7 @@ export function listAgentSessions(root: string): Promise<unknown> {
 /**
  * 发一条消息。后端走 prompt_async，立刻返回，正文靠事件流推回来。
  * `model` 是 `provider/model` 引用，必须显式给：不给的话 opencode 会用用户全局
- * 配置里的默认模型，那多半不是 CodeDock 里配的那个。
+ * 配置里的默认模型，那多半不是 Codovo 里配的那个。
  */
 export function sendAgentMessage(
   root: string,

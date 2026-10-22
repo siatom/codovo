@@ -104,8 +104,8 @@ export function DatabaseAgent({
     [settings],
   );
 
-  // 开发调试版可能只在 src-tauri/.env 里配了模型，后端会合成一个 id 为 codedock 的提供商
-  const fallbackRef = aiConfig.model ? `codedock/${aiConfig.model}` : "";
+  // 开发调试版可能只在 src-tauri/.env 里配了模型，后端会合成一个 id 为 codovo 的提供商
+  const fallbackRef = aiConfig.model ? `codovo/${aiConfig.model}` : "";
   const modelRef = resolveDefaultModel(settings)?.ref ?? fallbackRef;
 
   const setCurrentId = useCallback((id: string | null) => {

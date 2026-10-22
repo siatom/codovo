@@ -14,10 +14,10 @@ import type { ReviewTarget } from "../lib/workstreams";
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
 export type ToolId = "files" | "changes" | "browser" | "remote" | "database" | "preview" | "deploy";
 
-const TOOL_KEY = "codedock.rightTool.";
+const TOOL_KEY = "codovo.rightTool.";
 
 /** 「变更」模块上次用的是总览还是完整 Git 面板，按活动根记。 */
-const CHANGES_MODE_KEY = "codedock.changesMode.";
+const CHANGES_MODE_KEY = "codovo.changesMode.";
 
 const TOOLS: ToolId[] = ["files", "changes", "browser", "remote", "database", "preview", "deploy"];
 

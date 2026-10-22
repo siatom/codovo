@@ -1,6 +1,6 @@
 //! 数据库 Agent 的 MCP 工具服务（stdio 传输）。
 //!
-//! opencode 通过 `opencode.json` 的 `mcp.db` 拉起它（`codedock.exe --mcp-db`），
+//! opencode 通过 `opencode.json` 的 `mcp.db` 拉起它（`codovo.exe --mcp-db`），
 //! 走标准 MCP stdio 协议（换行分隔的 JSON-RPC 2.0）。它是**独立进程**，拿不到主进程的
 //! `DbState`——「当前连接」由主进程写的 target.json 同步（`db_agent_set_target`），
 //! 密码仍按 connId 从系统钥匙串取。
@@ -64,7 +64,7 @@ pub fn db_agent_set_target(
 
 /// MCP server 入口。由 `main()` 在 Tauri 初始化之前调用，返回进程退出码。
 pub fn run_stdio() -> i32 {
-    let target = std::env::var("CODEDOCK_DB_TARGET")
+    let target = std::env::var("CODOVO_DB_TARGET")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from);
@@ -141,7 +141,7 @@ async fn handle(conn: &mut ConnCache, request: Value) -> Option<Value> {
             let result = json!({
                 "protocolVersion": protocol,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "codedock-db", "version": env!("CARGO_PKG_VERSION") },
+                "serverInfo": { "name": "codovo-db", "version": env!("CARGO_PKG_VERSION") },
             });
             Some(ok_response(id, result))
         }

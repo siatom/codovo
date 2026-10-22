@@ -103,7 +103,7 @@ export function SplitPane({
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setDragging(true);
-    document.body.classList.add("codedock-dragging");
+    document.body.classList.add("codovo-dragging");
   }, []);
 
   const onPointerMove = useCallback(
@@ -143,7 +143,7 @@ export function SplitPane({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     setDragging(false);
-    document.body.classList.remove("codedock-dragging");
+    document.body.classList.remove("codovo-dragging");
   }, []);
 
   return (
@@ -197,7 +197,7 @@ export function SplitPane({
       <div
         className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
           // 拖动中不做过渡：每帧都改 flex-basis，跟上指针才不会有橡皮筋感
-          animateCollapse && !dragging ? "codedock-split-anim" : ""
+          animateCollapse && !dragging ? "codovo-split-anim" : ""
         }`}
         style={
           // 收起时按内容宽度收（flexBasis auto），不是归零——右栏里那条图标条得留着。

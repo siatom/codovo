@@ -187,7 +187,7 @@ const STATUS_ICON_BUTTON =
  * 差异视图的排布（内联 / 并排）是窗口级偏好，存 sessionStorage：多窗口下各记各的。
  * 默认内联——窄面板里左右并排会把两侧压得很窄，内联更好读。
  */
-const DIFF_SIDE_BY_SIDE_KEY = "codedock.diffSideBySide";
+const DIFF_SIDE_BY_SIDE_KEY = "codovo.diffSideBySide";
 
 function readDiffSideBySide(): boolean {
   try {
@@ -202,7 +202,7 @@ function readDiffSideBySide(): boolean {
  * markdown 预览的大纲开关，窗口级偏好存 sessionStorage。
  * 默认关：只在需要跳章节时从标题栏打开，不默认占掉正文右侧的宽度。
  */
-const MARKDOWN_OUTLINE_KEY = "codedock.markdownOutline";
+const MARKDOWN_OUTLINE_KEY = "codovo.markdownOutline";
 
 function readMarkdownOutline(): boolean {
   try {
@@ -657,7 +657,7 @@ function diffUri(tab: Extract<Tab, { kind: "diff" }>, side: "original" | "modifi
         ? `range-${source.from.slice(0, 12)}-${source.to.slice(0, 12)}`
         : source.mode;
   return monaco.Uri.parse(
-    `codedock-diff:/${key}/${encodeURIComponent(pathKey(tab.path))}/${side}`,
+    `codovo-diff:/${key}/${encodeURIComponent(pathKey(tab.path))}/${side}`,
   );
 }
 
@@ -1023,11 +1023,11 @@ export function EditorPane({
     const editor = editorRef.current;
     if (!editor || !editor.getModel()) return;
     if (isFindWidgetVisible(editor)) {
-      editor.trigger("codedock", "closeFindWidget", null);
+      editor.trigger("codovo", "closeFindWidget", null);
       editor.focus();
       return;
     }
-    editor.trigger("codedock", "actions.find", null);
+    editor.trigger("codovo", "actions.find", null);
   }, []);
 
   /** 按标签栏顺序切到下一个 / 上一个标签（含差异标签），到头绕回 */
@@ -1661,7 +1661,7 @@ export function EditorPane({
           return;
         }
         // 兜底：Monaco 的按语法重排缩进。至少把缩进对齐，不静默失败
-        live.trigger("codedock", "editor.action.reindentlines", null);
+        live.trigger("codovo", "editor.action.reindentlines", null);
         syncDirty();
         return;
       }
@@ -2338,7 +2338,7 @@ export function EditorPane({
 
     const saveKey = toMonacoKeybinding(settings.shortcuts["editor.save"]);
     const saveAction = editor.addAction({
-      id: "codedock.save",
+      id: "codovo.save",
       label: "保存文件",
       // 键位翻不出来就不注册键位，保存按钮和菜单里的该项仍可用
       keybindings: saveKey === null ? [] : [saveKey],
@@ -2353,7 +2353,7 @@ export function EditorPane({
     // 只读时 Monaco 不接管（截断 / 只读不该改内容），工具栏按钮另有针对性禁用。
     const formatKey = toMonacoKeybinding(settings.shortcuts["editor.format"]);
     const formatAction = editor.addAction({
-      id: "codedock.format",
+      id: "codovo.format",
       label: "格式化文档",
       keybindings: formatKey === null ? [] : [formatKey],
       precondition: "!editorReadonly",
@@ -2559,7 +2559,7 @@ export function EditorPane({
     if (path === null) {
       // 未命名缓冲区：没有磁盘内容可读，直接给一个空 model。序号由 WorkspacePane 发，
       // 这里只按它建 URI；重开同一个标签会先命中上面的缓存，不会重复建
-      const uri = monaco.Uri.parse(`inmemory://codedock/untitled-${active.untitledId ?? "new"}`);
+      const uri = monaco.Uri.parse(`inmemory://codovo/untitled-${active.untitledId ?? "new"}`);
       const model = monaco.editor.createModel("", "plaintext", uri);
       applyIndentToModel(model, indentRef.current);
       modelsRef.current.set(key, {

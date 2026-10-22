@@ -18,7 +18,7 @@ import { RIGHT_TOOLS } from "../components/ToolRail";
  * 界面操作智能体（应用助手）的桥。
  *
  * 设置、工作区列表、界面布局全在前端 WebView 里（localStorage + React state），而工具调用
- * 发生在 opencode 拉起的**独立子进程**（`codedock.exe --mcp-app`，见
+ * 发生在 opencode 拉起的**独立子进程**（`codovo.exe --mcp-app`，见
  * `src-tauri/src/app_agent.rs`）里，够不着这些状态。所以后端把每次工具调用写成一个请求文件，
  * 这里轮询取走、执行、再把结果写回，形成一个「后端工具 → 前端执行 → 回传结果」的环。
  */
@@ -119,7 +119,7 @@ async function execute(
     case "remove_workspace": {
       const workspace = findWorkspace(ctx, requireString(args.workspace, "workspace"));
       const confirmed = await ctx.confirm(
-        `应用助手请求移除工作区「${workspace.name}」。只去掉 CodeDock 里的记录，不会动磁盘上的文件夹。`,
+        `应用助手请求移除工作区「${workspace.name}」。只去掉 Codovo 里的记录，不会动磁盘上的文件夹。`,
         "移除",
       );
       if (!confirmed) return `已取消移除工作区「${workspace.name}」`;

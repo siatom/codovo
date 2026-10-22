@@ -54,7 +54,7 @@ pub struct PreviewDetection {
     pub cdp_port: Option<u16>,
     /// 命中了哪些标记文件，界面上解释「为什么这么判」
     pub reason: String,
-    /// 需要提醒用户的（如「这是 CodeDock 自身」）
+    /// 需要提醒用户的（如「这是 Codovo 自身」）
     pub warnings: Vec<String>,
 }
 
@@ -391,21 +391,21 @@ fn parse_dev_url(line: &str) -> Option<String> {
     None
 }
 
-/// 「这是 CodeDock 自身」的告警：自预览会撞单实例锁和 CDP 端口。
+/// 「这是 Codovo 自身」的告警：自预览会撞单实例锁和 CDP 端口。
 fn self_preview_warning(pkg: Option<&Value>, tauri_conf: Option<&Value>) -> Option<String> {
     let by_name = pkg
         .and_then(|p| p.get("name"))
         .and_then(Value::as_str)
-        .map(|name| name == "codedock")
+        .map(|name| name == "codovo")
         .unwrap_or(false);
     let by_identifier = tauri_conf
         .and_then(|c| c.get("identifier"))
         .and_then(Value::as_str)
-        .map(|id| id.starts_with("com.codedock"))
+        .map(|id| id.starts_with("com.codovo"))
         .unwrap_or(false);
     if by_name || by_identifier {
         Some(
-            "这是 CodeDock 自身：启动预览会与当前运行实例争抢单实例锁 / CDP 调试端口，很可能起不来"
+            "这是 Codovo 自身：启动预览会与当前运行实例争抢单实例锁 / CDP 调试端口，很可能起不来"
                 .to_string(),
         )
     } else {
@@ -751,7 +751,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "codedock-preview-{tag}-{}",
+            "codovo-preview-{tag}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -848,15 +848,15 @@ mod tests {
     }
 
     #[test]
-    fn warns_when_previewing_codedock_itself() {
+    fn warns_when_previewing_codovo_itself() {
         let dir = temp_dir("self");
         std::fs::create_dir_all(dir.join("src-tauri")).unwrap();
         std::fs::write(
             dir.join("src-tauri").join("tauri.conf.json"),
-            r#"{ "identifier": "com.codedock" }"#,
+            r#"{ "identifier": "com.codovo" }"#,
         )
         .unwrap();
-        std::fs::write(dir.join("package.json"), r#"{ "name": "codedock" }"#).unwrap();
+        std::fs::write(dir.join("package.json"), r#"{ "name": "codovo" }"#).unwrap();
 
         let detected = detect_project(&dir);
         assert_eq!(detected.kind, "tauri");

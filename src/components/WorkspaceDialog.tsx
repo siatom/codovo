@@ -20,7 +20,7 @@ interface WorkspaceDialogProps {
   initialRoots?: string[];
   onCancel: () => void;
   onSubmit: (value: { name: string; roots: string[] }) => void;
-  /** 编辑模式才有：「移除本地工作区」——只从 CodeDock 的列表里去掉，不碰磁盘 */
+  /** 编辑模式才有：「移除本地工作区」——只从 Codovo 的列表里去掉，不碰磁盘 */
   onRemove?: () => void;
 }
 

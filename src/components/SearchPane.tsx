@@ -377,7 +377,7 @@ export function SearchPane({
                                         </span>
                                         <span className="min-w-0 flex-1 truncate text-[12px] text-fg-muted">
                                           {match.text.slice(0, match.column - 1)}
-                                          <span className="codedock-find-hit">
+                                          <span className="codovo-find-hit">
                                             {match.text.slice(
                                               match.column - 1,
                                               match.column - 1 + match.length,

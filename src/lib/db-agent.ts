@@ -13,7 +13,7 @@ export const DB_AGENT_ROOT = "__db_agent__";
  * **只存一条**——数据库 Agent 的历史是所有连接共用的一份（对话本身不绑定库，
  * 执行 SQL 时才用当前目标连接），所以不按连接分开记。
  */
-const SESSION_KEY = "codedock.dbAgentSession";
+const SESSION_KEY = "codovo.dbAgentSession";
 
 export function readDbAgentSession(): string {
   try {

@@ -51,10 +51,10 @@ interface ConnectResult {
   fingerprint: string;
 }
 
-export const REMOTE_HOSTS_KEY = "codedock.remoteHosts";
+export const REMOTE_HOSTS_KEY = "codovo.remoteHosts";
 
 /** 主机列表变更时派发的本地事件，让同一窗口里的多个面板同步（跨窗口靠 storage 事件） */
-export const HOSTS_EVENT = "codedock:remote-hosts";
+export const HOSTS_EVENT = "codovo:remote-hosts";
 
 /**
  * 主机 id 只允许 slug：后端要把它拼进系统钥匙串的条目名（见 remote.rs 的 valid_host_id）。

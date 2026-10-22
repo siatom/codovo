@@ -9,11 +9,11 @@
  * 只用 body class + 窗口事件，不引入跨组件的状态订阅；动画时长变化时改这里的
  * SETTLE_MS 即可（比 styles.css 里最长的 300ms 多留一点余量）。
  */
-const ANIMATING_CLASS = "codedock-layout-animating";
+const ANIMATING_CLASS = "codovo-layout-animating";
 
 /** 动画开始 / 落定的窗口级事件：用事件而不是模块内的 Set，开发态 HMR 换了模块实例也还能收到 */
-const START_EVENT = "codedock:layout-start";
-const SETTLED_EVENT = "codedock:layout-settled";
+const START_EVENT = "codovo:layout-start";
+const SETTLED_EVENT = "codovo:layout-settled";
 
 /** 动画结束后的余量：留一帧给最后一帧布局落定 */
 const SETTLE_MS = 340;

@@ -40,7 +40,7 @@ const CLI_MENU_ITEM =
 const HINT = "px-2 py-1 text-[11px] text-fg-faint";
 
 /** 列表高度是窗口级偏好，存 sessionStorage：多窗口下各拖各的 */
-const HEIGHT_KEY = "codedock.cliHistoryHeight";
+const HEIGHT_KEY = "codovo.cliHistoryHeight";
 
 /** 自动刷新间隔。列表是 CLI 自己写在磁盘上的，界面不知道它什么时候变 */
 const POLL_MS = 20000;
@@ -181,7 +181,7 @@ export function CliHistory({
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { startY: event.clientY, startHeight: height };
     setDragging(true);
-    document.body.classList.add("codedock-dragging-row");
+    document.body.classList.add("codovo-dragging-row");
   };
 
   const onHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -202,7 +202,7 @@ export function CliHistory({
     }
     dragRef.current = null;
     setDragging(false);
-    document.body.classList.remove("codedock-dragging-row");
+    document.body.classList.remove("codovo-dragging-row");
     try {
       // 用 state 里最新的值：拖动过程中它一直在变
       window.sessionStorage.setItem(HEIGHT_KEY, String(height));

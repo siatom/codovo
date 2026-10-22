@@ -429,7 +429,7 @@ function SizeSlider({
         max={FONT_SIZE_MAX}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        className="codedock-range min-w-0 flex-1"
+        className="codovo-range min-w-0 flex-1"
       />
       <span className="w-11 shrink-0 rounded-md bg-hover px-1 py-0.5 text-center text-[11px] text-fg-dim tabular-nums">
         {value}px
@@ -1629,7 +1629,7 @@ function AiCommandList({
         if (Math.abs(event.clientY - drag.startY) < DRAG_THRESHOLD) return;
         drag.started = true;
         window.getSelection()?.removeAllRanges();
-        document.body.classList.add("codedock-dragging-list");
+        document.body.classList.add("codovo-dragging-list");
         setDragFrom(drag.from);
       }
       const index = dropIndexAt(event.clientY);
@@ -1642,7 +1642,7 @@ function AiCommandList({
       setPending(false);
       setDragFrom(null);
       setDropIndex(null);
-      document.body.classList.remove("codedock-dragging-list");
+      document.body.classList.remove("codovo-dragging-list");
       const index = dropRef.current;
       dropRef.current = null;
       // 按下了但没挪过，那就是普通点击，什么都不用做
@@ -2079,7 +2079,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   return (
     <div
       ref={overlayRef}
-      className="codedock-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-[2px]"
+      className="codovo-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-[2px]"
       // 认「按下点就在遮罩上」而不是 click：从弹窗内按下、拖到遮罩上松开会误判成点外部
       onMouseDown={(event) => {
         if (event.button !== 0 || event.target !== event.currentTarget) return;
@@ -2106,7 +2106,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               }
             : undefined
         }
-        className="codedock-dialog-in relative flex h-[640px] max-h-full w-[780px] max-w-full flex-col overflow-hidden rounded-2xl border border-line-strong bg-raised shadow-[0_24px_80px_-16px_rgb(0_0_0_/_0.7)]"
+        className="codovo-dialog-in relative flex h-[640px] max-h-full w-[780px] max-w-full flex-col overflow-hidden rounded-2xl border border-line-strong bg-raised shadow-[0_24px_80px_-16px_rgb(0_0_0_/_0.7)]"
         onClick={(event) => event.stopPropagation()}
       >
         {/* 四边四角都能拖着改大小，热区压在最上层 */}
@@ -2181,7 +2181,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             onWheel={onWheel}
             className="min-h-0 flex-1 overflow-auto"
           >
-            <div className="codedock-tab-in flex flex-col gap-5 p-5">
+            <div className="codovo-tab-in flex flex-col gap-5 p-5">
               <div className="flex flex-col gap-1">
                 <h2 className="text-[15px] font-semibold tracking-tight text-fg">
                   {currentTab.label}
@@ -2649,7 +2649,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                   <Section
                     title="可选扩展"
-                    hint="只在使用 CodeDock 的 Gitee 反馈功能时需要。"
+                    hint="只在使用 Codovo 的 Gitee 反馈功能时需要。"
                   >
                     <DependencyRow
                       id="gitee"
@@ -2814,7 +2814,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             左上角顺手显示版本，装完能自己核对（dev 构建额外带个标记） */}
         <footer className="flex h-14 shrink-0 items-center justify-between border-t border-line bg-panel/20 px-5">
           <span className="select-text rounded-full border border-line px-2 py-0.5 text-[10px] tracking-wide text-fg-faint">
-            CodeDock v{__APP_VERSION__}
+            Codovo v{__APP_VERSION__}
             {import.meta.env.DEV ? " · dev" : ""}
           </span>
           <div className="flex items-center gap-2">

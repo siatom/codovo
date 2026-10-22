@@ -25,7 +25,7 @@ const HEAD_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
 
 /** 日志区高度按工作目录记；上下限在拖动时再受面板高度约束 */
-const LOG_HEIGHT_KEY = "codedock.deployLogHeight.";
+const LOG_HEIGHT_KEY = "codovo.deployLogHeight.";
 const DEFAULT_LOG_HEIGHT = 280;
 const MIN_LOG_HEIGHT = 80;
 const MAX_LOG_HEIGHT = 600;

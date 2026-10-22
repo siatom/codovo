@@ -319,26 +319,26 @@ body {
 }
 
 /* 拖动分栏期间禁掉选中和文字光标；横向和纵向各一套光标 */
-body.codedock-dragging,
-body.codedock-dragging *,
-body.codedock-dragging-row,
-body.codedock-dragging-row * {
+body.codovo-dragging,
+body.codovo-dragging *,
+body.codovo-dragging-row,
+body.codovo-dragging-row * {
   user-select: none;
 }
 
-body.codedock-dragging,
-body.codedock-dragging * {
+body.codovo-dragging,
+body.codovo-dragging * {
   cursor: col-resize;
 }
 
-body.codedock-dragging-row,
-body.codedock-dragging-row * {
+body.codovo-dragging-row,
+body.codovo-dragging-row * {
   cursor: row-resize;
 }
 
 /* 拖动工作区行重排：同样禁选中，光标给抓握态（不是 row-resize，这不是在改尺寸） */
-body.codedock-dragging-list,
-body.codedock-dragging-list * {
+body.codovo-dragging-list,
+body.codovo-dragging-list * {
   user-select: none;
   cursor: grabbing;
 }
@@ -784,7 +784,7 @@ body.codedock-dragging-list * {
 }
 
 /* 搜索结果里高亮命中的那一段，色系跟编辑器里的选中态保持一致 */
-.codedock-find-hit {
+.codovo-find-hit {
   border-radius: 2px;
   background: var(--c-selected);
   color: var(--c-fg);
@@ -799,7 +799,7 @@ body.codedock-dragging-list * {
 
 /* ---- 设置面板：字号滑杆（跨平台统一样式） ---- */
 /* 原生 range 三端长得都不一样，这里手工画轨道与滑块，颜色走语义变量。 */
-.codedock-range {
+.codovo-range {
   -webkit-appearance: none;
   appearance: none;
   height: 18px;
@@ -808,13 +808,13 @@ body.codedock-dragging-list * {
   cursor: pointer;
 }
 
-.codedock-range::-webkit-slider-runnable-track {
+.codovo-range::-webkit-slider-runnable-track {
   height: 4px;
   border-radius: 999px;
   background: var(--c-active);
 }
 
-.codedock-range::-webkit-slider-thumb {
+.codovo-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px;
   height: 14px;
@@ -826,18 +826,18 @@ body.codedock-dragging-list * {
   transition: transform 120ms ease;
 }
 
-.codedock-range:hover::-webkit-slider-thumb,
-.codedock-range:focus-visible::-webkit-slider-thumb {
+.codovo-range:hover::-webkit-slider-thumb,
+.codovo-range:focus-visible::-webkit-slider-thumb {
   transform: scale(1.12);
 }
 
-.codedock-range::-moz-range-track {
+.codovo-range::-moz-range-track {
   height: 4px;
   border-radius: 999px;
   background: var(--c-active);
 }
 
-.codedock-range::-moz-range-thumb {
+.codovo-range::-moz-range-thumb {
   width: 12px;
   height: 12px;
   border: 2px solid var(--c-raised);
@@ -846,7 +846,7 @@ body.codedock-dragging-list * {
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
 }
 
-.codedock-range:focus-visible {
+.codovo-range:focus-visible {
   outline: 2px solid var(--c-accent);
   outline-offset: 2px;
   border-radius: 999px;
@@ -854,7 +854,7 @@ body.codedock-dragging-list * {
 
 /* ---- 设置面板：开关 / 弹窗动画 ---- */
 /* 弹窗淡入与卡片浮起，配合 prefers-reduced-motion 一起关掉 */
-@keyframes codedock-overlay-in {
+@keyframes codovo-overlay-in {
   from {
     opacity: 0;
   }
@@ -863,7 +863,7 @@ body.codedock-dragging-list * {
   }
 }
 
-@keyframes codedock-dialog-in {
+@keyframes codovo-dialog-in {
   from {
     opacity: 0;
     transform: translateY(10px) scale(0.985);
@@ -874,7 +874,7 @@ body.codedock-dragging-list * {
   }
 }
 
-@keyframes codedock-tab-in {
+@keyframes codovo-tab-in {
   from {
     opacity: 0;
     transform: translateY(4px);
@@ -885,34 +885,34 @@ body.codedock-dragging-list * {
   }
 }
 
-.codedock-overlay-in {
-  animation: codedock-overlay-in 150ms ease-out;
+.codovo-overlay-in {
+  animation: codovo-overlay-in 150ms ease-out;
 }
 
-.codedock-dialog-in {
-  animation: codedock-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+.codovo-dialog-in {
+  animation: codovo-dialog-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.codedock-tab-in {
-  animation: codedock-tab-in 140ms ease-out;
+.codovo-tab-in {
+  animation: codovo-tab-in 140ms ease-out;
 }
 
 /* 主分栏右侧内容面板的收放：只过渡 flex-basis，第一块同步 grow 吃掉差额。
    缓动和左侧栏共用一套（起步略快、尾段收柔），两条边看起来才是一个节奏 */
-.codedock-split-anim {
+.codovo-split-anim {
   transition: flex-basis 280ms var(--ease-dock);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .codedock-overlay-in,
-  .codedock-dialog-in,
-  .codedock-tab-in,
-  .codedock-range::-webkit-slider-thumb {
+  .codovo-overlay-in,
+  .codovo-dialog-in,
+  .codovo-tab-in,
+  .codovo-range::-webkit-slider-thumb {
     animation: none;
     transition: none;
   }
 
-  .codedock-split-anim {
+  .codovo-split-anim {
     transition: none;
   }
 }

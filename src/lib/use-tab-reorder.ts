@@ -69,7 +69,7 @@ export function useTabReorder(onReorder: (from: number, to: number) => void) {
         drag.started = true;
         // 按下到越界这几像素里可能已经选上了文本，清掉
         window.getSelection()?.removeAllRanges();
-        document.body.classList.add("codedock-dragging-list");
+        document.body.classList.add("codovo-dragging-list");
         setDragFrom(drag.from);
       }
       const index = dropIndexAt(event.clientX);
@@ -82,7 +82,7 @@ export function useTabReorder(onReorder: (from: number, to: number) => void) {
       setPending(false);
       setDragFrom(null);
       setDropIndex(null);
-      document.body.classList.remove("codedock-dragging-list");
+      document.body.classList.remove("codovo-dragging-list");
       const index = dropRef.current;
       dropRef.current = null;
       // 按下了但没挪过，那就是普通点击，什么都不用做

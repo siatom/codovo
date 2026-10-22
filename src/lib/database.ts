@@ -44,10 +44,10 @@ export interface DbConnectionState {
   error?: string;
 }
 
-export const DB_CONNECTIONS_KEY = "codedock.dbConnections";
+export const DB_CONNECTIONS_KEY = "codovo.dbConnections";
 
 /** 连接列表变更时派发的本地事件，让同一窗口里的多个面板同步（跨窗口靠 storage 事件） */
-export const DB_CONNECTIONS_EVENT = "codedock:db-connections";
+export const DB_CONNECTIONS_EVENT = "codovo:db-connections";
 
 export const DB_KINDS: DbKind[] = ["mysql", "postgres", "sqlite"];
 

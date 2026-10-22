@@ -46,8 +46,8 @@ const EXIT_POLL: Duration = Duration::from_secs(1);
 /// 报错时回传的响应体上限，别把整页 HTML 塞给用户。
 const MAX_ERROR_CHARS: usize = 500;
 /// 注入给 opencode 的密钥环境变量前缀。每个提供商一个变量
-/// （`CODEDOCK_AI_KEY_<PROVIDER_ID>`），密钥不写进配置文件，只走环境变量。
-const API_KEY_ENV_PREFIX: &str = "CODEDOCK_AI_KEY_";
+/// （`CODOVO_AI_KEY_<PROVIDER_ID>`），密钥不写进配置文件，只走环境变量。
+const API_KEY_ENV_PREFIX: &str = "CODOVO_AI_KEY_";
 /// opencode v2 要求服务口令，我们自己定一个并通过这个环境变量注入。
 /// 不定的话它会随机生成、打到 stdout，我们还得去解析那行输出。
 const PASSWORD_ENV: &str = "OPENCODE_PASSWORD";
@@ -88,7 +88,7 @@ const DB_AGENT_SKILL_BODY: &str = "\
 
 /// 数据库 Agent 专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
 const DB_AGENT_PROMPT: &str = "\
-你是 CodeDock 里面向数据库的查询助手。你能看到的工具只有一组只读数据库工具\
+你是 Codovo 里面向数据库的查询助手。你能看到的工具只有一组只读数据库工具\
 （db_list_tables / db_describe_table / db_run_query）。\n\
 把用户的中文问题翻成准确的 SQL，用工具执行后把结果讲清楚：先给结论，再附上执行的 SQL。\
 除非用户要求，不要罗列原始行，用一两条代表性数据说明即可。\n\
@@ -107,10 +107,10 @@ const APP_AGENT_SKILL_NAME: &str = "app-control";
 const APP_AGENT_AGENT_NAME: &str = "app";
 
 /// 应用助手的技能正文（frontmatter 由 `render_skill` 补）。
-/// 目的：把 CodeDock 的界面结构和设置字段名写死给模型，用户问「怎么改字号」时它能答对，
+/// 目的：把 Codovo 的界面结构和设置字段名写死给模型，用户问「怎么改字号」时它能答对，
 /// 而不是去翻代码或瞎猜。
 const APP_AGENT_SKILL_BODY: &str = "\
-# CodeDock 界面操作
+# Codovo 界面操作
 
 ## 界面结构
 
@@ -168,10 +168,10 @@ const APP_AGENT_SKILL_BODY: &str = "\
 
 /// 应用助手专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
 const APP_AGENT_PROMPT: &str = "\
-你是 CodeDock（一个 AI 编程驾驶舱桌面应用）的界面操作助手。你能看到的工具只有一组界面工具\
+你是 Codovo（一个 AI 编程驾驶舱桌面应用）的界面操作助手。你能看到的工具只有一组界面工具\
 （app_get_state / app_update_settings / app_add_workspace / app_rename_workspace / \
 app_pin_workspace / app_remove_workspace / app_reset_settings / app_switch_panel / \
-app_set_right_pane / app_set_fullscreen），它们改的是 CodeDock 自己的设置、工作区列表与界面布局。\n\
+app_set_right_pane / app_set_fullscreen），它们改的是 Codovo 自己的设置、工作区列表与界面布局。\n\
 规则：\n\
 1. 用户问「怎么改 X」「X 在哪」时，直接用中文讲清路径（例如「设置 → 终端 → 字号」），\
 不要调用工具；拿不准当前值时才先调 app_get_state。\n\
@@ -200,7 +200,7 @@ const PREVIEW_AGENT_AGENT_NAME: &str = "preview";
 const PREVIEW_AGENT_SKILL_BODY: &str = "\
 # 项目预览
 
-你是 CodeDock「预览」面板背后的一键启动助手：用户点面板上的「启动」按钮触发你，没有对话界面。
+你是 Codovo「预览」面板背后的一键启动助手：用户点面板上的「启动」按钮触发你，没有对话界面。
 你要把当前工作区项目跑起来，并用一两句话把结果（地址 / CDP 调试端口）汇报出来。
 
 ## 工作流
@@ -223,13 +223,13 @@ const PREVIEW_AGENT_SKILL_BODY: &str = "\
 ## 注意
 
 - 没有对话界面：**直接执行，不要反问、不要等确认**；最多只重试一次。
-- 探测出 warnings（例如「这是 CodeDock 自身」）时照常启动，并在汇报里提一句。
-- 预览进程由 CodeDock 托管，日志显示在面板下方。
+- 探测出 warnings（例如「这是 Codovo 自身」）时照常启动，并在汇报里提一句。
+- 预览进程由 Codovo 托管，日志显示在面板下方。
 - 你改不了项目代码；要让代码改动生效，先让用户改完再点一次「启动」。";
 
 /// 预览助手专用 primary agent 的提示词。比技能更靠前，先把角色与边界定死。
 const PREVIEW_AGENT_PROMPT: &str = "\
-你是 CodeDock「预览」面板背后的一键启动助手，由面板上的「启动」按钮触发，没有对话界面。\
+你是 Codovo「预览」面板背后的一键启动助手，由面板上的「启动」按钮触发，没有对话界面。\
 你要把当前工作区项目跑起来，并用一两句话汇报结果（地址 / CDP 调试端口）。\
 你能用的工具只有一组预览工具（preview_detect / preview_start / preview_stop / preview_status），\
 加上看项目用的 read / grep / glob / list。\n\
@@ -530,9 +530,9 @@ impl AgentConfig {
 
         // 界面上一个提供商都没配、全靠 .env：合成一个，保留「面板留空也能跑」的调试路径
         if self.providers.is_empty() {
-            let id = "codedock".to_string();
+            let id = "codovo".to_string();
             self.providers.push(ProviderSpec {
-                name: "CodeDock (.env)".to_string(),
+                name: "Codovo (.env)".to_string(),
                 base_url: overrides.base_url.clone().unwrap_or_default(),
                 has_key: overrides.api_key.is_some(),
                 models: overrides.model.clone().into_iter().collect(),
@@ -983,7 +983,7 @@ fn provider_hint() -> String {
     }
 }
 
-/// 生成 CodeDock 专用的 opencode 配置，写在自己的配置目录里。
+/// 生成 Codovo 专用的 opencode 配置，写在自己的配置目录里。
 ///
 /// 用 `OPENCODE_CONFIG_DIR` 把它指过去，完全不碰用户的 `~/.config/opencode/`；
 /// 也不往工作区写 `opencode.json`——那会污染用户仓库、出现在 git 改动列表里。
@@ -1052,14 +1052,14 @@ fn write_config(
         wrote_skill = true;
     }
 
-    // 应用助手也内置一份技能：把 CodeDock 的界面结构与设置字段名写死给模型，
+    // 应用助手也内置一份技能：把 Codovo 的界面结构与设置字段名写死给模型，
     // 用户问「怎么改字号」时能直接答对
     if app_mailbox.is_some() {
         let target = skills_dir.join(APP_AGENT_SKILL_NAME);
         std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
         let skill = SkillSpec {
             name: APP_AGENT_SKILL_NAME.to_string(),
-            description: "CodeDock 界面结构与设置字段速查：界面操作助手回答「怎么改某设置」时用"
+            description: "Codovo 界面结构与设置字段速查：界面操作助手回答「怎么改某设置」时用"
                 .to_string(),
             content: APP_AGENT_SKILL_BODY.to_string(),
         };
@@ -1164,7 +1164,7 @@ fn write_config(
 
     if app_mailbox.is_some() {
         // 应用助手：同样是固定角色 + 固定边界。`tools` 逐项关掉文件 / 命令 / 联网类工具，
-        // 它只该动 CodeDock 界面（`app_*` 那组 MCP 工具）——这是 per-agent 的开关，
+        // 它只该动 Codovo 界面（`app_*` 那组 MCP 工具）——这是 per-agent 的开关，
         // 不会波及用户自己的 coding agent。
         let tools = APP_AGENT_DISABLED_TOOLS
             .iter()
@@ -1173,7 +1173,7 @@ fn write_config(
         agents.insert(
             APP_AGENT_AGENT_NAME.to_string(),
             serde_json::json!({
-                "description": "CodeDock 界面操作助手：问答并修改设置、工作区与界面布局",
+                "description": "Codovo 界面操作助手：问答并修改设置、工作区与界面布局",
                 "mode": "primary",
                 "prompt": APP_AGENT_PROMPT,
                 "tools": serde_json::Value::Object(tools),
@@ -1191,7 +1191,7 @@ fn write_config(
         agents.insert(
             PREVIEW_AGENT_AGENT_NAME.to_string(),
             serde_json::json!({
-                "description": "CodeDock 预览助手：按项目类型启动 / 停止预览，方便调试验证",
+                "description": "Codovo 预览助手：按项目类型启动 / 停止预览，方便调试验证",
                 "mode": "primary",
                 "prompt": PREVIEW_AGENT_PROMPT,
                 "tools": serde_json::Value::Object(tools),
@@ -1230,7 +1230,7 @@ fn write_config(
             "db": {
                 "type": "local",
                 "command": [exe.to_string_lossy(), "--mcp-db"],
-                "environment": { "CODEDOCK_DB_TARGET": target.to_string_lossy() },
+                "environment": { "CODOVO_DB_TARGET": target.to_string_lossy() },
                 "timeout": 60000,
             }
         });
@@ -1259,7 +1259,7 @@ fn write_config(
         let entry = serde_json::json!({
             "type": "local",
             "command": [exe.to_string_lossy(), "--mcp-app"],
-            "environment": { "CODEDOCK_APP_MAILBOX": mailbox.to_string_lossy() },
+            "environment": { "CODOVO_APP_MAILBOX": mailbox.to_string_lossy() },
             "timeout": 120000,
         });
         // 与上面 db 那块互斥（工作区智能体不会是数据库 Agent），但真撞上也得两边都留住
@@ -1282,8 +1282,8 @@ fn write_config(
             "type": "local",
             "command": [exe.to_string_lossy(), "--mcp-preview"],
             "environment": {
-                "CODEDOCK_PREVIEW_MAILBOX": mailbox.to_string_lossy(),
-                "CODEDOCK_PREVIEW_ROOT": cfg.workspace_root.trim(),
+                "CODOVO_PREVIEW_MAILBOX": mailbox.to_string_lossy(),
+                "CODOVO_PREVIEW_ROOT": cfg.workspace_root.trim(),
             },
             "timeout": 120000,
         });
@@ -2266,35 +2266,35 @@ mod tests {
     #[test]
     fn split_model_ref_cuts_on_the_first_slash() {
         assert_eq!(
-            split_model_ref("codedock/some-model"),
-            Some(("codedock", "some-model"))
+            split_model_ref("codovo/some-model"),
+            Some(("codovo", "some-model"))
         );
         // 模型 id 自己带斜杠时，后半段整段都是模型名
         assert_eq!(
             split_model_ref("ollama/meta-llama/Llama-3-8B"),
             Some(("ollama", "meta-llama/Llama-3-8B"))
         );
-        assert_eq!(split_model_ref("  codedock / m  "), Some(("codedock", "m")));
+        assert_eq!(split_model_ref("  codovo / m  "), Some(("codovo", "m")));
         // 切不出两段的一律当没有：宁可不下发，也别把引用的两半搞错
         assert_eq!(split_model_ref("some-model"), None);
         assert_eq!(split_model_ref("/m"), None);
-        assert_eq!(split_model_ref("codedock/"), None);
+        assert_eq!(split_model_ref("codovo/"), None);
         assert_eq!(split_model_ref("   "), None);
     }
 
     #[test]
     fn prompt_body_matches_each_generation() {
         // v1 把文本放进 parts[]，v2 直接放顶层 text
-        let v1 = prompt_body(Protocol::V1, "你好", Some("codedock/m"), Some("plan"));
+        let v1 = prompt_body(Protocol::V1, "你好", Some("codovo/m"), Some("plan"));
         assert_eq!(v1["parts"][0]["type"], "text");
         assert_eq!(v1["parts"][0]["text"], "你好");
         assert!(v1.get("text").is_none());
-        assert_eq!(v1["model"]["providerID"], "codedock");
+        assert_eq!(v1["model"]["providerID"], "codovo");
         assert_eq!(v1["model"]["modelID"], "m");
         // v1 靠 body 里的 agent 切 primary agent
         assert_eq!(v1["agent"], "plan");
 
-        let v2 = prompt_body(Protocol::V2, "你好", Some("codedock/m"), Some("plan"));
+        let v2 = prompt_body(Protocol::V2, "你好", Some("codovo/m"), Some("plan"));
         assert_eq!(v2["text"], "你好");
         assert!(v2.get("parts").is_none());
         assert_eq!(v2["model"]["modelID"], "m");
@@ -2332,8 +2332,8 @@ mod tests {
         AgentConfig {
             command: "opencode".to_string(),
             port: 0,
-            providers: vec![provider("codedock", &["some-model"])],
-            default_model: "codedock/some-model".to_string(),
+            providers: vec![provider("codovo", &["some-model"])],
+            default_model: "codovo/some-model".to_string(),
             // 单测别去碰真实钥匙串：要密钥的用例一律走 .env 覆盖这条路，
             // 它不落盘、也不查凭据库
             dev_api_key: None,
@@ -2350,7 +2350,7 @@ mod tests {
 
     #[test]
     fn config_materializes_rules_memory_skills_and_agents() {
-        let dir = std::env::temp_dir().join(format!("codedock-agent-layer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codovo-agent-layer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut cfg = bare_config();
@@ -2406,7 +2406,7 @@ mod tests {
 
     #[test]
     fn bare_config_writes_no_extension_fields() {
-        let dir = std::env::temp_dir().join(format!("codedock-agent-bare-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codovo-agent-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
         write_config(&dir, &cfg, None, None, None).unwrap();
@@ -2424,7 +2424,7 @@ mod tests {
 
     #[test]
     fn database_agent_config_injects_readonly_mcp_and_skill() {
-        let dir = std::env::temp_dir().join(format!("codedock-agent-db-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codovo-agent-db-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut cfg = bare_config();
@@ -2438,7 +2438,7 @@ mod tests {
         assert_eq!(value["mcp"]["db"]["type"], "local");
         assert_eq!(value["mcp"]["db"]["command"][1], "--mcp-db");
         assert_eq!(
-            value["mcp"]["db"]["environment"]["CODEDOCK_DB_TARGET"]
+            value["mcp"]["db"]["environment"]["CODOVO_DB_TARGET"]
                 .as_str()
                 .unwrap(),
             target.to_string_lossy()
@@ -2457,7 +2457,7 @@ mod tests {
 
     #[test]
     fn workspace_agent_config_injects_the_app_assistant() {
-        let dir = std::env::temp_dir().join(format!("codedock-agent-app-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codovo-agent-app-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let cfg = bare_config();
@@ -2471,7 +2471,7 @@ mod tests {
         assert_eq!(value["mcp"]["app"]["type"], "local");
         assert_eq!(value["mcp"]["app"]["command"][1], "--mcp-app");
         assert_eq!(
-            value["mcp"]["app"]["environment"]["CODEDOCK_APP_MAILBOX"]
+            value["mcp"]["app"]["environment"]["CODOVO_APP_MAILBOX"]
                 .as_str()
                 .unwrap(),
             mailbox.to_string_lossy()
@@ -2494,7 +2494,7 @@ mod tests {
     #[test]
     fn preview_agent_config_injects_the_preview_assistant() {
         let dir =
-            std::env::temp_dir().join(format!("codedock-agent-preview-{}", std::process::id()));
+            std::env::temp_dir().join(format!("codovo-agent-preview-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut cfg = bare_config();
@@ -2509,13 +2509,13 @@ mod tests {
         // MCP：本地 stdio，命令是本 exe 的 --mcp-preview，环境变量指向邮箱目录 + 本助手的工作区
         assert_eq!(value["mcp"]["preview"]["command"][1], "--mcp-preview");
         assert_eq!(
-            value["mcp"]["preview"]["environment"]["CODEDOCK_PREVIEW_MAILBOX"]
+            value["mcp"]["preview"]["environment"]["CODOVO_PREVIEW_MAILBOX"]
                 .as_str()
                 .unwrap(),
             mailbox.to_string_lossy()
         );
         assert_eq!(
-            value["mcp"]["preview"]["environment"]["CODEDOCK_PREVIEW_ROOT"],
+            value["mcp"]["preview"]["environment"]["CODOVO_PREVIEW_ROOT"],
             "/tmp/proj"
         );
         assert!(value["mcp"]["preview"]["timeout"].as_u64().unwrap() >= 60000);
@@ -2663,7 +2663,7 @@ mod tests {
 
     #[test]
     fn config_uses_dynamic_model_key() {
-        let dir = std::env::temp_dir().join("codedock-agent-test-config");
+        let dir = std::env::temp_dir().join("codovo-agent-test-config");
         let _ = std::fs::remove_dir_all(&dir);
         let cfg = bare_config();
         write_config(&dir, &cfg, None, None, None).unwrap();
@@ -2672,16 +2672,16 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
 
         // 模型名要原样成为 key，不能被 json! 当成字面量 "model"
-        assert!(value["provider"]["codedock"]["models"]["some-model"].is_object());
-        assert_eq!(value["model"], "codedock/some-model");
+        assert!(value["provider"]["codovo"]["models"]["some-model"].is_object());
+        assert_eq!(value["model"], "codovo/some-model");
         assert_eq!(
-            value["provider"]["codedock"]["options"]["baseURL"],
-            "https://codedock.example.com/v1"
+            value["provider"]["codovo"]["options"]["baseURL"],
+            "https://codovo.example.com/v1"
         );
         // 密钥只能留占位符，绝不能出现在文件里；变量名按 provider id 派生
         assert_eq!(
-            value["provider"]["codedock"]["options"]["apiKey"],
-            "{env:CODEDOCK_AI_KEY_CODEDOCK}"
+            value["provider"]["codovo"]["options"]["apiKey"],
+            "{env:CODOVO_AI_KEY_CODOVO}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2690,7 +2690,7 @@ mod tests {
     #[test]
     fn config_writes_every_usable_provider() {
         let dir = std::env::temp_dir().join(format!(
-            "codedock-agent-multi-provider-{}",
+            "codovo-agent-multi-provider-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2731,7 +2731,7 @@ mod tests {
             .is_none());
         assert_eq!(
             value["provider"]["deepseek"]["options"]["apiKey"],
-            "{env:CODEDOCK_AI_KEY_DEEPSEEK}"
+            "{env:CODOVO_AI_KEY_DEEPSEEK}"
         );
         // id 里有连字符时环境变量名要能兜住
         let cfg = AgentConfig {
@@ -2745,7 +2745,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             value["provider"]["my-vendor"]["options"]["apiKey"],
-            "{env:CODEDOCK_AI_KEY_MY_VENDOR}"
+            "{env:CODOVO_AI_KEY_MY_VENDOR}"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2754,7 +2754,7 @@ mod tests {
     #[test]
     fn agent_model_gets_the_default_provider_prefix() {
         let dir = std::env::temp_dir().join(format!(
-            "codedock-agent-model-prefix-{}",
+            "codovo-agent-model-prefix-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2783,7 +2783,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
                 .unwrap();
-        assert_eq!(value["agent"]["legacy"]["model"], "codedock/some-model");
+        assert_eq!(value["agent"]["legacy"]["model"], "codovo/some-model");
         assert_eq!(value["agent"]["explicit"]["model"], "other/their-model");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2798,16 +2798,16 @@ mod tests {
         };
         assert_eq!(
             cfg.resolved_default_model().as_deref(),
-            Some("codedock/some-model")
+            Some("codovo/some-model")
         );
 
         // 指向的提供商整个没了 → 退到第一个可用提供商
         let cfg = AgentConfig {
             default_model: "gone/m".to_string(),
-            providers: vec![provider("codedock", &["m"]), provider("deepseek", &["d"])],
+            providers: vec![provider("codovo", &["m"]), provider("deepseek", &["d"])],
             ..bare_config()
         };
-        assert_eq!(cfg.resolved_default_model().as_deref(), Some("codedock/m"));
+        assert_eq!(cfg.resolved_default_model().as_deref(), Some("codovo/m"));
 
         // 一个可用提供商都没有 → None，调用方据此报「没配提供商」
         let cfg = AgentConfig {
@@ -2840,7 +2840,7 @@ mod tests {
         };
         assert_eq!(
             cfg.secrets().unwrap(),
-            vec![("CODEDOCK_AI_KEY_DEEPSEEK".to_string(), "sk-dev".to_string())]
+            vec![("CODOVO_AI_KEY_DEEPSEEK".to_string(), "sk-dev".to_string())]
         );
     }
 
@@ -2859,25 +2859,25 @@ mod tests {
             ..bare_config()
         };
         cfg.apply(&overrides);
-        assert_eq!(cfg.default_model, "codedock/dev-model");
+        assert_eq!(cfg.default_model, "codovo/dev-model");
         assert_eq!(cfg.providers[0].base_url, "https://dev.example.com/v1");
         assert!(cfg.providers[0].has_key);
         assert_eq!(
             cfg.secrets().unwrap(),
-            vec![("CODEDOCK_AI_KEY_CODEDOCK".to_string(), "sk-dev".to_string())]
+            vec![("CODOVO_AI_KEY_CODOVO".to_string(), "sk-dev".to_string())]
         );
 
         // 配了提供商：覆盖打在默认那家上，模型只换模型段
         let mut cfg = bare_config();
         cfg.providers.push(provider("deepseek", &["deepseek-chat"]));
         cfg.apply(&overrides);
-        assert_eq!(cfg.default_model, "codedock/dev-model");
+        assert_eq!(cfg.default_model, "codovo/dev-model");
         assert_eq!(cfg.providers[0].base_url, "https://dev.example.com/v1");
         assert_eq!(cfg.providers[1].base_url, "https://deepseek.example.com/v1");
         // .env 的密钥只落在默认那家，别家不受影响（它们得各查各的钥匙串条目）
         assert_eq!(
             cfg.secrets().unwrap(),
-            vec![("CODEDOCK_AI_KEY_CODEDOCK".to_string(), "sk-dev".to_string())]
+            vec![("CODOVO_AI_KEY_CODOVO".to_string(), "sk-dev".to_string())]
         );
     }
 
@@ -2885,7 +2885,7 @@ mod tests {
     fn default_provider_id_prefers_the_reference_prefix() {
         // 默认模型的提供商前缀为准，认不出来才退到第一个可用项
         let cfg = AgentConfig {
-            providers: vec![provider("codedock", &["m"]), provider("deepseek", &["d"])],
+            providers: vec![provider("codovo", &["m"]), provider("deepseek", &["d"])],
             default_model: "deepseek/d".to_string(),
             ..bare_config()
         };
@@ -2895,7 +2895,7 @@ mod tests {
             default_model: "gone/m".to_string(),
             ..cfg
         };
-        assert_eq!(cfg.default_provider_id().as_deref(), Some("codedock"));
+        assert_eq!(cfg.default_provider_id().as_deref(), Some("codovo"));
     }
 
     #[test]
@@ -2916,7 +2916,7 @@ mod tests {
 
     #[test]
     fn command_lookup_uses_explicit_path() {
-        let dir = std::env::temp_dir().join(format!("codedock-agent-path-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("codovo-agent-path-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         #[cfg(windows)]

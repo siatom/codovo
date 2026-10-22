@@ -662,7 +662,7 @@ fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, St
 /// 探一次。写完直接回新状态，前端一次 IPC 就能把界面刷到位，不用等下一个轮询周期。
 ///
 /// 分支名写死 main 而不是让 git 用全局的 init.defaultBranch：界面上的按钮说的就是
-/// 「初始化 Git 仓库」，用户按下去该拿到和 CodeDock 仓库本身一致的结果，而不是被
+/// 「初始化 Git 仓库」，用户按下去该拿到和 Codovo 仓库本身一致的结果，而不是被
 /// 本机配置决定；另外 git 2.28+ 才会在空仓库的 status 里报出分支名，`-b` 顺带保证了
 /// 刚初始化完的面板能显示分支。
 fn init_git_repo(root: &Path) -> Result<GitStatus, String> {
@@ -851,7 +851,7 @@ fn apply_patch(root: &Path, patch: &str, action: &HunkAction) -> Result<GitStatu
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let file = std::env::temp_dir().join(format!(
-        "codedock-hunk-{}-{seq}.patch",
+        "codovo-hunk-{}-{seq}.patch",
         std::process::id()
     ));
     fs::write(&file, patch.as_bytes()).map_err(|reason| format!("写临时补丁失败: {reason}"))?;
@@ -4450,7 +4450,7 @@ mod tests {
     #[test]
     fn non_repo_workspace_reports_itself_as_such() {
         // 拿一个不存在的目录当工作区：rev-parse 必然非 0 退出
-        let missing = std::env::temp_dir().join("codedock-not-a-repo-ever");
+        let missing = std::env::temp_dir().join("codovo-not-a-repo-ever");
         assert_eq!(
             run_git(&missing, &["rev-parse", "--show-prefix"]).unwrap(),
             None
@@ -4486,7 +4486,7 @@ mod tests {
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let unique = SEQ.fetch_add(1, Ordering::Relaxed);
         let top =
-            std::env::temp_dir().join(format!("codedock-git-{}-{unique}", std::process::id()));
+            std::env::temp_dir().join(format!("codovo-git-{}-{unique}", std::process::id()));
         let repo = top.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let state = FsState::new();
@@ -4496,8 +4496,8 @@ mod tests {
 
     fn init_repo(repo: &Path) {
         assert!(git(repo, &["init", "-q", "."]), "git init 失败");
-        assert!(git(repo, &["config", "user.email", "codedock@test"]));
-        assert!(git(repo, &["config", "user.name", "codedock"]));
+        assert!(git(repo, &["config", "user.email", "codovo@test"]));
+        assert!(git(repo, &["config", "user.name", "codovo"]));
     }
 
     fn path_of_file(repo: &Path, name: &str) -> String {
@@ -5724,8 +5724,8 @@ mod tests {
             git(repo, &["init", "-q", "-b", "main", "."]),
             "git init 失败"
         );
-        assert!(git(repo, &["config", "user.email", "codedock@test"]));
-        assert!(git(repo, &["config", "user.name", "codedock"]));
+        assert!(git(repo, &["config", "user.email", "codovo@test"]));
+        assert!(git(repo, &["config", "user.name", "codovo"]));
     }
 
     fn bare_remote(top: &Path) -> PathBuf {
@@ -5740,8 +5740,8 @@ mod tests {
     fn push_from_another_clone(top: &Path, remote_url: &str, name: &str) {
         assert!(git(top, &["clone", "-q", remote_url, "other"]));
         let other = top.join("other");
-        assert!(git(&other, &["config", "user.email", "codedock@test"]));
-        assert!(git(&other, &["config", "user.name", "codedock"]));
+        assert!(git(&other, &["config", "user.email", "codovo@test"]));
+        assert!(git(&other, &["config", "user.name", "codovo"]));
         fs::write(other.join(name), "r\n").unwrap();
         assert!(git(&other, &["add", "-A"]));
         assert!(git(&other, &["commit", "-q", "-m", "remote side"]));
@@ -5753,8 +5753,8 @@ mod tests {
     fn push_conflicting_change(top: &Path, remote_url: &str, name: &str, content: &str) {
         assert!(git(top, &["clone", "-q", remote_url, "conflict-clone"]));
         let other = top.join("conflict-clone");
-        assert!(git(&other, &["config", "user.email", "codedock@test"]));
-        assert!(git(&other, &["config", "user.name", "codedock"]));
+        assert!(git(&other, &["config", "user.email", "codovo@test"]));
+        assert!(git(&other, &["config", "user.name", "codovo"]));
         fs::write(other.join(name), content).unwrap();
         assert!(git(&other, &["add", "-A"]));
         assert!(git(&other, &["commit", "-q", "-m", "remote side"]));
@@ -7293,8 +7293,8 @@ mod tests {
         assert_eq!(after.branch.as_deref(), Some("main"));
 
         // 幂等：已经有历史之后再跑一次不报错，HEAD 也不动
-        assert!(git(&repo, &["config", "user.email", "codedock@test"]));
-        assert!(git(&repo, &["config", "user.name", "codedock"]));
+        assert!(git(&repo, &["config", "user.email", "codovo@test"]));
+        assert!(git(&repo, &["config", "user.name", "codovo"]));
         fs::write(repo.join("a.ts"), "a\n").unwrap();
         stage_paths(&repo, &None).unwrap();
         commit_staged(&repo, "first").unwrap();

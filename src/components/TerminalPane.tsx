@@ -85,7 +85,7 @@ interface TerminalPaneProps {
  *
  * 顶栏是 **AI CLI 快速切换条**：配了哪些 CLI 就摆哪几个按钮，点一下——该 CLI 已经开着标签
  * 就切过去，没有就新开一个标签跑它。想聊代码走这条线（真正的 CLI，原样运行）；
- * 需要改 CodeDock 自身的设置与界面时，用右栏的「应用助手」抽屉。
+ * 需要改 Codovo 自身的设置与界面时，用右栏的「应用助手」抽屉。
  */
 export function TerminalPane({
   root,

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# 热替换本机已安装的 CodeDock——不关闭正在运行的实例，下次启动即新版本。
+# 热替换本机已安装的 Codovo——不关闭正在运行的实例，下次启动即新版本。
 #
-# 为什么不用安装器：NSIS 安装器要在安装目录覆盖 codedock.exe，而正在运行的 exe 被
+# 为什么不用安装器：NSIS 安装器要在安装目录覆盖 codovo.exe，而正在运行的 exe 被
 # 系统锁住，安装器只能先把它结束（见 tauri-bundler 生成的 utils.nsh 里
 # CheckIfAppIsRunning 宏：静默模式 IfSilent 直接走 KillProcess，连确认都不弹）。
 #
-# 而 Windows 允许「重命名」正在运行的 exe：把旧 exe 改成 codedock.exe.old——进程继续
+# 而 Windows 允许「重命名」正在运行的 exe：把旧 exe 改成 codovo.exe.old——进程继续
 # 用内存里的旧镜像跑，不受影响——再把新 exe 放到原路径。于是不关闭应用即可更新，
 # 下次启动生效。代价：绕过了安装器，所以「应用和功能」里的版本号与 uninstall.exe
 # 不会更新；回滚 = 把 .old 改回原名（见 --rollback）。
 #
 # 用法：bash scripts/hot-update.sh [选项]
-#   --no-build        跳过构建，直接用已有的 src-tauri/target/release/codedock.exe
-#   --rollback        用 codedock.exe.old 还原上一版本（需先关闭应用）
-#   --dir <path>      指定安装目录（默认 %LOCALAPPDATA%\CodeDock）
+#   --no-build        跳过构建，直接用已有的 src-tauri/target/release/codovo.exe
+#   --rollback        用 codovo.exe.old 还原上一版本（需先关闭应用）
+#   --dir <path>      指定安装目录（默认 %LOCALAPPDATA%\Codovo）
 #   -h, --help        显示帮助
 #
-# 坑：重命名后的 codedock.exe.old 在应用运行期间仍被占用、删不掉，所以连续第二次
+# 坑：重命名后的 codovo.exe.old 在应用运行期间仍被占用、删不掉，所以连续第二次
 # 运行（还没重启过应用）时，脚本会自动改用带时间戳的备份名，不覆盖上一次的回滚点。
 #
 # 运行时输出一律用英文：Git Bash 把 stdout 重定向到文件时中文会变成乱码
@@ -26,14 +26,14 @@ set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
-APP=codedock
+APP=codovo
 BINARY="${APP}.exe"
 
 usage() {
   echo "usage: bash scripts/hot-update.sh [--no-build] [--rollback] [--dir <path>]"
   echo "  --no-build     skip the build, reuse the existing release binary"
-  echo "  --rollback     restore codedock.exe.old (close the app first)"
-  echo "  --dir <path>   install directory (default: %LOCALAPPDATA%\\CodeDock)"
+  echo "  --rollback     restore codovo.exe.old (close the app first)"
+  echo "  --dir <path>   install directory (default: %LOCALAPPDATA%\\Codovo)"
 }
 
 do_build=1
@@ -58,7 +58,7 @@ case "$(uname -s 2>/dev/null)" in
 esac
 
 if [ -z "$install_dir" ]; then
-  install_dir="${LOCALAPPDATA:-$HOME/AppData/Local}/CodeDock"
+  install_dir="${LOCALAPPDATA:-$HOME/AppData/Local}/Codovo"
 fi
 
 # 安装目录是按 per-user NSIS 装的，只有 Windows 有这个约定；别的平台路径不同，
@@ -87,7 +87,7 @@ running_pids() {
   tasklist //FI "IMAGENAME eq $BINARY" //NH 2>/dev/null | awk '{print $2}' | grep -E '^[0-9]+$' | tr '\n' ' '
 }
 
-# 找最近一次的回滚点：优先定名 codedock.exe.old，否则取最新的时间戳备份。
+# 找最近一次的回滚点：优先定名 codovo.exe.old，否则取最新的时间戳备份。
 newest_backup() {
   ls -t "$install_dir/$BINARY".old* 2>/dev/null | head -n1
 }

@@ -113,7 +113,7 @@ export interface Settings {
   /** 助手服务监听的端口；0 表示自动挑一个空闲的 */
   agentPort: number;
   /**
-   * @deprecated 工作区层的智能体配置已改以工作区根下 `.codedock/` 的文件为准，
+   * @deprecated 工作区层的智能体配置已改以工作区根下 `.codovo/` 的文件为准，
    * 这里只保留旧数据用于一次性迁移（见 lib/agent-config.ts 的 readWorkspaceLayer）。
    * 新代码不要再读写它。
    */
@@ -188,7 +188,7 @@ export interface Settings {
   shortcuts: Record<string, string>;
 }
 
-const SETTINGS_KEY = "codedock.settings";
+const SETTINGS_KEY = "codovo.settings";
 
 /**
  * 设置面板上可单独恢复默认的分类，和 SettingsDialog 的 tab 一一对应。
@@ -478,8 +478,8 @@ function migrateLegacyProvider(raw: Record<string, unknown>): AiProvider[] {
   const apiKey = asString(raw.aiApiKey, "");
   if (!baseUrl && !model && !apiKey) return [];
   const provider: AiProvider = {
-    id: "codedock",
-    name: "CodeDock",
+    id: "codovo",
+    name: "Codovo",
     baseUrl,
     apiKeySet: apiKey !== "",
     models: model ? [{ id: model, name: model, enabled: true }] : [],
@@ -580,7 +580,7 @@ function readSaved(): Settings {
     agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
     agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
     // 老版本的设置里没有这一项，回落成空表；更早的字段叫 agentProjects，兜底读旧名。
-    // 只用于一次性迁移到 `.codedock/`（见 lib/agent-config.ts 的 readWorkspaceLayer）
+    // 只用于一次性迁移到 `.codovo/`（见 lib/agent-config.ts 的 readWorkspaceLayer）
     agentWorkspaces: asWorkspaceLayers(raw.agentWorkspaces ?? raw.agentProjects),
     uiFontFamily: asString(raw.uiFontFamily, DEFAULTS.uiFontFamily),
     terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),

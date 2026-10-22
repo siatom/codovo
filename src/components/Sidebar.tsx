@@ -107,10 +107,10 @@ function firstWaitingTarget(
 }
 
 /** 窗口级偏好，存 sessionStorage：多窗口下各收各的侧边栏 */
-const COLLAPSED_KEY = "codedock.sidebarCollapsed";
+const COLLAPSED_KEY = "codovo.sidebarCollapsed";
 
 /** 同上，窗口级：展开态宽度（px），各窗口各拖各的 */
-const WIDTH_KEY = "codedock.sidebarWidth";
+const WIDTH_KEY = "codovo.sidebarWidth";
 
 /** 展开态默认宽度，和原来写死的 w-60 一致 */
 const DEFAULT_WIDTH = 240;
@@ -342,7 +342,7 @@ export function Sidebar({
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = { startX: event.clientX, startWidth: width, width };
     setResizing(true);
-    document.body.classList.add("codedock-dragging");
+    document.body.classList.add("codovo-dragging");
   };
 
   const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -362,7 +362,7 @@ export function Sidebar({
     if (!drag) return;
     resizeRef.current = null;
     setResizing(false);
-    document.body.classList.remove("codedock-dragging");
+    document.body.classList.remove("codovo-dragging");
     // 松手才落盘：拖动中每帧写一次没必要
     try {
       window.sessionStorage.setItem(WIDTH_KEY, String(drag.width));
@@ -618,7 +618,7 @@ export function Sidebar({
           >
             <IconSettings />
           </button>
-          {/* 应用助手：问答 CodeDock 用法、按指令改设置 / 工作区 / 界面布局 */}
+          {/* 应用助手：问答 Codovo 用法、按指令改设置 / 工作区 / 界面布局 */}
           <button
             type="button"
             onClick={onOpenAppAgent}
@@ -687,7 +687,7 @@ export function Sidebar({
           >
             <IconSettings />
           </button>
-          {/* 应用助手：问答 CodeDock 用法、按指令改设置 / 工作区 / 界面布局 */}
+          {/* 应用助手：问答 Codovo 用法、按指令改设置 / 工作区 / 界面布局 */}
           <button
             type="button"
             onClick={onOpenAppAgent}

@@ -351,7 +351,7 @@ export function ExplorerPane({
   useEffect(
     () => () => {
       if (expandTimerRef.current !== null) window.clearTimeout(expandTimerRef.current);
-      document.body.classList.remove("codedock-dragging-list");
+      document.body.classList.remove("codovo-dragging-list");
     },
     [],
   );
@@ -1672,7 +1672,7 @@ export function ExplorerPane({
     dragPathsRef.current = [];
     dropDirRef.current = null;
     stopExpandTimer();
-    document.body.classList.remove("codedock-dragging-list");
+    document.body.classList.remove("codovo-dragging-list");
     setDragging([]);
     setDropDir(null);
     setDragLabel(null);
@@ -1762,7 +1762,7 @@ export function ExplorerPane({
 
         const dragged = selection.get(pathKey(state.path)) ?? entry;
         setDragLabel({ name: dragged.name, count: paths.length, isDir: dragged.isDir });
-        document.body.classList.add("codedock-dragging-list");
+        document.body.classList.add("codovo-dragging-list");
         requestAnimationFrame(() => positionGhost(event.clientX, event.clientY));
       }
 

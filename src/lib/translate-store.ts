@@ -107,7 +107,7 @@ interface TranslationCacheEntry {
   updatedAt: number;
 }
 
-const CACHE_KEY = "codedock.translationCache";
+const CACHE_KEY = "codovo.translationCache";
 const CACHE_VERSION = 1;
 /** 最多保留的文档数量 */
 const MAX_CACHE_ENTRIES = 24;

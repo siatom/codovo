@@ -11,12 +11,12 @@ import {
  * 预览助手的桥。
  *
  * 预览进程池的唯一事实来源是后端主进程的 `PreviewState`，而工具调用发生在 opencode
- * 拉起的**独立子进程**（`codedock.exe --mcp-preview`，见 `src-tauri/src/preview_agent.rs`）里。
+ * 拉起的**独立子进程**（`codovo.exe --mcp-preview`，见 `src-tauri/src/preview_agent.rs`）里。
  * 所以后端把每次工具调用写成一个请求文件，这里轮询取走、调 `lib/preview.ts` 的命令、
  * 再把结果写回，形成「后端工具 → 前端执行 → 回传结果」的环（和 `lib/app-agent.ts` 同一套）。
  *
  * 预览助手是**每个工作区一个进程**：请求里带着该助手所属的工作区路径（后端经
- * `CODEDOCK_PREVIEW_ROOT` 注入），所以这里不依赖「当前活动工作区」，后台工作区的调用也照常执行。
+ * `CODOVO_PREVIEW_ROOT` 注入），所以这里不依赖「当前活动工作区」，后台工作区的调用也照常执行。
  *
  * 面板上点「启动」就跑一轮预览助手，它调的工具经这里落到 `lib/preview.ts` 的预览命令上。
  */

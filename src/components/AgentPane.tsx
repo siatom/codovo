@@ -74,7 +74,7 @@ type Phase = "idle" | "starting" | "ready" | "error";
  * 当前选中的会话 id 按工作区记，换工作区就是另一套历史。
  * 存 sessionStorage：多窗口下同一个工作区可以各看各的会话，互不影响。
  */
-const SESSION_KEY_PREFIX = "codedock.agentSession.";
+const SESSION_KEY_PREFIX = "codovo.agentSession.";
 
 /** 发送键是这一屏唯一的主操作，做成实心圆钮；圆底上的字色复用角标那套 text-app */
 const SEND_BUTTON =
@@ -176,7 +176,7 @@ function focusComposerEnd(root: HTMLElement): void {
  * 应用助手面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
  * 这里只负责发消息、把 SSE 事件渲染成对话。
  *
- * 它是**内置应用助手**的界面：靠内置的 `app` agent 问答 CodeDock 用法、按指令改设置 /
+ * 它是**内置应用助手**的界面：靠内置的 `app` agent 问答 Codovo 用法、按指令改设置 /
  * 管工作区 / 切右栏模块（见 lib/app-agent.ts 的邮箱桥）。所以 primary agent 固定为
  * `app`，不给用户切换——要聊代码请用终端里的 AI CLI。
  */
@@ -238,7 +238,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   // 默认模型那家提供商走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
-  // 项目层配置以仓库根的 `.codedock/` 为准，异步读进来；读到之前保持 null，
+  // 项目层配置以仓库根的 `.codovo/` 为准，异步读进来；读到之前保持 null，
   // boot 会等它就绪再启动，免得把半截配置喂给 opencode。
   const [workspaceLayer, setWorkspaceLayer] = useState<AgentLayer | null>(null);
   useEffect(() => {
@@ -252,7 +252,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
       .then(({ layer: loaded, migrated }) => {
         if (cancelled) return;
         setWorkspaceLayer(loaded);
-        if (migrated) console.info("已把旧的项目层智能体配置迁移到 .codedock/");
+        if (migrated) console.info("已把旧的项目层智能体配置迁移到 .codovo/");
       })
       .catch((reason) => {
         console.error("读取项目层智能体配置失败", reason);
@@ -264,7 +264,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   }, [root, settings.agentWorkspaces]);
 
   // 生效层只剩项目层：全局层随「设置 → 智能体」的瘦身一起去掉了，助手改用仓库根的
-  // `.codedock/`（rules / memory / skills / agents），随仓库走、能进 git。
+  // `.codovo/`（rules / memory / skills / agents），随仓库走、能进 git。
   // 仍然过一遍 mergeAgentLayer：它负责滤掉关掉的和名字非法的条目，非法名会让后端校验拦下整个服务。
   const layer = useMemo(
     () => mergeAgentLayer(emptyAgentLayer(), workspaceLayer ?? emptyAgentLayer()),
@@ -287,9 +287,9 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   );
 
   // 写进 opencode 配置的全局默认模型。提供商为空但 aiReady（开发调试只写 .env）
-  // 时，后端会合成一个 id 为 codedock 的提供商，引用得跟它对上，
+  // 时，后端会合成一个 id 为 codovo 的提供商，引用得跟它对上，
   // 见 src-tauri/src/agent.rs 的 apply()
-  const fallbackRef = aiConfig.model ? `codedock/${aiConfig.model}` : "";
+  const fallbackRef = aiConfig.model ? `codovo/${aiConfig.model}` : "";
   const defaultModelRef = resolveDefaultModel(settings)?.ref ?? fallbackRef;
 
   // 这一轮对话用哪个模型：primary agent 自己绑了就用绑的，否则跟随全局默认。
@@ -740,7 +740,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
           opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
           {/* 只在真配了提供商时才把引用译成名字：开发调试下提供商是后端合成的，
-              译出来会是 `codedock/xxx`，不如直接显示 .env 里的模型名 */}
+              译出来会是 `codovo/xxx`，不如直接显示 .env 里的模型名 */}
           {(settings.aiProviders.length > 0 && sendModel
             ? modelRefLabel(settings, sendModel)
             : aiConfig.model) || "未配置模型"}
@@ -776,7 +776,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
                 <IconBot className="h-5 w-5" />
               </span>
               <div className="text-[13px] font-medium text-fg-muted">
-                问答 CodeDock 用法，或让它改设置与界面
+                问答 Codovo 用法，或让它改设置与界面
               </div>
               <div className="text-[12px] leading-relaxed text-fg-faint">
                 改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框
@@ -816,7 +816,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             onClick={onComposerClick}
-            data-placeholder="问 CodeDock 用法，或让它改设置与界面…"
+            data-placeholder="问 Codovo 用法，或让它改设置与界面…"
             className="agent-composer min-h-6 max-h-40 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-fg outline-none"
           />
           <div className="mt-1 flex items-center gap-2">

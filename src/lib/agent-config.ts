@@ -11,18 +11,18 @@ export function isLayerEmpty(layer: AgentLayer): boolean {
   );
 }
 
-/** 读工作区根的 `.codedock/` 项目层配置。文件不存在返回空层。 */
+/** 读工作区根的 `.codovo/` 项目层配置。文件不存在返回空层。 */
 export function readWorkspaceLayerFile(root: string): Promise<AgentLayer> {
   return invoke<AgentLayer>("agent_config_read", { root });
 }
 
-/** 把项目层配置写到工作区根的 `.codedock/`。 */
+/** 把项目层配置写到工作区根的 `.codovo/`。 */
 export function writeWorkspaceLayerFile(root: string, layer: AgentLayer): Promise<void> {
   return invoke<void>("agent_config_write", { root, layer });
 }
 
 /**
- * 读项目层，并做一次性迁移：`.codedock/` 为空而 localStorage 里还留着旧的
+ * 读项目层，并做一次性迁移：`.codovo/` 为空而 localStorage 里还留着旧的
  * `agentWorkspaces[root]` 时，把旧值写进文件（配置不丢），返回 `migrated: true`。
  * 之后文件非空，不会再迁移。
  */

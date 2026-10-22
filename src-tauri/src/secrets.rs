@@ -15,7 +15,7 @@ use keyring::Entry;
 use serde::Serialize;
 
 /// 条目归类名。用户在系统凭据管理器 / 钥匙串里看到的就是它，所以用产品名。
-const SERVICE: &str = "CodeDock";
+const SERVICE: &str = "Codovo";
 
 /// provider id 的长度上限。这几个平台对条目名的长度都有上限（Windows 是 256 字符
 /// 量级），我们自己的 id 是 slug（十几个字符），这里只是别让脏数据把接口顶回来。
@@ -166,8 +166,8 @@ mod tests {
     #[test]
     fn empty_key_is_a_delete() {
         // 空密钥不该往凭据库里塞一条空记录，等价于清除
-        assert!(set("codedock-test-empty", "   ").is_ok());
+        assert!(set("codovo-test-empty", "   ").is_ok());
         // 清除一个本来就没有的条目也算成功
-        assert!(delete("codedock-test-not-there").is_ok());
+        assert!(delete("codovo-test-not-there").is_ok());
     }
 }

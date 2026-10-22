@@ -135,7 +135,7 @@ fn open_shell(
     }
     // PATH 只有 macOS 需要显式喂：GUI 应用没有终端父进程，拿不到用户登录 shell 里的 PATH。
     // Windows 上绝不能覆盖——portable-pty 每次 spawn 都会重读注册表（system + user PATH 合并），
-    // 显式设成进程自身那份 PATH 反而把它钉死在 CodeDock 启动那一刻的旧值，启动之后新改的
+    // 显式设成进程自身那份 PATH 反而把它钉死在 Codovo 启动那一刻的旧值，启动之后新改的
     // PATH 就永远进不来（Linux 下 get_base_env 不读额外配置，设与不设等价，故一并省去）。
     #[cfg(target_os = "macos")]
     if let Some(path) = crate::shell_env::resolved_path(&program, workdir.as_deref()) {
@@ -310,7 +310,7 @@ mod tests {
         let is_pwsh = lower.ends_with("pwsh")
             || lower.ends_with("pwsh.exe")
             || lower.ends_with("powershell.exe");
-        let marker = format!("codedock-ok-{}", std::process::id());
+        let marker = format!("codovo-ok-{}", std::process::id());
 
         // 命令文本里不能出现 marker 本身，否则终端回显输入行就会造成假阳性，
         // 所以两种 shell 都得靠「拼两段」求值——但拼法不通用：
@@ -318,9 +318,9 @@ mod tests {
         let command = if is_cmd {
             "ver".to_string()
         } else if is_pwsh {
-            format!("'codedock' + '-ok-{}'", std::process::id())
+            format!("'codovo' + '-ok-{}'", std::process::id())
         } else {
-            format!("printf '%s%s\\n' 'codedock' '-ok-{}'", std::process::id())
+            format!("printf '%s%s\\n' 'codovo' '-ok-{}'", std::process::id())
         };
         // 只发 \r：真实终端的 Enter 就是 \r，多带一个 \n 会让 pwsh 进入续行
         shell

@@ -8,7 +8,7 @@
 # 几个绕不开的坑：
 # - NSIS 的静默开关是 /S，而 Git Bash 会把 /S 当路径去转换，所以写成 //S
 #   （MSYS 会剥掉一个斜杠还原成 /S，同 dev-local.sh 里的 taskkill //F）。
-# - 安装版 identifier 是 com.codedock、dev 版是 com.codedock.dev，两者并存不冲突；
+# - 安装版 identifier 是 com.codovo、dev 版是 com.codovo.dev，两者并存不冲突；
 #   但安装会覆盖本机已有的安装版——正在运行的实例会被安装器静默结束。
 # - corepack 的 pnpm shim 在没有控制台的后台会话里会因设置进程标题失败而崩
 #   （Assertion failed: process_title），前台无碍、后台必崩；改成 node 直跑
@@ -82,8 +82,8 @@ if [ "$os" != windows ]; then
   exit 0
 fi
 
-if tasklist //FI "IMAGENAME eq codedock.exe" 2>/dev/null | grep -qi 'codedock.exe'; then
-  echo "[build-install] WARNING: codedock.exe is running; the installer will close it"
+if tasklist //FI "IMAGENAME eq codovo.exe" 2>/dev/null | grep -qi 'codovo.exe'; then
+  echo "[build-install] WARNING: codovo.exe is running; the installer will close it"
 fi
 
 echo "[build-install] installing silently ..."
@@ -94,10 +94,10 @@ if [ "$code" -ne 0 ]; then
   exit "$code"
 fi
 
-# currentUser 模式装到 %LOCALAPPDATA%\CodeDock；换过 installMode 的话这里验不到，
+# currentUser 模式装到 %LOCALAPPDATA%\Codovo；换过 installMode 的话这里验不到，
 # 只提示、不当失败。
 localappdata_u="$(cygpath -u "${LOCALAPPDATA:-$HOME/AppData/Local}" 2>/dev/null || echo "${LOCALAPPDATA:-$HOME/AppData/Local}")"
-installed="$localappdata_u/CodeDock/codedock.exe"
+installed="$localappdata_u/Codovo/codovo.exe"
 if [ -f "$installed" ]; then
   echo "[build-install] installed: $installed"
 else

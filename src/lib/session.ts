@@ -15,7 +15,7 @@ export interface EditorSession {
   active: string | null;
 }
 
-const KEY_PREFIX = "codedock.editorSession.";
+const KEY_PREFIX = "codovo.editorSession.";
 /** 落盘防抖：拖动重排标签会连着触发很多次 */
 const SAVE_DELAY_MS = 400;
 

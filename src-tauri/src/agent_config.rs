@@ -1,13 +1,13 @@
 //! 工作区**项目层**的智能体配置读写。
 //!
-//! 项目层（规则 / 记忆 / 技能 / Agents）以仓库根 `.codedock/` 下的文件为准，而不是
+//! 项目层（规则 / 记忆 / 技能 / Agents）以仓库根 `.codovo/` 下的文件为准，而不是
 //! localStorage——这样配置随仓库走、能进 git、也能用编辑器直接改。全局层仍留在
-//! `codedock.settings`（它不属于任何仓库）。
+//! `codovo.settings`（它不属于任何仓库）。
 //!
 //! 文件布局：
-//! - `.codedock/rules.md` / `.codedock/memory.md`：纯文本
-//! - `.codedock/skills.json`：`AgentSkill[]`
-//! - `.codedock/agents.json`：`AgentProfile[]`
+//! - `.codovo/rules.md` / `.codovo/memory.md`：纯文本
+//! - `.codovo/skills.json`：`AgentSkill[]`
+//! - `.codovo/agents.json`：`AgentProfile[]`
 //!
 //! 空内容不落盘（删掉对应文件），全空时连目录都不建。读的时候文件缺失当空、解析失败报错。
 
@@ -19,7 +19,7 @@ use tauri::State;
 use crate::fs_api::FsState;
 
 /// 工作区根下存放项目层配置的目录名。
-const DIR: &str = ".codedock";
+const DIR: &str = ".codovo";
 
 /// 项目层的一整套配置。字段与前端 `lib/settings.tsx` 的 `AgentLayer` 对齐。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -119,7 +119,7 @@ fn write_or_remove_json<T: Serialize>(path: &Path, items: &[T]) -> Result<(), St
     std::fs::write(path, text).map_err(|error| format!("写入 {} 失败: {error}", path.display()))
 }
 
-/// 把项目层配置写到工作区根的 `.codedock/` 下。全空时不建目录。
+/// 把项目层配置写到工作区根的 `.codovo/` 下。全空时不建目录。
 fn write_layer(root: &Path, layer: &AgentLayer) -> Result<(), String> {
     let dir = root.join(DIR);
     let empty = layer.rules.trim().is_empty()
@@ -133,7 +133,7 @@ fn write_layer(root: &Path, layer: &AgentLayer) -> Result<(), String> {
         }
         return Ok(());
     }
-    std::fs::create_dir_all(&dir).map_err(|error| format!("创建 .codedock 目录失败: {error}"))?;
+    std::fs::create_dir_all(&dir).map_err(|error| format!("创建 .codovo 目录失败: {error}"))?;
     write_or_remove(&dir.join("rules.md"), &layer.rules)?;
     write_or_remove(&dir.join("memory.md"), &layer.memory)?;
     write_or_remove_json(&dir.join("skills.json"), &layer.skills)?;
@@ -143,14 +143,14 @@ fn write_layer(root: &Path, layer: &AgentLayer) -> Result<(), String> {
 
 // ---- Tauri 命令 ----
 
-/// 读工作区项目层的智能体配置（`.codedock/` 下）。没有就返回空层。
+/// 读工作区项目层的智能体配置（`.codovo/` 下）。没有就返回空层。
 #[tauri::command]
 pub fn agent_config_read(state: State<'_, FsState>, root: String) -> Result<AgentLayer, String> {
     let root: PathBuf = state.checked_root(&root)?;
     read_layer(&root)
 }
 
-/// 把项目层配置写到工作区根的 `.codedock/` 下。
+/// 把项目层配置写到工作区根的 `.codovo/` 下。
 #[tauri::command]
 pub fn agent_config_write(
     state: State<'_, FsState>,
@@ -167,7 +167,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "codedock-agent-config-{tag}-{}",
+            "codovo-agent-config-{tag}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -213,8 +213,8 @@ mod tests {
         write_layer(&dir, &original).unwrap();
 
         // 落盘位置正确
-        assert!(dir.join(".codedock").join("rules.md").is_file());
-        assert!(dir.join(".codedock").join("skills.json").is_file());
+        assert!(dir.join(".codovo").join("rules.md").is_file());
+        assert!(dir.join(".codovo").join("skills.json").is_file());
 
         let read_back = read_layer(&dir).unwrap();
         assert_eq!(read_back.rules, original.rules);
@@ -231,16 +231,16 @@ mod tests {
         let dir = temp_dir("empty");
         write_layer(&dir, &sample()).unwrap();
         write_layer(&dir, &AgentLayer::default()).unwrap();
-        assert!(!dir.join(".codedock").join("rules.md").exists());
-        assert!(!dir.join(".codedock").join("skills.json").exists());
+        assert!(!dir.join(".codovo").join("rules.md").exists());
+        assert!(!dir.join(".codovo").join("skills.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn broken_json_is_reported() {
         let dir = temp_dir("broken");
-        std::fs::create_dir_all(dir.join(".codedock")).unwrap();
-        std::fs::write(dir.join(".codedock").join("agents.json"), "{ not json").unwrap();
+        std::fs::create_dir_all(dir.join(".codovo")).unwrap();
+        std::fs::write(dir.join(".codovo").join("agents.json"), "{ not json").unwrap();
         assert!(read_layer(&dir).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

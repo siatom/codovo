@@ -20,7 +20,7 @@ export const CLI_PROVIDERS: CliProvider[] = [
   { key: "opencode", label: "opencode", resumeFlag: "--session" },
 ];
 
-const CLI_CHOICE_KEY = "codedock.cliChoice";
+const CLI_CHOICE_KEY = "codovo.cliChoice";
 
 /**
  * 从一段文本里认 CLI 名：取第一个词（可执行文件名），去掉目录前缀和 Windows

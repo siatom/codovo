@@ -72,13 +72,13 @@ mod macos {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    const PATH_START: &[u8] = b"__CODEDOCK_PATH_START__";
-    const PATH_END: &[u8] = b"__CODEDOCK_PATH_END__";
+    const PATH_START: &[u8] = b"__CODOVO_PATH_START__";
+    const PATH_END: &[u8] = b"__CODOVO_PATH_END__";
     const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
     const MAX_PROBE_OUTPUT: u64 = 64 * 1024;
 
     pub(super) fn probe_path(shell: &str, cwd: Option<&Path>) -> Option<OsString> {
-        let script = "printf '__CODEDOCK_PATH_START__%s__CODEDOCK_PATH_END__\\n' \"$PATH\"";
+        let script = "printf '__CODOVO_PATH_START__%s__CODOVO_PATH_END__\\n' \"$PATH\"";
         let mut command = Command::new(shell);
         command
             .args(["-ilc", script])
@@ -143,21 +143,21 @@ mod macos {
 
         #[test]
         fn extracts_path_after_shell_output() {
-            let output = b"plugin output\n__CODEDOCK_PATH_START__/one:/two__CODEDOCK_PATH_END__\n";
+            let output = b"plugin output\n__CODOVO_PATH_START__/one:/two__CODOVO_PATH_END__\n";
             assert_eq!(extract_path(output), Some(OsString::from("/one:/two")));
         }
 
         #[test]
         fn uses_last_complete_marker_pair() {
-            let output = b"__CODEDOCK_PATH_START__/old__CODEDOCK_PATH_END__\n__CODEDOCK_PATH_START__/new__CODEDOCK_PATH_END__";
+            let output = b"__CODOVO_PATH_START__/old__CODOVO_PATH_END__\n__CODOVO_PATH_START__/new__CODOVO_PATH_END__";
             assert_eq!(extract_path(output), Some(OsString::from("/new")));
         }
 
         #[test]
         fn rejects_missing_or_empty_path() {
-            assert_eq!(extract_path(b"__CODEDOCK_PATH_START__/one"), None);
+            assert_eq!(extract_path(b"__CODOVO_PATH_START__/one"), None);
             assert_eq!(
-                extract_path(b"__CODEDOCK_PATH_START____CODEDOCK_PATH_END__"),
+                extract_path(b"__CODOVO_PATH_START____CODOVO_PATH_END__"),
                 None
             );
         }

@@ -24,7 +24,7 @@ interface AppAssistantDrawerProps {
 }
 
 /** 窗口级偏好，存 sessionStorage：多窗口下各拖各的宽度 */
-const WIDTH_KEY = "codedock.assistantWidth";
+const WIDTH_KEY = "codovo.assistantWidth";
 
 /** 默认宽度：够放一段对话和输入框，又不至于把中间的终端挤没 */
 const DEFAULT_WIDTH = 460;
@@ -86,7 +86,7 @@ export function AppAssistantDrawer({
     event.currentTarget.setPointerCapture(event.pointerId);
     resizeRef.current = { startX: event.clientX, startWidth: width };
     setResizing(true);
-    document.body.classList.add("codedock-dragging");
+    document.body.classList.add("codovo-dragging");
   };
 
   const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -103,7 +103,7 @@ export function AppAssistantDrawer({
     if (!resizeRef.current) return;
     resizeRef.current = null;
     setResizing(false);
-    document.body.classList.remove("codedock-dragging");
+    document.body.classList.remove("codovo-dragging");
     try {
       window.sessionStorage.setItem(WIDTH_KEY, String(width));
     } catch {

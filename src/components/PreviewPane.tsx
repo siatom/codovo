@@ -50,7 +50,7 @@ const KIND_LABEL: Record<string, string> = {
 };
 
 /** 日志区高度按工作目录记；上下限在拖动时再受面板高度约束 */
-const LOG_HEIGHT_KEY = "codedock.previewLogHeight.";
+const LOG_HEIGHT_KEY = "codovo.previewLogHeight.";
 const DEFAULT_LOG_HEIGHT = 224;
 const MIN_LOG_HEIGHT = 80;
 const MAX_LOG_HEIGHT = 600;
@@ -164,8 +164,8 @@ export function PreviewPane({
       })),
     [settings],
   );
-  // 开发调试版可能只在 src-tauri/.env 里配了模型，后端会合成一个 id 为 codedock 的提供商
-  const fallbackRef = aiConfig.model ? `codedock/${aiConfig.model}` : "";
+  // 开发调试版可能只在 src-tauri/.env 里配了模型，后端会合成一个 id 为 codovo 的提供商
+  const fallbackRef = aiConfig.model ? `codovo/${aiConfig.model}` : "";
   const modelRef = resolveDefaultModel(settings)?.ref ?? fallbackRef;
 
   const runDetect = useCallback(async () => {

@@ -46,7 +46,7 @@ let dragging: { entry: PanelEntry; side: "left" | "right" } | null = null;
  * 一是让 Chromium 认为载荷非空、不会取消这次拖拽；二是别把路径当成文本拖到
  * 终端 / 编辑器里，那会变成一次意外的粘贴。
  */
-const DRAG_MIME = "application/x-codedock-entry";
+const DRAG_MIME = "application/x-codovo-entry";
 
 /** 面板里的一行。远程是 SftpEntry、本地是 LocalEntry，两者同构 */
 export interface PanelEntry {

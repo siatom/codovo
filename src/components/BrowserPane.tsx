@@ -4,7 +4,7 @@ import { assetUrl } from "../lib/asset-url";
 import { FullscreenButton } from "./FullscreenButton";
 import { IconExternalLink, IconRefresh } from "./icons";
 
-const URL_KEY = "codedock.browserUrl.";
+const URL_KEY = "codovo.browserUrl.";
 
 /**
  * 文件树里点了「在内置浏览器中打开」时送进来的请求。

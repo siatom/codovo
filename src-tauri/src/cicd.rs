@@ -302,7 +302,7 @@ fn suggest_config_yaml(root: &Path) -> String {
     };
 
     format!(
-        "# .local-cicd.yaml —— 由 CodeDock 按项目标记探测生成，请按实际情况调整\n\
+        "# .local-cicd.yaml —— 由 Codovo 按项目标记探测生成，请按实际情况调整\n\
          # 字段留空即跳过该阶段。详见本机 local-cicd 技能。\n\
          # 探测依据：{reason}\n\
          version: 1\n\

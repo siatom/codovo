@@ -23,7 +23,7 @@ interface LogResizeHandleProps {
 /**
  * 日志区和上方内容之间的拖动条。
  *
- * 指针捕获 + body 挂 `codedock-dragging-row`，和 GitChangesPane 的时间线是同一套写法：
+ * 指针捕获 + body 挂 `codovo-dragging-row`，和 GitChangesPane 的时间线是同一套写法：
  * 指针拖出这条 1px 的细线后照样收得到事件，拖动期间全局禁选中、光标保持 row-resize。
  * 条在日志区上方，所以「往上拖」是把日志区拉高（`start.height - delta`）。
  */
@@ -51,7 +51,7 @@ export function LogResizeHandle({
     event.currentTarget.setPointerCapture(event.pointerId);
     startRef.current = { y: event.clientY, height };
     setDragging(true);
-    document.body.classList.add("codedock-dragging-row");
+    document.body.classList.add("codovo-dragging-row");
   };
 
   const onPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -70,7 +70,7 @@ export function LogResizeHandle({
     }
     startRef.current = null;
     setDragging(false);
-    document.body.classList.remove("codedock-dragging-row");
+    document.body.classList.remove("codovo-dragging-row");
     onCommit(latestRef.current);
   };
 

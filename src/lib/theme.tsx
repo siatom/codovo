@@ -37,7 +37,7 @@ export const THEME_NAMES: Theme[] = [
   "monokai",
 ];
 
-const THEME_KEY = "codedock.theme";
+const THEME_KEY = "codovo.theme";
 const MEDIA = "(prefers-color-scheme: dark)";
 
 /** 没存过偏好（或存坏了）时的主题；设置面板「恢复默认」也回到它 */

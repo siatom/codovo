@@ -42,11 +42,11 @@ window.MonacoEnvironment = {
   },
 };
 
-export const DARK_THEME = "codedock-dark";
-export const LIGHT_THEME = "codedock-light";
+export const DARK_THEME = "codovo-dark";
+export const LIGHT_THEME = "codovo-light";
 export function monacoThemeFor(preference: Theme, theme: "dark" | "light") {
   return preference === "vscode" || preference === "vscode-light" || preference === "one-dark" || preference === "dracula" || preference === "github-dark" || preference === "github-light" || preference === "material-nova" || preference === "neon-green" || preference === "tokyo-night" || preference === "catppuccin-mocha" || preference === "nord" || preference === "solarized-dark" || preference === "solarized-light" || preference === "monokai"
-    ? `codedock-${preference}`
+    ? `codovo-${preference}`
     : theme === "light" ? LIGHT_THEME : DARK_THEME;
 }
 
@@ -120,7 +120,7 @@ export function setupMonacoTheme() {
     monokai: ["vs-dark", "#1f201b", "#f8f8f2", "#31322b", "#66d9ef", "#3a4a4a"],
   } as const;
   for (const [name, [base, background, foreground, raised, accent, selection]] of Object.entries(palettes)) {
-    monaco.editor.defineTheme(`codedock-${name}`, {
+    monaco.editor.defineTheme(`codovo-${name}`, {
       base, inherit: true, rules: [],
       colors: {
         "editor.background": background,

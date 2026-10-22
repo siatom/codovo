@@ -1,6 +1,6 @@
 // 通过 CDP 连到 WebView2，做截图 / 求值 / 模拟按键，用于验证界面真的能用。
 // 用法: node scripts/cdp-check.cjs '{"wait":1500,"keys":"git status\r","shot":"a.png","eval":"..."}'
-// 多窗口：加 "target":"工作区名" 按窗口标题挑一个（App 把标题设成 `CodeDock — <工作区名>`）；
+// 多窗口：加 "target":"工作区名" 按窗口标题挑一个（App 把标题设成 `Codovo — <工作区名>`）；
 // 不传就取第一个 page。
 const http = require("node:http");
 const fs = require("node:fs");

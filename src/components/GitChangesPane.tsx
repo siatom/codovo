@@ -224,8 +224,8 @@ function messageMetrics(el: HTMLTextAreaElement) {
 }
 
 // 时间线这摊都是窗口级偏好，存 sessionStorage：多窗口下各收各的、各拖各的
-const LOG_COLLAPSED_KEY = "codedock.commitLogCollapsed.";
-const LOG_HEIGHT_KEY = "codedock.commitLogHeight.";
+const LOG_COLLAPSED_KEY = "codovo.commitLogCollapsed.";
+const LOG_HEIGHT_KEY = "codovo.commitLogHeight.";
 
 /** 时间线那块能拖到多高/多矮 */
 const MIN_LOG_HEIGHT = 80;
@@ -262,7 +262,7 @@ function readLogHeight(root: string): number {
  * 工作树概览的折叠状态，同样按 root 存 sessionStorage。默认展开——多工作树仓库里它是
  * 这块面板的主导航，收起来才需要用户主动点。
  */
-const WT_COLLAPSED_KEY = "codedock.worktreeOverviewCollapsed.";
+const WT_COLLAPSED_KEY = "codovo.worktreeOverviewCollapsed.";
 
 /**
  * 工作树概览的后台重拉间隔。
@@ -282,7 +282,7 @@ function readWtCollapsed(root: string): boolean {
   }
 }
 
-const VIEW_KEY = "codedock.gitChangesView.";
+const VIEW_KEY = "codovo.gitChangesView.";
 
 /** 改动列表的两种排法：平铺，或按目录层级收起来 */
 type ChangeView = "list" | "tree";
@@ -3034,7 +3034,7 @@ export function GitChangesPane({
     event.currentTarget.setPointerCapture(event.pointerId);
     dragRef.current = { startY: event.clientY, startHeight: logHeight };
     setDraggingLog(true);
-    document.body.classList.add("codedock-dragging-row");
+    document.body.classList.add("codovo-dragging-row");
   };
 
   const onHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3054,7 +3054,7 @@ export function GitChangesPane({
     }
     dragRef.current = null;
     setDraggingLog(false);
-    document.body.classList.remove("codedock-dragging-row");
+    document.body.classList.remove("codovo-dragging-row");
     try {
       // 用 state 里最新的值：拖动过程中它一直在变
       window.sessionStorage.setItem(LOG_HEIGHT_KEY + root, String(logHeight));
@@ -3096,7 +3096,7 @@ export function GitChangesPane({
     const height = messageRef.current?.getBoundingClientRect().height ?? 0;
     messageDragRef.current = { startY: event.clientY, startHeight: height };
     setDraggingMessage(true);
-    document.body.classList.add("codedock-dragging-row");
+    document.body.classList.add("codovo-dragging-row");
   };
 
   const onMessageHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3118,7 +3118,7 @@ export function GitChangesPane({
     }
     messageDragRef.current = null;
     setDraggingMessage(false);
-    document.body.classList.remove("codedock-dragging-row");
+    document.body.classList.remove("codovo-dragging-row");
   };
 
   /**

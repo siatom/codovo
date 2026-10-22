@@ -22,7 +22,7 @@ import { pathKey } from "./fs";
  * （见 TerminalSession 的 engaged），单纯打开 / 切换工作区不产生活动。
  */
 
-const ACTIVITY_KEY = "codedock.workspaceActivity";
+const ACTIVITY_KEY = "codovo.workspaceActivity";
 
 /**
  * 同一 root 两次上报的最小间隔。终端高频输出（spinner 每秒重绘多次）会持续触达这里，

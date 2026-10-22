@@ -12,11 +12,11 @@ use serde::Serialize;
 /// 只认这三个键，文件里写别的会被忽略。
 /// 只在解析路径存在的构建里需要，否则正式版会报 dead_code。
 #[cfg(any(debug_assertions, test))]
-const KEY_BASE_URL: &str = "CODEDOCK_AI_BASE_URL";
+const KEY_BASE_URL: &str = "CODOVO_AI_BASE_URL";
 #[cfg(any(debug_assertions, test))]
-const KEY_MODEL: &str = "CODEDOCK_AI_MODEL";
+const KEY_MODEL: &str = "CODOVO_AI_MODEL";
 #[cfg(any(debug_assertions, test))]
-const KEY_API_KEY: &str = "CODEDOCK_AI_API_KEY";
+const KEY_API_KEY: &str = "CODOVO_AI_API_KEY";
 
 /// `.env` 里读到的覆盖值。`None` = 这个键没写（或写了空值），保持前端传来的值不动。
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -127,30 +127,30 @@ mod tests {
 
     #[test]
     fn parse_skips_comments_and_blank_lines() {
-        let parsed = parse_env("# 注释\n\nCODEDOCK_AI_MODEL=gpt-4o-mini\n");
+        let parsed = parse_env("# 注释\n\nCODOVO_AI_MODEL=gpt-4o-mini\n");
         assert_eq!(
             parsed,
-            vec![("CODEDOCK_AI_MODEL".to_string(), "gpt-4o-mini".to_string())]
+            vec![("CODOVO_AI_MODEL".to_string(), "gpt-4o-mini".to_string())]
         );
     }
 
     #[test]
     fn parse_handles_crlf_and_bom() {
         // Windows 上这两样最常见：BOM 会污染第一个键名，CRLF 的 \r 会留在值尾
-        let parsed = parse_env("\u{feff}CODEDOCK_AI_API_KEY=sk-1\r\nCODEDOCK_AI_MODEL=m\r\n");
+        let parsed = parse_env("\u{feff}CODOVO_AI_API_KEY=sk-1\r\nCODOVO_AI_MODEL=m\r\n");
         assert_eq!(
             parsed[0],
-            ("CODEDOCK_AI_API_KEY".to_string(), "sk-1".to_string())
+            ("CODOVO_AI_API_KEY".to_string(), "sk-1".to_string())
         );
         assert_eq!(
             parsed[1],
-            ("CODEDOCK_AI_MODEL".to_string(), "m".to_string())
+            ("CODOVO_AI_MODEL".to_string(), "m".to_string())
         );
     }
 
     #[test]
     fn parse_keeps_equals_inside_value() {
-        let parsed = parse_env("CODEDOCK_AI_API_KEY=abc=def");
+        let parsed = parse_env("CODOVO_AI_API_KEY=abc=def");
         assert_eq!(parsed[0].1, "abc=def");
     }
 
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn overrides_take_only_known_keys() {
-        let overrides = overrides_from("OTHER=1\nCODEDOCK_AI_MODEL=m");
+        let overrides = overrides_from("OTHER=1\nCODOVO_AI_MODEL=m");
         assert_eq!(overrides.model.as_deref(), Some("m"));
         assert_eq!(overrides.base_url, None);
         assert_eq!(overrides.api_key, None);
@@ -172,13 +172,13 @@ mod tests {
 
     #[test]
     fn overrides_last_write_wins() {
-        let overrides = overrides_from("CODEDOCK_AI_MODEL=a\nCODEDOCK_AI_MODEL=b");
+        let overrides = overrides_from("CODOVO_AI_MODEL=a\nCODOVO_AI_MODEL=b");
         assert_eq!(overrides.model.as_deref(), Some("b"));
     }
 
     #[test]
     fn overrides_treat_empty_value_as_absent() {
-        let overrides = overrides_from("CODEDOCK_AI_BASE_URL=\nCODEDOCK_AI_API_KEY=");
+        let overrides = overrides_from("CODOVO_AI_BASE_URL=\nCODOVO_AI_API_KEY=");
         assert_eq!(overrides, AiOverrides::default());
     }
 }

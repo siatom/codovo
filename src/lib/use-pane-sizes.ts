@@ -44,7 +44,7 @@ export function usePaneSizes(
         base: sizes,
       };
       setDragging(true);
-      document.body.classList.add(axis === "row" ? "codedock-dragging" : "codedock-dragging-row");
+      document.body.classList.add(axis === "row" ? "codovo-dragging" : "codovo-dragging-row");
     },
     [axis, sizes],
   );
@@ -80,7 +80,7 @@ export function usePaneSizes(
     }
     drag.current = null;
     setDragging(false);
-    document.body.classList.remove("codedock-dragging", "codedock-dragging-row");
+    document.body.classList.remove("codovo-dragging", "codovo-dragging-row");
   }, []);
 
   return { sizes, dragging, onHandleDown, onHandleMove, onHandleUp };

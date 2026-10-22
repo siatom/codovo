@@ -8,11 +8,11 @@ import { useRemoteHosts } from "../lib/remote-hosts";
 import { clearHostSecrets, type RemoteConnectionState, type RemoteHost } from "../lib/remote";
 import { IconArrowsLeftRight, IconClose, IconMore, IconPlus, IconServer, IconTerminal } from "./icons";
 
-const ACTIVE_KEY = "codedock.remoteActiveHost";
-const TAB_KEY = "codedock.remoteTab";
+const ACTIVE_KEY = "codovo.remoteActiveHost";
+const TAB_KEY = "codovo.remoteTab";
 /** 主机列表宽度（像素）与「本地/远程」左右顺序，都是窗口级偏好，存 sessionStorage */
-const RAIL_KEY = "codedock.remoteRailWidth";
-const SWAP_KEY = "codedock.remoteSwapped";
+const RAIL_KEY = "codovo.remoteRailWidth";
+const SWAP_KEY = "codovo.remoteSwapped";
 const RAIL_MIN = 140;
 const RAIL_MAX = 420;
 const RAIL_DEFAULT = 176;
@@ -314,7 +314,7 @@ export function RemotePane({
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setResizing(true);
-    document.body.classList.add("codedock-dragging");
+    document.body.classList.add("codovo-dragging");
   };
 
   const onResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -329,7 +329,7 @@ export function RemotePane({
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     setResizing(false);
-    document.body.classList.remove("codedock-dragging");
+    document.body.classList.remove("codovo-dragging");
     writeSession(RAIL_KEY, String(railWidth));
   };
 

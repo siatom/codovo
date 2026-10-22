@@ -1,6 +1,6 @@
-//! CodeDock「预览助手」的 MCP 工具服务（stdio 传输）。
+//! Codovo「预览助手」的 MCP 工具服务（stdio 传输）。
 //!
-//! opencode 通过 `opencode.json` 的 `mcp.preview` 拉起它（`codedock.exe --mcp-preview`），
+//! opencode 通过 `opencode.json` 的 `mcp.preview` 拉起它（`codovo.exe --mcp-preview`），
 //! 走标准 MCP stdio 协议（换行分隔的 JSON-RPC 2.0）。
 //!
 //! **为什么走文件邮箱桥**：预览进程池的唯一事实来源是主进程的 `preview::PreviewState`
@@ -12,7 +12,7 @@
 //! **一请求一文件**：预览助手是**每个工作区一个进程**（哨兵 root 按工作区区分），
 //! 两个工作区的助手可能同时调工具，固定文件名（`request.json`）会互相覆盖，
 //! 所以请求 / 响应都按调用 id 命名（`request-<id>.json` / `response-<id>.json`）。
-//! 每条请求还会带上本进程所属的工作区（`CODEDOCK_PREVIEW_ROOT`），前端据此决定操作哪个项目。
+//! 每条请求还会带上本进程所属的工作区（`CODOVO_PREVIEW_ROOT`），前端据此决定操作哪个项目。
 //!
 //! `initialize` 阶段不碰任何 I/O，连邮箱目录都不建——否则 opencode 默认 5s 的握手超时
 //! 会把工具判成不可用。
@@ -150,12 +150,12 @@ fn has_prefix_suffix(path: &Path, prefix: &str, suffix: &str) -> bool {
 
 /// MCP server 入口。由 `main()` 在 Tauri 初始化之前调用，返回进程退出码。
 pub fn run_stdio() -> i32 {
-    let mailbox = std::env::var("CODEDOCK_PREVIEW_MAILBOX")
+    let mailbox = std::env::var("CODOVO_PREVIEW_MAILBOX")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from);
     // 这个助手属于哪个工作区。工具调用时一并转给前端（见 call_tool）。
-    let workspace_root = std::env::var("CODEDOCK_PREVIEW_ROOT")
+    let workspace_root = std::env::var("CODOVO_PREVIEW_ROOT")
         .ok()
         .filter(|value| !value.trim().is_empty());
 
@@ -216,7 +216,7 @@ fn handle(mailbox: Option<&Path>, workspace_root: Option<&str>, request: Value) 
             let result = json!({
                 "protocolVersion": protocol,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "codedock-preview", "version": env!("CARGO_PKG_VERSION") },
+                "serverInfo": { "name": "codovo-preview", "version": env!("CARGO_PKG_VERSION") },
             });
             Some(ok_response(id, result))
         }
@@ -259,7 +259,7 @@ fn call_tool(
         map.entry("root".to_string()).or_insert_with(|| json!(root));
     }
 
-    let dir = mailbox.ok_or("没有配置预览操作通道（缺少 CODEDOCK_PREVIEW_MAILBOX）")?;
+    let dir = mailbox.ok_or("没有配置预览操作通道（缺少 CODOVO_PREVIEW_MAILBOX）")?;
     let id = next_request_id();
     let response_path = dir.join(format!("{RESPONSE_PREFIX}{id}.json"));
     // 先清掉自己的响应路径（理论上不存在），再写请求
@@ -274,7 +274,7 @@ fn call_tool(
 
 /// 工具清单。名字在 opencode 侧会带上 server 前缀（`preview_`）。
 ///
-/// 每个工具都作用于**本助手所属的工作区**（后端启动时把该路径经 `CODEDOCK_PREVIEW_ROOT`
+/// 每个工具都作用于**本助手所属的工作区**（后端启动时把该路径经 `CODOVO_PREVIEW_ROOT`
 /// 交给本进程、调用时一并转给前端），所以参数里不再需要 path。
 ///
 /// 真正执行在前端（见 `src/lib/preview-agent.ts`），这里只负责把参数原样投递过去。
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn initialize_answers_without_touching_the_mailbox() {
         // 握手必须立刻回：给一个根本不存在的邮箱目录，也不能出错、更不能去建它
-        let missing = std::env::temp_dir().join("codedock-preview-agent-never-created");
+        let missing = std::env::temp_dir().join("codovo-preview-agent-never-created");
         let _ = std::fs::remove_dir_all(&missing);
         let response = handle(
             Some(&missing),
@@ -361,7 +361,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
-        assert_eq!(response["result"]["serverInfo"]["name"], "codedock-preview");
+        assert_eq!(response["result"]["serverInfo"]["name"], "codovo-preview");
         assert!(!missing.exists());
     }
 
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn take_request_picks_up_a_prefixed_request_and_removes_it() {
         let dir = std::env::temp_dir().join(format!(
-            "codedock-preview-agent-take-{}",
+            "codovo-preview-agent-take-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

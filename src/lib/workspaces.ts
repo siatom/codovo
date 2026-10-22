@@ -19,18 +19,18 @@ export interface Workspace {
   pinned?: boolean;
 }
 
-const WORKSPACES_KEY = "codedock.workspaceList";
-const LAST_WORKSPACE_KEY = "codedock.lastWorkspace";
+const WORKSPACES_KEY = "codovo.workspaceList";
+const LAST_WORKSPACE_KEY = "codovo.lastWorkspace";
 
 // 上一版（项目模型）的两个键。只在首次迁移时读，**迁完不删**——
 // 万一迁移有疏漏，用户原来的工作区列表还在，不至于凭空消失。
-const LEGACY_PROJECTS_KEY = "codedock.projects";
-const LEGACY_LAST_KEY = "codedock.lastProject";
+const LEGACY_PROJECTS_KEY = "codovo.projects";
+const LEGACY_LAST_KEY = "codovo.lastProject";
 
 // 更早的单根模型（一个工作区 == 一个目录）的三个键，同样只读不删。
-const LEGACY_WORKSPACES_KEY = "codedock.workspaces";
-const LEGACY_NAMES_KEY = "codedock.workspaceNames";
-const LEGACY_CURRENT_KEY = "codedock.workspace";
+const LEGACY_WORKSPACES_KEY = "codovo.workspaces";
+const LEGACY_NAMES_KEY = "codovo.workspaceNames";
+const LEGACY_CURRENT_KEY = "codovo.workspace";
 
 /** 取路径最后一段当目录名；盘符根这类取不到就退回原串 */
 export function folderName(path: string): string {
@@ -160,7 +160,7 @@ function readLegacyProjects(): Workspace[] {
 /**
  * 启动时调一次：读新的工作区列表；没有就依次往前迁。
  *
- * 迁移顺序：上一版项目模型（`codedock.projects`）优先，其次才是更早的单根模型。
+ * 迁移顺序：上一版项目模型（`codovo.projects`）优先，其次才是更早的单根模型。
  * 单根的每个目录各自成为一个单根工作区——这正是当初的形态，用户看到的东西不变。
  */
 export function migrateWorkspaces(): Workspace[] {
@@ -209,7 +209,7 @@ export function saveWorkspace(workspace: Workspace): Workspace[] {
   return next;
 }
 
-/** 从列表里去掉一个工作区（只动 CodeDock 的记录，不碰磁盘）。返回新列表 */
+/** 从列表里去掉一个工作区（只动 Codovo 的记录，不碰磁盘）。返回新列表 */
 export function dropWorkspace(id: string): Workspace[] {
   const next = readWorkspaces().filter((item) => item.id !== id);
   saveWorkspaceList(next);
@@ -218,7 +218,7 @@ export function dropWorkspace(id: string): Workspace[] {
 
 export function readLastWorkspaceId(): string | null {
   try {
-    // 上一版记在 codedock.lastProject 里，还没搬过就回落读它
+    // 上一版记在 codovo.lastProject 里，还没搬过就回落读它
     return (
       window.localStorage.getItem(LAST_WORKSPACE_KEY) ??
       window.localStorage.getItem(LEGACY_LAST_KEY)
@@ -241,7 +241,7 @@ export function clearLastWorkspaceId() {
     window.localStorage.removeItem(LAST_WORKSPACE_KEY);
     // 旧键必须一并清：readLastWorkspaceId 会回落到它，只清新键的话「关到空」这个状态
     // 根本留不住——下次启动照样从旧键里把工作区捞回来。旧键只是「上次开的是哪个」，
-    // 不是工作区列表（列表在 codedock.projects / workspaceList 里，都不动），清掉不丢东西。
+    // 不是工作区列表（列表在 codovo.projects / workspaceList 里，都不动），清掉不丢东西。
     window.localStorage.removeItem(LEGACY_LAST_KEY);
   } catch {
     // 同 saveWorkspaceList

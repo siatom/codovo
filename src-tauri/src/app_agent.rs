@@ -1,15 +1,15 @@
-//! CodeDock「应用助手」的 MCP 工具服务（stdio 传输）。
+//! Codovo「应用助手」的 MCP 工具服务（stdio 传输）。
 //!
-//! opencode 通过 `opencode.json` 的 `mcp.app` 拉起它（`codedock.exe --mcp-app`），
+//! opencode 通过 `opencode.json` 的 `mcp.app` 拉起它（`codovo.exe --mcp-app`），
 //! 走标准 MCP stdio 协议（换行分隔的 JSON-RPC 2.0）。
 //!
 //! **为什么不能像数据库 Agent 那样直接干活**：数据库 Agent 的操作对象（库）在进程外
-//! 可达，而这个 Agent 要改的东西——设置（`codedock.settings`）、工作区列表
-//! （`codedock.workspaceList`）、右栏模块与全屏状态——全都在**前端 WebView** 里
+//! 可达，而这个 Agent 要改的东西——设置（`codovo.settings`）、工作区列表
+//! （`codovo.workspaceList`）、右栏模块与全屏状态——全都在**前端 WebView** 里
 //! （localStorage + React state）。本进程是 opencode 拉起的**独立子进程**，够不着。
 //!
 //! 所以这里只做「传话」：把工具调用写成一个请求文件，由前端轮询取走、执行、再把结果
-//! 写回来（目录由 `CODEDOCK_APP_MAILBOX` 指定）。选文件邮箱而不是「主进程转发」，是为了
+//! 写回来（目录由 `CODOVO_APP_MAILBOX` 指定）。选文件邮箱而不是「主进程转发」，是为了
 //! 和既有的 `db_agent` 目标文件同一套做法（临时文件 + rename 原子写、不引入常驻监听或
 //! 端口），改动最小；代价是前端要挂一个 500ms 的轮询，只是读一个小文件，可以接受。
 //!
@@ -121,7 +121,7 @@ pub struct AppAgentRequest {
 /// 全程同步：这里不需要异步 I/O，单个工具调用就是「写文件 + 轮询读文件」，
 /// 请求本来也是一条一条来的，起 tokio 运行时反而绕。
 pub fn run_stdio() -> i32 {
-    let mailbox = std::env::var("CODEDOCK_APP_MAILBOX")
+    let mailbox = std::env::var("CODOVO_APP_MAILBOX")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from);
@@ -183,7 +183,7 @@ fn handle(mailbox: Option<&Path>, request: Value) -> Option<Value> {
             let result = json!({
                 "protocolVersion": protocol,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "codedock-app", "version": env!("CARGO_PKG_VERSION") },
+                "serverInfo": { "name": "codovo-app", "version": env!("CARGO_PKG_VERSION") },
             });
             Some(ok_response(id, result))
         }
@@ -228,7 +228,7 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "get_state",
-            "description": "读取 CodeDock 当前状态：设置项、工作区列表、右栏当前模块与展开状态、全屏状态。回答「现在字号是多少」这类问题前先调它。",
+            "description": "读取 Codovo 当前状态：设置项、工作区列表、右栏当前模块与展开状态、全屏状态。回答「现在字号是多少」这类问题前先调它。",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -237,7 +237,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "update_settings",
-            "description": "修改 CodeDock 设置。patch 里每个键是设置字段名（如 terminalFontSize、editorAutoSave、theme），值为新值。不确定字段名时先看技能说明或调 get_state。",
+            "description": "修改 Codovo 设置。patch 里每个键是设置字段名（如 terminalFontSize、editorAutoSave、theme），值为新值。不确定字段名时先看技能说明或调 get_state。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -253,7 +253,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "add_workspace",
-            "description": "把磁盘上的一个目录加为 CodeDock 工作区并打开它。路径必须是绝对路径；目录不存在会失败。",
+            "description": "把磁盘上的一个目录加为 Codovo 工作区并打开它。路径必须是绝对路径；目录不存在会失败。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -292,7 +292,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "remove_workspace",
-            "description": "从列表里移除一个工作区（只去掉 CodeDock 的记录，不删磁盘目录）。执行前会弹确认框，用户拒绝就取消。",
+            "description": "从列表里移除一个工作区（只去掉 Codovo 的记录，不删磁盘目录）。执行前会弹确认框，用户拒绝就取消。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -369,7 +369,7 @@ pub(crate) fn call_tool(mailbox: Option<&Path>, request: &Value) -> Result<Strin
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    let dir = mailbox.ok_or("没有配置界面操作通道（缺少 CODEDOCK_APP_MAILBOX）")?;
+    let dir = mailbox.ok_or("没有配置界面操作通道（缺少 CODOVO_APP_MAILBOX）")?;
     let id = next_request_id();
     let response_path = dir.join(RESPONSE_FILE);
     // 先清掉上一轮的响应，再写请求：反过来的话前端可能在「写请求」与「清响应」之间
@@ -411,7 +411,7 @@ pub(crate) fn wait_response(path: &Path, id: &str, timeout: Duration) -> Result<
         }
         std::thread::sleep(POLL_INTERVAL);
     }
-    Err("等待 CodeDock 界面响应超时：应用可能没在运行，或确认框一直没有被处理".to_string())
+    Err("等待 Codovo 界面响应超时：应用可能没在运行，或确认框一直没有被处理".to_string())
 }
 
 /// 请求 id：pid + 自增序号 + 纳秒。前两者保证同进程内不重，纳秒挡住进程重启后的撞号。
@@ -430,7 +430,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "codedock-app-agent-{tag}-{}",
+            "codovo-app-agent-{tag}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn initialize_answers_without_touching_the_mailbox() {
         // 握手必须立刻回：给一个根本不存在的邮箱目录，也不能出错、更不能去建它
-        let missing = std::env::temp_dir().join("codedock-app-agent-never-created");
+        let missing = std::env::temp_dir().join("codovo-app-agent-never-created");
         let _ = std::fs::remove_dir_all(&missing);
         let response = handle(
             Some(&missing),
@@ -505,7 +505,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
-        assert_eq!(response["result"]["serverInfo"]["name"], "codedock-app");
+        assert_eq!(response["result"]["serverInfo"]["name"], "codovo-app");
         assert!(!missing.exists());
     }
 

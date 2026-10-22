@@ -8,7 +8,7 @@ export type { TranslateTarget };
  *
  * 只负责把一篇文档拆成适合单次请求的片段，并把代码块、目录、链接引用等不该
  * 交给模型的内容换成占位符；真正的网络请求在 `lib/ai.ts` / Rust 侧完成。
- * 算法与 CodeLite 保持一致，占位符前缀换成 CodeDock 自己的，避免两边的缓存
+ * 算法与 CodeLite 保持一致，占位符前缀换成 Codovo 自己的，避免两边的缓存
  * 或模型输出混用。
  */
 
@@ -39,7 +39,7 @@ const DOCUMENT_EXTENSIONS = new Set([
   "asciidoc",
 ]);
 
-const MARKER_PREFIX = "CODEDOCK_CODE_";
+const MARKER_PREFIX = "CODOVO_CODE_";
 
 /** 占位符：用少见的括号包住，模型更容易原样保留 */
 function marker(index: number): string {
@@ -47,7 +47,7 @@ function marker(index: number): string {
 }
 
 /** 宽松匹配占位符，容忍模型把两侧括号换成别的成对符号 */
-const MARKER_RE = /[⟦\[(【]?\s*CODEDOCK_CODE_(\d+)\s*[⟧\])】]?/g;
+const MARKER_RE = /[⟦\[(【]?\s*CODOVO_CODE_(\d+)\s*[⟧\])】]?/g;
 
 export interface PreparedDocument {
   /** 已屏蔽代码块、可直接发给模型的片段 */
@@ -314,7 +314,7 @@ function markerSpans(line: string): Array<[number, number]> {
 /**
  * 给超长行找一个不切断占位符的切点。
  *
- * 首选离 `limit` 最近的边界；如果落点正好在 `⟦CODEDOCK_CODE_n⟧` 里，就退到
+ * 首选离 `limit` 最近的边界；如果落点正好在 `⟦CODOVO_CODE_n⟧` 里，就退到
  * 占位符起点或进到终点，二者取偏离上限更小的那个——退得太靠前会让片段明显
  * 变短，进得太多又可能超过上下文限制，折中即可。
  */

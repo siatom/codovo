@@ -804,7 +804,7 @@ fn write_atomic(file: &Path, bytes: &[u8]) -> Result<(), String> {
     // 进程内自增序号 + 进程 id：并发写同一个文件时临时名也不会撞车
     static SEQ: AtomicUsize = AtomicUsize::new(0);
     let unique = SEQ.fetch_add(1, Ordering::Relaxed);
-    let temp = parent.join(format!(".{name}.codedock-{}-{unique}.tmp", std::process::id()));
+    let temp = parent.join(format!(".{name}.codovo-{}-{unique}.tmp", std::process::id()));
 
     // 先记下原文件权限（如可执行位）：临时文件是新文件，默认权限会把原属性冲掉
     let permissions = fs::metadata(file).ok().map(|meta| meta.permissions());
@@ -1794,7 +1794,7 @@ mod tests {
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let unique = SEQ.fetch_add(1, Ordering::Relaxed);
         let root =
-            std::env::temp_dir().join(format!("codedock-test-{}-{unique}", std::process::id()));
+            std::env::temp_dir().join(format!("codovo-test-{}-{unique}", std::process::id()));
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let state = FsState::new();
@@ -2369,7 +2369,7 @@ mod tests {
             .unwrap()
             .flatten()
             .map(|item| item.file_name().to_string_lossy().to_string())
-            .filter(|name| name.contains(".codedock-"))
+            .filter(|name| name.contains(".codovo-"))
             .collect();
         assert!(leftovers.is_empty(), "不该留下临时文件: {leftovers:?}");
 

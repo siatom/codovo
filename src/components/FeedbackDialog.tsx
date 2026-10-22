@@ -364,7 +364,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       )}
       {pendingDelete && (
         <ConfirmDialog
-          message={`从本地历史里移除 #${pendingDelete.number}？只清 CodeDock 这边的记录，Gitee 上的 issue 不受影响。`}
+          message={`从本地历史里移除 #${pendingDelete.number}？只清 Codovo 这边的记录，Gitee 上的 issue 不受影响。`}
           confirmLabel="移除"
           onConfirm={() => void removeRecord(pendingDelete.number)}
           onCancel={() => setPendingDelete(null)}

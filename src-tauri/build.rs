@@ -2,7 +2,7 @@ use std::env;
 
 /// release 构建的防线：`tauri_build` 会把环境变量 `TAURI_CONFIG` 当 json patch 合并进配置，
 /// 一旦终端里残留了 build.rs 给 debug 用的那份 dev patch，release 就会静默产出
-/// identifier 为 `com.codedock.dev`、图标是金色的「伪安装版」——数据目录和任务栏图标
+/// identifier 为 `com.codovo.dev`、图标是金色的「伪安装版」——数据目录和任务栏图标
 /// 全跟着变，用户会以为工作区历史丢了。这里在动 tauri_build 之前直接失败，避免再默默产出。
 fn reject_dev_overrides(patch: &serde_json::Value) {
     let identifier = patch.get("identifier").and_then(serde_json::Value::as_str);
@@ -18,9 +18,9 @@ fn reject_dev_overrides(patch: &serde_json::Value) {
         })
         .unwrap_or(false);
 
-    if identifier == Some("com.codedock.dev") || dev_icon {
+    if identifier == Some("com.codovo.dev") || dev_icon {
         panic!(
-            "release 构建检测到 dev 配置覆盖（TAURI_CONFIG 里带 com.codedock.dev / icons/dev）。\n\
+            "release 构建检测到 dev 配置覆盖（TAURI_CONFIG 里带 com.codovo.dev / icons/dev）。\n\
              这会产出 identifier 和图标都是 dev 的安装版，WebView 数据目录、任务栏图标、\
              工作区历史都会跟着变成 dev 的。\n\
              请清掉该环境变量后重新构建：PowerShell 用 Remove-Item Env:TAURI_CONFIG，\
@@ -58,7 +58,7 @@ fn main() {
     // 进程里展开的，能读到。
     if profile == "debug" {
         let mut patch = overrides.unwrap_or_else(|| serde_json::json!({}));
-        patch["identifier"] = serde_json::Value::String("com.codedock.dev".to_string());
+        patch["identifier"] = serde_json::Value::String("com.codovo.dev".to_string());
 
         // dev 版图标换琥珀橙，跟安装版的蓝色尖括号一眼分清：exe 资源图标（任务栏 / 托盘）
         // 与窗口图标都取自 bundle.icon，指到 icons/dev/ 这一套即可。那套由
