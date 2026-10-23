@@ -70,8 +70,9 @@ pub struct CliSession {
 
 /// 列出某个 CLI 在当前工作区的会话历史。
 ///
-/// `command` 是用户在设置里配的那条命令（`opencode`、`npx opencode`、完整路径
-/// 都行），只有 opencode 这一支用得上——它的记录得靠 opencode 自己来读。
+/// `command` 是用户在设置里配的那条命令（`opencode`、`npx opencode`、完整路径，
+/// 后面带 `--auto` 这类运行期参数也行），只有 opencode 这一支用得上——它的记录
+/// 得靠 opencode 自己来读。
 ///
 /// 标了 `async`：opencode 那一支要起子进程、可能还要等它的后台服务，同步跑会把
 /// UI 卡住。Tauri 会把这里的同步 body 丢到线程池，写法不用变。
@@ -104,13 +105,48 @@ fn split_command(command: &str) -> Option<(String, Vec<String>)> {
     Some((program, parts.map(str::to_string).collect()))
 }
 
+/// 列会话时实际要传的前置参数。
+///
+/// 用户配的命令常带运行期参数（`opencode --auto`），这些参数只对交互式启动有
+/// 意义：`session list` 子命令会把它们当成非法 flag 直接报错
+/// （Unrecognized flag: --auto in command opencode session）。所以只保留到 CLI
+/// 名字为止——`npx -y opencode` 里 npx 的参数和包名留下，`--auto` 这类丢掉。
+/// 认不出名字的写法无从判断哪些是运行期参数，按原样传。
+fn session_list_command(command: &str) -> Option<(String, Vec<String>)> {
+    let (program, leading) = split_command(command)?;
+    let stop = std::iter::once(program.as_str())
+        .chain(leading.iter().map(String::as_str))
+        .position(is_opencode);
+    let Some(stop) = stop else {
+        return Some((program, leading));
+    };
+    Some((program, leading.into_iter().take(stop).collect()))
+}
+
+/// 这个参数词是不是 opencode 本身。`npx @scope/opencode`、`C:\bin\opencode.cmd`
+/// 都算——和前端 `cli-sessions.ts` 的 `cliKey` 同一套规则。
+fn is_opencode(token: &str) -> bool {
+    let base = token
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase();
+    let stem = base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".cmd"))
+        .or_else(|| base.strip_suffix(".bat"))
+        .or_else(|| base.strip_suffix(".ps1"))
+        .unwrap_or(&base);
+    stem == "opencode"
+}
+
 /// 借 opencode 自己列会话。
 ///
 /// 它的输出（`--format json`）正好是我们要的字段，而且已经按项目过滤、最新在前，
 /// 所以这里不重新过滤也不重排，只做数量和字段的兜底。
 fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
     let (program, leading) =
-        split_command(command).ok_or_else(|| "没有配置 opencode 命令".to_string())?;
+        session_list_command(command).ok_or_else(|| "没有配置 opencode 命令".to_string())?;
 
     // PATH 用登录 shell 解析出来的那份：从 Dock / 开始菜单启动时进程自己的 PATH
     // 可能不全（和 agent.rs 起服务时同一个理由）
@@ -807,6 +843,28 @@ mod tests {
         // 空串 / 只有空白都拆不出 program
         assert_eq!(split_command(""), None);
         assert_eq!(split_command("   "), None);
+    }
+
+    #[test]
+    fn session_list_keeps_launcher_args_but_drops_runtime_flags() {
+        let leading = |command: &str| session_list_command(command).unwrap().1;
+
+        // 运行期参数只对交互式启动有效，session list 不认，必须丢掉
+        assert!(leading("opencode --auto").is_empty());
+        assert!(leading(r"C:\tools\opencode.cmd --auto").is_empty());
+        // 包管理器和它自己的参数要留下，否则起不来
+        assert_eq!(leading("npx opencode"), vec!["opencode"]);
+        assert_eq!(leading("npx -y opencode"), vec!["-y", "opencode"]);
+        // CLI 名字之后的运行期参数丢掉，之前的都保留
+        assert_eq!(
+            leading("npx -y @sst/opencode --auto"),
+            vec!["-y", "@sst/opencode"]
+        );
+        // 认不出 CLI 名时无从判断，按原样传
+        assert_eq!(
+            leading("npx -y some-wrapper --auto"),
+            vec!["-y", "some-wrapper", "--auto"]
+        );
     }
 
     #[test]
