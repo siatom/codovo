@@ -40,17 +40,20 @@ const NOISE_PREFIXES: &[&str] = &[
     "[Request interrupted by user",
 ];
 
-/// 把会话记录写成 jsonl 文件的那两家 CLI -> 相对用户主目录的位置。
+/// 把会话记录写成 jsonl 文件的那几家 CLI -> 相对用户主目录的位置。
 ///
 /// opencode 不在这张表里：它的会话在 sqlite 库里（而且 schema 正在从 `session`
 /// 迁到 `session_v2`，只读打开还读不到 WAL 里没 checkpoint 的新数据），所以改走
 /// 它自己的 `session list --format json`，见 `list_opencode`。
-/// 三端都用 `/` 拼：Windows 的 Path 也认它。
+/// 这几端都用 `/` 拼：Windows 的 Path 也认它。
 fn provider_projects_dir(provider: &str) -> Option<&'static str> {
     match provider {
         "codebuddy" => Some(".codebuddy/projects"),
         "claude" => Some(".claude/projects"),
         "codex" => Some(".codex/sessions"),
+        // Qoder CLI（可执行文件叫 qodercli）照抄了 claude 的布局：
+        // ~/.qoder/projects/<slug>/<session-uuid>.jsonl
+        "qoder" => Some(".qoder/projects"),
         _ => None,
     }
 }
@@ -242,7 +245,7 @@ fn parse_opencode_sessions(raw: &str) -> Vec<CliSession> {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string(),
-                // 已经是 Unix 毫秒，和另两家对齐了才回给前端
+                // 已经是 Unix 毫秒，和别家对齐了才回给前端
                 updated: item.get("updated").and_then(|v| v.as_u64()).unwrap_or(0),
                 cwd: item
                     .get("directory")
@@ -258,7 +261,7 @@ fn parse_opencode_sessions(raw: &str) -> Vec<CliSession> {
     found
 }
 
-/// 标题的三个候选槽，优先级从高到低。codebuddy 三档都有，claude 只有最后一档。
+/// 标题的三个候选槽，优先级从高到低。codebuddy 三档都有，claude / qoder 只有最后一档。
 #[derive(Default)]
 struct Titles {
     /// codebuddy 的 ai-title.aiTitle，模型现起的标题，最贴近"这次对话在聊什么"
@@ -329,7 +332,7 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
                 continue;
             };
             // 按 cwd 字段正向匹配。不去反算 slug——slug 有损，路径里本身的 '-'
-            // 和分隔符是撞的，两家 CLI 的规则还不一样
+            // 和分隔符是撞的，各家 CLI 的规则还不一样
             if cwd_key(&scan.cwd) != target {
                 continue;
             }
@@ -409,6 +412,7 @@ fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
             "codebuddy" => scan_codebuddy(&value, &mut titles),
             "claude" => scan_claude(&value, &mut titles),
             "codex" => scan_codex(&value, &mut titles),
+            "qoder" => scan_claude(&value, &mut titles),
             _ => {}
         }
     }
@@ -497,6 +501,9 @@ fn scan_codebuddy(value: &serde_json::Value, titles: &mut Titles) {
     }
 }
 
+/// claude 的记录形状：顶层 type=user，正文在 message.content（字符串或内容块数组）。
+/// qoder 的 jsonl 基本照抄了这一套（多一个 humanInput.text，但和 message.content
+/// 是同一句话，用不上），所以两家共用这一个扫描器。
 fn scan_claude(value: &serde_json::Value, titles: &mut Titles) {
     if !titles.first.is_empty() || value.get("type").and_then(|v| v.as_str()) != Some("user") {
         return;
@@ -784,6 +791,42 @@ mod tests {
         assert!(provider_projects_dir("codebuddy").is_some());
         assert!(provider_projects_dir("claude").is_some());
         assert!(provider_projects_dir("codex").is_some());
+        assert!(provider_projects_dir("qoder").is_some());
+    }
+
+    /// Qoder 的目录布局和记录形状都跟 claude 一样（<slug>/<id>.jsonl、type=user +
+    /// message.content），所以走 scan_claude。这里钉住三件事：文件名当 id、按 cwd
+    /// 过滤、标题取第一条真正的人说的话。
+    #[test]
+    fn qoder_takes_first_real_prompt_and_uses_file_stem_as_id() {
+        let projects = temp_projects();
+        write_session(
+            &projects,
+            "D--CodeProjects-codovo",
+            "4da63787-3b3a-4168-aa1d-d4467fd04675",
+            &[
+                r#"{"type":"workspace-directories","sessionId":"4da63787-3b3a-4168-aa1d-d4467fd04675","directories":["/Users/someone/work"]}"#,
+                // 工具结果回灌也是 type=user，但不是人说的话
+                r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","content":"No files found"}]},"cwd":"/Users/someone/work"}"#,
+                r#"{"type":"user","isSidechain":false,"origin":{"kind":"human"},"humanInput":{"text":"将软件所有的图标重绘"},"message":{"role":"user","content":"将软件所有的图标重绘"},"cwd":"/Users/someone/work"}"#,
+            ],
+        );
+        // slug 有损，同一个目录里可能混着别的 cwd
+        write_session(
+            &projects,
+            "D--CodeProjects-codovo",
+            "bbbb-2222",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":"别的目录"},"cwd":"/Users/someone/other"}"#,
+            ],
+        );
+
+        let found = list_sessions_in(&projects, "qoder", WORK);
+        assert_eq!(found.len(), 1);
+        // resume 要的是文件名词干（记录里的 sessionId 也是它，但以文件名为准）
+        assert_eq!(found[0].id, "4da63787-3b3a-4168-aa1d-d4467fd04675");
+        assert_eq!(found[0].title, "将软件所有的图标重绘");
+        fs::remove_dir_all(&projects).ok();
     }
 
     #[test]

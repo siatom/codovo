@@ -14,7 +14,7 @@ export interface PreparedLaunch {
  *
  * 参数与形态都按各家官方文档（2026-10 核对）：
  * - Claude Code / CodeBuddy：`--add-dir <dir...>`，一个参数后面可以跟多个目录
- * - Codex / Antigravity：`--add-dir <dir>`，每个目录重复一次参数
+ * - Codex / Antigravity / Qoder：`--add-dir <dir>`，每个目录重复一次参数
  * - GitHub Copilot CLI：`--add-dir=<dir>`，每个目录重复一次
  * - Gemini CLI / Qwen Code / iFlow CLI：`--include-directories <dir>`，每个目录重复一次
  *
@@ -39,6 +39,8 @@ const ADDITIONAL_DIRS_SPECS: AdditionalDirsSpec[] = [
   { commands: ["codebuddy", "codebuddy-code"], flag: "--add-dir", style: "list" },
   { commands: ["codex"], flag: "--add-dir", style: "repeat" },
   { commands: ["agy", "antigravity"], flag: "--add-dir", style: "repeat" },
+  // qodercli 的 --add-dir 一次只收一个目录
+  { commands: ["qoder", "qodercli"], flag: "--add-dir", style: "repeat" },
   { commands: ["copilot"], flag: "--add-dir", style: "equals" },
   { commands: ["gemini", "gemini-cli"], flag: "--include-directories", style: "repeat" },
   { commands: ["qwen", "qwen-code"], flag: "--include-directories", style: "repeat" },
