@@ -16,6 +16,7 @@ import {
   DEFAULT_MONO_FONT,
   DEFAULT_UI_FONT,
   resolveFont,
+  type AgentEnvVar,
   type AiCommand,
   type AiProvider,
   type AutoSaveMode,
@@ -32,6 +33,15 @@ import {
   newProviderId,
   resolveDefaultModel,
 } from "../lib/providers";
+import {
+  AGENT_CATALOG,
+  catalogStatusId,
+  checkAgentClis,
+  commandStatusId,
+  configuredIndex,
+  type AgentCatalogItem,
+  type AgentCliStatus,
+} from "../lib/agents";
 import {
   TERMINAL_THEME_OPTIONS,
   resolveTerminalTheme,
@@ -61,6 +71,7 @@ import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
+  AgentLogo,
   IconBot,
   IconCheck,
   IconChevronDown,
@@ -72,7 +83,9 @@ import {
   IconPalette,
   IconPencil,
   IconPlus,
+  IconRefresh,
   IconSettings,
+  IconSparkle,
   IconTerminal,
 } from "./icons";
 
@@ -91,7 +104,7 @@ const TABS = [
   {
     id: "terminal",
     label: "终端",
-    desc: "终端程序、配色方案与 AI CLI",
+    desc: "终端程序、配色方案与等待提示",
     icon: IconTerminal,
   },
   {
@@ -107,10 +120,16 @@ const TABS = [
     icon: IconKeyboard,
   },
   {
-    id: "agent",
-    label: "AI",
-    desc: "模型提供商、文档翻译与助手服务",
+    id: "agents",
+    label: "智能体",
+    desc: "编程 Agent 的安装状态、启动命令与环境变量",
     icon: IconBot,
+  },
+  {
+    id: "agent",
+    label: "模型",
+    desc: "模型提供商、文档翻译与助手服务",
+    icon: IconSparkle,
   },
   {
     id: "dependencies",
@@ -125,7 +144,8 @@ type TabId = (typeof TABS)[number]["id"];
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
-  terminal: "终端程序、配色，以及 AI CLI 列表",
+  terminal: "终端程序与配色",
+  agents: "编程 Agent 列表，含名称、启动命令与环境变量",
   editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
   shortcuts: "全部快捷键键位",
   agent: "模型提供商、密钥、文档翻译目标语言，以及助手运行用的 opencode 与端口",
@@ -1568,19 +1588,122 @@ function DependencyRow({
   );
 }
 
+/** 安装状态徽标：绿=已安装，红=未安装，灰=还在检测 */
+function AgentStatusBadge({
+  status,
+  checking,
+}: {
+  status?: AgentCliStatus;
+  checking: boolean;
+}) {
+  if (!status) {
+    return (
+      <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] text-fg-faint">
+        {checking ? "检测中…" : "未检测"}
+      </span>
+    );
+  }
+  return status.installed ? (
+    <span
+      title={status.version ?? "已安装"}
+      className="shrink-0 rounded-full bg-ok/10 px-1.5 py-0.5 text-[10px] font-medium text-ok"
+    >
+      已安装
+    </span>
+  ) : (
+    <span
+      title="在 PATH 里找不到这个可执行文件"
+      className="shrink-0 rounded-full bg-danger-bg px-1.5 py-0.5 text-[10px] font-medium text-danger"
+    >
+      未安装
+    </span>
+  );
+}
+
 /**
- * AI CLI 列表：每行左侧一个抓握把手，按住把手上下拖可以调整顺序——顺序就是终端工具条
- * 那个 AI 下拉里的顺序。
+ * 环境变量编辑器：一行一个键值对，允许先加空行再慢慢填。
  *
- * 拖动只从把手发起：一行里是两个文本输入框，整行可拖会把「在输入框里划选文字」变成拖行。
- * pointermove / pointerup 挂 window 而不是把手自己（指针一移出把手就断了），把手刻意不
- * setPointerCapture——和侧边栏工作区行的重排同一套做法。
+ * 空键的行只存在界面上，启动时由 agentEnvFor 过滤；值会明文落在本机设置里，
+ * 所以提示里写清楚——密钥类的还是建议交给 CLI 自己的配置文件。
  */
-function AiCommandList({
+function EnvVarEditor({
+  env,
+  onChange,
+}: {
+  env: AgentEnvVar[];
+  onChange: (next: AgentEnvVar[]) => void;
+}) {
+  const patch = (index: number, part: Partial<AgentEnvVar>) =>
+    onChange(env.map((entry, i) => (i === index ? { ...entry, ...part } : entry)));
+
+  return (
+    <div className="flex w-full flex-col gap-1.5">
+      {env.length === 0 && (
+        <p className="text-[11px] text-fg-faint">还没有环境变量</p>
+      )}
+      {env.map((entry, index) => (
+        <div key={index} className="flex items-center gap-1.5">
+          <input
+            type="text"
+            value={entry.key}
+            spellCheck={false}
+            placeholder="变量名，如 ANTHROPIC_BASE_URL"
+            onChange={(event) => patch(index, { key: event.target.value })}
+            className={TEXT_INPUT + " min-w-0 flex-1 font-mono"}
+          />
+          <span className="shrink-0 text-[11px] text-fg-faint">=</span>
+          <input
+            type="text"
+            value={entry.value}
+            spellCheck={false}
+            placeholder="值"
+            onChange={(event) => patch(index, { value: event.target.value })}
+            className={TEXT_INPUT + " min-w-0 flex-[1.3] font-mono"}
+          />
+          <button
+            type="button"
+            onClick={() => onChange(env.filter((_, i) => i !== index))}
+            title="删除这个环境变量"
+            className={LIST_ACTION}
+          >
+            <IconClose className="h-3 w-3" />
+          </button>
+        </div>
+      ))}
+      <div>
+        <button
+          type="button"
+          onClick={() => onChange([...env, { key: "", value: "" }])}
+          className={BUTTON_SM}
+        >
+          <IconPlus className="h-3 w-3" />
+          添加变量
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 已配置的编程 Agent：一张可折叠卡片，头部是抓握把手 + 名字 + 安装状态，展开后改名称、
+ * 启动命令和环境变量。
+ *
+ * 顺序就是终端顶栏 AI CLI 按钮的顺序，所以保留拖动重排；拖动只从把手发起，否则在输入框
+ * 里划选文字会变成拖行。pointermove / pointerup 挂 window，指针移出把手也不会断。
+ */
+function AgentCommandList({
   commands,
+  statuses,
+  checking,
+  openIndex,
+  onOpenChange,
   onChange,
 }: {
   commands: AiCommand[];
+  statuses: Record<string, AgentCliStatus>;
+  checking: boolean;
+  openIndex: number | null;
+  onOpenChange: (index: number | null) => void;
   onChange: (next: AiCommand[]) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
@@ -1597,6 +1720,11 @@ function AiCommandList({
   // 用 ref 存最新回调：父组件每次渲染都会传新函数，进了依赖数组会反复解绑重挂
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // 拖动后展开的条目会跟着换下标，得知道当前展开的是哪一条
+  const openRef = useRef(openIndex);
+  openRef.current = openIndex;
+  const onOpenRef = useRef(onOpenChange);
+  onOpenRef.current = onOpenChange;
 
   /** 光标落在第几个空档：逐行比中线，过了最后一行中线就落到末尾 */
   const dropIndexAt = (clientY: number): number => {
@@ -1655,6 +1783,8 @@ function AiCommandList({
       const [moved] = next.splice(drag.from, 1);
       next.splice(insertAt, 0, moved);
       onChangeRef.current(next);
+      // 被拖的那条如果正展开着，跟着它落到新位置
+      if (openRef.current === drag.from) onOpenRef.current(insertAt);
     };
     const onUp = () => finish(true);
     const onCancel = () => finish(false);
@@ -1668,66 +1798,222 @@ function AiCommandList({
     };
   }, [pending]);
 
+  // 从下面「系统支持」点「已添加」时卡片可能在视口外，展开后滚到它；已经在视口里就不动
+  useEffect(() => {
+    if (openIndex === null) return;
+    const row = listRef.current?.children[openIndex] as HTMLElement | undefined;
+    row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [openIndex]);
+
   return (
-    <div ref={listRef} className="flex w-full flex-col gap-1.5">
+    <div ref={listRef} className="flex w-full flex-col gap-2">
       {commands.map((item, index) => {
         const dropBefore = dropIndex === index;
         const dropAfter = dropIndex === commands.length && index === commands.length - 1;
+        const open = openIndex === index;
         return (
-          <div key={index} className="relative flex items-center gap-1.5">
+          <div
+            key={index}
+            className="relative overflow-hidden rounded-lg border border-line-strong bg-raised transition-colors"
+          >
             {/* 落点线：插在某行之前画在它上面，插在末尾画在最后一行下面 */}
             {(dropBefore || dropAfter) && (
               <span
-                className={`pointer-events-none absolute right-0 left-0 z-10 h-0.5 rounded bg-accent-strong ${
-                  dropBefore ? "-top-0.5" : "-bottom-0.5"
-                }`}
+                className={
+                  "pointer-events-none absolute right-0 left-0 z-10 h-0.5 rounded bg-accent-strong " +
+                  (dropBefore ? "-top-0.5" : "-bottom-0.5")
+                }
               />
             )}
-            <div
-              onPointerDown={onHandleDown(index)}
-              title="拖动调整顺序"
-              className={`flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-fg-faint hover:text-fg-muted ${
-                dragFrom === index ? "opacity-40" : ""
-              }`}
-            >
-              <IconGripVertical className="h-3.5 w-3.5" />
+            <div className="flex items-center gap-1.5 p-2.5">
+              <div
+                onPointerDown={onHandleDown(index)}
+                title="拖动调整顺序"
+                className={
+                  "flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-fg-faint hover:text-fg-muted " +
+                  (dragFrom === index ? "opacity-40" : "")
+                }
+              >
+                <IconGripVertical className="h-3.5 w-3.5" />
+              </div>
+              <button
+                type="button"
+                onClick={() => onOpenChange(open ? null : index)}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+              >
+                <IconChevronDown
+                  className={
+                    "h-3.5 w-3.5 shrink-0 text-fg-faint transition-transform " +
+                    (open ? "" : "-rotate-90")
+                  }
+                />
+                <AgentLogo
+                  name={item.name}
+                  command={item.command}
+                  className="h-4 w-4 shrink-0"
+                />
+                <span className="truncate text-[12px] text-fg">
+                  {item.name.trim() || "未命名智能体"}
+                </span>
+                <span className="truncate font-mono text-[11px] text-fg-faint">
+                  {item.command.trim() || "未填写命令"}
+                </span>
+              </button>
+              {item.command.trim() !== "" && (
+                <AgentStatusBadge
+                  status={statuses[commandStatusId(item.command)]}
+                  checking={checking}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onChange(commands.filter((_, i) => i !== index));
+                  // 删的是展开项就收起；删在它前面则让展开项跟着左移一格
+                  if (open) onOpenChange(null);
+                  else if (openIndex !== null && index < openIndex) {
+                    onOpenChange(openIndex - 1);
+                  }
+                }}
+                title="删除这个智能体"
+                className={LIST_ACTION}
+              >
+                <IconClose className="h-3 w-3" />
+              </button>
             </div>
-            <input
-              type="text"
-              value={item.name}
-              spellCheck={false}
-              placeholder="名称"
-              onChange={(event) =>
-                onChange(
-                  commands.map((entry, i) =>
-                    i === index ? { ...entry, name: event.target.value } : entry,
-                  ),
-                )
+
+            {open && (
+              <div className="flex flex-col gap-3 border-t border-line p-3">
+                <Field label="名称" hint="只用于界面展示，也是终端顶栏按钮上的名字">
+                  <input
+                    type="text"
+                    value={item.name}
+                    spellCheck={false}
+                    placeholder="如 Claude Code"
+                    onChange={(event) =>
+                      onChange(
+                        commands.map((entry, i) =>
+                          i === index ? { ...entry, name: event.target.value } : entry,
+                        ),
+                      )
+                    }
+                    className={TEXT_INPUT}
+                  />
+                </Field>
+                <Field
+                  label="启动命令"
+                  hint="裸命令名会去 PATH 里找，也可以填完整路径；会原样在当前终端执行，工作区的其他目录由 CLI 自己支持的参数注入"
+                >
+                  <input
+                    type="text"
+                    value={item.command}
+                    spellCheck={false}
+                    placeholder="如 claude"
+                    onChange={(event) =>
+                      onChange(
+                        commands.map((entry, i) =>
+                          i === index ? { ...entry, command: event.target.value } : entry,
+                        ),
+                      )
+                    }
+                    className={TEXT_INPUT + " font-mono"}
+                  />
+                </Field>
+                <Field
+                  label="环境变量"
+                  hint="启动时按原样注入这个 CLI 的进程环境，同名变量后写的覆盖先写的。值明文保存在本机设置里，密钥类建议交给 CLI 自己的配置或系统凭据库"
+                >
+                  <EnvVarEditor
+                    env={item.env}
+                    onChange={(env) =>
+                      onChange(
+                        commands.map((entry, i) => (i === index ? { ...entry, env } : entry)),
+                      )
+                    }
+                  />
+                </Field>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 系统支持的 Agent：装了标绿、没装标红，已经配置过的可以直接展开去改 */
+function SupportedAgentList({
+  commands,
+  statuses,
+  checking,
+  onAdd,
+  onOpenConfigured,
+}: {
+  commands: AiCommand[];
+  statuses: Record<string, AgentCliStatus>;
+  checking: boolean;
+  onAdd: (item: AgentCatalogItem) => void;
+  onOpenConfigured: (index: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {AGENT_CATALOG.map((item) => {
+        const index = configuredIndex(item, commands);
+        const status = statuses[catalogStatusId(item.key)];
+        const installed = status?.installed === true;
+        const missing = status !== undefined && !status.installed;
+        return (
+          <div
+            key={item.key}
+            className={
+              "flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors " +
+              (installed
+                ? "border-ok/30 bg-ok/[0.04] hover:border-ok/50"
+                : missing
+                  ? "border-danger-line bg-danger-bg/30 hover:border-danger-line"
+                  : "border-line bg-raised/70 hover:border-line-hover hover:bg-raised")
+            }
+          >
+            <div
+              className={
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg " +
+                (installed
+                  ? "bg-ok/10 text-ok"
+                  : missing
+                    ? "bg-danger-bg text-danger"
+                    : "bg-raised text-fg-faint")
               }
-              className={`${TEXT_INPUT} min-w-0 flex-1`}
-            />
-            <input
-              type="text"
-              value={item.command}
-              spellCheck={false}
-              placeholder="命令，例如 claude"
-              onChange={(event) =>
-                onChange(
-                  commands.map((entry, i) =>
-                    i === index ? { ...entry, command: event.target.value } : entry,
-                  ),
-                )
-              }
-              className={`${TEXT_INPUT} min-w-0 flex-[1.5]`}
-            />
-            <button
-              type="button"
-              onClick={() => onChange(commands.filter((_, i) => i !== index))}
-              title="删除这个 AI CLI"
-              className={LIST_ACTION}
             >
-              <IconClose className="h-3 w-3" />
-            </button>
+              <AgentLogo name={item.name} command={item.command} className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <p className="truncate text-[12px] font-medium text-fg">{item.name}</p>
+                <AgentStatusBadge status={status} checking={checking} />
+              </div>
+              <p className="mt-0.5 truncate font-mono text-[10px] text-fg-faint">
+                {item.command}
+                {status?.version ? " · " + status.version : ""}
+              </p>
+              <p className="mt-0.5 truncate text-[10px] text-fg-faint" title={item.hint}>
+                {missing ? "安装：" + item.install : item.hint}
+              </p>
+            </div>
+            {index !== null ? (
+              <button
+                type="button"
+                onClick={() => onOpenConfigured(index)}
+                title="去已配置列表里编辑它"
+                className={BUTTON_SM}
+              >
+                已添加
+              </button>
+            ) : (
+              <button type="button" onClick={() => onAdd(item)} className={BUTTON_SM}>
+                <IconPlus className="h-3 w-3" />
+                添加
+              </button>
+            )}
           </div>
         );
       })}
@@ -1754,6 +2040,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [installMessage, setInstallMessage] = useState("");
   const [dependencyStatuses, setDependencyStatuses] = useState<Record<string, DependencyStatus>>({});
   const [checkingDependencies, setCheckingDependencies] = useState(true);
+  /** 编程 Agent 的安装状态，key 见 lib/agents.ts 的 catalogStatusId / commandStatusId */
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentCliStatus>>({});
+  const [checkingAgents, setCheckingAgents] = useState(true);
+  /** 已配置 Agent 的手风琴：一次只展开一条 */
+  const [openAgent, setOpenAgent] = useState<number | null>(null);
+  /** 检测批次的序号，用来丢掉过期结果 */
+  const agentCheckRef = useRef(0);
   /** 等确认的「删除提供商」 */
   const [pendingRemove, setPendingRemove] = useState<{
     provider: AiProvider;
@@ -1823,6 +2116,49 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   useEffect(() => {
     void refreshDependencies();
   }, []);
+
+  /**
+   * 检测系统支持的 Agent 和已配置的命令是否在本机。
+   *
+   * 只在打开设置时和点「重新检测」时跑：每次检测都要起子进程读版本，跟着命令输入逐字
+   * 触发太浪费。检测失败不挡设置面板，徽标停在「未检测」，用户可以点刷新重试。
+   */
+  const refreshAgents = async () => {
+    // 命令改得快时可能叠起两批检测，只让最后发起的那批落地
+    const generation = ++agentCheckRef.current;
+    setCheckingAgents(true);
+    try {
+      // 同一条命令配了多次只查一次
+      const configured = new Map<string, string>();
+      for (const item of settings.aiCommands) {
+        const command = item.command.trim();
+        if (command !== "") configured.set(commandStatusId(command), command);
+      }
+      const statuses = await checkAgentClis([
+        ...AGENT_CATALOG.map((item) => ({
+          id: catalogStatusId(item.key),
+          commands: [item.command, ...item.aliases],
+        })),
+        ...Array.from(configured, ([id, command]) => ({ id, commands: [command] })),
+      ]);
+      if (generation !== agentCheckRef.current) return;
+      setAgentStatuses(Object.fromEntries(statuses.map((status) => [status.id, status])));
+    } catch {
+      // 见上：失败时保持「未检测」
+    } finally {
+      if (generation === agentCheckRef.current) setCheckingAgents(false);
+    }
+  };
+
+  // 命令文本变了才需要重新探测：改名、改环境变量都不影响可执行文件在不在。
+  // 防抖是为了不在输入命令时每敲一个字就起一批子进程；打开设置面板也会走这一趟。
+  const agentCommandSignature = settings.aiCommands
+    .map((item) => item.command)
+    .join("\n");
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshAgents(), 500);
+    return () => window.clearTimeout(timer);
+  }, [agentCommandSignature]);
 
   // ---- 模型提供商 ----
 
@@ -2403,32 +2739,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       />
                     </Field>
                   </Section>
-                  <Section
-                    title="AI CLI"
-                    hint="名称只用于展示，命令用于在当前终端执行；空命令不会出现在工具条中。启动时会把工作区的其他目录按 CLI 支持的参数或配置自动注入；按住左侧把手可拖动调整顺序"
-                    action={
-                      <button
-                        type="button"
-                        onClick={() =>
-                          update({
-                            aiCommands: [
-                              ...settings.aiCommands,
-                              { name: "", command: "" },
-                            ],
-                          })
-                        }
-                        title="添加一个 AI CLI"
-                        className={HEAD_ACTION}
-                      >
-                        <IconPlus className="h-3 w-3" />
-                      </button>
-                    }
-                  >
-                    <AiCommandList
-                      commands={settings.aiCommands}
-                      onChange={(aiCommands) => update({ aiCommands })}
-                    />
-                  </Section>
                 </>
               )}
 
@@ -2607,7 +2917,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                   <Section
                     title="AI 命令行工具"
-                    hint="按需安装；安装后可在终端中使用，也可加入顶部的 CLI 列表。"
+                    hint="按需安装；装好后到「智能体」页配置启动命令和环境变量。"
                   >
                     <DependencyRow
                       id="opencode"
@@ -2669,6 +2979,89 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   <p className="text-[11px] leading-relaxed text-fg-faint">
                     Windows 的 WebView2 由系统提供；如果应用无法启动，请先安装 Microsoft Edge WebView2 Runtime。
                   </p>
+                </>
+              )}
+
+              {tab === "agents" && (
+                <>
+                  <Section
+                    title="已配置"
+                    hint="终端顶栏按这里的顺序摆按钮，空命令的条目不会出现；按住左侧把手可调整顺序，点条目展开改命令和环境变量"
+                    action={
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenAgent(settings.aiCommands.length);
+                          update({
+                            aiCommands: [
+                              ...settings.aiCommands,
+                              { name: "", command: "", env: [] },
+                            ],
+                          });
+                        }}
+                        title="添加一个编程 Agent"
+                        className={HEAD_ACTION}
+                      >
+                        <IconPlus className="h-3 w-3" />
+                      </button>
+                    }
+                  >
+                    {settings.aiCommands.length === 0 ? (
+                      <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-6 text-center">
+                        <IconBot className="h-5 w-5 text-fg-faint" />
+                        <p className="text-[12px] text-fg-muted">还没有配置编程 Agent</p>
+                        <p className="max-w-[320px] text-[11px] leading-relaxed text-fg-faint">
+                          从下面的「系统支持」里挑一个，或者点右上角的加号手动添加一条命令。
+                        </p>
+                      </div>
+                    ) : (
+                      <AgentCommandList
+                        commands={settings.aiCommands}
+                        statuses={agentStatuses}
+                        checking={checkingAgents}
+                        openIndex={openAgent}
+                        onOpenChange={setOpenAgent}
+                        onChange={(aiCommands) => update({ aiCommands })}
+                      />
+                    )}
+                  </Section>
+
+                  <Section
+                    title="系统支持"
+                    hint="本机是否安装按可执行文件是否在 PATH 中判断；用 npx 这类包运行器临时启动的会显示未安装，装了但读不出版本号仍按已安装算"
+                    action={
+                      <button
+                        type="button"
+                        onClick={() => void refreshAgents()}
+                        disabled={checkingAgents}
+                        title="重新检测本机安装情况"
+                        className={HEAD_ACTION + " disabled:opacity-40"}
+                      >
+                        <IconRefresh
+                          className={
+                            checkingAgents
+                              ? "h-3.5 w-3.5 animate-spin"
+                              : "h-3.5 w-3.5"
+                          }
+                        />
+                      </button>
+                    }
+                  >
+                    <SupportedAgentList
+                      commands={settings.aiCommands}
+                      statuses={agentStatuses}
+                      checking={checkingAgents}
+                      onAdd={(item) => {
+                        const next = [
+                          ...settings.aiCommands,
+                          { name: item.name, command: item.command, env: [] },
+                        ];
+                        update({ aiCommands: next });
+                        setOpenAgent(next.length - 1);
+                      }}
+                      onOpenConfigured={setOpenAgent}
+                    />
+                  </Section>
                 </>
               )}
 
@@ -2858,7 +3251,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
         <ConfirmDialog
           message={
             confirmReset === "all"
-              ? "恢复全部默认设置？模型提供商、密钥、AI CLI 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。"
+              ? "恢复全部默认设置？模型提供商、密钥、编程 Agent 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。"
               : isResettableTab(confirmReset)
                 ? `恢复「${
                     TABS.find((item) => item.id === confirmReset)?.label

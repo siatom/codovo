@@ -28,9 +28,17 @@ export const EDITOR_LINE_HEIGHTS: EditorLineHeight[] = ["1.4", "1.6", "1.8"];
 /** 编辑器字号出厂值。字号快捷键「重置字号」与设置面板都用它，别再写第二份字面量 */
 export const DEFAULT_EDITOR_FONT_SIZE = 13;
 
+/** 一条环境变量；允许键名暂时空着（正在输入），启动时跳过空键 */
+export interface AgentEnvVar {
+  key: string;
+  value: string;
+}
+
 export interface AiCommand {
   name: string;
   command: string;
+  /** 启动这个 CLI 时额外注入进程环境的环境变量，按顺序生效，同名后者覆盖前者 */
+  env: AgentEnvVar[];
 }
 
 /** 一条可复用的技能：物化成一份 SKILL.md，Agent 按需加载 */
@@ -194,7 +202,13 @@ const SETTINGS_KEY = "codovo.settings";
  * 设置面板上可单独恢复默认的分类，和 SettingsDialog 的 tab 一一对应。
  * `dependencies` 只有环境检测与安装、没有设置项，所以不在这里。
  */
-export type SettingsSection = "appearance" | "terminal" | "editor" | "shortcuts" | "agent";
+export type SettingsSection =
+  | "appearance"
+  | "terminal"
+  | "editor"
+  | "shortcuts"
+  | "agents"
+  | "agent";
 
 /**
  * 每个分类各管哪些字段。恢复某一页默认时只把这些键写回出厂值，别的分类原样留着。
@@ -227,7 +241,6 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "terminalTheme",
     "terminalGpuAcceleration",
     "terminalWaitHint",
-    "aiCommands",
   ],
   editor: [
     "editorAutoSave",
@@ -242,6 +255,8 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "editorLineHeight",
   ],
   shortcuts: ["shortcuts"],
+  // 编程 Agent 从「终端」页独立出来：命令和环境变量都属于 Agent 本身
+  agents: ["aiCommands"],
   agent: [
     "aiProviders",
     "aiDefaultProvider",
@@ -296,11 +311,11 @@ const DEFAULTS: Settings = {
   // name 用各家的规范写法（与 lib/cli-sessions.ts 的 CLI_PROVIDERS.label 对齐），
   // command 才是实际会跑的可执行文件名
   aiCommands: [
-    { name: "Claude Code", command: "claude" },
-    { name: "Codex", command: "codex --no-daemon" },
-    { name: "Antigravity", command: "agy" },
-    { name: "CodeBuddy", command: "codebuddy" },
-    { name: "opencode", command: "opencode" },
+    { name: "Claude Code", command: "claude", env: [] },
+    { name: "Codex", command: "codex --no-daemon", env: [] },
+    { name: "Antigravity", command: "agy", env: [] },
+    { name: "CodeBuddy", command: "codebuddy", env: [] },
+    { name: "opencode", command: "opencode", env: [] },
   ],
   // 不预置任何厂商：提供商和模型都由用户自己加
   aiProviders: [],
@@ -407,14 +422,26 @@ function asBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+/** 环境变量列表：键名必须是字符串，值缺失按空串处理；空键留给界面编辑，启动时再过滤 */
+function asEnvList(value: unknown): AgentEnvVar[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): AgentEnvVar[] => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    if (typeof record.key !== "string") return [];
+    return [{ key: record.key, value: asString(record.value, "") }];
+  });
+}
+
 function asCommandList(value: unknown): AiCommand[] {
   if (!Array.isArray(value)) return [...DEFAULTS.aiCommands];
   return value.flatMap((item): AiCommand[] => {
-    if (typeof item === "string") return [{ name: item, command: item }];
+    if (typeof item === "string") return [{ name: item, command: item, env: [] }];
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
     if (typeof record.name !== "string" || typeof record.command !== "string") return [];
-    return [{ name: record.name, command: record.command }];
+    // 老版本没有 env 字段，回落空表即可
+    return [{ name: record.name, command: record.command, env: asEnvList(record.env) }];
   });
 }
 
@@ -674,7 +701,10 @@ const SettingsContext = createContext<SettingsValue | null>(null);
 function freshDefaults(): Settings {
   return {
     ...DEFAULTS,
-    aiCommands: DEFAULTS.aiCommands.map((item) => ({ ...item })),
+    aiCommands: DEFAULTS.aiCommands.map((item) => ({
+      ...item,
+      env: item.env.map((entry) => ({ ...entry })),
+    })),
     aiProviders: [],
     agentWorkspaces: {},
     shortcuts: defaultShortcuts(),

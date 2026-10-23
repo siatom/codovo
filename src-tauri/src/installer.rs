@@ -1,5 +1,6 @@
 //! 本机开发依赖安装：只允许安装内置白名单，避免把任意 shell 文本交给子进程。
 use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Clone, Copy)]
@@ -96,6 +97,77 @@ pub async fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
     .map_err(|error| format!("检查依赖失败：{error}"))
 }
 
+/// 一个 Agent 的检测请求：`id` 由前端定，`commands` 是候选可执行名（按顺序试）。
+#[derive(serde::Deserialize)]
+pub struct AgentCliQuery {
+    pub id: String,
+    pub commands: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct AgentCliStatus {
+    pub id: String,
+    pub installed: bool,
+    pub version: Option<String>,
+}
+
+/// 批量检测编程 Agent 是否在本机。
+///
+/// 「已安装」只看可执行文件在不在 PATH（或给的完整路径存不存在），版本号单独读：
+/// 有些 CLI 不认 `--version`，不能因为读不到版本就报未安装。
+#[tauri::command]
+pub async fn check_agent_clis(queries: Vec<AgentCliQuery>) -> Result<Vec<AgentCliStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // 和依赖检测同一套 PATH：macOS 的 GUI 进程得靠 login shell 才拿得到用户装的 Node
+        let path = crate::shell_env::resolved_path(&crate::shell_env::default_shell(), None);
+        let path = path.as_deref();
+        queries
+            .into_iter()
+            .map(|query| {
+                let found = query
+                    .commands
+                    .iter()
+                    .filter_map(|command| first_word(command))
+                    .find_map(|program| locate(&program, path));
+                let version = found.as_deref().and_then(version_of);
+                AgentCliStatus {
+                    id: query.id,
+                    installed: found.is_some(),
+                    version,
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| format!("检测智能体失败：{error}"))
+}
+
+/// 命令文本的第一个词（可执行文件名）。带引号的完整路径按引号收尾，Windows 上很常见。
+fn first_word(command: &str) -> Option<String> {
+    let trimmed = command.trim();
+    let token = if let Some(rest) = trimmed.strip_prefix('"') {
+        rest.split('"').next().unwrap_or(rest)
+    } else if let Some(rest) = trimmed.strip_prefix('\'') {
+        rest.split('\'').next().unwrap_or(rest)
+    } else {
+        trimmed.split_whitespace().next().unwrap_or(trimmed)
+    };
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
+/// 读一行版本号；读不出来返回 None，不影响「已安装」的判断。
+fn version_of(program: &Path) -> Option<String> {
+    let output = run_found(
+        Some(program),
+        &program.display().to_string(),
+        &["--version"],
+    )
+    .ok()?;
+    let first = output.lines().next()?.trim();
+    (!first.is_empty()).then(|| first.to_string())
+}
+
 /// 起一个外部命令并收下它的输出。`path` 为 None 时退回进程自身的环境变量。
 ///
 /// 这里必须自己解析可执行文件，不能直接 `Command::new("opencode")`：Windows 上
@@ -104,6 +176,20 @@ pub async fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
 /// 全报成未安装（opencode / codex / codebuddy / claude / gitee 都是这种）。
 /// 后缀探测与 `cmd /c` 包装复用 agent 那套，三端差异只留一份。
 fn run(program: &str, args: &[&str], path: Option<&OsStr>) -> Result<String, String> {
+    let found = locate(program, path);
+    run_found(found.as_deref(), program, args)
+}
+
+/// 定位可执行文件：带路径分隔符的当完整路径，其余在 PATH 里按后缀挨个试。
+///
+/// 抽出来是因为「是否已安装」和「读版本号」得分开判断：找不到文件就算没装，
+/// 找到了但 --version 失败（有的 CLI 没这个参数）仍然算装了。
+fn locate(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    if program.contains('/') || program.contains('\\') {
+        let candidate = PathBuf::from(program);
+        return candidate.is_file().then_some(candidate);
+    }
+
     let inherited;
     let path = match path {
         Some(path) => Some(path),
@@ -112,10 +198,14 @@ fn run(program: &str, args: &[&str], path: Option<&OsStr>) -> Result<String, Str
             inherited.as_deref()
         }
     };
+    crate::agent::find_on_path(program, path)
+}
 
-    let mut command = match crate::agent::find_on_path(program, path) {
-        Some(found) if crate::agent::needs_cmd_wrapper(&found) => {
-            crate::agent::wrap_with_cmd(&found, args)
+/// 起一个已定位（或按名字交给系统）的命令并收下输出。
+fn run_found(found: Option<&Path>, program: &str, args: &[&str]) -> Result<String, String> {
+    let mut command = match found {
+        Some(found) if crate::agent::needs_cmd_wrapper(found) => {
+            crate::agent::wrap_with_cmd(found, args)
         }
         Some(found) => {
             let mut command = Command::new(found);
@@ -299,3 +389,20 @@ fn hide_console(command: &mut Command) {
 }
 #[cfg(not(target_os = "windows"))]
 fn hide_console(_command: &mut Command) {}
+
+#[cfg(test)]
+mod tests {
+    use super::first_word;
+
+    #[test]
+    fn first_word_handles_plain_and_quoted_commands() {
+        assert_eq!(first_word("claude --resume x").as_deref(), Some("claude"));
+        assert_eq!(first_word("  codex  ").as_deref(), Some("codex"));
+        assert_eq!(
+            first_word("\"C:\\Program Files\\Claude\\claude.exe\" --version").as_deref(),
+            Some("C:\\Program Files\\Claude\\claude.exe")
+        );
+        assert_eq!(first_word("'claude' --resume").as_deref(), Some("claude"));
+        assert_eq!(first_word("   "), None);
+    }
+}

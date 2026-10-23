@@ -12,6 +12,7 @@ import {
   type TerminalSessionHandle,
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
+import { agentEnvFor } from "../lib/agents";
 import { prepareLaunch } from "../lib/cli-launch";
 import { pathKey, samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
@@ -169,6 +170,9 @@ export function TerminalPane({
   // 附加目录却会随活动根切换而变，用 ref 取最新值，别把 ref 回调带旧。
   const additionalRootsRef = useRef(additionalRoots);
   additionalRootsRef.current = additionalRoots;
+  // 同上：runInNewSession 的句柄要稳定，但 Agent 的环境变量随时可能在设置里改
+  const aiCommandsRef = useRef(settings.aiCommands);
+  aiCommandsRef.current = settings.aiCommands;
 
   // 标签页要显示每个会话的 shell 图标和名字，所以候选一挂载就拉，不用等到点开菜单
   useEffect(() => {
@@ -306,8 +310,14 @@ export function TerminalPane({
     hintByIdRef.current.set(id, command);
     const prepared = prepareLaunch(command, additionalRootsRef.current);
     launchCommandByIdRef.current.set(id, prepared.command);
-    if (Object.keys(prepared.env).length > 0) {
-      launchEnvByIdRef.current.set(id, prepared.env);
+    // 用户在「设置 → 智能体」里给这家 CLI 配的环境变量 + 启动时自动注入的权限配置。
+    // 自动注入的放后面：工作区边界的权限不能被用户配置盖掉。
+    const env = {
+      ...agentEnvFor(aiCommandsRef.current, command),
+      ...prepared.env,
+    };
+    if (Object.keys(env).length > 0) {
+      launchEnvByIdRef.current.set(id, env);
     }
     setLaunchFor({ id, command: prepared.command });
     setSessions((list) => [...list, id]);

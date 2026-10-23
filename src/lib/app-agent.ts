@@ -270,7 +270,8 @@ const SECTION_LABELS: Record<SettingsSection, string> = {
   terminal: "终端",
   editor: "编辑器",
   shortcuts: "快捷键",
-  agent: "AI",
+  agents: "智能体",
+  agent: "模型",
 };
 
 const SECTIONS = Object.keys(SECTION_LABELS) as SettingsSection[];

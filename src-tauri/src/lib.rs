@@ -104,6 +104,7 @@ pub fn run() {
             fs_api::fs_move,
             fs_api::fs_copy,
             installer::check_dependencies,
+            installer::check_agent_clis,
             installer::install_dependency,
             git::git_status,
             git::git_init,
