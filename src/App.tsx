@@ -10,6 +10,7 @@ import {
   type WorkspaceHandles,
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
 import { AppAssistantDrawer, type AppAssistantDrawerHandle } from "./components/AppAssistantDrawer";
@@ -40,6 +41,7 @@ import {
   pathKey,
   pathsExist,
   pathsPresent,
+  pickFolder,
   pickOpenPath,
   workspaceActivate,
   workspaceClose,
@@ -448,6 +450,19 @@ function Shell() {
     }
   }, [openFileAnywhere]);
   chooseFileRef.current = chooseFile;
+
+  /**
+   * 欢迎页的主入口「打开文件夹」：直接挑目录当工作区打开，不用先经过新建对话框。
+   * 选多个目录时按现有规则合成一个多根工作区（和拖入一致）。
+   */
+  const openFolderFromWelcome = useCallback(async () => {
+    try {
+      const picked = await pickFolder();
+      if (picked.length > 0) await openFolders(picked);
+    } catch (reason) {
+      setToast(`选择文件夹失败：${reason}`);
+    }
+  }, [openFolders]);
 
   /** 目标工作区处理完单文件请求后按 nonce 移除，免得实例重挂载时又打开一次 */
   const handleOpenRequestHandled = useCallback((nonce: number) => {
@@ -936,30 +951,33 @@ function Shell() {
       {/* 自绘标题栏横跨整个窗口：窗口按钮固定在右上角，和系统标题栏的位置一致 */}
       <TitleBar workspace={activeName} />
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* 全屏时侧边栏整块藏起来。用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
-        <div className={fullscreen !== "none" ? "hidden" : "contents"}>
-          <Sidebar
-            workspaces={workspaces}
-            currentId={activeId}
-            activeRoot={activeRoot}
-            opened={opened}
-            missingRoots={missingRoots}
-            onSelect={(workspace) => void openWorkspace(workspace)}
-            onCreate={() => setDialog({ mode: "create" })}
-            onEdit={(workspace) => setDialog({ mode: "edit", workspace })}
-            onRemove={setPendingRemove}
-            onClose={closeWorkspace}
-            onTogglePin={togglePin}
-            onResumeSession={resumeSession}
-            onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
-            onOpenAppAgent={openAppAgent}
-            collapsed={sidebarCollapsed}
-            onSetCollapsed={applySidebarCollapsed}
-            settingsOpen={settingsOpen}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onCloseSettings={() => setSettingsOpen(false)}
-          />
-        </div>
+        {/* 没有打开任何工作区时侧栏整块不挂载，欢迎页铺满窗口——底部另给了设置 / 主题入口。
+            有工作区后照旧：全屏时藏起来，用 contents 只是让这层壳不参与布局，Sidebar 本身不卸载 */}
+        {opened.length > 0 && (
+          <div className={fullscreen !== "none" ? "hidden" : "contents"}>
+            <Sidebar
+              workspaces={workspaces}
+              currentId={activeId}
+              activeRoot={activeRoot}
+              opened={opened}
+              missingRoots={missingRoots}
+              onSelect={(workspace) => void openWorkspace(workspace)}
+              onCreate={() => setDialog({ mode: "create" })}
+              onEdit={(workspace) => setDialog({ mode: "edit", workspace })}
+              onRemove={setPendingRemove}
+              onClose={closeWorkspace}
+              onTogglePin={togglePin}
+              onResumeSession={resumeSession}
+              onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
+              onOpenAppAgent={openAppAgent}
+              collapsed={sidebarCollapsed}
+              onSetCollapsed={applySidebarCollapsed}
+              settingsOpen={settingsOpen}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onCloseSettings={() => setSettingsOpen(false)}
+            />
+          </div>
+        )}
         {/* 每个打开的工作区挂一个实例：非当前的 hidden 藏着不卸载，切回来是原样 */}
         {opened.map((id) => {
           const workspace = workspaces.find((item) => item.id === id);
@@ -985,9 +1003,13 @@ function Shell() {
         {opened.length === 0 && (
           <WorkspaceEmpty
             error={notice}
-            onPick={() => {
-              setDialog({ mode: "create" });
-            }}
+            workspaces={workspaces}
+            missingRoots={missingRoots}
+            onCreate={() => setDialog({ mode: "create" })}
+            onOpen={(workspace) => void openWorkspace(workspace)}
+            onOpenFolder={() => void openFolderFromWelcome()}
+            onOpenFile={() => void chooseFile()}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         )}
       </div>
@@ -1000,6 +1022,12 @@ function Shell() {
         root={activeRoot}
         onClose={() => setAssistantOpen(false)}
       />
+
+      {/* 没有打开工作区时侧栏不挂载，设置面板改由窗口层渲染：欢迎页底部的入口
+          和 Ctrl+, 都要能打开它。有侧栏时仍由 Sidebar 自己渲染，避免出现两个 */}
+      {opened.length === 0 && settingsOpen && (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} />
+      )}
 
       {dialog && (
         <WorkspaceDialog
