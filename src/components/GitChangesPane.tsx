@@ -4714,7 +4714,7 @@ export function GitChangesPane({
           onPointerUp={onHandleUp}
           onPointerCancel={onHandleUp}
           onKeyDown={onHandleKeyDown}
-          title="拖动调整时间线的高度"
+          title="拖动调整提交历史的高度"
           className={`relative h-px shrink-0 cursor-row-resize bg-line-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-strong ${
             draggingLog ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
@@ -4735,7 +4735,7 @@ export function GitChangesPane({
           <button
             type="button"
             onClick={() => setLogCollapsedPersisted(!logCollapsed)}
-            title={logCollapsed ? "展开时间线" : "收起时间线"}
+            title={logCollapsed ? "展开提交历史" : "收起提交历史"}
             className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-fg"
           >
             {logCollapsed ? (
@@ -4743,7 +4743,7 @@ export function GitChangesPane({
             ) : (
               <IconChevronDown className="h-3 w-3 shrink-0" />
             )}
-            <span>时间线</span>
+            <span>提交历史</span>
             {commits && commits.length > 0 && (
               <span className="text-fg-faint">{commits.length}</span>
             )}

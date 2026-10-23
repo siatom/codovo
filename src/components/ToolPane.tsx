@@ -260,7 +260,7 @@ export function ToolPane({
               <button
                 type="button"
                 onClick={() => setAdvancedOpen(true)}
-                title="完整 Git：暂存 / 提交 / 时间线 / 储藏"
+                title="完整 Git：暂存 / 提交 / 提交历史 / 储藏"
                 className={ICON_BUTTON}
               >
                 <IconCommit className="h-3.5 w-3.5" />
@@ -268,7 +268,14 @@ export function ToolPane({
             )}
             <button
               type="button"
-              onClick={() => setReloadKey((key) => key + 1)}
+              onClick={() => {
+                // 雷达里「主检出」那行读的是 git 快照（2 秒轮询），只重拉 worktree 列表
+                // 的话点完刷新数字还得等下一拍才动，看起来就像按钮没反应。这里把各根的
+                // 快照一并立刻重拉；完整 Git 面板自己也会在 reloadSignal 里拉一次，重复
+                // 的那次由 useGitStatus 的 inFlight 合并掉
+                for (const controller of Object.values(gitByRoot)) controller.refresh();
+                setReloadKey((key) => key + 1);
+              }}
               title="刷新"
               className={ICON_BUTTON}
             >

@@ -241,7 +241,11 @@ export function useGitStatus(
     const unavailable = new Set<string>();
 
     const load = async (root: string, force = false) => {
-      if (disposed || unavailable.has(root)) return;
+      if (disposed) return;
+      // 手动刷新（force）要能救回被停掉的根：上一次超时或 git 暂时不可用不该变成
+      // 永久放弃，否则刷新按钮对这个根就真的没作用了
+      if (force) unavailable.delete(root);
+      if (unavailable.has(root)) return;
       if (inFlight.has(root)) {
         // 正在飞的时候又来了刷新请求：记一笔，等它落地后补跑一次。
         // 既不丢刷新，也不会把请求堆起来
