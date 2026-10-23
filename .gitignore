@@ -4,6 +4,8 @@ node_modules/
 # 构建产物（Rust/Tauri 的 target、gen/schemas 在 src-tauri/.gitignore 里）
 dist/
 *.tsbuildinfo
+# Vite 在配置文件变化时写出的临时副本（vite.config.ts.timestamp-*.mjs）
+*.timestamp-*.mjs
 
 # 文件树图标：由 scripts/gen-file-icons.mjs 从 material-icon-theme 生成（约 3MB svg），
 # dev / build / install 时自动重跑，不进仓库
@@ -12,11 +14,7 @@ public/material-icons/
 # 日志
 logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+*-debug.log*
 
 # 本地环境变量：可能含密钥，一律不进仓库（示例文件除外）
 .env
@@ -34,13 +32,6 @@ lerna-debug.log*
 .idea/
 *.sw?
 
-# CodeBuddy：只放行随仓库共享的项目级技能与斜杠命令（.codebuddy/skills/、.codebuddy/commands/），
-# 其余（本地配置、会话数据）照旧忽略。
-# 必须先写 .codebuddy/* 而不是整个目录，否则下面的 ! 例外不生效
-.codebuddy/*
-!.codebuddy/skills/
-!.codebuddy/commands/
-
 # 系统
 .DS_Store
 Thumbs.db
@@ -49,9 +40,19 @@ desktop.ini
 # 临时文件
 .tmp*
 
-# Letta
+# AI 工具本地目录
+# CodeBuddy：只放行随仓库共享的项目级技能与斜杠命令（.codebuddy/skills/、.codebuddy/commands/），
+# 其余（本地配置、会话数据）照旧忽略。
+# 必须先写 .codebuddy/* 而不是整个目录，否则下面的 ! 例外不生效
+.codebuddy/*
+!.codebuddy/skills/
+!.codebuddy/commands/
+# 其余工具同样只保留项目级共享文件，本地配置与缓存不进仓库
+.qoder/
+.kiro/
 .letta/
+# Claude Code 的 worktree 目录
+.claude/worktrees/
 
 # opencode 本地 worktree（全局配置 worktree.directory 指向项目内 .worktrees/）
 .worktrees/
-.kiro/
