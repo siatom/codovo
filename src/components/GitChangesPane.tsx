@@ -225,11 +225,20 @@ function messageMetrics(el: HTMLTextAreaElement) {
 
 // 时间线这摊都是窗口级偏好，存 sessionStorage：多窗口下各收各的、各拖各的
 const LOG_COLLAPSED_KEY = "codovo.commitLogCollapsed.";
-const LOG_HEIGHT_KEY = "codovo.commitLogHeight.";
+const LOG_RATIO_KEY = "codovo.commitLogRatio.";
 
 /** 时间线那块能拖到多高/多矮 */
 const MIN_LOG_HEIGHT = 80;
 const MAX_LOG_HEIGHT = 600;
+
+/** 默认占面板高度的四成：面板变高变矮时时间线跟着走，不必再拖一次 */
+const DEFAULT_LOG_RATIO = 0.4;
+
+/** 比例的合法区间。只用来挡住坏掉的存储值，像素级的上限在派生高度那里管 */
+const MIN_LOG_RATIO = 0.1;
+const MAX_LOG_RATIO = 0.8;
+
+/** 面板高度还没量到（首帧）时的兜底像素高度，别让时间线先跳成最矮 */
 const DEFAULT_LOG_HEIGHT = 224;
 
 /** 上面至少要留出来的高度：工具条 + 提交框 + 两三行改动列表 */
@@ -246,16 +255,25 @@ function readLogCollapsed(root: string): boolean {
   }
 }
 
-function readLogHeight(root: string): number {
+function readLogRatio(root: string): number {
   try {
-    const saved = Number(window.sessionStorage.getItem(LOG_HEIGHT_KEY + root));
-    if (Number.isFinite(saved) && saved >= MIN_LOG_HEIGHT && saved <= MAX_LOG_HEIGHT) {
+    const saved = Number(window.sessionStorage.getItem(LOG_RATIO_KEY + root));
+    if (Number.isFinite(saved) && saved >= MIN_LOG_RATIO && saved <= MAX_LOG_RATIO) {
       return saved;
     }
   } catch {
-    // 读不到就用默认值
+    // 读不到就用默认比例
   }
-  return DEFAULT_LOG_HEIGHT;
+  return DEFAULT_LOG_RATIO;
+}
+
+/**
+ * 目标像素高度换成比例，顺手夹进合法区间。
+ * 像素级的上限（面板高度 - RESERVED_ABOVE）不在这儿算，派生高度那处统一管。
+ */
+function ratioForHeight(px: number, panelHeight: number): number {
+  if (panelHeight <= 0) return DEFAULT_LOG_RATIO;
+  return Math.min(MAX_LOG_RATIO, Math.max(MIN_LOG_RATIO, px / panelHeight));
 }
 
 /**
@@ -1827,11 +1845,29 @@ export function GitChangesPane({
 
   // 时间线
   const [logCollapsed, setLogCollapsed] = useState(() => readLogCollapsed(root));
-  const [logHeight, setLogHeight] = useState(() => readLogHeight(root));
+  /** 时间线占面板高度的比例（不是像素）：面板变高变矮时时间线仍保持这个占比 */
+  const [logRatio, setLogRatio] = useState(() => readLogRatio(root));
+  /** 面板实测高度，0 表示还没量到（首帧） */
+  const [panelHeight, setPanelHeight] = useState(0);
   const [draggingLog, setDraggingLog] = useState(false);
-  /** 拖动起点，null 表示没在拖 */
+  /** 拖动起点，null 表示没在拖。startHeight 是像素，位移要除以面板高度才换得成比例 */
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * 时间线的实际像素高度，由比例和面板高度现算。
+   * 上下限只在这一处夹：MIN/MAX 管绝对范围，面板高度减 RESERVED_ABOVE 保证上面那块不被挤没。
+   */
+  const logHeight =
+    panelHeight > 0
+      ? Math.max(
+          MIN_LOG_HEIGHT,
+          Math.min(
+            Math.min(MAX_LOG_HEIGHT, panelHeight - RESERVED_ABOVE),
+            Math.round(panelHeight * logRatio),
+          ),
+        )
+      : DEFAULT_LOG_HEIGHT;
   const [logLimit, setLogLimit] = useState(LOG_PAGE);
   /** null = 还没拉到 */
   const [commits, setCommits] = useState<GitCommit[] | null>(null);
@@ -3040,11 +3076,10 @@ export function GitChangesPane({
   const onHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag) return;
-    // 上限还要看面板本身有多高，否则能把上面那块挤没
-    const room = (panelRef.current?.clientHeight ?? 0) - RESERVED_ABOVE;
-    const limit = Math.max(MIN_LOG_HEIGHT, Math.min(MAX_LOG_HEIGHT, room));
+    // 上下限不在这儿夹，交给派生高度那一处；这里只把位移换算成比例
+    const height = panelRef.current?.clientHeight ?? 0;
     const next = drag.startHeight - (event.clientY - drag.startY);
-    setLogHeight(Math.min(limit, Math.max(MIN_LOG_HEIGHT, next)));
+    setLogRatio(ratioForHeight(next, height));
   };
 
   const onHandleUp = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -3057,7 +3092,7 @@ export function GitChangesPane({
     document.body.classList.remove("codovo-dragging-row");
     try {
       // 用 state 里最新的值：拖动过程中它一直在变
-      window.sessionStorage.setItem(LOG_HEIGHT_KEY + root, String(logHeight));
+      window.sessionStorage.setItem(LOG_RATIO_KEY + root, String(logRatio));
     } catch {
       // 记不住就下次还是默认高度
     }
@@ -3072,17 +3107,27 @@ export function GitChangesPane({
       event.key === "ArrowUp" ? KEY_RESIZE_STEP : event.key === "ArrowDown" ? -KEY_RESIZE_STEP : 0;
     if (delta === 0) return;
     event.preventDefault();
-    const room = (panelRef.current?.clientHeight ?? 0) - RESERVED_ABOVE;
-    const limit = Math.max(MIN_LOG_HEIGHT, Math.min(MAX_LOG_HEIGHT, room));
-    const next = Math.min(limit, Math.max(MIN_LOG_HEIGHT, logHeight + delta));
-    setLogHeight(next);
+    // 从当前像素高度加一个步长，再换回比例；上下限同样交给派生高度那处
+    const next = ratioForHeight(logHeight + delta, panelRef.current?.clientHeight ?? 0);
+    setLogRatio(next);
     try {
       // 和 pointerup 一样落盘：键盘调完也得记住（这里直接用算出来的 next，setState 是异步的）
-      window.sessionStorage.setItem(LOG_HEIGHT_KEY + root, String(next));
+      window.sessionStorage.setItem(LOG_RATIO_KEY + root, String(next));
     } catch {
       // 记不住就下次还是默认高度
     }
   };
+
+  // 面板高度变了（窗口缩放、右栏宽度变化）就得重算时间线的像素高度，比例本身不动
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const measure = () => setPanelHeight(panel.clientHeight);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, []);
 
   /**
    * 拖动提交框的下边缘改高度，和上面拖历史那条是同一套写法。
