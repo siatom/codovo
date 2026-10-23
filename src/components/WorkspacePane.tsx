@@ -34,7 +34,7 @@ import {
   type Tab,
   type TabPatch,
 } from "../lib/tabs";
-import type { EditorLocation } from "../lib/types";
+import type { EditorLocation, TerminalSessionInfo } from "../lib/types";
 import type { Workspace } from "../lib/workspaces";
 import type { BrowserFileRequest } from "./BrowserPane";
 
@@ -170,6 +170,16 @@ export function WorkspacePane({
    * 只影响「变更」面板这一个模块：文件树 / 终端 / 编辑器仍然跟工作区根走。
    */
   const [wtMap, setWtMap] = useState<Record<string, string>>({});
+  /**
+   * 终端会话归属（id / cwd / 是否在等用户），由 TerminalPane 上报。
+   * 变更雷达靠它判断「哪个工作树上有终端在跑、谁在等我」——attention store 是按
+   * 工作区根记的，落不到具体工作树上，所以要多这一份。
+   */
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSessionInfo[]>([]);
+  /** 变更雷达的「去看」：切到该目录的终端，没有就新开一个 */
+  const openTerminalAt = useCallback((cwd: string) => {
+    terminalRef.current?.focusOrOpenAt(cwd);
+  }, []);
   const pickWorktree = useCallback((workRoot: string, target: string) => {
     setWtMap((current) => {
       const next = { ...current };
@@ -691,6 +701,7 @@ export function WorkspacePane({
             ref={setTerminalHandle}
             fullscreen={leftFullscreen}
             onToggleFullscreen={onToggleLeftFullscreen}
+            onSessionsReport={setTerminalSessions}
           />
         }
         second={
@@ -758,6 +769,8 @@ export function WorkspacePane({
                         onOpenMatch={openMatch}
                         onPickWorktree={pickWorktree}
                         onReview={setReview}
+                        sessions={terminalSessions}
+                        onOpenTerminal={openTerminalAt}
                         onBeforeReplace={saveAllEdits}
                         onAfterReplace={reloadAfterReplace}
                         onBeforeRename={saveAllEdits}

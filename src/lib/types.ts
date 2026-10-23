@@ -260,6 +260,20 @@ export interface WorkstreamReview {
   deletions: number;
 }
 
+/**
+ * 终端会话的归属：雷达要靠它判断「哪个工作树上有终端在跑、有没有在等用户」。
+ *
+ * 单独列一份而不是让雷达直接读 attention store：那边按工作区根记，落不到具体
+ * 工作树上；这里由 TerminalPane 把会话的 cwd 一并带出来。
+ */
+export interface TerminalSessionInfo {
+  id: number;
+  /** 会话 shell 的落点：工作区根，或某个工作树路径 */
+  cwd: string;
+  /** 停在交互提示 / 一轮任务跑完等下一步；null = 没在等 */
+  attention: "permission" | "question" | "prompt" | "done" | null;
+}
+
 /** 一条 stash 记录 */
 export interface GitStash {
   /** `stash@{n}` 里的那个 n，恢复 / 丢弃时要原样带回去 */

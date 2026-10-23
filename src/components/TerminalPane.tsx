@@ -13,13 +13,13 @@ import {
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
 import { prepareLaunch } from "../lib/cli-launch";
-import { samePath } from "../lib/fs";
+import { pathKey, samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import { useTabReorder } from "../lib/use-tab-reorder";
-import type { EditorLocation } from "../lib/types";
+import type { EditorLocation, TerminalSessionInfo } from "../lib/types";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   AgentLogo,
@@ -62,6 +62,11 @@ export interface TerminalPaneHandle {
    * 标签已经关掉了就什么都不做。
    */
   focusSession: (id: number) => void;
+  /**
+   * 切到落在某个目录里的终端：已经有（cwd 相同）就聚焦，没有就新开一个。
+   * 变更雷达的「去看」用它——工作树不在工作区根下，得单独指定落点。
+   */
+  focusOrOpenAt: (cwd: string) => void;
 }
 
 interface TerminalPaneProps {
@@ -75,6 +80,11 @@ interface TerminalPaneProps {
   fullscreen: boolean;
   /** 切换左侧全屏。按钮画在标签栏右端 */
   onToggleFullscreen: () => void;
+  /**
+   * 会话归属上报：id、shell 落点、是否在等用户。变更雷达靠它把「哪个工作树在跑、
+   * 谁在等我」落到具体工作树上（attention store 是按工作区根记的，落不到树）。
+   */
+  onSessionsReport?: (sessions: TerminalSessionInfo[]) => void;
   /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<TerminalPaneHandle>;
 }
@@ -93,6 +103,7 @@ export function TerminalPane({
   visible,
   fullscreen,
   onToggleFullscreen,
+  onSessionsReport,
   ref,
 }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
@@ -116,6 +127,8 @@ export function TerminalPane({
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
   /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
   const shellByIdRef = useRef(new Map<number, string>());
+  /** shell 落点：只有工作树终端会记，没记的落在 root。创建时定死，不随切换变化 */
+  const cwdByIdRef = useRef(new Map<number, string>());
   /**
    * 普通 shell 会话的标签序号：它用的 shell 是第几次被开出来的。**创建时定死**，
    * 不按「当前还剩几个同名」算——关掉别的标签不会让剩下的跳号（pwsh 3 → pwsh 2）。
@@ -204,10 +217,15 @@ export function TerminalPane({
 
   // shell 不传 = 用设置里的默认；传空串 = 明确点的是「自动」（后端自己挑）。
   // 两者必须分开：用户在菜单里点「自动」时不该被设置里的具体 shell 顶掉。
-  const addSession = (shell?: string) => {
+  /**
+   * 新开一个会话。`cwd` 是 shell 落点，不传就落在工作区根（绝大多数情况）。
+   * 工作树里的终端传它自己的目录，归属根仍然是 root——后端按 root 收进程。
+   */
+  const addSession = (shell?: string, cwd?: string) => {
     const id = nextIdRef.current;
     nextIdRef.current += 1;
     if (shell !== undefined) shellByIdRef.current.set(id, shell);
+    if (cwd) cwdByIdRef.current.set(id, cwd);
     assignShellSeq(id);
     setSessions((list) => [...list, id]);
     setActiveId(id);
@@ -322,11 +340,44 @@ export function TerminalPane({
     [sessions],
   );
 
+  /**
+   * 变更雷达的「去看」：cwd 相同的标签已经开着就切过去，否则新开一个。
+   * 只看 cwd，不看跑的是什么——用户要的是「那棵树上现在有终端」，不关心是哪个 CLI。
+   */
+  const focusOrOpenAt = useCallback(
+    (cwd: string) => {
+      const key = pathKey(cwd);
+      const existing = sessions.find(
+        (id) => pathKey(cwdByIdRef.current.get(id) ?? root) === key,
+      );
+      if (existing !== undefined) {
+        setActiveId(existing);
+        handlesRef.current.get(existing)?.focus();
+        return;
+      }
+      addSession(undefined, cwd);
+    },
+    [sessions, root],
+  );
+
   useImperativeHandle(
     ref,
-    () => ({ runInNewSession, insertToTerminal, focusSession }),
-    [runInNewSession, insertToTerminal, focusSession],
+    () => ({ runInNewSession, insertToTerminal, focusSession, focusOrOpenAt }),
+    [runInNewSession, insertToTerminal, focusSession, focusOrOpenAt],
   );
+
+  // 把会话归属上报给上层：变更雷达要按 cwd 把「在跑 / 在等你」落到具体工作树上。
+  // attention 存在全局 store 里、按 terminalTarget(id) 索引，这里翻译成 cwd + 状态
+  useEffect(() => {
+    if (!onSessionsReport) return;
+    onSessionsReport(
+      sessions.map((id) => ({
+        id,
+        cwd: cwdByIdRef.current.get(id) ?? root,
+        attention: attention[terminalTarget(id)] ?? null,
+      })),
+    );
+  }, [sessions, attention, root, onSessionsReport]);
 
   /** 配过的 AI CLI（空命令是加了还没填的，不进顶栏） */
   const aiCommands = useMemo(
@@ -579,6 +630,7 @@ export function TerminalPane({
                 <TerminalSession
                   ref={attachHandle(id)}
                   root={root}
+                  cwd={cwdByIdRef.current.get(id)}
                   // undefined = 跟随设置里的默认；只有在下拉里明确选过 shell 的会话才有值
                   shell={shellByIdRef.current.get(id)}
                   // Ctrl/Cmd+W 关的是「当前这个」标签；只剩一个时会换新会话顶上，

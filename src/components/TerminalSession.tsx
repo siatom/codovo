@@ -240,8 +240,15 @@ function judgeActivity(term: Terminal): CliActivity | null {
 }
 
 interface TerminalSessionProps {
-  /** 这个会话属于哪个工作区；shell 就落在这个目录，后端也按它归属会话 */
+  /** 这个会话属于哪个工作区；后端按它归属会话 */
   root: string;
+  /**
+   * shell 的落点。不传就落在 root。
+   *
+   * 工作树（worktree）不在工作区根下，但从变更雷达「去看」时要在那棵树里开终端，
+   * 所以落点和归属根得分开。cwd 变了会重开 shell——对已经存在的会话它不会变。
+   */
+  cwd?: string;
   /** 是否是当前显示的那个会话：从后台切回来要重新量尺寸并聚焦 */
   active: boolean;
   /** 是否在当前布局中显示；显示多个终端时不等同于焦点会话 */
@@ -291,6 +298,7 @@ export const TerminalSession = forwardRef<
 >(function TerminalSession(
   {
     root,
+    cwd,
     active,
     visible = active,
     initialCommand,
@@ -561,7 +569,7 @@ export const TerminalSession = forwardRef<
     const start = async () => {
       const handle = await spawnPty({
         root,
-        cwd: root,
+        cwd: cwd ?? root,
         env: bootEnv,
         // 刻意读闭包里的值、且不放进下面的依赖数组：改了 shell 只该影响之后新建的
         // 会话，不能把正在跑的终端重建掉（那会打断命令和 AI CLI）。
@@ -776,9 +784,10 @@ export const TerminalSession = forwardRef<
       termRef.current = null;
       fitRef.current = null;
     };
-    // root 变了就重开一个 shell 落在新目录，比往运行中的 shell 里塞 cd 可靠
-    // （跨盘符、各种 shell 的转义规则都不一样）
-  }, [sessionKey, root]);
+    // root / cwd 变了就重开一个 shell 落在新目录，比往运行中的 shell 里塞 cd 可靠
+    // （跨盘符、各种 shell 的转义规则都不一样）。cwd 对已存在的会话是固定的，
+    // 只有新开的工作树终端才会带不同的值
+  }, [sessionKey, root, cwd]);
 
   // 切界面主题、或换终端配色，都不重建会话，只换调色板：滚动历史和正在跑的命令不受影响
   useEffect(() => {

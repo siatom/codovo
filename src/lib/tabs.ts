@@ -6,12 +6,16 @@ import { pathKey } from "./fs";
  * - staged：HEAD ↔ index
  * - commit：`<rev>^` ↔ `<rev>`
  * - range：`<from>` ↔ `<to>`，两侧都是任意 ref（提交 / 分支 / 标签）
+ *
+ * `root` 只在**文件不属于工作区任何根**时才需要：工作树（worktree）里的文件就属于
+ * 这种情况，它不在 workspace.roots 下，编辑器按路径推断仓库会落到主检出上，diff
+ * 直接报「路径不在仓库里」。带上它，diff 就在那棵工作树上跑。
  */
 export type DiffSource =
-  | { mode: "unstaged" }
-  | { mode: "staged" }
-  | { mode: "commit"; rev: string }
-  | { mode: "range"; from: string; to: string };
+  | { mode: "unstaged"; root?: string }
+  | { mode: "staged"; root?: string }
+  | { mode: "commit"; rev: string; root?: string }
+  | { mode: "range"; from: string; to: string; root?: string };
 
 /**
  * 磁盘跟编辑器内容对不上的外部变更状态：
@@ -57,15 +61,18 @@ const SEP = "\u0000";
 
 /** 提交号在 key 里只取前 12 位就够区分了，也免得 key 太长 */
 function sourceKey(source: DiffSource): string {
+  // 同一个文件可能分别在工作树和主检出上被打开成差异标签，root 要进 key，
+  // 否则两个标签会撞成同一个
+  const root = source.root ? `${SEP}${pathKey(source.root)}` : "";
   switch (source.mode) {
     case "staged":
-      return "s";
+      return `s${root}`;
     case "unstaged":
-      return "u";
+      return `u${root}`;
     case "commit":
-      return `c${SEP}${source.rev.slice(0, 12)}`;
+      return `c${SEP}${source.rev.slice(0, 12)}${root}`;
     case "range":
-      return `r${SEP}${source.from.slice(0, 12)}${SEP}${source.to.slice(0, 12)}`;
+      return `r${SEP}${source.from.slice(0, 12)}${SEP}${source.to.slice(0, 12)}${root}`;
   }
 }
 

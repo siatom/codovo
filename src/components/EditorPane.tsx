@@ -650,12 +650,14 @@ function applyFormatToModel(model: monaco.editor.ITextModel, text: string): bool
 function diffUri(tab: Extract<Tab, { kind: "diff" }>, side: "original" | "modified"): monaco.Uri {
   const { source } = tab;
   // range 要带上两侧 ref 才能区分「同一个文件的两次不同比较」，否则它们会撞同一个 model
-  const key =
+  const base =
     source.mode === "commit"
       ? `commit-${source.rev.slice(0, 12)}`
       : source.mode === "range"
         ? `range-${source.from.slice(0, 12)}-${source.to.slice(0, 12)}`
         : source.mode;
+  // 同一文件可能同时在工作树和主检出上打开，root 要进 URI，否则两侧 model 会撞
+  const key = source.root ? `${base}@${pathKey(source.root)}` : base;
   return monaco.Uri.parse(
     `codovo-diff:/${key}/${encodeURIComponent(pathKey(tab.path))}/${side}`,
   );
@@ -2206,7 +2208,9 @@ export function EditorPane({
 
       let payload;
       try {
-        payload = await gitFileDiff(rootFor(tab.path), tab.path, tab.source);
+        // 工作树里的文件不在任何工作区根下，rootFor 会落到主检出上；source.root 优先，
+        // 让这份 diff 在那棵工作树上跑
+        payload = await gitFileDiff(tab.source.root ?? rootFor(tab.path), tab.path, tab.source);
       } catch (reason) {
         if (activeRef.current && tabKey(activeRef.current) === key) {
           setDiffStatus({ kind: "error", message: String(reason) });
