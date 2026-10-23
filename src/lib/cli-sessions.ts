@@ -3,13 +3,18 @@ import type { CliSessionInfo } from "./types";
 
 /**
  * 能列会话历史的 AI CLI。加新的一家要同时改后端 `src-tauri/src/cli_sessions.rs`：
- * jsonl 那两家加进 `provider_projects_dir`，其它形式的另开一支。
+ * 写 jsonl 的那几家加进 `provider_projects_dir`，其它形式的另开一支。
  */
 export interface CliProvider {
   key: string;
   label: string;
   /** resume 时接在命令后的子命令/参数。opencode 是 --session，Codex 是 resume */
   resumeFlag: string;
+  /**
+   * 可执行文件名和 key 不一致时的别名。Qoder CLI 的 key 是 qoder，
+   * 但可执行文件叫 qodercli，只比 key 会认不出来
+   */
+  aliases?: string[];
 }
 
 /** 顺序就是侧边栏选择器里的显示顺序 */
@@ -17,6 +22,7 @@ export const CLI_PROVIDERS: CliProvider[] = [
   { key: "codebuddy", label: "CodeBuddy", resumeFlag: "--resume" },
   { key: "claude", label: "Claude Code", resumeFlag: "--resume" },
   { key: "codex", label: "Codex", resumeFlag: "resume" },
+  { key: "qoder", label: "Qoder", resumeFlag: "--resume", aliases: ["qodercli"] },
   { key: "opencode", label: "opencode", resumeFlag: "--session" },
 ];
 
@@ -47,11 +53,15 @@ export function cliKey(text: string): string {
  */
 export function cliProvider(command: string, name = ""): CliProvider | null {
   const words = [...command.trim().split(/\s+/), name.trim()].map(cliKey);
-  return CLI_PROVIDERS.find((item) => words.includes(item.key)) ?? null;
+  return (
+    CLI_PROVIDERS.find((item) =>
+      [item.key, ...(item.aliases ?? [])].some((key) => words.includes(key)),
+    ) ?? null
+  );
 }
 
 /**
- * 拼 resume 命令。flag 由 provider 决定：codebuddy / claude 是 `--resume`，
+ * 拼 resume 命令。flag 由 provider 决定：codebuddy / claude / qoder 是 `--resume`，
  * opencode 是 `--session`（`opencode --help` 确认过，它没有 --resume）。
  *
  * 会话 id 是 UUID 或 `ses_xxx`，都不含分隔符和空格，所以拼进 zsh / pwsh / cmd
