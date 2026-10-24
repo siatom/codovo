@@ -5,5 +5,6 @@ export type PlannerPlan = { goalId: string; candidates: ProposalCandidate[] };
 export type OrchestrationPolicy = { creationPolicy: string; maxConcurrent: number; maxRetries: number; timeoutMs: number; budgetUnits: number; requireApproval: boolean };
 export const validatePlannerPlan = (plan: PlannerPlan) => invoke<PlannerPlan>("orchestration_validate_plan", { plan });
 export const readyCandidates = (plan: PlannerPlan, completed: string[], active: number, policy: OrchestrationPolicy) => invoke<ProposalCandidate[]>("orchestration_ready_candidates", { plan, completed, active, policy });
+export const scheduleCandidates = (request: { plan: PlannerPlan; completed: string[]; active: number; retryCounts: Record<string, number>; budgetUsed: number; policy: OrchestrationPolicy }) => invoke<ProposalCandidate[]>("orchestration_schedule", { request });
 export const defaultOrchestrationPolicy = () => invoke<OrchestrationPolicy>("orchestration_policy_default");
 export const verifyRun = (runId: string, checks: Array<{ name: string; status: string; output: string }>, createRepairProposal: boolean) => invoke("orchestration_verify", { runId, checks, createRepairProposal });

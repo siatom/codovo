@@ -11,8 +11,8 @@
 | CODO-306 | 协议层允许结构化聊天与 PTY 分离共存，未知能力不会热切换为原生模式 |
 | CODO-307 | M2 `proposal_from_session` 提供会话转候选保底路径；结构化消息可携带 citations |
 | CODO-308 | 审批桥只允许 approved/rejected/timed_out 终态，pending 不能被伪造为执行完成 |
-| CODO-309 | 资源记录包含 scope/digest/conflicts，冲突返回预览数据，不静默覆盖 |
-| CODO-310—311 | 协议类型和单测已建立；真实四家 Adapter 的黄金 Fixture/E2E 需在对应 CLI 可用环境补跑 |
+| CODO-309 | `protocol_index_workspace_resources` 索引 `.codovo/{rules,memory,skills,agents}`，输出 scope/digest/conflicts；冲突返回预览数据，不静默覆盖 |
+| CODO-310—311 | `protocol_sanitize_diagnostics` 递归脱敏 token/secret/password/API key；真实四家 Adapter 的黄金 Fixture/E2E 需在对应 CLI 可用环境补跑 |
 
 ## M4
 

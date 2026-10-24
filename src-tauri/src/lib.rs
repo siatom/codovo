@@ -268,6 +268,7 @@ pub fn run() {
             adapters::adapter_start,
             orchestration::orchestration_validate_plan,
             orchestration::orchestration_ready_candidates,
+            orchestration::orchestration_schedule,
             orchestration::orchestration_dedupe,
             orchestration::orchestration_handoff,
             orchestration::orchestration_verify,

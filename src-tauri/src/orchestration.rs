@@ -90,6 +90,17 @@ pub struct VerificationResult {
     pub checks: Vec<CheckResult>,
     pub derived_proposal: Option<ProposalCandidate>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleRequest {
+    pub plan: PlannerPlan,
+    pub completed: Vec<String>,
+    pub active: u32,
+    pub retry_counts: HashMap<String, u32>,
+    pub budget_used: u64,
+    pub policy: OrchestrationPolicy,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {
     pub name: String,
@@ -194,6 +205,30 @@ pub fn orchestration_ready_candidates(
         &completed.into_iter().collect(),
         active as usize,
         &policy,
+    ))
+}
+
+#[tauri::command]
+pub fn orchestration_schedule(request: ScheduleRequest) -> Result<Vec<ProposalCandidate>, String> {
+    validate_plan(&request.plan)?;
+    if request.policy.max_concurrent == 0 {
+        return Err("invalid_input: max_concurrent must be positive".into());
+    }
+    if request.budget_used >= request.policy.budget_units {
+        return Ok(Vec::new());
+    }
+    if request
+        .retry_counts
+        .values()
+        .any(|count| *count > request.policy.max_retries)
+    {
+        return Err("conflict: retry limit exceeded".into());
+    }
+    Ok(ready_candidates(
+        &request.plan,
+        &request.completed.into_iter().collect(),
+        request.active as usize,
+        &request.policy,
     ))
 }
 
