@@ -5,6 +5,7 @@ mod agent_config;
 mod ai;
 mod app_agent;
 mod cicd;
+mod control_plane;
 mod cli_sessions;
 mod database;
 mod db_agent;
@@ -20,6 +21,7 @@ mod preview;
 mod preview_agent;
 mod pty;
 mod remote;
+mod runtime;
 mod secrets;
 mod shell_env;
 mod shells;
@@ -65,9 +67,18 @@ pub fn run() {
         .manage(database::DbState::new())
         .manage(preview::PreviewState::new())
         .manage(cicd::CicdState::new())
+        .manage(control_plane::ControlPlaneState::new())
+        .manage(runtime::RuntimeState::new())
         .setup(|app| {
             // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
             tray::init(app.handle())?;
+            // 应用重启后先把上次未收敛的运行状态标为 unknown，避免 UI 误判为仍在运行。
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Some(state) = handle.try_state::<control_plane::ControlPlaneState>() {
+                    let _ = state.mark_unknown(&handle).await;
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -227,6 +238,20 @@ pub fn run() {
             cicd::cicd_run,
             cicd::cicd_stop,
             cicd::cicd_status,
+            control_plane::control_registry_scan,
+            control_plane::control_registry_list,
+            control_plane::control_profile_list,
+            control_plane::control_profile_upsert,
+            control_plane::control_profile_delete,
+            control_plane::control_session_create,
+            control_plane::control_session_list,
+            control_plane::control_session_update_status,
+            control_plane::control_event_record,
+            control_plane::control_event_list,
+            control_plane::control_reconcile,
+            runtime::runtime_start,
+            runtime::runtime_cancel,
+            runtime::runtime_stop,
             agent_config::agent_config_read,
             agent_config::agent_config_write,
             tray::app_quit,
@@ -270,6 +295,9 @@ pub fn run() {
                 }
                 // CICD 流水线可能正卡在某条命令上，退出时打断并 kill 当前子进程
                 if let Some(state) = app.try_state::<cicd::CicdState>() {
+                    state.kill_all();
+                }
+                if let Some(state) = app.try_state::<runtime::RuntimeState>() {
                     state.kill_all();
                 }
             }

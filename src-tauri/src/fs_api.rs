@@ -308,6 +308,7 @@ pub fn workspace_close(
     watch: tauri::State<'_, crate::watcher::WatchState>,
     pty: tauri::State<'_, crate::pty::PtyState>,
     agent: tauri::State<'_, crate::agent::AgentState>,
+    runtime: tauri::State<'_, crate::runtime::RuntimeState>,
     roots: Vec<String>,
 ) {
     for root in &roots {
@@ -316,6 +317,7 @@ pub fn workspace_close(
         // 关工作区时也要把它一并收掉，别留个游离的 opencode 进程
         agent.kill_workspace(&crate::preview_agent::agent_root(root));
         let _ = pty.kill_workspace(root);
+        let _ = runtime.kill_owner(root);
         watch.stop_if(Path::new(root));
         state.forget(root);
     }

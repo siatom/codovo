@@ -66,6 +66,13 @@ import {
   installDependency,
   type DependencyStatus,
 } from "../lib/installer";
+import {
+  listAgentSessions,
+  reconcileControlPlane,
+  scanAgentRegistry,
+  type AgentInstallation,
+  type AgentSessionRecord,
+} from "../lib/control-plane";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
@@ -2043,6 +2050,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   /** 编程 Agent 的安装状态，key 见 lib/agents.ts 的 catalogStatusId / commandStatusId */
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentCliStatus>>({});
   const [checkingAgents, setCheckingAgents] = useState(true);
+  const [controlInstallations, setControlInstallations] = useState<AgentInstallation[]>([]);
+  const [controlSessions, setControlSessions] = useState<AgentSessionRecord[]>([]);
+  const [checkingControlPlane, setCheckingControlPlane] = useState(false);
   /** 已配置 Agent 的手风琴：一次只展开一条 */
   const [openAgent, setOpenAgent] = useState<number | null>(null);
   /** 检测批次的序号，用来丢掉过期结果 */
@@ -2150,6 +2160,26 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     }
   };
 
+  const refreshControlPlane = async () => {
+    setCheckingControlPlane(true);
+    try {
+      const installations = await scanAgentRegistry(
+        AGENT_CATALOG.map((item) => ({
+          id: item.key,
+          commands: [item.command, ...item.aliases],
+        })),
+      );
+      await reconcileControlPlane();
+      const sessions = await listAgentSessions();
+      setControlInstallations(installations);
+      setControlSessions(sessions);
+    } catch {
+      // 控制面状态只是诊断信息，不能阻塞已有的 Agent 设置和 PTY。
+    } finally {
+      setCheckingControlPlane(false);
+    }
+  };
+
   // 命令文本变了才需要重新探测：改名、改环境变量都不影响可执行文件在不在。
   // 防抖是为了不在输入命令时每敲一个字就起一批子进程；打开设置面板也会走这一趟。
   const agentCommandSignature = settings.aiCommands
@@ -2159,6 +2189,11 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     const timer = window.setTimeout(() => void refreshAgents(), 500);
     return () => window.clearTimeout(timer);
   }, [agentCommandSignature]);
+
+  useEffect(() => {
+    if (tab !== "agents") return;
+    void refreshControlPlane();
+  }, [tab]);
 
   // ---- 模型提供商 ----
 
@@ -3061,6 +3096,52 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                       }}
                       onOpenConfigured={setOpenAgent}
                     />
+                  </Section>
+
+                  <Section
+                    title="M1 控制面"
+                    hint="Registry、Profile 和 Native Session 的平台状态；未知能力不会被显示为已支持"
+                    action={
+                      <button
+                        type="button"
+                        onClick={() => void refreshControlPlane()}
+                        disabled={checkingControlPlane}
+                        title="刷新控制面状态"
+                        className={HEAD_ACTION + " disabled:opacity-40"}
+                      >
+                        <IconRefresh className={checkingControlPlane ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+                      </button>
+                    }
+                  >
+                    <div className="flex w-full flex-col gap-2">
+                      {controlInstallations.length === 0 ? (
+                        <p className="text-[11px] text-fg-faint">尚未完成控制面探测</p>
+                      ) : (
+                        controlInstallations.map((installation) => (
+                          <div key={installation.adapterId} className="flex items-center justify-between rounded-md border border-line px-3 py-2">
+                            <div className="min-w-0">
+                              <p className="truncate text-[12px] text-fg">{installation.adapterId}</p>
+                              <p className="truncate text-[10px] text-fg-faint">
+                                {installation.version ?? "版本未知"} · {installation.supportedModes.join(", ")}
+                              </p>
+                            </div>
+                            <span className={installation.auth === "unavailable" ? "text-[10px] text-fg-faint" : "text-[10px] text-amber-500"}>
+                              {installation.auth === "unavailable" ? "未安装" : "认证未核实"}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                      <div className="flex items-center justify-between border-t border-line pt-2 text-[11px] text-fg-faint">
+                        <span>Native Session</span>
+                        <span>{controlSessions.length} 条</span>
+                      </div>
+                      {controlSessions.slice(0, 3).map((session) => (
+                        <div key={session.id} className="flex items-center justify-between text-[11px] text-fg-muted">
+                          <span className="truncate">{session.nativeSessionId ?? session.id}</span>
+                          <span className="ml-2 shrink-0">{session.status}</span>
+                        </div>
+                      ))}
+                    </div>
                   </Section>
                 </>
               )}
