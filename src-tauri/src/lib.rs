@@ -7,6 +7,7 @@ mod app_agent;
 mod cicd;
 mod control_plane;
 mod agent_protocol;
+mod adapters;
 mod cli_sessions;
 mod database;
 mod db_agent;
@@ -260,6 +261,8 @@ pub fn run() {
             agent_protocol::protocol_create_approval,
             agent_protocol::protocol_decide_approval,
             agent_protocol::protocol_resource_conflicts,
+            adapters::adapter_catalog,
+            adapters::adapter_capability_summary,
             orchestration::orchestration_validate_plan,
             orchestration::orchestration_ready_candidates,
             orchestration::orchestration_dedupe,

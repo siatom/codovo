@@ -34,3 +34,5 @@
 - 新增 Rust 文件 `rustfmt --edition 2021 --check`：通过。
 - `cargo test --lib`：本机 `aws-lc-sys` 的 MSVC `cl.exe D8050` 阻断依赖编译，无法在当前环境取得 Rust 测试证据。
 - M3/M4 契约层不会伪造真实厂商能力；真实 Adapter 接入、网络重连和黄金 Fixture 仍以 `docs/agent-compatibility-matrix.md` 的版本探测结果为准。
+
+四家 Agent 现在都有显式 `AdapterDescriptor`（`src-tauri/src/adapters.rs`）：默认只声明流式文本/交互回合，原生能力必须由探测结果显式开启；审批策略为 `native_only_else_pty`，未知能力回退既有 PTY，不启用危险免审批参数。
