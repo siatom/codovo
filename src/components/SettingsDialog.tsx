@@ -73,6 +73,7 @@ import {
   type AgentInstallation,
   type AgentSessionRecord,
 } from "../lib/control-plane";
+import { listGoals, listTasks, upsertGoal, upsertTask, type Goal, type Task } from "../lib/task-plane";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
@@ -2053,6 +2054,10 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [controlInstallations, setControlInstallations] = useState<AgentInstallation[]>([]);
   const [controlSessions, setControlSessions] = useState<AgentSessionRecord[]>([]);
   const [checkingControlPlane, setCheckingControlPlane] = useState(false);
+  const [m2Goals, setM2Goals] = useState<Goal[]>([]);
+  const [m2Tasks, setM2Tasks] = useState<Task[]>([]);
+  const [m2Title, setM2Title] = useState("");
+  const [m2GoalTitle, setM2GoalTitle] = useState("");
   /** 已配置 Agent 的手风琴：一次只展开一条 */
   const [openAgent, setOpenAgent] = useState<number | null>(null);
   /** 检测批次的序号，用来丢掉过期结果 */
@@ -2193,6 +2198,20 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   useEffect(() => {
     if (tab !== "agents") return;
     void refreshControlPlane();
+  }, [tab]);
+
+  const refreshM2 = async () => {
+    try {
+      const goals = await listGoals();
+      setM2Goals(goals);
+      setM2Tasks(await listTasks(goals[0]?.id));
+    } catch {
+      // 控制面尚未初始化时，设置页仍可正常使用。
+    }
+  };
+
+  useEffect(() => {
+    if (tab === "agents") void refreshM2();
   }, [tab]);
 
   // ---- 模型提供商 ----
@@ -3141,6 +3160,79 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                           <span className="ml-2 shrink-0">{session.status}</span>
                         </div>
                       ))}
+                    </div>
+                  </Section>
+
+                  <Section
+                    title="M2 任务"
+                    hint="手工 Goal/Task 与 Proposal 的基础看板；任务状态仍由后端状态机校验"
+                    action={
+                      <button
+                        type="button"
+                        onClick={() => void refreshM2()}
+                        title="刷新任务"
+                        className={HEAD_ACTION}
+                      >
+                        <IconRefresh className="h-3.5 w-3.5" />
+                      </button>
+                    }
+                  >
+                    <div className="flex w-full flex-col gap-2">
+                      <div className="flex gap-2">
+                        <input
+                          value={m2GoalTitle}
+                          onChange={(event) => setM2GoalTitle(event.target.value)}
+                          placeholder="新 Goal 标题"
+                          className={TEXT_INPUT}
+                        />
+                        <button
+                          type="button"
+                          className={BUTTON}
+                          onClick={async () => {
+                            if (!m2GoalTitle.trim()) return;
+                            await upsertGoal({ title: m2GoalTitle.trim() });
+                            setM2GoalTitle("");
+                            await refreshM2();
+                          }}
+                        >
+                          <IconPlus className="h-3 w-3" /> Goal
+                        </button>
+                      </div>
+                      {m2Goals.slice(0, 3).map((goal) => (
+                        <div key={goal.id} className="rounded-md border border-line px-3 py-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[12px] text-fg">{goal.title}</span>
+                            <span className="text-[10px] text-fg-faint">{goal.status}</span>
+                          </div>
+                          <div className="mt-2 flex gap-2">
+                            <input
+                              value={m2Title}
+                              onChange={(event) => setM2Title(event.target.value)}
+                              placeholder="新 Task 标题"
+                              className={TEXT_INPUT}
+                            />
+                            <button
+                              type="button"
+                              className={BUTTON}
+                              onClick={async () => {
+                                if (!m2Title.trim()) return;
+                                await upsertTask({ goalId: goal.id, title: m2Title.trim() });
+                                setM2Title("");
+                                await refreshM2();
+                              }}
+                            >
+                              <IconPlus className="h-3 w-3" /> Task
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {m2Tasks.slice(0, 8).map((task) => (
+                        <div key={task.id} className="flex items-center justify-between border-b border-line py-1 text-[11px]">
+                          <span className="truncate text-fg-muted">{task.title}</span>
+                          <span className="ml-2 shrink-0 text-fg-faint">{task.status}</span>
+                        </div>
+                      ))}
+                      {m2Goals.length === 0 && <p className="text-[11px] text-fg-faint">还没有 Goal</p>}
                     </div>
                   </Section>
                 </>

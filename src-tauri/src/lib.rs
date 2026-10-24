@@ -22,6 +22,7 @@ mod preview_agent;
 mod pty;
 mod remote;
 mod runtime;
+mod task_plane;
 mod secrets;
 mod shell_env;
 mod shells;
@@ -77,6 +78,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if let Some(state) = handle.try_state::<control_plane::ControlPlaneState>() {
                     let _ = state.mark_unknown(&handle).await;
+                    let _ = task_plane::initialize(&state, &handle).await;
                 }
             });
             Ok(())
@@ -252,6 +254,30 @@ pub fn run() {
             runtime::runtime_start,
             runtime::runtime_cancel,
             runtime::runtime_stop,
+            task_plane::task_goal_upsert,
+            task_plane::task_goal_list,
+            task_plane::task_milestone_upsert,
+            task_plane::task_milestone_list,
+            task_plane::task_upsert,
+            task_plane::task_list,
+            task_plane::task_transition,
+            task_plane::task_dependency_add,
+            task_plane::task_dependency_list,
+            task_plane::proposal_create,
+            task_plane::proposal_from_session,
+            task_plane::proposal_list,
+            task_plane::proposal_decide,
+            task_plane::task_run_start,
+            task_plane::task_run_list,
+            task_plane::task_run_finish,
+            task_plane::verification_record,
+            task_plane::verification_list,
+            task_plane::project_upsert,
+            task_plane::repository_register,
+            task_plane::repository_list,
+            task_plane::worktree_lease_acquire,
+            task_plane::worktree_lease_release,
+            task_plane::worktree_lease_list,
             agent_config::agent_config_read,
             agent_config::agent_config_write,
             tray::app_quit,

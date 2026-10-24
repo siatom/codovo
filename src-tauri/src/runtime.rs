@@ -160,9 +160,10 @@ pub fn runtime_start(
     thread::spawn(move || {
         // 轮询 try_wait，让 timeout/cancel 线程仍能取得锁并 kill 子进程。
         let status = loop {
-            let result = waiter_child.lock().ok().and_then(|mut slot| {
-                slot.as_mut().map(|child| child.try_wait())
-            });
+            let result = waiter_child
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.as_mut().map(|child| child.try_wait()));
             match result {
                 Some(Ok(Some(status))) => break Some(status),
                 Some(Ok(None)) => thread::sleep(Duration::from_millis(20)),
