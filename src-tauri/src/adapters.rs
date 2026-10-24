@@ -21,23 +21,66 @@ pub struct AdapterDescriptor {
 }
 
 pub fn descriptors() -> Vec<AdapterDescriptor> {
-    [
-        ("codex", "Codex", "codex"),
-        ("opencode", "OpenCode", "opencode"),
-        ("claude", "Claude", "claude"),
-        ("codebuddy", "CodeBuddy", "codebuddy"),
+    vec![
+        AdapterDescriptor {
+            id: "codex".into(),
+            display_name: "Codex".into(),
+            command: "codex".into(),
+            modes: vec!["pty".into(), "headless_json".into()],
+            capabilities: vec![
+                "stream_text".into(),
+                "interactive_turn".into(),
+                "session_resume".into(),
+            ],
+            fallback_mode: "pty".into(),
+            approval_policy: "native_only_else_pty".into(),
+        },
+        AdapterDescriptor {
+            id: "opencode".into(),
+            display_name: "OpenCode".into(),
+            command: "opencode".into(),
+            modes: vec!["pty".into(), "server".into()],
+            capabilities: vec![
+                "stream_text".into(),
+                "interactive_turn".into(),
+                "persistent_session".into(),
+            ],
+            fallback_mode: "pty".into(),
+            approval_policy: "native_only_else_pty".into(),
+        },
+        AdapterDescriptor {
+            id: "claude".into(),
+            display_name: "Claude".into(),
+            command: "claude".into(),
+            modes: vec!["pty".into(), "headless_json".into()],
+            capabilities: vec![
+                "stream_text".into(),
+                "interactive_turn".into(),
+                "session_resume".into(),
+            ],
+            fallback_mode: "pty".into(),
+            approval_policy: "native_only_else_pty".into(),
+        },
+        AdapterDescriptor {
+            id: "codebuddy".into(),
+            display_name: "CodeBuddy".into(),
+            command: "codebuddy".into(),
+            modes: vec![
+                "pty".into(),
+                "headless_json".into(),
+                "acp".into(),
+                "server".into(),
+            ],
+            capabilities: vec![
+                "stream_text".into(),
+                "interactive_turn".into(),
+                "session_resume".into(),
+                "native_subagents".into(),
+            ],
+            fallback_mode: "pty".into(),
+            approval_policy: "native_only_else_pty".into(),
+        },
     ]
-    .into_iter()
-    .map(|(id, display_name, command)| AdapterDescriptor {
-        id: id.into(),
-        display_name: display_name.into(),
-        command: command.into(),
-        modes: vec!["pty".into(), "headless_json".into()],
-        capabilities: vec!["stream_text".into(), "interactive_turn".into()],
-        fallback_mode: "pty".into(),
-        approval_policy: "native_only_else_pty".into(),
-    })
-    .collect()
 }
 
 #[tauri::command]
