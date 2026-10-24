@@ -33,6 +33,18 @@ pub enum RunRole {
     Verifier,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowState {
+    Planner,
+    Developer,
+    Reviewer,
+    Verifier,
+    NeedsHuman,
+    Done,
+    Repair,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProposalCandidate {
@@ -84,6 +96,43 @@ pub struct EvidenceRef {
     pub source: String,
     pub value: serde_json::Value,
     pub confidence: String,
+}
+
+#[tauri::command]
+pub fn orchestration_workflow_transition(
+    from: WorkflowState,
+    to: WorkflowState,
+) -> Result<WorkflowState, String> {
+    let valid = matches!(
+        (from, to),
+        (
+            WorkflowState::Planner,
+            WorkflowState::Developer | WorkflowState::NeedsHuman
+        ) | (
+            WorkflowState::Developer,
+            WorkflowState::Reviewer | WorkflowState::Verifier | WorkflowState::NeedsHuman
+        ) | (
+            WorkflowState::Reviewer,
+            WorkflowState::Verifier | WorkflowState::Repair | WorkflowState::NeedsHuman
+        ) | (
+            WorkflowState::Verifier,
+            WorkflowState::Done | WorkflowState::Repair | WorkflowState::NeedsHuman
+        ) | (
+            WorkflowState::Repair,
+            WorkflowState::Developer | WorkflowState::NeedsHuman
+        ) | (
+            WorkflowState::NeedsHuman,
+            WorkflowState::Planner
+                | WorkflowState::Developer
+                | WorkflowState::Reviewer
+                | WorkflowState::Verifier
+        )
+    );
+    if valid {
+        Ok(to)
+    } else {
+        Err("invalid_transition: workflow role".into())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

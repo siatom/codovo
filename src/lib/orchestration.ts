@@ -8,5 +8,6 @@ export const readyCandidates = (plan: PlannerPlan, completed: string[], active: 
 export const scheduleCandidates = (request: { plan: PlannerPlan; completed: string[]; active: number; retryCounts: Record<string, number>; budgetUsed: number; policy: OrchestrationPolicy }) => invoke<ProposalCandidate[]>("orchestration_schedule", { request });
 export const storePlan = (planId: string, plan: PlannerPlan, policy: OrchestrationPolicy) => invoke<void>("orchestration_store_plan", { planId, plan, policy });
 export const loadPlan = (planId: string) => invoke<[PlannerPlan, OrchestrationPolicy]>("orchestration_load_plan", { planId });
+export const transitionWorkflow = (from: string, to: string) => invoke<string>("orchestration_workflow_transition", { from, to });
 export const defaultOrchestrationPolicy = () => invoke<OrchestrationPolicy>("orchestration_policy_default");
 export const verifyRun = (runId: string, checks: Array<{ name: string; status: string; output: string }>, createRepairProposal: boolean) => invoke("orchestration_verify", { runId, checks, createRepairProposal });
