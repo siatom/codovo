@@ -6,6 +6,7 @@ mod ai;
 mod app_agent;
 mod cicd;
 mod control_plane;
+mod agent_protocol;
 mod cli_sessions;
 mod database;
 mod db_agent;
@@ -22,6 +23,7 @@ mod preview_agent;
 mod pty;
 mod remote;
 mod runtime;
+mod orchestration;
 mod task_plane;
 mod secrets;
 mod shell_env;
@@ -254,6 +256,16 @@ pub fn run() {
             runtime::runtime_start,
             runtime::runtime_cancel,
             runtime::runtime_stop,
+            agent_protocol::protocol_normalize_event,
+            agent_protocol::protocol_create_approval,
+            agent_protocol::protocol_decide_approval,
+            agent_protocol::protocol_resource_conflicts,
+            orchestration::orchestration_validate_plan,
+            orchestration::orchestration_ready_candidates,
+            orchestration::orchestration_dedupe,
+            orchestration::orchestration_handoff,
+            orchestration::orchestration_verify,
+            orchestration::orchestration_policy_default,
             task_plane::task_goal_upsert,
             task_plane::task_goal_list,
             task_plane::task_milestone_upsert,
