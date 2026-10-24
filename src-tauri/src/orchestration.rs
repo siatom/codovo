@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
-use std::collections::HashSet;
-use tauri::{AppHandle, Manager};
+use std::collections::{HashMap, HashSet};
+use tauri::AppHandle;
 
 use crate::control_plane::ControlPlaneState;
 
@@ -104,7 +104,7 @@ pub fn orchestration_workflow_transition(
     to: WorkflowState,
 ) -> Result<WorkflowState, String> {
     let valid = matches!(
-        (from, to),
+        (&from, &to),
         (
             WorkflowState::Planner,
             WorkflowState::Developer | WorkflowState::NeedsHuman
@@ -155,10 +155,10 @@ pub struct ScheduleRequest {
     pub policy: OrchestrationPolicy,
 }
 
-async fn orchestration_store(
-    state: &tauri::State<'_, ControlPlaneState>,
+async fn orchestration_store<'a>(
+    state: &'a tauri::State<'_, ControlPlaneState>,
     app: &AppHandle,
-) -> Result<&sqlx::SqlitePool, String> {
+) -> Result<&'a sqlx::SqlitePool, String> {
     let pool = state.pool(app).await?;
     sqlx::query("CREATE TABLE IF NOT EXISTS orchestration_plans (id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, plan_json TEXT NOT NULL, policy_json TEXT NOT NULL, status TEXT NOT NULL, updated_at INTEGER NOT NULL)")
         .execute(pool).await.map_err(|e| format!("storage_error: {e}"))?;

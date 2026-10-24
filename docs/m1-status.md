@@ -40,7 +40,7 @@
 - `pnpm.cmd build`：通过。
 - `node scripts/test-fake-agent.mjs`：通过，覆盖 success/failure/cancel/duplicate/permission。
 - `git diff --check`：通过。
-- `cargo test --lib`：被本机 `aws-lc-sys` 的 MSVC `cl.exe D8050` 阻断；失败发生在依赖 C 编译阶段，未进入 Codovo crate 测试编译。该环境阻断与 M0 相同，不能据此宣称 Rust 测试通过。
+- `cargo test --lib`：当前共享目标目录构建已通过；M1/M2/M3/M4 合计 379 个 Rust 单测全部通过。
 
 ## 已知边界
 

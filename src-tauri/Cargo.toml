@@ -78,11 +78,12 @@ sqlx = { version = "0.8.6", default-features = false, features = [
   "bigdecimal",
   "uuid",
   "json",
+  "macros",
 ] }
 # sqlx 的列解码要用到这几个类型名，所以得作为直接依赖
 chrono = "0.4"
 bigdecimal = "0.4"
-uuid = "1"
+uuid = { version = "1", features = ["v4"] }
 # 查询结果导出为 Excel(.xlsx)。纯 Rust、默认无 C 依赖（不引 zlib 特性），只写不读，
 # 比前端 SheetJS 少一次「把整包数据搬到 WebView 再搬回来」的往返。
 rust_xlsxwriter = "0.99"

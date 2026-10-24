@@ -28,7 +28,7 @@ M2 在 M1 控制面 SQLite 上增加任务领域与工作区证据链。实现�
 - `pnpm.cmd build`：通过，TypeScript 与 Vite 构建成功。
 - `rustfmt --edition 2021 --check`：新增 Rust 模块通过。
 - `git diff --check`：通过。
-- `cargo test --lib`：依赖 `aws-lc-sys` 调用 MSVC `cl.exe` 返回 `D8050`，尚未进入 Codovo crate 编译；因此 Rust 单测结果保持未验证。
+- `cargo test --lib`：通过；共享目标目录复用依赖后，379 个 Rust 单测全部通过。
 
 ## 安全边界
 

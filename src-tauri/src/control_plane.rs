@@ -4,7 +4,6 @@
 //! 平台数据属于 Codovo 自己的控制面，放在 Tauri app data 目录并由迁移版本管理。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -37,18 +36,13 @@ pub(crate) fn now_ms_for_external() -> i64 {
 }
 
 /// 统一接入方式。未知值不能默认为能力已支持。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum IntegrationMode {
+    #[default]
     Pty,
     Headless,
     NativeApi,
-}
-
-impl Default for IntegrationMode {
-    fn default() -> Self {
-        Self::Pty
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

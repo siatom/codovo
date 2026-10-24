@@ -131,7 +131,7 @@ pub fn protocol_normalize_event(event: serde_json::Value) -> Result<NormalizedAg
         .get("eventKey")
         .and_then(|v| v.as_str())
         .or_else(|| event.get("id").and_then(|v| v.as_str()))
-        .unwrap_or_else(|| "unkeyed")
+        .unwrap_or("unkeyed")
         .to_string();
     let event_type = event
         .get("type")

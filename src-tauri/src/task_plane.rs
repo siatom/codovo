@@ -8,7 +8,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::control_plane::ControlPlaneState;
 
@@ -357,10 +357,10 @@ fn run(row: RunRow) -> Result<TaskRun, String> {
     })
 }
 
-async fn pool(
-    state: &tauri::State<'_, ControlPlaneState>,
+async fn pool<'a>(
+    state: &'a tauri::State<'_, ControlPlaneState>,
     app: &AppHandle,
-) -> Result<&SqlitePool, String> {
+) -> Result<&'a SqlitePool, String> {
     let pool = state.pool(app).await?;
     ensure_schema(pool).await?;
     Ok(pool)
@@ -1089,13 +1089,12 @@ pub async fn worktree_lease_release(
     lease_id: String,
 ) -> Result<bool, String> {
     let pool = pool(&state, &app).await?;
-    Ok(sqlx::query("DELETE FROM worktree_leases WHERE id=?")
+    let result = sqlx::query("DELETE FROM worktree_leases WHERE id=?")
         .bind(lease_id)
         .execute(pool)
         .await
-        .map_err(storage)?
-        .rows_affected()
-        == 1)
+        .map_err(storage)?;
+    Ok(result.rows_affected() == 1)
 }
 
 #[tauri::command(async)]
