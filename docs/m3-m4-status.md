@@ -41,3 +41,5 @@
 四家 Agent 现在都有显式 `AdapterDescriptor`（`src-tauri/src/adapters.rs`）：默认只声明流式文本/交互回合，原生能力必须由探测结果显式开启；审批策略为 `native_only_else_pty`，未知能力回退既有 PTY，不启用危险免审批参数。
 
 本机 2026-10-24 的只读帮助探测还确认：Codex `exec --output-format stream-json`、OpenCode `--server/--session`、Claude `--print/--output-format`、CodeBuddy `--print --output-format stream-json` 与 `--serve/--acp`。这些只是 CLI 入口证据，仍不等于模型认证或端到端调用成功。
+
+`adapter_normalize_output` 已将 JSONL stdout 接到统一 `NormalizedAgentEvent`；Rust 单测覆盖 Codex 结构化行的 adapter/eventKey 保留。
