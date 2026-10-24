@@ -18,6 +18,7 @@ pub struct AdapterDescriptor {
     pub capabilities: Vec<String>,
     pub fallback_mode: String,
     pub approval_policy: String,
+    pub structured_args: Vec<String>,
 }
 
 pub fn descriptors() -> Vec<AdapterDescriptor> {
@@ -34,6 +35,7 @@ pub fn descriptors() -> Vec<AdapterDescriptor> {
             ],
             fallback_mode: "pty".into(),
             approval_policy: "native_only_else_pty".into(),
+            structured_args: vec!["exec".into(), "--json".into()],
         },
         AdapterDescriptor {
             id: "opencode".into(),
@@ -47,6 +49,7 @@ pub fn descriptors() -> Vec<AdapterDescriptor> {
             ],
             fallback_mode: "pty".into(),
             approval_policy: "native_only_else_pty".into(),
+            structured_args: vec!["--server".into()],
         },
         AdapterDescriptor {
             id: "claude".into(),
@@ -60,6 +63,11 @@ pub fn descriptors() -> Vec<AdapterDescriptor> {
             ],
             fallback_mode: "pty".into(),
             approval_policy: "native_only_else_pty".into(),
+            structured_args: vec![
+                "--print".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+            ],
         },
         AdapterDescriptor {
             id: "codebuddy".into(),
@@ -79,6 +87,11 @@ pub fn descriptors() -> Vec<AdapterDescriptor> {
             ],
             fallback_mode: "pty".into(),
             approval_policy: "native_only_else_pty".into(),
+            structured_args: vec![
+                "--print".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+            ],
         },
     ]
 }
@@ -134,12 +147,20 @@ pub fn adapter_start(
         return Err("unsupported_capability: adapter mode".into());
     }
     let program = input.program.unwrap_or(descriptor.command);
+    let mut args = input.args;
+    if mode == "headless_json" || mode == "server" {
+        for arg in &descriptor.structured_args {
+            if !args.iter().any(|existing| existing == arg) {
+                args.push(arg.clone());
+            }
+        }
+    }
     runtime_start(
         state,
         on_event,
         input.owner,
         program,
-        input.args,
+        args,
         input.cwd,
         input.timeout_ms,
     )
