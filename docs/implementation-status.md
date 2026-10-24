@@ -37,3 +37,7 @@ M1 的任务映射、SQLite v1 表结构、Tauri 命令、验证证据和已知�
 ## M2：任务管理与工作区
 
 M2 的领域模型、状态机、Proposal、Run、Project/Repository、Worktree 租约和 Verification 记录见 [`m2-status.md`](./m2-status.md)。核心实现位于 `src-tauri/src/task_plane.rs`，前端通过 `src/lib/task-plane.ts` 调用。
+
+## M3 / M4：协议与编排契约
+
+M3/M4 的结构化 Agent 协议、审批/资源冲突、Proposal Pipeline、Planner DAG、Handoff、预算和 Verifier 交付见 [`m3-m4-status.md`](./m3-m4-status.md)。真实厂商 Adapter 与完整多进程 E2E 需要在依赖环境可编译后继续补跑。
