@@ -33,3 +33,7 @@
 ## M1：控制面与运行时骨架
 
 M1 的任务映射、SQLite v1 表结构、Tauri 命令、验证证据和已知边界见 [`m1-status.md`](./m1-status.md)。核心实现位于 `src-tauri/src/control_plane.rs` 与 `src-tauri/src/runtime.rs`，原有 PTY 路径保持不变。
+
+## M2：任务管理与工作区
+
+M2 的领域模型、状态机、Proposal、Run、Project/Repository、Worktree 租约和 Verification 记录见 [`m2-status.md`](./m2-status.md)。核心实现位于 `src-tauri/src/task_plane.rs`，前端通过 `src/lib/task-plane.ts` 调用。
