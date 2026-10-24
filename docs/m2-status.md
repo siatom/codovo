@@ -16,7 +16,7 @@ M2 在 M1 控制面 SQLite 上增加任务领域与工作区证据链。实现�
 | CODO-208 | Run 保存 baseline/final SHA、dirty 标记、changed paths |
 | CODO-209 | Run 启动/结束命令连接既有 Profile、Session、Worktree 字段；Adapter 执行仍由 M1 Runtime 承担 |
 | CODO-210 | 独立 Verification 表；Agent 声明、自动检查和人工验收通过 `source` 区分 |
-| CODO-211/212 | M2 基础 API 已具备；完整对话转换入口和深度 Tasks/Changes 导航留作后续增强，不伪造未实现能力 |
+| CODO-211/212 | `proposal_from_session` 将原生 Session 转为待审批 Proposal；设置页提供 Task→Run→验收的基础导航，不把普通对话直接登记为 Task |
 | CODO-213 | 前端构建与领域静态测试已覆盖；Rust 集成测试受本机 `aws-lc-sys` MSVC 阻断，见验证记录 |
 
 ## 数据表

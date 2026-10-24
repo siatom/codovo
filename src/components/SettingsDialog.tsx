@@ -73,7 +73,7 @@ import {
   type AgentInstallation,
   type AgentSessionRecord,
 } from "../lib/control-plane";
-import { listGoals, listTasks, upsertGoal, upsertTask, type Goal, type Task } from "../lib/task-plane";
+import { listGoals, listTasks, listRuns, listVerifications, upsertGoal, upsertTask, type Goal, type Task, type TaskRun, type Verification } from "../lib/task-plane";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
@@ -2058,6 +2058,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const [m2Tasks, setM2Tasks] = useState<Task[]>([]);
   const [m2Title, setM2Title] = useState("");
   const [m2GoalTitle, setM2GoalTitle] = useState("");
+  const [m2SelectedTask, setM2SelectedTask] = useState<string | null>(null);
+  const [m2Runs, setM2Runs] = useState<TaskRun[]>([]);
+  const [m2Verifications, setM2Verifications] = useState<Verification[]>([]);
   /** 已配置 Agent 的手风琴：一次只展开一条 */
   const [openAgent, setOpenAgent] = useState<number | null>(null);
   /** 检测批次的序号，用来丢掉过期结果 */
@@ -2208,6 +2211,13 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     } catch {
       // 控制面尚未初始化时，设置页仍可正常使用。
     }
+  };
+
+  const openM2Task = async (task: Task) => {
+    setM2SelectedTask(task.id);
+    const runs = await listRuns(task.id);
+    setM2Runs(runs);
+    setM2Verifications(runs[0] ? await listVerifications(runs[0].id) : []);
   };
 
   useEffect(() => {
@@ -3227,11 +3237,18 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         </div>
                       ))}
                       {m2Tasks.slice(0, 8).map((task) => (
-                        <div key={task.id} className="flex items-center justify-between border-b border-line py-1 text-[11px]">
+                        <button key={task.id} type="button" onClick={() => void openM2Task(task)} className="flex items-center justify-between border-b border-line py-1 text-left text-[11px] hover:bg-active">
                           <span className="truncate text-fg-muted">{task.title}</span>
                           <span className="ml-2 shrink-0 text-fg-faint">{task.status}</span>
-                        </div>
+                        </button>
                       ))}
+                      {m2SelectedTask && (
+                        <div className="mt-1 rounded-md border border-line bg-surface-raised px-3 py-2 text-[10px] text-fg-faint">
+                          <div className="flex items-center justify-between"><span>Run 历史</span><span>{m2Runs.length} 次</span></div>
+                          {m2Runs.slice(0, 3).map((run) => <div key={run.id} className="mt-1 flex justify-between"><span>#{run.attemptNo} · {run.status}</span><span>{run.finalSha?.slice(0, 8) ?? "无 final SHA"}</span></div>)}
+                          {m2Verifications.length > 0 && <div className="mt-2 border-t border-line pt-1">验收：{m2Verifications.map((item) => `${item.kind}/${item.status}`).join("、")}</div>}
+                        </div>
+                      )}
                       {m2Goals.length === 0 && <p className="text-[11px] text-fg-faint">还没有 Goal</p>}
                     </div>
                   </Section>

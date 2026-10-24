@@ -12,6 +12,8 @@ export const listTasks = (goalId?: string, status?: string) => invoke<Task[]>("t
 export const upsertTask = (input: Record<string, unknown>) => invoke<Task>("task_upsert", { input });
 export const transitionTask = (id: string, to: string, expectedVersion: number) => invoke<Task>("task_transition", { id, to, expectedVersion });
 export const listRuns = (taskId?: string) => invoke<TaskRun[]>("task_run_list", { taskId });
+export type Verification = { id: string; runId: string; kind: string; status: string; summary: string; evidence: unknown; source: string; createdAt: number };
+export const listVerifications = (runId: string) => invoke<Verification[]>("verification_list", { runId });
 export const listProposals = (status?: string) => invoke<Proposal[]>("proposal_list", { status });
 export const proposalFromSession = (sessionId: string, title: string, excerpt?: string) =>
   invoke<Proposal>("proposal_from_session", { sessionId, title, excerpt });
