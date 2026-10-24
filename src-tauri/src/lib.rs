@@ -261,6 +261,8 @@ pub fn run() {
             agent_protocol::protocol_create_approval,
             agent_protocol::protocol_decide_approval,
             agent_protocol::protocol_resource_conflicts,
+            agent_protocol::protocol_index_workspace_resources,
+            agent_protocol::protocol_sanitize_diagnostics,
             adapters::adapter_catalog,
             adapters::adapter_capability_summary,
             adapters::adapter_start,

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -205,6 +206,71 @@ pub fn protocol_resource_conflicts(resources: Vec<ResourceRecord>) -> Vec<Resour
         }
     }
     out
+}
+
+#[tauri::command]
+pub fn protocol_index_workspace_resources(root: String) -> Result<Vec<ResourceRecord>, String> {
+    let root_path = Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("invalid_input: workspace root: {e}"))?;
+    let resource_dir = root_path.join(".codovo");
+    let entries = [
+        ("rules", "rules.md"),
+        ("memory", "memory.md"),
+        ("skills", "skills.json"),
+        ("agents", "agents.json"),
+    ];
+    let mut resources = Vec::new();
+    for (kind, name) in entries {
+        let path = resource_dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("storage_error: {e}"))?;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let digest = format!("{:016x}", hasher.finish());
+        resources.push(ResourceRecord {
+            id: format!("resource_{kind}"),
+            kind: kind.into(),
+            name: name.into(),
+            scope: "workspace".into(),
+            path: path.to_string_lossy().into_owned(),
+            digest: Some(digest),
+            conflicts: Vec::new(),
+        });
+    }
+    Ok(protocol_resource_conflicts(resources))
+}
+
+#[tauri::command]
+pub fn protocol_sanitize_diagnostics(value: serde_json::Value) -> serde_json::Value {
+    fn sanitize(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(mut object) => {
+                for (key, item) in object.clone() {
+                    let upper = key.to_ascii_uppercase();
+                    if upper.contains("TOKEN")
+                        || upper.contains("SECRET")
+                        || upper.contains("PASSWORD")
+                        || upper.contains("API_KEY")
+                        || upper.contains("PRIVATE_KEY")
+                    {
+                        object.insert(key, "[REDACTED]".into());
+                    } else {
+                        object.insert(key, sanitize(item));
+                    }
+                }
+                serde_json::Value::Object(object)
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(sanitize).collect())
+            }
+            other => other,
+        }
+    }
+    sanitize(value)
 }
 
 #[cfg(test)]
