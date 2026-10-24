@@ -263,6 +263,7 @@ pub fn run() {
             agent_protocol::protocol_resource_conflicts,
             adapters::adapter_catalog,
             adapters::adapter_capability_summary,
+            adapters::adapter_start,
             orchestration::orchestration_validate_plan,
             orchestration::orchestration_ready_candidates,
             orchestration::orchestration_dedupe,
