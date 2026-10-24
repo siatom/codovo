@@ -29,3 +29,7 @@
 - [x] Fake CLI/Adapter 可离线运行，覆盖成功、失败、取消、重复事件和权限请求。
 - [x] 前端构建和 Fake Adapter 测试已通过；Rust 基线失败原因已记录为本机 `aws-lc-sys`/MSVC `cl.exe D8050` 环境问题。
 - [x] 后续实施顺序和模块复用/新增边界已固定。
+
+## M1：控制面与运行时骨架
+
+M1 的任务映射、SQLite v1 表结构、Tauri 命令、验证证据和已知边界见 [`m1-status.md`](./m1-status.md)。核心实现位于 `src-tauri/src/control_plane.rs` 与 `src-tauri/src/runtime.rs`，原有 PTY 路径保持不变。
