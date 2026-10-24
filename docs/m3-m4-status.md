@@ -23,7 +23,7 @@
 | CODO-403 | 标题规范化去重；默认 Manual 策略，AutonomousLimited 需显式策略 |
 | CODO-404 | 原生任务映射保留为候选来源，不把不可观察能力标成已发现 |
 | CODO-405—406 | HandoffPackage 明确证据可信度与跨 Agent 不保留 native session 的事实 |
-| CODO-407 | ready 队列按 `maxConcurrent` 限流，策略包含重试/超时/预算字段 |
+| CODO-407 | ready 队列按 `maxConcurrent` 限流，策略包含重试/超时/预算字段；Planner Plan 与策略持久化到 `orchestration_plans`，可重启恢复 |
 | CODO-408 | Verifier 失败不宣称成功，可派生待审批修复 Proposal |
 | CODO-409—410 | Planner/Developer/Reviewer/Verifier 角色与工作台数据契约已冻结；现有设置页仍是基础入口 |
 | CODO-411 | 纯领域 DAG/Verifier 测试已建立；完整多进程故障注入需 Rust 依赖环境恢复后执行 |

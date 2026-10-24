@@ -1,7 +1,11 @@
 //! M4 长程任务编排：Proposal Pipeline、Planner DAG、Handoff、预算和 Verifier。
 
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use std::collections::HashSet;
+use tauri::{AppHandle, Manager};
+
+use crate::control_plane::ControlPlaneState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +104,62 @@ pub struct ScheduleRequest {
     pub retry_counts: HashMap<String, u32>,
     pub budget_used: u64,
     pub policy: OrchestrationPolicy,
+}
+
+async fn orchestration_store(
+    state: &tauri::State<'_, ControlPlaneState>,
+    app: &AppHandle,
+) -> Result<&sqlx::SqlitePool, String> {
+    let pool = state.pool(app).await?;
+    sqlx::query("CREATE TABLE IF NOT EXISTS orchestration_plans (id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, plan_json TEXT NOT NULL, policy_json TEXT NOT NULL, status TEXT NOT NULL, updated_at INTEGER NOT NULL)")
+        .execute(pool).await.map_err(|e| format!("storage_error: {e}"))?;
+    Ok(pool)
+}
+
+#[tauri::command(async)]
+pub async fn orchestration_store_plan(
+    state: tauri::State<'_, ControlPlaneState>,
+    app: AppHandle,
+    plan_id: String,
+    plan: PlannerPlan,
+    policy: OrchestrationPolicy,
+) -> Result<(), String> {
+    validate_plan(&plan)?;
+    let pool = orchestration_store(&state, &app).await?;
+    let plan_json = serde_json::to_string(&plan).map_err(|e| format!("invalid_input: {e}"))?;
+    let policy_json = serde_json::to_string(&policy).map_err(|e| format!("invalid_input: {e}"))?;
+    sqlx::query("INSERT INTO orchestration_plans(id,goal_id,plan_json,policy_json,status,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET plan_json=excluded.plan_json,policy_json=excluded.policy_json,updated_at=excluded.updated_at")
+        .bind(plan_id).bind(&plan.goal_id).bind(plan_json).bind(policy_json).bind("ready")
+        .bind(crate::control_plane::now_ms_for_external())
+        .execute(pool).await.map_err(|e| format!("storage_error: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub async fn orchestration_load_plan(
+    state: tauri::State<'_, ControlPlaneState>,
+    app: AppHandle,
+    plan_id: String,
+) -> Result<(PlannerPlan, OrchestrationPolicy), String> {
+    let pool = orchestration_store(&state, &app).await?;
+    let row = sqlx::query("SELECT plan_json,policy_json FROM orchestration_plans WHERE id=?")
+        .bind(plan_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("storage_error: {e}"))?
+        .ok_or_else(|| "not_found: orchestration plan".to_string())?;
+    let plan: PlannerPlan = serde_json::from_str(
+        &row.try_get::<String, _>("plan_json")
+            .map_err(|e| format!("storage_error: {e}"))?,
+    )
+    .map_err(|e| format!("storage_error: {e}"))?;
+    let policy: OrchestrationPolicy = serde_json::from_str(
+        &row.try_get::<String, _>("policy_json")
+            .map_err(|e| format!("storage_error: {e}"))?,
+    )
+    .map_err(|e| format!("storage_error: {e}"))?;
+    validate_plan(&plan)?;
+    Ok((plan, policy))
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckResult {

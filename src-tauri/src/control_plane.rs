@@ -32,6 +32,10 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
+pub(crate) fn now_ms_for_external() -> i64 {
+    now_ms()
+}
+
 /// 统一接入方式。未知值不能默认为能力已支持。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

@@ -269,6 +269,8 @@ pub fn run() {
             orchestration::orchestration_validate_plan,
             orchestration::orchestration_ready_candidates,
             orchestration::orchestration_schedule,
+            orchestration::orchestration_store_plan,
+            orchestration::orchestration_load_plan,
             orchestration::orchestration_dedupe,
             orchestration::orchestration_handoff,
             orchestration::orchestration_verify,
