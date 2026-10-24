@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
 use crate::runtime::{runtime_start, RuntimeEvent, RuntimeState};
+use crate::agent_protocol::{protocol_normalize_event, NormalizedAgentEvent};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +167,15 @@ pub fn adapter_start(
     )
 }
 
+#[tauri::command]
+pub fn adapter_normalize_output(adapter_id: String, line: String) -> Result<NormalizedAgentEvent, String> {
+    let descriptor = descriptors().into_iter().find(|item| item.id == adapter_id).ok_or_else(|| format!("not_found: adapter {adapter_id}"))?;
+    let value: serde_json::Value = serde_json::from_str(line.trim()).map_err(|e| format!("transport_error: structured output is not JSON: {e}"))?;
+    let mut event = protocol_normalize_event(value)?;
+    event.adapter_id = descriptor.id;
+    Ok(event)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +184,16 @@ mod tests {
         let item = adapter_capability_summary("codex".into(), vec![]).unwrap();
         assert!(item.capabilities.is_empty());
         assert_eq!(item.fallback_mode, "pty");
+    }
+
+    #[test]
+    fn structured_output_is_normalized_with_catalog_adapter() {
+        let event = adapter_normalize_output(
+            "codex".into(),
+            r#"{"type":"message.delta","eventKey":"x"}"#.into(),
+        )
+        .unwrap();
+        assert_eq!(event.adapter_id, "codex");
+        assert_eq!(event.event_key, "x");
     }
 }

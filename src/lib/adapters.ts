@@ -5,3 +5,4 @@ export const listAdapters = () => invoke<AdapterDescriptor[]>("adapter_catalog")
 export const capabilitySummary = (adapterId: string, verified: string[]) => invoke<AdapterDescriptor>("adapter_capability_summary", { adapterId, verified });
 export const startAdapter = (input: { adapterId: string; owner: string; program?: string; args: string[]; cwd?: string; mode?: "pty" | "headless_json"; timeoutMs?: number }, onEvent: unknown) =>
   invoke<number>("adapter_start", { input, onEvent });
+export const normalizeAdapterOutput = (adapterId: string, line: string) => invoke("adapter_normalize_output", { adapterId, line });

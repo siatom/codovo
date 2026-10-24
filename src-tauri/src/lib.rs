@@ -266,6 +266,7 @@ pub fn run() {
             adapters::adapter_catalog,
             adapters::adapter_capability_summary,
             adapters::adapter_start,
+            adapters::adapter_normalize_output,
             orchestration::orchestration_validate_plan,
             orchestration::orchestration_ready_candidates,
             orchestration::orchestration_schedule,
