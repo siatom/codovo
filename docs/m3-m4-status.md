@@ -32,6 +32,7 @@
 
 - `pnpm.cmd exec tsc --noEmit`：通过。
 - `pnpm.cmd test:adapter-contracts`：通过，离线检查四家 CLI 的只读帮助入口与结构化线索。
+- `pnpm.cmd test:m3-m4`：通过，验证 Fake Agent 审批拒绝/失败事件链、幂等 eventKey 和 Planner 依赖推进。
 - 新增 Rust 文件 `rustfmt --edition 2021 --check`：通过。
 - `cargo test --lib`：本机 `aws-lc-sys` 的 MSVC `cl.exe D8050` 阻断依赖编译，无法在当前环境取得 Rust 测试证据。
 - M3/M4 契约层不会伪造真实厂商能力；真实 Adapter 接入、网络重连和黄金 Fixture 仍以 `docs/agent-compatibility-matrix.md` 的版本探测结果为准。
