@@ -247,6 +247,37 @@ const PREVIEW_AGENT_DISABLED_TOOLS: &[&str] = &[
     "bash", "edit", "write", "patch", "webfetch", "websearch", "task",
 ];
 
+/// 一次性文本生成能力（翻译 / 提交方案 / 解读 / 反馈 / CICD）共用的哨兵 root。
+///
+/// 这些能力不属于任何工作区，也不需要出现在界面的智能体列表里；但它们和终端区智能体
+/// 一样由 opencode 跑，所以还是走同一套槽位。用哨兵 root 让它们独占一个进程。
+pub(crate) const UTILITY_ROOT: &str = "__utility__";
+
+/// 一次性文本生成共用的 primary agent 名。技能由它在每次调用时按名字加载。
+pub(crate) const UTILITY_AGENT_NAME: &str = "utility";
+
+/// 单次生成的等待上限。比终端对话短：这类调用都在等一个确定的结果，模型卡住就该报错。
+const UTILITY_TURN_TIMEOUT: Duration = Duration::from_secs(120);
+/// 等结果时轮询会话历史的间隔。事件流正常时走不到这里，只作保底。
+const UTILITY_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// 一次性生成助手的提示词：只负责加载指定技能并照做，不要自由发挥。
+const UTILITY_AGENT_PROMPT: &str = "\
+你是 Codovo 内置的文本生成助手。用户每次会指定一个技能名，你要先用 skill 工具加载该技能，\
+再严格按技能里的规则完成任务。\n\
+规则：\n\
+1. 必须先加载用户指定的技能；加载失败就如实报错，不要凭空编造结果。\n\
+2. 只输出任务要求的结果本身，不要解释你做了什么，也不要说「已加载技能」。\n\
+3. 除 skill 之外不要调用任何工具。\n\
+4. 一次性完成任务，不要反问，也不要等确认。";
+
+/// 一次性生成助手要关掉的工具：它只做纯文本生成，不该翻磁盘、跑命令或联网。
+/// 注意**不关 skill**——技能加载正是它唯一需要的工具。
+const UTILITY_DISABLED_TOOLS: &[&str] = &[
+    "bash", "edit", "write", "patch", "read", "grep", "glob", "list", "webfetch", "websearch",
+    "task",
+];
+
 /// 对接的是哪一带 opencode 的接口。
 ///
 /// 两代差异不小，但**相对路径几乎一样**：除了探针、发消息、中断这三处名字真的不同，
@@ -327,6 +358,23 @@ pub struct SkillSpec {
     description: String,
     #[serde(default)]
     content: String,
+}
+
+impl SkillSpec {
+    /// 内置技能用：名字 / 说明 / 正文都是代码里写死的常量。
+    pub(crate) fn new(name: &str, description: &str, content: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    /// 技能名（单测核对清单用）。
+    #[cfg(test)]
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
 }
 
 /// 一个自定义 agent：写进 opencode.json 的 `agent` map。
@@ -437,9 +485,56 @@ pub struct AgentConfig {
     /// 其余模式忽略。
     #[serde(default)]
     workspace_root: String,
+    /// 一次性文本生成：不注入用户的规则 / 记忆 / 技能 / agents / MCP，
+    /// 只写入 `utility_skills` 与内置的 utility agent。前端传不进来。
+    #[serde(skip)]
+    utility: bool,
+    /// utility 模式专用技能清单（内容来自 `ai.rs` 里的提示词常量）。其余模式忽略。
+    #[serde(skip)]
+    utility_skills: Vec<SkillSpec>,
 }
 
 impl AgentConfig {
+    /// 拼一份一次性生成用的配置：单个提供商、单个模型，只带内置技能。
+    ///
+    /// `dev_api_key` 是 `src-tauri/.env` 里的调试密钥；给了就随配置带进子进程环境，
+    /// 不必再查系统钥匙串。
+    pub(crate) fn for_utility(
+        command: String,
+        provider_id: String,
+        base_url: String,
+        model: String,
+        dev_api_key: Option<String>,
+        skills: Vec<SkillSpec>,
+    ) -> Self {
+        Self {
+            command,
+            // 固定端口留给终端区智能体：utility 与它并存，抢同一个端口必然起不来
+            port: 0,
+            providers: vec![ProviderSpec {
+                name: provider_id.clone(),
+                id: provider_id.clone(),
+                base_url,
+                // 走到这里时密钥已经校验过（.env 或钥匙串），所以恒为 true；
+                // 真正的正文由 `secrets()` 取，不落配置文件
+                has_key: true,
+                models: vec![model.clone()],
+            }],
+            default_model: format!("{provider_id}/{model}"),
+            dev_api_key: dev_api_key.map(|key| (provider_id, key)),
+            rules: String::new(),
+            memory: String::new(),
+            skills: Vec::new(),
+            agents: Vec::new(),
+            primary: UTILITY_AGENT_NAME.to_string(),
+            database: false,
+            preview: false,
+            workspace_root: String::new(),
+            utility: true,
+            utility_skills: skills,
+        }
+    }
+
     /// 真正能拿去建连的提供商：id / 地址 / 模型齐全
     fn usable_providers(&self) -> Vec<&ProviderSpec> {
         self.providers
@@ -602,6 +697,13 @@ struct Running {
     password: String,
     /// 子进程输出的尾巴。启动失败时拼进错误里，不然只能看到一句"启动超时"
     log: ChildLog,
+    /// 配置指纹：只有 utility 槽位在复用时比对（见 `config_fingerprint`）
+    fingerprint: u64,
+    /// 这批事件是否只留给后端（utility 没有界面，别往前端推）
+    quiet: bool,
+    /// SSE 解析出来的原始事件。utility 的 `run_once` 靠它等回合结束；
+    /// 前端仍走 `agent-event`，两条路互不影响。
+    events: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 /// 给 opencode 生成一个服务口令。
@@ -761,6 +863,9 @@ fn unwrap_data(value: serde_json::Value) -> serde_json::Value {
 struct Slot {
     inner: Arc<Mutex<Option<Running>>>,
     generation: Arc<AtomicU64>,
+    /// 串行化「起进程 + 探测协议」这段异步流程。两个并发调用（比如翻译和提交方案
+    /// 同时触发）不能各自起一个进程，也不能在探测完成前读到占位的协议值。
+    start_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// 进程池，**按工作区 root 分片**：一个工作区一个 opencode 进程，切走的工作区继续跑。
@@ -784,6 +889,7 @@ impl AgentState {
             .or_insert_with(|| Slot {
                 inner: Arc::new(Mutex::new(None)),
                 generation: Arc::new(AtomicU64::new(1)),
+                start_lock: Arc::new(tokio::sync::Mutex::new(())),
             })
             .clone()
     }
@@ -1017,18 +1123,27 @@ fn write_config(
     std::fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
 
     let mut instructions: Vec<String> = Vec::new();
-    for (file, text) in [("rules.md", &cfg.rules), ("memory.md", &cfg.memory)] {
-        if text.trim().is_empty() {
-            continue;
+    // utility 是后端自己发起的一次性生成，跟用户当前工作区的规则 / 记忆无关，
+    // 也不该把它们带进翻译、提交信息这类任务的上下文
+    if !cfg.utility {
+        for (file, text) in [("rules.md", &cfg.rules), ("memory.md", &cfg.memory)] {
+            if text.trim().is_empty() {
+                continue;
+            }
+            let path = dir.join(file);
+            std::fs::write(&path, text).map_err(|e| format!("写入 {file} 失败: {e}"))?;
+            instructions.push(path.to_string_lossy().into_owned());
         }
-        let path = dir.join(file);
-        std::fs::write(&path, text).map_err(|e| format!("写入 {file} 失败: {e}"))?;
-        instructions.push(path.to_string_lossy().into_owned());
     }
 
     let skills_dir = dir.join("skills");
     let mut wrote_skill = false;
-    for skill in &cfg.skills {
+    let user_skills: &[SkillSpec] = if cfg.utility {
+        &cfg.utility_skills
+    } else {
+        &cfg.skills
+    };
+    for skill in user_skills {
         let name = validate_name(&skill.name)?;
         let target = skills_dir.join(name);
         std::fs::create_dir_all(&target).map_err(|e| format!("创建技能目录失败: {e}"))?;
@@ -1127,7 +1242,8 @@ fn write_config(
     }
 
     let mut agents = serde_json::Map::new();
-    for agent in &cfg.agents {
+    // utility 不加载用户在设置里配的 agents，只留下面那个内置的
+    for agent in cfg.agents.iter().filter(|_| !cfg.utility) {
         let name = validate_name(&agent.name)?;
         let mode = agent.mode.trim();
         if !matches!(mode, "primary" | "subagent" | "all") {
@@ -1199,6 +1315,24 @@ fn write_config(
         );
     }
 
+    if cfg.utility {
+        // 一次性生成只留一个固定角色的 primary agent：任务说明在技能里，
+        // 这里只管「加载技能、照做、只输出结果」。工具全关（skill 除外）。
+        let tools = UTILITY_DISABLED_TOOLS
+            .iter()
+            .map(|name| (name.to_string(), serde_json::json!(false)))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
+        agents.insert(
+            UTILITY_AGENT_NAME.to_string(),
+            serde_json::json!({
+                "description": "Codovo 内置的一次性文本生成助手：按指定技能完成翻译 / 提交方案 / 解读等任务",
+                "mode": "primary",
+                "prompt": UTILITY_AGENT_PROMPT,
+                "tools": serde_json::Value::Object(tools),
+            }),
+        );
+    }
+
     let mut config = serde_json::json!({
         "provider": serde_json::Value::Object(providers),
         "model": default_model,
@@ -1220,6 +1354,10 @@ fn write_config(
     }
     if !cfg.primary.trim().is_empty() {
         config["default_agent"] = serde_json::json!(cfg.primary.trim());
+    }
+    if cfg.utility {
+        // 盖上上面那条：utility 只认内置 agent（`primary` 本来就是它，这里再保一道）
+        config["default_agent"] = serde_json::json!(UTILITY_AGENT_NAME);
     }
 
     if let Some(target) = db_target {
@@ -1657,6 +1795,7 @@ fn frame_data(frame: &str) -> Option<&str> {
 ///
 /// 事件流两代的路径只差 `/api` 前缀，但认证只有 v2 要——v2 漏了认证头会直接 401，
 /// 表现成"连上了但一条事件都没有"。
+#[allow(clippy::too_many_arguments)]
 fn spawn_sse(
     app: AppHandle,
     inner: Arc<Mutex<Option<Running>>>,
@@ -1665,6 +1804,8 @@ fn spawn_sse(
     port: u16,
     password: String,
     generation: u64,
+    events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    quiet: bool,
 ) {
     tauri::async_runtime::spawn(async move {
         let client = match reqwest::Client::builder().build() {
@@ -1691,13 +1832,18 @@ fn spawn_sse(
                                     continue;
                                 };
                                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
-                                    let _ = app.emit(
-                                        EVENT_NAME,
-                                        TaggedEvent {
-                                            root: root.clone(),
-                                            event: value,
-                                        },
-                                    );
+                                    // 后端等回合结束也吃这条流；没有订阅者时 send 直接失败，
+                                    // 事件丢掉即可，不影响前端那条路
+                                    let _ = events.send(value.clone());
+                                    if !quiet {
+                                        let _ = app.emit(
+                                            EVENT_NAME,
+                                            TaggedEvent {
+                                                root: root.clone(),
+                                                event: value,
+                                            },
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1725,6 +1871,7 @@ fn spawn_exit_watcher(
     generation: Arc<AtomicU64>,
     root: String,
     port: u16,
+    quiet: bool,
 ) {
     std::thread::spawn(move || loop {
         std::thread::sleep(EXIT_POLL);
@@ -1747,13 +1894,15 @@ fn spawn_exit_watcher(
             guard.take();
             generation.fetch_add(1, Ordering::SeqCst);
             drop(guard);
-            let _ = app.emit(
-                EXIT_EVENT,
-                TaggedEvent {
-                    root: root.clone(),
-                    event: serde_json::json!(code),
-                },
-            );
+            if !quiet {
+                let _ = app.emit(
+                    EXIT_EVENT,
+                    TaggedEvent {
+                        root: root.clone(),
+                        event: serde_json::json!(code),
+                    },
+                );
+            }
             return;
         }
     });
@@ -1768,6 +1917,536 @@ fn is_current(inner: &Arc<Mutex<Option<Running>>>, generation: u64) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+// ---- 一次性生成 ----
+
+/// 配置指纹。utility 槽位复用时比对它：换个 provider / 模型 / 技能正文就该重起进程。
+///
+/// 只哈希会影响生成结果的字段（命令、默认模型、提供商、技能），其余东西改了不必重起。
+fn config_fingerprint(cfg: &AgentConfig) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut push = |text: &str| {
+        for byte in text.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        // 分隔符：避免相邻字段拼起来后产生同一串字节
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    };
+
+    push(cfg.command.trim());
+    push(&cfg.default_model);
+    for provider in &cfg.providers {
+        push(&provider.id);
+        push(&provider.base_url);
+        push(if provider.has_key { "1" } else { "0" });
+        for model in &provider.models {
+            push(model);
+        }
+    }
+    for skill in &cfg.utility_skills {
+        push(&skill.name);
+        push(&skill.description);
+        push(&skill.content);
+    }
+    hash
+}
+
+/// utility 的工作目录：它不属于任何工作区，固定落在应用配置目录下的空目录里。
+fn utility_cwd(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("拿不到配置目录: {e}"))?
+        .join("utility")
+        .join("cwd");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    Ok(dir)
+}
+
+/// 发给 utility agent 的用户消息：第一行点名技能，后面才是任务数据。
+///
+/// 模型是否真的调 skill 工具由 `UTILITY_AGENT_PROMPT` 约束；这里再把技能名放进
+/// 用户消息，双保险。
+fn utility_prompt(skill: &str, user_text: &str) -> String {
+    format!("技能：{skill}\n先用 skill 工具加载该技能，再完成下面的任务。\n\n{user_text}")
+}
+
+/// 用一次性生成助手跑一个技能，返回模型最终的文本。
+///
+/// 每次调用一个独立会话：并发调用（长文档翻译 + 提交方案）互不打断，结束就删。
+/// provider / 模型变化由 `start_instance` 的指纹比对收掉旧进程重起。
+pub(crate) async fn run_once(
+    app: &AppHandle,
+    state: &AgentState,
+    config: AgentConfig,
+    skill: &str,
+    user_text: String,
+) -> Result<String, String> {
+    let cwd = utility_cwd(app)?;
+    // start_instance 会消费 config，先把生效模型取出来（prompt 要显式带上它，
+    // 否则 opencode 会用用户全局配置里的默认模型）
+    let model = config.resolved_default_model();
+    start_instance(app, state, UTILITY_ROOT, config, cwd).await?;
+
+    let slot = state
+        .peek(UTILITY_ROOT)
+        .ok_or_else(|| "一次性生成服务还没启动".to_string())?;
+    let (protocol, port, password, events) = {
+        let guard = slot.inner.lock().map_err(|e| e.to_string())?;
+        let running = guard
+            .as_ref()
+            .ok_or_else(|| "一次性生成服务还没启动".to_string())?;
+        (
+            running.protocol,
+            running.port,
+            running.password.clone(),
+            running.events.subscribe(),
+        )
+    };
+
+    let client = http_client()?;
+    let session_id =
+        create_session(&client, protocol, port, &password, &format!("codovo:{skill}")).await?;
+
+    let result = run_turn(
+        &client,
+        protocol,
+        port,
+        &password,
+        &session_id,
+        model.as_deref(),
+        skill,
+        &user_text,
+        events,
+    )
+    .await;
+
+    // 临时会话用完就收：成功也不留在会话列表里。失败时先打断，免得删除撞上忙状态。
+    if result.is_err() {
+        let _ = abort_session(&client, protocol, port, &password, &session_id).await;
+    }
+    let _ = delete_session(&client, protocol, port, &password, &session_id).await;
+    result
+}
+
+/// 在一个新会话里发一次 prompt，等回合结束，再把最终文本取回来。
+#[allow(clippy::too_many_arguments)]
+async fn run_turn(
+    client: &reqwest::Client,
+    protocol: Protocol,
+    port: u16,
+    password: &str,
+    session_id: &str,
+    model: Option<&str>,
+    skill: &str,
+    user_text: &str,
+    events: tokio::sync::broadcast::Receiver<serde_json::Value>,
+) -> Result<String, String> {
+    // v2 的 prompt 体不收 agent，得先切会话的 primary agent
+    if protocol == Protocol::V2 {
+        switch_agent(client, port, session_id, UTILITY_AGENT_NAME, protocol, password).await?;
+    }
+
+    let body = prompt_body(
+        protocol,
+        &utility_prompt(skill, user_text),
+        model,
+        Some(UTILITY_AGENT_NAME),
+    );
+    request_json(
+        client,
+        reqwest::Method::POST,
+        endpoint(
+            protocol,
+            port,
+            &format!("/session/{session_id}/{}", protocol.prompt_path()),
+        ),
+        Some(body),
+        protocol,
+        password,
+    )
+    .await?;
+
+    wait_turn(client, protocol, port, password, session_id, events).await?;
+    let messages = fetch_messages(client, protocol, port, password, session_id).await?;
+    extract_assistant_text(&messages)
+}
+
+/// 等这一轮结束。事件流是主路径，2 秒一次的历史轮询作保底——
+/// SSE 断线、事件丢包时不能一直等到超时。
+async fn wait_turn(
+    client: &reqwest::Client,
+    protocol: Protocol,
+    port: u16,
+    password: &str,
+    session_id: &str,
+    mut events: tokio::sync::broadcast::Receiver<serde_json::Value>,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + UTILITY_TURN_TIMEOUT;
+    let mut ticker = tokio::time::interval(UTILITY_POLL_INTERVAL);
+    // 事件流断掉（发送端关闭 / 落后太多）后只靠轮询，别在 recv 上原地空转
+    let mut polling_only = false;
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err("等待模型响应超时（超过 120 秒），请稍后重试".to_string());
+            }
+            received = events.recv(), if !polling_only => {
+                match received {
+                    Ok(event) => {
+                        if let Some(outcome) = turn_outcome(&event, session_id) {
+                            return outcome;
+                        }
+                    }
+                    Err(_) => polling_only = true,
+                }
+            }
+            _ = ticker.tick() => {
+                let messages = fetch_messages(client, protocol, port, password, session_id).await?;
+                if let Some(outcome) = history_turn_state(&messages) {
+                    return outcome;
+                }
+            }
+        }
+    }
+}
+
+/// 事件流里的回合结束信号。两代事件名不重叠，一个 match 就能同时吃下。
+///
+/// 严格要求 `sessionID` 与本次会话一致：utility 是共享进程，别的会话的结束事件
+/// 不能当成自己的。拿不到 sessionID 时一律忽略，交给轮询判定。
+fn turn_outcome(event: &serde_json::Value, session_id: &str) -> Option<Result<(), String>> {
+    let payload = event
+        .get("properties")
+        .or_else(|| event.get("data"))
+        .unwrap_or(&serde_json::Value::Null);
+    let id = payload.get("sessionID").and_then(|value| value.as_str())?;
+    if id != session_id {
+        return None;
+    }
+
+    match event
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+    {
+        // v2 的回合结束
+        "session.execution.succeeded" | "session.idle" => Some(Ok(())),
+        "session.execution.failed" | "session.error" => {
+            Some(Err(describe_opencode_error(payload)))
+        }
+        "session.execution.interrupted" => Some(Err("生成被中断".to_string())),
+        "session.status" => {
+            let status = payload
+                .get("status")
+                .and_then(|value| value.get("type"))
+                .and_then(|value| value.as_str());
+            (status == Some("idle")).then_some(Ok(()))
+        }
+        _ => None,
+    }
+}
+
+/// 从会话历史判断这一轮是否已经结束。
+///
+/// 只看「最后一条 assistant 消息」：它有 `time.completed` 就算完；v2 历史里还可能出现
+/// `type: "idle"` 的结束标记，只要已经产生过 assistant 消息，也视为结束。
+fn history_turn_state(raw: &serde_json::Value) -> Option<Result<(), String>> {
+    let list = raw.as_array()?;
+    let mut idle = false;
+    let mut messages: Vec<(i64, bool, bool, Option<String>)> = Vec::new();
+
+    for item in list {
+        if item.get("type").and_then(|value| value.as_str()) == Some("idle") {
+            idle = true;
+            continue;
+        }
+        let Some(meta) = history_message_meta(item) else {
+            continue;
+        };
+        messages.push(meta);
+    }
+
+    // 接口按倒序返回，先按创建时间升序排，再取最后一条 assistant
+    messages.sort_by_key(|entry| entry.0);
+    let last = messages.iter().rev().find(|entry| entry.1)?;
+    if let Some(error) = &last.3 {
+        return Some(Err(error.clone()));
+    }
+    if last.2 || idle {
+        return Some(Ok(()));
+    }
+    None
+}
+
+/// 一条历史消息的 (创建时间, 是否 assistant, 是否已完成, 错误文案)。
+fn history_message_meta(
+    item: &serde_json::Value,
+) -> Option<(i64, bool, bool, Option<String>)> {
+    // v1：元信息在 info 里
+    if let Some(info) = item.get("info") {
+        let role = info.get("role").and_then(|value| value.as_str())?;
+        let time = info.get("time");
+        let created = time
+            .and_then(|value| value.get("created"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        let completed = time
+            .and_then(|value| value.get("completed"))
+            .and_then(|value| value.as_i64())
+            .is_some();
+        return Some((
+            created,
+            role == "assistant",
+            completed,
+            error_message(info.get("error")),
+        ));
+    }
+
+    // v2：type 直接在顶层
+    let role = item.get("type").and_then(|value| value.as_str())?;
+    if role != "assistant" && role != "user" {
+        return None;
+    }
+    let time = item.get("time");
+    let created = time
+        .and_then(|value| value.get("created"))
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    let completed = time
+        .and_then(|value| value.get("completed"))
+        .and_then(|value| value.as_i64())
+        .is_some();
+    Some((
+        created,
+        role == "assistant",
+        completed,
+        error_message(item.get("error")),
+    ))
+}
+
+/// 取最后一条带正文的 assistant 消息。两代的正文位置不同：
+/// v1 在 `parts[type=="text"].text`，v2 在 `content[type=="text"].text`。
+fn extract_assistant_text(raw: &serde_json::Value) -> Result<String, String> {
+    let list = raw
+        .as_array()
+        .ok_or_else(|| "会话历史格式异常，无法取出生成结果".to_string())?;
+    let mut messages: Vec<(i64, bool, String)> = Vec::new();
+
+    for item in list {
+        if item.get("type").and_then(|value| value.as_str()) == Some("idle") {
+            continue;
+        }
+
+        if let Some(info) = item.get("info") {
+            let role = info.get("role").and_then(|value| value.as_str()).unwrap_or("");
+            let text = item
+                .get("parts")
+                .and_then(|value| value.as_array())
+                .map(|parts| join_text_parts(parts))
+                .unwrap_or_default();
+            let created = info
+                .get("time")
+                .and_then(|value| value.get("created"))
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            messages.push((created, role == "assistant", text));
+            continue;
+        }
+
+        let role = item.get("type").and_then(|value| value.as_str()).unwrap_or("");
+        if role != "assistant" && role != "user" {
+            continue;
+        }
+        let text = item
+            .get("content")
+            .and_then(|value| value.as_array())
+            .map(|blocks| join_text_parts(blocks))
+            .unwrap_or_else(|| {
+                // v2 的用户消息把正文放在顶层 text；assistant 一般走 content
+                item.get("text")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            });
+        let created = item
+            .get("time")
+            .and_then(|value| value.get("created"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0);
+        messages.push((created, role == "assistant", text));
+    }
+
+    messages.sort_by_key(|entry| entry.0);
+    let last = messages
+        .iter()
+        .rev()
+        .find(|entry| entry.1 && !entry.2.trim().is_empty())
+        .ok_or_else(|| "模型没有返回文本内容".to_string())?;
+    Ok(last.2.trim().to_string())
+}
+
+/// 把若干内容块里的文本拼起来。工具 / 推理块直接跳过，块之间空一行。
+fn join_text_parts(blocks: &[serde_json::Value]) -> String {
+    blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(|value| value.as_str()) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// 从任意错误值里抠出一句能给用户看的文案。
+fn error_message(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    if value.is_null() || value.is_boolean() {
+        return None;
+    }
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        return (!text.is_empty()).then(|| text.to_string());
+    }
+    if let Some(text) = value
+        .get("message")
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(text.to_string());
+    }
+    if let Some(text) = value
+        .get("data")
+        .and_then(|item| item.get("message"))
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        return Some(text.to_string());
+    }
+    Some(truncate(&value.to_string(), MAX_ERROR_CHARS))
+}
+
+/// opencode 的错误结构五花八门（字符串 / `{message}` / `{data:{message}}`），
+/// 这里统一取一句文案，再按常见原因补一条中文提示。
+fn describe_opencode_error(payload: &serde_json::Value) -> String {
+    let detail = error_message(payload.get("error"))
+        .or_else(|| error_message(payload.get("message")))
+        .or_else(|| error_message(Some(payload)))
+        .unwrap_or_else(|| "模型生成失败".to_string());
+    let detail = truncate(&detail, MAX_ERROR_CHARS);
+    let lower = detail.to_ascii_lowercase();
+
+    let hint = if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("invalid api key")
+    {
+        "（检查「设置 → 智能体 → 模型提供商」里的 API 密钥）"
+    } else if lower.contains("429") || lower.contains("rate limit") {
+        "（被限流了，稍后重试或检查配额）"
+    } else if lower.contains("model")
+        && (lower.contains("not found") || lower.contains("does not exist"))
+    {
+        "（检查模型名是否可用）"
+    } else {
+        ""
+    };
+
+    format!("{detail}{hint}")
+}
+
+/// 建一个临时会话，返回它的 id。
+async fn create_session(
+    client: &reqwest::Client,
+    protocol: Protocol,
+    port: u16,
+    password: &str,
+    title: &str,
+) -> Result<String, String> {
+    let created = request_json(
+        client,
+        reqwest::Method::POST,
+        endpoint(protocol, port, "/session"),
+        Some(serde_json::json!({ "title": title })),
+        protocol,
+        password,
+    )
+    .await?;
+    protocol
+        .unwrap(created)
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "创建会话失败：响应里没有 id".to_string())
+}
+
+async fn fetch_messages(
+    client: &reqwest::Client,
+    protocol: Protocol,
+    port: u16,
+    password: &str,
+    session_id: &str,
+) -> Result<serde_json::Value, String> {
+    let messages = request_json(
+        client,
+        reqwest::Method::GET,
+        endpoint(
+            protocol,
+            port,
+            &format!("/session/{session_id}/message"),
+        ),
+        None,
+        protocol,
+        password,
+    )
+    .await?;
+    Ok(protocol.unwrap(messages))
+}
+
+async fn abort_session(
+    client: &reqwest::Client,
+    protocol: Protocol,
+    port: u16,
+    password: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    request_json(
+        client,
+        reqwest::Method::POST,
+        endpoint(
+            protocol,
+            port,
+            &format!("/session/{session_id}/{}", protocol.interrupt_path()),
+        ),
+        None,
+        protocol,
+        password,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn delete_session(
+    client: &reqwest::Client,
+    protocol: Protocol,
+    port: u16,
+    password: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    request_json(
+        client,
+        reqwest::Method::DELETE,
+        endpoint(protocol, port, &format!("/session/{session_id}")),
+        None,
+        protocol,
+        password,
+    )
+    .await
+    .map(|_| ())
 }
 
 // ---- 命令 ----
@@ -1810,15 +2489,6 @@ pub async fn agent_start(
     // 覆盖要赶在下面判空之前：面板留空、只写 .env 时也得能起
     let mut config = config;
     config.apply(&dev::read_overrides());
-    // 判空一律用可用的提供商：地址或模型缺一个，opencode 那边只会静默回落，界面上
-    // 却看不出问题，不如在这里拦下来把话说清楚
-    if config.usable_providers().is_empty() {
-        return Err(format!("没有可用的模型提供商。{}", provider_hint()));
-    }
-    if config.resolved_default_model().is_none() {
-        return Err(format!("默认模型不可用。{}", provider_hint()));
-    }
-    let secrets = config.secrets()?;
 
     // git / 文件系统都是同步阻塞的，赶在第一个 await 之前跑完，别让 std 的锁跨越 await。
     // 数据库 Agent 用一个固定的哨兵 root（前端传的常量），它不属于任何工作区、
@@ -1843,14 +2513,40 @@ pub async fn agent_start(
     } else {
         fs_state.checked_root(&root)?
     };
-    let slot = state.slot(&root);
 
-    let (port, generation, cwd_text) = {
-        let mut guard = slot.inner.lock().map_err(|e| e.to_string())?;
+    start_instance(&app, &state, &root, config, cwd).await
+}
 
-        // 同一个工作区已经在跑：直接复用，不重启
+/// 起（或复用）某个槽位的 opencode 实例。终端区智能体与一次性生成共用这一段。
+///
+/// `start_lock` 串行化「判空 → 起进程 → 探测协议」：并发调用不会各起一个进程，
+/// 也不会在探测完成前读到占位的协议值。
+async fn start_instance(
+    app: &AppHandle,
+    state: &AgentState,
+    root: &str,
+    config: AgentConfig,
+    cwd: PathBuf,
+) -> Result<AgentInfo, String> {
+    // 判空一律用可用的提供商：地址或模型缺一个，opencode 那边只会静默回落，界面上
+    // 却看不出问题，不如在这里拦下来把话说清楚
+    if config.usable_providers().is_empty() {
+        return Err(format!("没有可用的模型提供商。{}", provider_hint()));
+    }
+    if config.resolved_default_model().is_none() {
+        return Err(format!("默认模型不可用。{}", provider_hint()));
+    }
+
+    let slot = state.slot(root);
+    let _start_guard = slot.start_lock.lock().await;
+    let fingerprint = config_fingerprint(&config);
+
+    // 同一个槽位已经在跑：直接复用。utility 还要比配置指纹——用户在设置里换了
+    // provider / 模型或技能正文后，下一次生成必须用新配置。
+    {
+        let guard = slot.inner.lock().map_err(|e| e.to_string())?;
         if let Some(running) = guard.as_ref() {
-            if running.cwd == cwd {
+            if running.cwd == cwd && (!config.utility || running.fingerprint == fingerprint) {
                 return Ok(AgentInfo {
                     port: running.port,
                     version: String::new(),
@@ -1859,8 +2555,15 @@ pub async fn agent_start(
                 });
             }
         }
+    }
 
-        // 工作区变了（或之前跑挂了），先收掉旧的
+    // 密钥从钥匙串取是同步阻塞的，放在 await 之外；复用命中的分支不会走到这里
+    let secrets = config.secrets()?;
+
+    let (port, generation, cwd_text) = {
+        let mut guard = slot.inner.lock().map_err(|e| e.to_string())?;
+
+        // 工作区 / 配置变了（或之前跑挂了），先收掉旧的
         slot.generation.fetch_add(1, Ordering::SeqCst);
         if let Some(mut old) = guard.take() {
             kill_child(&mut old.child);
@@ -1875,9 +2578,11 @@ pub async fn agent_start(
 
         // 配置目录按工作区分开：共用一份会让两个 opencode 进程争用同一批文件，
         // 而且收掉某个工作区时的 remove_dir_all 会把另一个还在用的目录一起删掉。
-        // 预览助手的 cwd 就是工作区根、会和终端区智能体撞名，再缀一段区分标记。
+        // 预览助手 / 一次性生成的 cwd 可能和工作区根撞名，再缀一段区分标记。
         let dir_name = if config.preview {
             format!("{}-preview", workspace_dir_name(&cwd))
+        } else if config.utility {
+            format!("{}-utility", workspace_dir_name(&cwd))
         } else {
             workspace_dir_name(&cwd)
         };
@@ -1889,19 +2594,19 @@ pub async fn agent_start(
             .join(dir_name);
         // 数据库 Agent 的目标连接文件由主进程维护（前端切连接时更新），这里只把路径写进配置
         let db_target = if config.database {
-            Some(crate::db_agent::target_path(&app)?)
+            Some(crate::db_agent::target_path(app)?)
         } else {
             None
         };
-        // 应用助手的界面操作邮箱只给终端区智能体：数据库 Agent 与预览助手都用不到界面工具
-        let app_mailbox = if config.database || config.preview {
+        // 应用助手的界面操作邮箱只给终端区智能体：数据库 / 预览 / 一次性生成都用不到界面工具
+        let app_mailbox = if config.database || config.preview || config.utility {
             None
         } else {
-            Some(crate::app_agent::mailbox_dir(&app)?)
+            Some(crate::app_agent::mailbox_dir(app)?)
         };
         // 预览助手的邮箱只给预览助手（右栏「预览」面板里的那个）；终端区智能体不再注入预览工具
         let preview_mailbox = if config.preview {
-            Some(crate::preview_agent::mailbox_dir(&app)?)
+            Some(crate::preview_agent::mailbox_dir(app)?)
         } else {
             None
         };
@@ -1916,7 +2621,8 @@ pub async fn agent_start(
         // 预览助手的 cwd 也是工作区根，若和终端区智能体共用 opencode 的会话库，
         // 两边的对话会互相出现在对方的历史列表里。给它单独指一个库：按工作区落盘、
         // 可持久（关掉工作区再打开，历史还在），cwd 不变，读项目不受影响。
-        let preview_db = if config.preview {
+        // 一次性生成同理：它不属于任何工作区，自己一份库最干净。
+        let isolated_db = if config.preview {
             let dir = app
                 .path()
                 .app_config_dir()
@@ -1925,6 +2631,15 @@ pub async fn agent_start(
                 .join("db");
             std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
             Some(dir.join(format!("{}.db", workspace_dir_name(&cwd))))
+        } else if config.utility {
+            let dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| format!("拿不到配置目录: {e}"))?
+                .join("utility")
+                .join("db");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+            Some(dir.join("opencode.db"))
         } else {
             None
         };
@@ -1937,9 +2652,11 @@ pub async fn agent_start(
             &config_dir,
             &secrets,
             &password,
-            preview_db.as_deref(),
+            isolated_db.as_deref(),
         )?;
         let generation = slot.generation.load(Ordering::SeqCst);
+        // 没有接收者时 send 会失败，事件随即丢掉——原样返回给 SSE 任务即可
+        let (events, _) = tokio::sync::broadcast::channel(1024);
 
         // cwd 马上要被 move 进 Running，先把字符串形态留下来给返回用
         let cwd_text = cwd.to_string_lossy().to_string();
@@ -1953,16 +2670,24 @@ pub async fn agent_start(
             generation,
             password,
             log,
+            fingerprint,
+            quiet: config.utility,
+            events,
         });
 
         (port, generation, cwd_text)
     };
 
     // 探测是异步的，放在锁外面
-    let (password, log) = {
+    let (password, log, events, quiet) = {
         let guard = slot.inner.lock().map_err(|e| e.to_string())?;
         match guard.as_ref() {
-            Some(running) => (running.password.clone(), Arc::clone(&running.log)),
+            Some(running) => (
+                running.password.clone(),
+                Arc::clone(&running.log),
+                running.events.clone(),
+                running.quiet,
+            ),
             None => return Err("智能体服务没起来".to_string()),
         }
     };
@@ -1970,8 +2695,8 @@ pub async fn agent_start(
     let (protocol, version) = match detect_protocol(port, &password, &log, HEALTH_TIMEOUT).await {
         Ok(found) => found,
         Err(reason) => {
-            // 只收本工作区这一份：探测失败的责任不该由别的工作区的智能体承担
-            state.kill_workspace(&root);
+            // 只收本槽位这一份：探测失败的责任不该由别的工作区的智能体承担
+            state.kill_workspace(root);
             return Err(reason);
         }
     };
@@ -1988,13 +2713,22 @@ pub async fn agent_start(
     spawn_sse(
         app.clone(),
         slot.inner.clone(),
-        root.clone(),
+        root.to_string(),
         protocol,
         port,
         password,
         generation,
+        events,
+        quiet,
     );
-    spawn_exit_watcher(app, slot.inner.clone(), slot.generation.clone(), root, port);
+    spawn_exit_watcher(
+        app.clone(),
+        slot.inner.clone(),
+        slot.generation.clone(),
+        root.to_string(),
+        port,
+        quiet,
+    );
 
     Ok(AgentInfo {
         port,
@@ -2345,6 +3079,8 @@ mod tests {
             database: false,
             preview: false,
             workspace_root: String::new(),
+            utility: false,
+            utility_skills: Vec::new(),
         }
     }
 
@@ -2930,5 +3666,192 @@ mod tests {
         assert!(resolve_launch("missing", Some(path.as_os_str())).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- 一次性生成 ----
+
+    fn utility_config() -> AgentConfig {
+        let mut cfg = AgentConfig::for_utility(
+            "opencode".to_string(),
+            "codovo".to_string(),
+            "https://codovo.example.com/v1".to_string(),
+            "some-model".to_string(),
+            Some("sk-dev".to_string()),
+            vec![SkillSpec::new("translate-zh", "翻译成简体中文", "只输出译文")],
+        );
+        cfg.utility_skills
+            .push(SkillSpec::new("commit-plan", "生成提交方案", "只输出 JSON"));
+        cfg
+    }
+
+    #[test]
+    fn utility_config_writes_skills_and_forces_the_utility_agent() {
+        let dir = std::env::temp_dir().join(format!("codovo-agent-utility-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut cfg = utility_config();
+        // 用户配置即使被误填进来也不该出现在 utility 的配置里
+        cfg.rules = "用户规则".to_string();
+        cfg.memory = "用户记忆".to_string();
+        cfg.skills = vec![SkillSpec::new("user-skill", "用户技能", "正文")];
+        write_config(&dir, &cfg, None, None, None).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("opencode.json")).unwrap())
+                .unwrap();
+        // 不注入用户规则 / 记忆 / 技能 / MCP
+        assert!(value.get("instructions").is_none());
+        assert!(value.get("mcp").is_none());
+        assert!(!dir.join("rules.md").exists());
+        assert!(!dir.join("skills").join("user-skill").exists());
+        // 只写 utility 技能，并登记技能目录
+        assert!(dir
+            .join("skills")
+            .join("translate-zh")
+            .join("SKILL.md")
+            .exists());
+        assert!(dir
+            .join("skills")
+            .join("commit-plan")
+            .join("SKILL.md")
+            .exists());
+        assert!(value["skills"]["paths"][0].as_str().unwrap().ends_with("skills"));
+        // 固定用内置 agent，工具全关（skill 不在关闭名单里）
+        assert_eq!(value["default_agent"], UTILITY_AGENT_NAME);
+        assert_eq!(value["agent"][UTILITY_AGENT_NAME]["mode"], "primary");
+        for tool in UTILITY_DISABLED_TOOLS {
+            assert_eq!(
+                value["agent"][UTILITY_AGENT_NAME]["tools"][tool], false,
+                "{tool} 应该被关掉"
+            );
+        }
+        assert!(value["agent"][UTILITY_AGENT_NAME]["tools"]
+            .get("skill")
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fingerprint_tracks_provider_and_skills() {
+        let base = utility_config();
+        // 同样的输入必须得到同样的指纹，否则每次调用都会误判成配置漂移
+        assert_eq!(config_fingerprint(&base), config_fingerprint(&utility_config()));
+
+        let mut other_model = utility_config();
+        other_model.default_model = "codovo/another-model".to_string();
+        assert_ne!(config_fingerprint(&base), config_fingerprint(&other_model));
+
+        let mut other_skill = utility_config();
+        other_skill.utility_skills[0].content = "改过的正文".to_string();
+        assert_ne!(config_fingerprint(&base), config_fingerprint(&other_skill));
+
+        // 与生成无关的字段变了不该触发重起
+        let mut unrelated = utility_config();
+        unrelated.rules = "无关规则".to_string();
+        assert_eq!(config_fingerprint(&base), config_fingerprint(&unrelated));
+    }
+
+    #[test]
+    fn turn_outcome_requires_the_matching_session() {
+        let event = serde_json::json!({
+            "type": "session.execution.succeeded",
+            "properties": { "sessionID": "ses_1" },
+        });
+        assert_eq!(turn_outcome(&event, "ses_1"), Some(Ok(())));
+        assert_eq!(turn_outcome(&event, "ses_2"), None);
+        // 拿不到 sessionID 就不认，交给轮询判定
+        let anonymous = serde_json::json!({ "type": "session.execution.succeeded" });
+        assert_eq!(turn_outcome(&anonymous, "ses_1"), None);
+
+        // v1 的回合结束
+        let idle = serde_json::json!({
+            "type": "session.idle",
+            "properties": { "sessionID": "ses_1" },
+        });
+        assert_eq!(turn_outcome(&idle, "ses_1"), Some(Ok(())));
+
+        // v2 失败：错误文案要带出来
+        let failed = serde_json::json!({
+            "type": "session.execution.failed",
+            "properties": { "sessionID": "ses_1", "error": "401 unauthorized" },
+        });
+        let message = turn_outcome(&failed, "ses_1").unwrap().unwrap_err();
+        assert!(message.contains("401"));
+        assert!(message.contains("API 密钥"));
+    }
+
+    #[test]
+    fn history_waits_for_the_final_assistant_message() {
+        // v2：assistant 还没 completed → 继续等
+        let running = serde_json::json!([
+            { "id": "m1", "type": "user", "text": "hi", "time": { "created": 1 } },
+            { "id": "m2", "type": "assistant", "content": [], "time": { "created": 2 } },
+        ]);
+        assert_eq!(history_turn_state(&running), None);
+
+        // 最后一条 assistant 完成 → 结束
+        let done = serde_json::json!([
+            { "id": "m1", "type": "user", "text": "hi", "time": { "created": 1 } },
+            {
+                "id": "m2",
+                "type": "assistant",
+                "content": [{ "type": "text", "text": "好" }],
+                "time": { "created": 2, "completed": 3 },
+            },
+        ]);
+        assert_eq!(history_turn_state(&done), Some(Ok(())));
+
+        // v1：完成时间在 info.time 里
+        let v1 = serde_json::json!([
+            {
+                "info": { "id": "m1", "role": "assistant", "time": { "created": 1, "completed": 2 } },
+                "parts": [{ "type": "text", "text": "好" }],
+            }
+        ]);
+        assert_eq!(history_turn_state(&v1), Some(Ok(())));
+    }
+
+    #[test]
+    fn extract_text_reads_both_generations() {
+        let v1 = serde_json::json!([
+            {
+                "info": { "id": "m1", "role": "user", "time": { "created": 1 } },
+                "parts": [{ "type": "text", "text": "问题" }],
+            },
+            {
+                "info": { "id": "m2", "role": "assistant", "time": { "created": 2 } },
+                "parts": [
+                    { "type": "tool", "text": "忽略我" },
+                    { "type": "text", "text": "第一段" },
+                    { "type": "text", "text": "第二段" },
+                ],
+            }
+        ]);
+        assert_eq!(extract_assistant_text(&v1).unwrap(), "第一段\n\n第二段");
+
+        // v2：接口倒序返回，仍要按创建时间取最后一条
+        let v2 = serde_json::json!([
+            {
+                "id": "m2",
+                "type": "assistant",
+                "content": [{ "type": "text", "text": "答案" }],
+                "time": { "created": 2, "completed": 3 },
+            },
+            { "id": "m1", "type": "user", "text": "问题", "time": { "created": 1 } },
+            { "type": "idle", "time": { "created": 4 } },
+        ]);
+        assert_eq!(extract_assistant_text(&v2).unwrap(), "答案");
+
+        // 只有工具块 / 空历史 → 报错，别返回空串
+        assert!(extract_assistant_text(&serde_json::json!([])).is_err());
+    }
+
+    #[test]
+    fn utility_prompt_names_the_skill_and_keeps_the_task() {
+        let prompt = utility_prompt("commit-plan", "改动文件清单：\n- a.ts");
+        assert!(prompt.starts_with("技能：commit-plan"));
+        assert!(prompt.contains("skill 工具加载"));
+        assert!(prompt.contains("- a.ts"));
     }
 }
