@@ -11,9 +11,17 @@ export const upsertGoal = (input: Record<string, unknown>) => invoke<Goal>("task
 export const listTasks = (goalId?: string, status?: string) => invoke<Task[]>("task_list", { goalId, status });
 export const upsertTask = (input: Record<string, unknown>) => invoke<Task>("task_upsert", { input });
 export const transitionTask = (id: string, to: string, expectedVersion: number) => invoke<Task>("task_transition", { id, to, expectedVersion });
+export const listTaskDependencies = (taskId: string) => invoke<string[]>("task_dependency_list", { taskId });
+export const addTaskDependency = (taskId: string, dependsOnId: string) => invoke<void>("task_dependency_add", { taskId, dependsOnId });
 export const listRuns = (taskId?: string) => invoke<TaskRun[]>("task_run_list", { taskId });
+export const taskRunStart = (input: { taskId: string; profileId?: string; worktreeId?: string; baselineSha?: string; baselineDirty?: boolean }) =>
+  invoke<TaskRun>("task_run_start", { input });
+export const taskRunFinish = (input: { runId: string; status: "succeeded" | "failed" | "cancelled" | "interrupted"; sessionId?: string; finalSha?: string; finalDirty?: boolean; changedPaths?: string[]; error?: string }) =>
+  invoke<TaskRun>("task_run_finish", { ...input, sessionId: input.sessionId ?? null, finalSha: input.finalSha ?? null, finalDirty: input.finalDirty ?? null, changedPaths: input.changedPaths ?? [], error: input.error ?? null });
 export type Verification = { id: string; runId: string; kind: string; status: string; summary: string; evidence: unknown; source: string; createdAt: number };
 export const listVerifications = (runId: string) => invoke<Verification[]>("verification_list", { runId });
+export const recordVerification = (input: { runId: string; kind: string; status: "passed" | "failed" | "unknown" | "accepted" | "rejected"; summary: string; evidence?: unknown; source?: string }) =>
+  invoke<Verification>("verification_record", { input: { ...input, evidence: input.evidence ?? {}, source: input.source ?? "workflow_ui" } });
 export const listProposals = (status?: string) => invoke<Proposal[]>("proposal_list", { status });
 export const proposalFromSession = (sessionId: string, title: string, excerpt?: string) =>
   invoke<Proposal>("proposal_from_session", { sessionId, title, excerpt });

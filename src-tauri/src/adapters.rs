@@ -150,11 +150,10 @@ pub fn adapter_start(
     let program = input.program.unwrap_or(descriptor.command);
     let mut args = input.args;
     if mode == "headless_json" || mode == "server" {
-        for arg in &descriptor.structured_args {
-            if !args.iter().any(|existing| existing == arg) {
-                args.push(arg.clone());
-            }
-        }
+        let mut structured = descriptor.structured_args.clone();
+        structured.retain(|arg| !args.iter().any(|existing| existing == arg));
+        structured.extend(args);
+        args = structured;
     }
     runtime_start(
         state,

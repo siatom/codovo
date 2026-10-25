@@ -91,6 +91,14 @@ export function listAgentSessions(root?: string): Promise<AgentSessionRecord[]> 
   return invoke("control_session_list", { root: root ?? null });
 }
 
+export function listControlEvents(options: { sessionId?: string; limit?: number; offset?: number } = {}): Promise<ExecutionEventEnvelope[]> {
+  return invoke("control_event_list", {
+    sessionId: options.sessionId ?? null,
+    limit: options.limit ?? 100,
+    offset: options.offset ?? 0,
+  });
+}
+
 export function updateAgentSessionStatus(id: string, status: string): Promise<void> {
   return invoke("control_session_update_status", { id, status });
 }

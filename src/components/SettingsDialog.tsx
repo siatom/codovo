@@ -2096,6 +2096,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const rightVisible: Record<ToolId, boolean> = {
     files: settings.rightFilesVisible,
     changes: settings.rightChangesVisible,
+    workflow: settings.rightWorkflowVisible,
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
@@ -2692,6 +2693,14 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         options={VISIBLE_OPTIONS}
                         disabledValue={lastVisible === "changes" ? false : undefined}
                         onChange={(rightChangesVisible) => update({ rightChangesVisible })}
+                      />
+                    </Row>
+                    <Row label="工作流" hint="目标、任务 DAG、Agent 执行、验收与提案审批">
+                      <BoolToggle
+                        value={settings.rightWorkflowVisible}
+                        options={VISIBLE_OPTIONS}
+                        disabledValue={lastVisible === "workflow" ? false : undefined}
+                        onChange={(rightWorkflowVisible) => update({ rightWorkflowVisible })}
                       />
                     </Row>
                     <Row label="浏览器">
