@@ -657,7 +657,7 @@ fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, St
     // 进行中的多步操作得另查：porcelain v2 不暴露 MERGE_HEAD / REBASE_HEAD 之类。
     // merging 仍表示"有任何多步操作没结束"（继续挡住 push / 切分支等），merge_kind
     // 再细分是哪一种，前端据此决定给不给"完成合并 / 中止合并"那对按钮。
-    let state = merge_state(root)?;
+    let state = git_dir.as_deref().and_then(merge_state_in_git_dir);
     status.merging = state.is_some();
     status.merge_kind = state.map(str::to_string);
     Ok(status)
@@ -1513,6 +1513,31 @@ fn merge_state(root: &Path) -> Result<Option<&'static str>, String> {
         }
     }
     Ok(None)
+}
+
+/// 同 `merge_state`，但直接看 `--absolute-git-dir` 下的标记文件，不启 git 进程。
+///
+/// 路径由 rev-parse 给出，工作树和子目录都能解析到真正的 gitdir。顺序仍按「专有标记
+/// 优先」：rebase / revert 内部复用拣选的机制，先查 CHERRY_PICK_HEAD 会把它们误判成拣选。
+/// 变基一开始就建 rebase-merge / rebase-apply，而 REBASE_HEAD 要到第一次拣选之后才有，
+/// 两个都要看。
+fn merge_state_in_git_dir(git_dir: &Path) -> Option<&'static str> {
+    if git_dir.join("MERGE_HEAD").is_file() {
+        return Some("merge");
+    }
+    if git_dir.join("REBASE_HEAD").is_file()
+        || git_dir.join("rebase-merge").is_dir()
+        || git_dir.join("rebase-apply").is_dir()
+    {
+        return Some("rebase");
+    }
+    if git_dir.join("REVERT_HEAD").is_file() {
+        return Some("revert");
+    }
+    if git_dir.join("CHERRY_PICK_HEAD").is_file() {
+        return Some("cherryPick");
+    }
+    None
 }
 
 /// 两侧内容统一按 LF 比较。
@@ -2591,22 +2616,19 @@ pub struct WorktreeStatus {
 /// 有意义。
 ///
 /// 成本是「工作树数 × 一次 git status」，比单根轮询重，调用方必须按可见性和更慢的节奏
-/// 去拉（前端只在概览露在眼前时、约 10 秒一次）。
+/// 去拉（前端只在概览露在眼前时、约 10 秒一次）。各工作树的 status 分批并行，
+/// 总耗时不再按工作树数累加。
 fn worktree_statuses_of(root: &Path, state: &FsState) -> Result<Vec<WorktreeStatus>, String> {
     let worktrees = worktrees_of(root, state)?;
-    let mut out = Vec::with_capacity(worktrees.len());
-    for item in worktrees {
+    let found = parallel_map(&worktrees, 8, |item| {
         // bare 没有工作区文件；目录不存在（prunable）连 cd 都进不去，都没法算状态
         if !item.exists || item.bare {
-            continue;
+            return None;
         }
-        let status = match status_of_with_counts(Path::new(&item.path), false) {
-            Ok(status) => status,
-            // 单棵工作树读失败（比如目录刚好被外部删掉）不该拖垮整个列表：跳过它
-            Err(_) => continue,
-        };
-        out.push(WorktreeStatus {
-            path: item.path,
+        let status = status_of_with_counts(Path::new(&item.path), false).ok()?;
+        // 单棵工作树读失败（比如目录刚好被外部删掉）不该拖垮整个列表：跳过它
+        Some(WorktreeStatus {
+            path: item.path.clone(),
             branch: status.branch,
             head: status.head,
             changed: status.changed,
@@ -2615,9 +2637,9 @@ fn worktree_statuses_of(root: &Path, state: &FsState) -> Result<Vec<WorktreeStat
             merge_kind: status.merge_kind,
             ahead: status.ahead,
             behind: status.behind,
-        });
-    }
-    Ok(out)
+        })
+    });
+    Ok(found.into_iter().flatten().collect())
 }
 
 /// 仓库下每个工作树的轻量状态。目录不是仓库 / 没有工作树时返回空数组，不是错误。
@@ -2812,17 +2834,10 @@ fn merge_base_of(root: &Path, a: &str, b: &str) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-/// a 是不是 b 的祖先。`merge-base --is-ancestor` 成功时没有输出，只能看退出码。
-fn is_ancestor(root: &Path, a: &str, b: &str) -> bool {
-    matches!(
-        run_git(root, &["merge-base", "--is-ancestor", a, b]),
-        Ok(Some(_))
-    )
-}
-
-/// 相对 base 的领先 / 落后条数。
-fn divergence_of(root: &Path, base: &str, head: &str) -> (u32, u32) {
-    let Some(raw) = run_git(
+/// 相对 base 的领先 / 落后条数。解析不出来时返回 None——调用方据此判断不了
+/// 「合没合过」，宁可不标，也不能把失败当成 0 算成「已合并」。
+fn divergence_of(root: &Path, base: &str, head: &str) -> Option<(u32, u32)> {
+    let raw = run_git(
         root,
         &[
             "rev-list",
@@ -2832,16 +2847,13 @@ fn divergence_of(root: &Path, base: &str, head: &str) -> (u32, u32) {
         ],
     )
     .ok()
-    .flatten()
-    else {
-        return (0, 0);
-    };
+    .flatten()?;
     let text = String::from_utf8_lossy(&raw);
     let mut parts = text.split_whitespace();
     // base...head 的左侧是 base 独有（落后），右侧是 head 独有（领先）
-    let behind = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
-    let ahead = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
-    (ahead, behind)
+    let behind = parts.next()?.parse().ok()?;
+    let ahead = parts.next()?.parse().ok()?;
+    Some((ahead, behind))
 }
 
 fn last_commit_of(root: &Path) -> Option<(i64, String)> {
@@ -2906,31 +2918,6 @@ fn diff_counts_by_path(root: &Path, from: &str, to: &str) -> HashMap<String, (u3
     out
 }
 
-/// 不启动 4 个 `rev-parse` 的合并状态探测：直接看 gitdir 里的标记文件。
-/// 只用于变更中心的批量概览；单根状态仍走 `merge_state`，保留原有语义。
-fn merge_state_quick(root: &Path) -> Option<&'static str> {
-    let raw = run_git(root, &["rev-parse", "--absolute-git-dir"])
-        .ok()
-        .flatten()?;
-    let dir = PathBuf::from(String::from_utf8_lossy(&raw).trim().to_string());
-    if dir.join("MERGE_HEAD").is_file() {
-        return Some("merge");
-    }
-    if dir.join("REBASE_HEAD").is_file()
-        || dir.join("rebase-merge").is_dir()
-        || dir.join("rebase-apply").is_dir()
-    {
-        return Some("rebase");
-    }
-    if dir.join("REVERT_HEAD").is_file() {
-        return Some("revert");
-    }
-    if dir.join("CHERRY_PICK_HEAD").is_file() {
-        return Some("cherryPick");
-    }
-    None
-}
-
 /// 一条工作线的基础字段。worktree 和 branch-only 两路各自填动态部分。
 fn empty_workstream(
     path: String,
@@ -2972,125 +2959,200 @@ fn empty_workstream(
     }
 }
 
-/// 汇总仓库下所有工作树 + 有独有提交的未检出分支。
+/// 一批任务按固定宽度并行跑，结果顺序和输入一致。
 ///
-/// 动态部分只跑一次 `status`（不带 numstat）、一次 log -1、一次 merge-base、
-/// 一次 rev-list 和一次 numstat；比原来的「每根一次 2 秒 status」便宜得多，
-/// 且只在变更中心可见时由前端按较慢节奏拉取。
-fn workstreams_of(root: &Path, state: &FsState) -> Result<Vec<WorkstreamInfo>, String> {
-    let worktrees = worktrees_of(root, state)?;
-    let base = default_base(root);
-    // 基准分支的当前提交：用来区分「刚建出来、还没有独有提交」和「真的合并过」。
-    // 两者都是 `merged = true`，但前者不该显示成「已合并」、也不该进清理建议。
-    let base_head = base
-        .as_deref()
-        .and_then(|name| resolve_commit(root, name).ok());
-    let mut out = Vec::with_capacity(worktrees.len());
-    let mut checked_out: HashSet<String> = HashSet::new();
+/// 变更中心要对每棵工作树、每条候选分支各跑好几个 git 进程：串行是延迟按数量累加，
+/// 不设上限地全开又会一次性拉起几十上百个 git。分批之后总耗时从「求和」变成
+/// 「每段取最慢」，进程数也有天花板。
+fn parallel_map<T, R>(items: &[T], width: usize, work: impl Fn(&T) -> R + Sync) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+{
+    let mut out = Vec::with_capacity(items.len());
+    for chunk in items.chunks(width.max(1)) {
+        let part: Vec<R> = std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .map(|item| scope.spawn(|| work(item)))
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|handle| handle.join().ok())
+                .collect()
+        });
+        out.extend(part);
+    }
+    out
+}
 
-    for item in worktrees {
-        if let Some(branch) = &item.branch {
-            checked_out.insert(branch.clone());
-        }
-        let kind = if item.current { "main" } else { "worktree" };
-        let mut info = empty_workstream(
-            item.path.clone(),
-            item.name.clone(),
-            kind,
-            base.clone(),
-        );
-        info.branch = item.branch.clone();
-        info.base_head = base_head.clone();
-        info.detached = item.detached;
-        info.bare = item.bare;
-        info.locked = item.locked;
-        info.lock_reason = item.lock_reason.clone();
-        info.prunable = item.prunable;
-        info.prune_reason = item.prune_reason.clone();
-        info.exists = item.exists;
-        info.current = item.current;
+/// 一棵工作树在清单里的动态部分。读不到状态就给基础字段，不报错。
+fn workstream_of_worktree(
+    item: &WorktreeInfo,
+    base: Option<&str>,
+    base_head: Option<&str>,
+    refs: &HashMap<&str, &RawBranchRef>,
+) -> WorkstreamInfo {
+    let kind = if item.current { "main" } else { "worktree" };
+    let mut info = empty_workstream(
+        item.path.clone(),
+        item.name.clone(),
+        kind,
+        base.map(str::to_string),
+    );
+    info.branch = item.branch.clone();
+    info.base_head = base_head.map(str::to_string);
+    info.detached = item.detached;
+    info.bare = item.bare;
+    info.locked = item.locked;
+    info.lock_reason = item.lock_reason.clone();
+    info.prunable = item.prunable;
+    info.prune_reason = item.prune_reason.clone();
+    info.exists = item.exists;
+    info.current = item.current;
 
-        if item.exists && !item.bare {
-            let dir = Path::new(&item.path);
-            if let Ok(status) = status_of_with_counts(dir, false) {
-                info.branch = status.branch.clone().or(info.branch);
-                info.head = status.head.clone();
-                info.changed = status.changed;
-                info.conflicts = status.conflicts;
-                info.upstream_ahead = status.ahead;
-                info.upstream_behind = status.behind;
-                info.merge_kind = merge_state_quick(dir)
-                    .map(str::to_string)
-                    .or(status.merge_kind.clone());
-                info.merging = info.merge_kind.is_some();
-                let base_name = info.base.clone();
-                let head = info.head.clone();
-                if let (Some(base_name), Some(head)) =
-                    (base_name.as_deref(), head.as_deref())
-                {
-                    let (ahead, behind) = divergence_of(dir, base_name, head);
-                    info.ahead = ahead;
-                    info.behind = behind;
-                    info.base_sha = merge_base_of(dir, base_name, head);
-                    info.merged = is_ancestor(dir, head, base_name);
-                    if let Some(sha) = info.base_sha.clone() {
-                        let (files, additions, deletions) =
-                            diff_stat_between(dir, &sha, head);
-                        info.diff_files = files;
-                        info.additions = additions;
-                        info.deletions = deletions;
-                    }
-                }
+    if !item.exists || item.bare {
+        return info;
+    }
+
+    let dir = Path::new(&item.path);
+    if let Ok(status) = status_of_with_counts(dir, false) {
+        info.branch = status.branch.clone().or(info.branch);
+        info.head = status.head.clone();
+        info.changed = status.changed;
+        info.conflicts = status.conflicts;
+        info.upstream_ahead = status.ahead;
+        info.upstream_behind = status.behind;
+        // status 已经看过 gitdir 里的标记文件了，不用再单独探一次合并状态
+        info.merge_kind = status.merge_kind.clone();
+        info.merging = info.merge_kind.is_some();
+        let head = info.head.clone();
+        if let (Some(base_name), Some(head)) = (info.base.as_deref(), head.as_deref()) {
+            if let Some((ahead, behind)) = divergence_of(dir, base_name, head) {
+                info.ahead = ahead;
+                info.behind = behind;
+                // head 没有基准之外的提交，等价于 head 已经是 base 的祖先
+                info.merged = ahead == 0;
             }
+            info.base_sha = merge_base_of(dir, base_name, head);
+            if let Some(sha) = info.base_sha.clone() {
+                let (files, additions, deletions) = diff_stat_between(dir, &sha, head);
+                info.diff_files = files;
+                info.additions = additions;
+                info.deletions = deletions;
+            }
+        }
+    }
+
+    // 「最近提交」直接查本地分支表（分支 ref 就是这棵树的 HEAD）；游离 HEAD 或
+    // 表里没有这个分支时才退回 log -1。
+    match info.branch.as_deref().and_then(|name| refs.get(name)) {
+        Some(reference) => {
+            info.last_commit_time = reference.time;
+            info.last_commit_subject = reference.subject.clone();
+        }
+        None => {
             if let Some((time, subject)) = last_commit_of(dir) {
                 info.last_commit_time = time;
                 info.last_commit_subject = subject;
             }
         }
-        out.push(info);
     }
+    info
+}
+
+/// 汇总仓库下所有工作树 + 有独有提交的未检出分支。
+///
+/// 每棵工作树的动态部分只跑一次 `status`（不带 numstat）、一次 rev-list、一次
+/// merge-base 和一次 numstat；「最近提交」复用一次 `for-each-ref` 的结果。
+/// 工作树之间、分支之间都并行取数，只在变更中心可见时由前端按较慢节奏拉取。
+fn workstreams_of(root: &Path, state: &FsState) -> Result<Vec<WorkstreamInfo>, String> {
+    // 并发上限：工作区里的 git 进程已经不少（前端还在 2 秒轮询主检出），
+    // 一次拉满反而互相抢 IO 和进程创建
+    const WIDTH: usize = 8;
+
+    let worktrees = worktrees_of(root, state)?;
+    let base = default_base(root);
+    let base_ref = base.as_deref();
+    // 基准分支的当前提交：用来区分「刚建出来、还没有独有提交」和「真的合并过」。
+    // 两者都是 `merged = true`，但前者不该显示成「已合并」、也不该进清理建议。
+    let base_head = base_ref.and_then(|name| resolve_commit(root, name).ok());
+    let base_head_ref = base_head.as_deref();
+    // 本地分支的提交号 / 时间 / 主题一次拿全：未检出分支复用这份列表，工作树也
+    // 不用再各跑一次 `log -1`
+    let refs = branch_refs(root);
+    let refs_by_name: HashMap<&str, &RawBranchRef> =
+        refs.iter().map(|item| (item.name.as_str(), item)).collect();
+    let checked_out: HashSet<&str> = worktrees
+        .iter()
+        .filter_map(|item| item.branch.as_deref())
+        .collect();
+
+    let mut out = parallel_map(&worktrees, WIDTH, |item| {
+        workstream_of_worktree(item, base_ref, base_head_ref, &refs_by_name)
+    });
 
     // 只建了分支、没建 worktree 的 agent 产物也要能被看到。
-    if let Some(base_name) = base.as_deref() {
-        // branch_refs 已按 committerdate 倒序，这里直接取最近的一批
-        let branches = branch_refs(root);
-        let mut count = 0;
-        for branch in branches {
-            if count >= 12 {
+    if let Some(base_name) = base_ref {
+        // branch_refs 已按 committerdate 倒序
+        let candidates: Vec<&RawBranchRef> = refs
+            .iter()
+            .filter(|item| item.name != base_name && !checked_out.contains(item.name.as_str()))
+            .collect();
+
+        // 先判「有没有独有提交」：没有的只是基准分支的副本，列出来全是噪音。
+        // 按日期顺序分批探测，凑满 12 条就停——分支攒了很多的仓库不必为列表
+        // 之外的旧分支白跑 rev-list。
+        let mut picked: Vec<(&RawBranchRef, (u32, u32))> = Vec::new();
+        for chunk in candidates.chunks(WIDTH) {
+            let part = parallel_map(chunk, WIDTH, |branch| {
+                (*branch, divergence_of(root, base_name, &branch.head))
+            });
+            for (branch, divergence) in part {
+                if let Some((ahead, behind)) = divergence {
+                    if ahead > 0 {
+                        picked.push((branch, (ahead, behind)));
+                    }
+                }
+                if picked.len() >= 12 {
+                    break;
+                }
+            }
+            if picked.len() >= 12 {
                 break;
             }
-            if branch.name == base_name || checked_out.contains(&branch.name) {
-                continue;
-            }
-            let (ahead, behind) = divergence_of(root, base_name, &branch.head);
-            // 没有独有提交的分支只是基准分支的副本，列出来全是噪音
-            if ahead == 0 {
-                continue;
-            }
+        }
+
+        // 再算基准点和改动规模。基准点也在 git 进程里，同样并行
+        let details = parallel_map(&picked, WIDTH, |(branch, _)| {
             let base_sha = merge_base_of(root, base_name, &branch.head);
-            let (files, additions, deletions) = match base_sha.as_deref() {
-                Some(sha) => diff_stat_between(root, sha, &branch.head),
-                None => (0, 0, 0),
-            };
+            let stat = base_sha
+                .as_deref()
+                .map(|sha| diff_stat_between(root, sha, &branch.head))
+                .unwrap_or((0, 0, 0));
+            (base_sha, stat)
+        });
+        for ((branch, (ahead, behind)), (base_sha, (files, additions, deletions))) in
+            picked.into_iter().zip(details)
+        {
             let mut info = empty_workstream(
                 String::new(),
                 branch.name.clone(),
                 "branch",
                 Some(base_name.to_string()),
             );
-            info.branch = Some(branch.name);
+            info.branch = Some(branch.name.clone());
             info.base_sha = base_sha;
-            info.base_head = base_head.clone();
-            info.head = Some(branch.head);
+            info.base_head = base_head_ref.map(str::to_string);
+            info.head = Some(branch.head.clone());
             info.ahead = ahead;
             info.behind = behind;
             info.last_commit_time = branch.time;
-            info.last_commit_subject = branch.subject;
+            info.last_commit_subject = branch.subject.clone();
             info.diff_files = files;
             info.additions = additions;
             info.deletions = deletions;
             out.push(info);
-            count += 1;
         }
     }
 
@@ -7447,7 +7509,11 @@ mod tests {
 
         let status = merge_workstream(&repo, "agent/merge", Some("main")).unwrap();
         assert_eq!(status.changed, 0);
-        assert!(is_ancestor(&repo, &head, "main"));
+        // 独立验一遍：agent 分支的 head 现在应该已经是 main 的祖先
+        assert!(matches!(
+            run_git(&repo, &["merge-base", "--is-ancestor", &head, "main"]),
+            Ok(Some(_))
+        ));
 
         let items = workstreams_of(&repo, &state).unwrap();
         let merged = items
