@@ -604,11 +604,18 @@ fn status_of(root: &Path) -> Result<GitStatus, String> {
 /// 不受影响。
 fn status_of_with_counts(root: &Path, with_counts: bool) -> Result<GitStatus, String> {
     // --show-prefix 一次调用回答两件事：目录是不是仓库（不是则非 0 退出），
-    // 以及工作区相对仓库根的位置（仓库根就是工作区时输出空行）
-    let prefix = match run_git(root, &["rev-parse", "--show-prefix"])? {
-        Some(bytes) => String::from_utf8_lossy(&bytes).trim().to_string(),
+    // 以及工作区相对仓库根的位置（仓库根就是工作区时输出空行）。
+    // 顺带取 --absolute-git-dir：下面判断「有没有进行中的多步操作」就能直接看标记
+    // 文件，不必为 MERGE_HEAD / REBASE_HEAD … 各起一个 rev-parse。这个函数被前端
+    // 每 2 秒轮询一次，省下的是每个工作区每一拍的等待。
+    let probe = match run_git(root, &["rev-parse", "--show-prefix", "--absolute-git-dir"])? {
+        Some(bytes) => bytes,
         None => return Ok(GitStatus::not_repo()),
     };
+    let probe = String::from_utf8_lossy(&probe);
+    let mut lines = probe.lines();
+    let prefix = lines.next().unwrap_or("").trim().to_string();
+    let git_dir = lines.next().map(|line| PathBuf::from(line.trim()));
 
     // -z：路径不做引号转义，空格和中文原样拿到，省掉一整套反解析
     // --untracked-files=all：未跟踪的**文件**逐个列出，不把整个目录折叠成一项——
