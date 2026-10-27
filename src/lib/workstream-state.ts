@@ -1,7 +1,7 @@
 import type { WorkstreamInfo } from "./types";
 
 /**
- * 一条工作线（工作树 / 未检出分支）此刻的状态。
+ * 一条工作线（工作树 / 本地分支）此刻的状态。
  *
  * 这里把原先总览面板里那套「Git 事实」与「需要你」两套判据合成一套：
  * 之前同一个工作树在「需要你」和工作树列表里可能显示两种说法，用户建立不起心智。
@@ -61,7 +61,7 @@ export function workstreamState(
   if (signals.terminals > 0 && item.changed > 0) {
     return { label: "运行中", tone: "accent", weight: 70, needsYou: false };
   }
-  // 未检出分支没有工作区，只可能「有独有提交」或「已合进基准」
+  // 分支条目本身没有工作区，只可能「有独有提交」或「已合进基准」
   if (item.kind === "branch") {
     return item.merged
       ? { label: "已合并", tone: "ok", weight: 20, needsYou: false }

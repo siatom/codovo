@@ -25,7 +25,7 @@ export interface ReviewTarget {
   kind: WorkstreamInfo["kind"];
 }
 
-/** 工作区根所属仓库的全部工作线（worktree + 有独有提交的未检出分支）。 */
+/** 工作区根所属仓库的全部工作线（所有工作树 + 最近的本地分支）。 */
 export function workstreamList(root: string): Promise<WorkstreamInfo[]> {
   return invoke<WorkstreamInfo[]>("workstream_list", { root });
 }

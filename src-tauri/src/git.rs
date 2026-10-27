@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -2662,11 +2662,11 @@ pub fn git_worktree_status(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkstreamInfo {
-    /// worktree 绝对路径；未检出分支为空串
+    /// 工作树绝对路径；分支条目为空串（分支可能被某棵工作树检出，对应关系由工作树那侧给出）
     path: String,
-    /// 显示名：worktree 用目录名，未检出分支用分支名
+    /// 显示名：工作树用目录名，分支用分支名
     name: String,
-    /// main = 工作区根所在检出；worktree = 其他工作树；branch = 未检出分支
+    /// main = 工作区根所在检出；worktree = 其他工作树；branch = 本地分支
     kind: String,
     branch: Option<String>,
     /// 对照的基准分支
@@ -3061,7 +3061,7 @@ fn workstream_of_worktree(
     info
 }
 
-/// 汇总仓库下所有工作树 + 有独有提交的未检出分支。
+/// 汇总仓库下所有工作树 + 本地分支。
 ///
 /// 每棵工作树的动态部分只跑一次 `status`（不带 numstat）、一次 rev-list、一次
 /// merge-base 和一次 numstat；「最近提交」复用一次 `for-each-ref` 的结果。
@@ -3083,48 +3083,31 @@ fn workstreams_of(root: &Path, state: &FsState) -> Result<Vec<WorkstreamInfo>, S
     let refs = branch_refs(root);
     let refs_by_name: HashMap<&str, &RawBranchRef> =
         refs.iter().map(|item| (item.name.as_str(), item)).collect();
-    let checked_out: HashSet<&str> = worktrees
-        .iter()
-        .filter_map(|item| item.branch.as_deref())
-        .collect();
 
     let mut out = parallel_map(&worktrees, WIDTH, |item| {
         workstream_of_worktree(item, base_ref, base_head_ref, &refs_by_name)
     });
 
-    // 只建了分支、没建 worktree 的 agent 产物也要能被看到。
+    // 本地分支全列：分支页要回答「这条分支有没有被检出、合没合、还差多少」。
+    // 检出与否由工作树那一侧给出（工作树的 branch + path），这里只补合并状态和改动规模。
     if let Some(base_name) = base_ref {
-        // branch_refs 已按 committerdate 倒序
-        let candidates: Vec<&RawBranchRef> = refs
+        // for-each-ref 已按 committerdate 倒序。老仓库可能有几百条分支，每条都要
+        // 一次 rev-list，所以只取最近的一批；更旧的分支不进列表，也不白跑进程。
+        const BRANCH_LIMIT: usize = 40;
+        let candidates: Vec<&RawBranchRef> = refs.iter().take(BRANCH_LIMIT).collect();
+
+        // 领先 / 落后只跑一次 rev-list；解析不出来时留 None，不能当成 0 算成「已合并」
+        let divergences = parallel_map(&candidates, WIDTH, |branch| {
+            (*branch, divergence_of(root, base_name, &branch.head))
+        });
+
+        // 没有独有提交的分支不用算基准点和改动规模——它们和基准分支是同一棵树
+        let with_commits: Vec<&RawBranchRef> = divergences
             .iter()
-            .filter(|item| item.name != base_name && !checked_out.contains(item.name.as_str()))
+            .filter(|(_, value)| matches!(value, Some((ahead, _)) if *ahead > 0))
+            .map(|(branch, _)| *branch)
             .collect();
-
-        // 先判「有没有独有提交」：没有的只是基准分支的副本，列出来全是噪音。
-        // 按日期顺序分批探测，凑满 12 条就停——分支攒了很多的仓库不必为列表
-        // 之外的旧分支白跑 rev-list。
-        let mut picked: Vec<(&RawBranchRef, (u32, u32))> = Vec::new();
-        for chunk in candidates.chunks(WIDTH) {
-            let part = parallel_map(chunk, WIDTH, |branch| {
-                (*branch, divergence_of(root, base_name, &branch.head))
-            });
-            for (branch, divergence) in part {
-                if let Some((ahead, behind)) = divergence {
-                    if ahead > 0 {
-                        picked.push((branch, (ahead, behind)));
-                    }
-                }
-                if picked.len() >= 12 {
-                    break;
-                }
-            }
-            if picked.len() >= 12 {
-                break;
-            }
-        }
-
-        // 再算基准点和改动规模。基准点也在 git 进程里，同样并行
-        let details = parallel_map(&picked, WIDTH, |(branch, _)| {
+        let details = parallel_map(&with_commits, WIDTH, |branch| {
             let base_sha = merge_base_of(root, base_name, &branch.head);
             let stat = base_sha
                 .as_deref()
@@ -3132,9 +3115,15 @@ fn workstreams_of(root: &Path, state: &FsState) -> Result<Vec<WorkstreamInfo>, S
                 .unwrap_or((0, 0, 0));
             (base_sha, stat)
         });
-        for ((branch, (ahead, behind)), (base_sha, (files, additions, deletions))) in
-            picked.into_iter().zip(details)
-        {
+        // 基准点 + 改动规模（文件数 / 新增 / 删除），按 head 回填到分支条目上
+        type BranchDiff = (Option<String>, (u32, u32, u32));
+        let detail_by_head: HashMap<&str, BranchDiff> = with_commits
+            .iter()
+            .zip(details)
+            .map(|(branch, detail)| (branch.head.as_str(), detail))
+            .collect();
+
+        for (branch, divergence) in divergences {
             let mut info = empty_workstream(
                 String::new(),
                 branch.name.clone(),
@@ -3142,16 +3131,23 @@ fn workstreams_of(root: &Path, state: &FsState) -> Result<Vec<WorkstreamInfo>, S
                 Some(base_name.to_string()),
             );
             info.branch = Some(branch.name.clone());
-            info.base_sha = base_sha;
             info.base_head = base_head_ref.map(str::to_string);
             info.head = Some(branch.head.clone());
-            info.ahead = ahead;
-            info.behind = behind;
             info.last_commit_time = branch.time;
             info.last_commit_subject = branch.subject.clone();
-            info.diff_files = files;
-            info.additions = additions;
-            info.deletions = deletions;
+            if let Some((ahead, behind)) = divergence {
+                info.ahead = ahead;
+                info.behind = behind;
+                info.merged = ahead == 0;
+            }
+            if let Some((base_sha, (files, additions, deletions))) =
+                detail_by_head.get(branch.head.as_str())
+            {
+                info.base_sha = base_sha.clone();
+                info.diff_files = *files;
+                info.additions = *additions;
+                info.deletions = *deletions;
+            }
             out.push(info);
         }
     }
@@ -7470,7 +7466,17 @@ mod tests {
             .expect("未检出分支应该出现在清单里");
         assert_eq!(orphan.kind, "branch");
         assert_eq!(orphan.ahead, 1);
+        assert!(!orphan.merged);
         assert!(orphan.path.is_empty());
+
+        // 分支清单是全量的：基准分支自己也在里面（相对自己是零差异），
+        // 前端靠 base 字段把它标成「基准」而不是「已合并」
+        let base_row = items
+            .iter()
+            .find(|item| item.kind == "branch" && item.branch.as_deref() == Some("main"))
+            .expect("基准分支也应该出现在分支清单里");
+        assert_eq!(base_row.ahead, 0);
+        assert!(base_row.merged);
 
         // 审阅数据：基准到 head 的提交和文件都要能拿到
         let review = review_of(&repo, Some(&wt), Some("agent/demo"), Some("main")).unwrap();

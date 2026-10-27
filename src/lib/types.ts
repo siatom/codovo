@@ -172,11 +172,11 @@ export interface WorktreeStatus {
  * 这个把结构 + 相对基准分支的提交/脏改动/合并状态汇总到一起，是总览列表的数据源。
  */
 export interface WorkstreamInfo {
-  /** worktree 绝对路径；未检出分支为空串 */
+  /** 工作树绝对路径；分支条目为空串 */
   path: string;
-  /** 显示名：worktree 用目录名，未检出分支用分支名 */
+  /** 显示名：工作树用目录名，分支用分支名 */
   name: string;
-  /** main = 工作区根所在检出；worktree = 其他工作树；branch = 未检出分支 */
+  /** main = 工作区根所在检出；worktree = 其他工作树；branch = 本地分支 */
   kind: "main" | "worktree" | "branch";
   branch: string | null;
   /** 对照的基准分支 */
