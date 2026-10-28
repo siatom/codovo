@@ -494,9 +494,10 @@ export function Sidebar({
                 : "有 AI 会话在等你输入，点击跳过去";
             return (
               <li key={workspace.id} data-ws-row className="relative">
-                {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
-                <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
-                  <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
+                {/* 选中底色只铺在工作区这一行上：连下面的对话历史一起染会变成一大块
+                    蓝底，展开后反而看不清哪些是行、哪些是历史 */}
+                <div className="group rounded-lg">
+                  <div className={`${ROW} ${isCurrent ? "bg-selected text-fg" : ""}`}>
                     {/* 展开对话历史的箭头。平时藏起来，悬停这一行才出现——每个工作区都
                         挂一个常显的箭头太吵；展开后一直亮着，也顺手当收起入口。
                         pointer-events 跟着显隐走，免得点到看不见的按钮 */}
