@@ -213,7 +213,7 @@ fn current_version(root: &Path) -> String {
     cmd.arg("rev-parse").arg("--short").arg("HEAD");
     cmd.current_dir(root);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-    crate::agent::hide_console(&mut cmd);
+    crate::launch::hide_console(&mut cmd);
     if let Ok(output) = cmd.output() {
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -453,7 +453,7 @@ impl<'a> Runner<'a> {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        crate::agent::hide_console(&mut cmd);
+        crate::launch::hide_console(&mut cmd);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -549,7 +549,7 @@ impl<'a> Runner<'a> {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        crate::agent::hide_console(&mut cmd);
+        crate::launch::hide_console(&mut cmd);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

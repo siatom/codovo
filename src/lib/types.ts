@@ -404,28 +404,24 @@ export interface ReplaceResult {
   errors: ReplaceFailure[];
 }
 
-// ---- 智能体（后端起一个 opencode 服务，见 src-tauri/src/agent.rs）----
+// ---- 智能体（后端进程内的 Rig 运行时，见 src-tauri/src/agent/）----
 
 /** agent_start 的返回；同一工作区重复调用会复用已有实例 */
 export interface AgentInfo {
-  port: number;
-  /** opencode 报的版本号，裸 semver（v1 是 1.18.32、v2 是 2.0.16） */
-  version: string;
-  /** 启动时探测出来的接口代次："v1" / "v2"。界面显示用，排查时也用得上 */
-  protocol: string;
-  /**
-   * 这个实例的工作目录。opencode 的会话全局存、混着各目录的记录，列历史时要拿它
-   * 按 directory 过滤（数据库 Agent 的 cwd 前端算不出来，只能后端带出来）
-   */
-  cwd: string;
+  /** 生效的模型引用，形如 `provider/model` */
+  model: string;
+  /** 这个槽位的工作目录 */
+  workspace: string;
 }
 
 export interface AgentStatus {
+  /** 槽位是否已经建起来 */
   running: boolean;
-  port: number | null;
+  /** 是否有正在跑的一轮 */
+  busy: boolean;
 }
 
-/** 工具调用的四种状态，对应 opencode 里 ToolPart.state.status */
+/** 工具调用的四种状态 */
 export type AgentToolStatus = "pending" | "running" | "completed" | "error";
 
 export interface AgentToolState {
@@ -433,14 +429,14 @@ export interface AgentToolState {
   /** 工具入参，形状随工具而变（读文件是 filePath、bash 是 command） */
   input?: unknown;
   output?: string;
-  /** opencode 给的一句话摘要，通常比 input 更适合当标题 */
+  /** 工具自己给的一句话摘要，通常比 input 更适合当标题 */
   title?: string;
   error?: string;
 }
 
 /**
- * opencode 的 Part。只认渲染用得到的字段，其余类型原样兜在 raw 里——
- * 它的 part 种类还在增加，写死结构一升级就崩。
+ * 一条消息里的片段。只认渲染用得到的几种，其余类型原样兜在 raw 里——
+ * 后端将来多认一种内容类型时，老版本界面不至于整段崩掉。
  */
 export type AgentPart =
   | { id: string; messageID: string; type: "text"; text: string }
@@ -464,32 +460,40 @@ export interface AgentMessage {
 }
 
 /**
- * SSE 事件。opencode v2 的信封长这样：
- * `{id, created, type, location?, data?, durable?}` —— 事件类型在 `type`，
- * 载荷在 `data`。`properties` 是 v2 之前的旧壳，留着是为了容错（少一层字段
- * 就整个解析失败更糟）。
+ * 助手事件。形状由后端 `src-tauri/src/agent/mod.rs` 的 emit 调用定义，
+ * 前端 `lib/agent.ts` 的 reducer 一一对应。
  */
-export interface AgentEvent {
-  type: string;
-  properties?: Record<string, unknown>;
-  data?: Record<string, unknown>;
-}
+export type AgentEvent =
+  | { type: "runStarted"; sessionId: string; messageId: string; text?: string }
+  | { type: "textDelta"; sessionId: string; messageId: string; delta: string }
+  | { type: "reasoningDelta"; sessionId: string; messageId: string; delta: string }
+  | {
+      type: "toolCall";
+      sessionId: string;
+      messageId: string;
+      callId: string;
+      tool: string;
+      input?: unknown;
+    }
+  | { type: "toolResult"; sessionId: string; callId: string; ok: boolean; output: string }
+  | { type: "runFinished"; sessionId: string; messageId: string }
+  | { type: "runFailed"; sessionId: string; messageId: string; message: string };
 
 /** 一整轮对话的状态，由 lib/agent.ts 的 reducer 维护 */
 export interface AgentConversation {
   /** 消息 id，按出现顺序 */
   order: string[];
   byId: Record<string, AgentMessage>;
-  /** 这一轮还在跑（收到 session.idle 才算完） */
+  /** 这一轮还在跑（收到 runFinished / runFailed 才算完） */
   streaming: boolean;
   error: string | null;
 }
 
-/** opencode 的会话摘要，GET /session 里的一条 */
+/** 一条会话的摘要，`agent_list_sessions` 返回的一项 */
 export interface AgentSessionSummary {
   id: string;
   title: string;
-  /** 最后活动时间，Unix 毫秒（opencode 的 time.updated） */
+  /** 最后活动时间，Unix 毫秒 */
   updated: number;
 }
 

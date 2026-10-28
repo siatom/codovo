@@ -4,8 +4,8 @@
 //! 连读文件的代码路径都不存在。
 //!
 //! 刻意不用 `dotenvy`：它会把变量 `set_var` 进进程环境，而 PTY 终端（`pty.rs` 用
-//! `CommandBuilder` 起 shell）和 opencode 子进程都继承进程环境，密钥会跟着泄漏到
-//! 用户随手开的每一个终端里。这里只解析成结构体，绝不碰进程环境。
+//! `CommandBuilder` 起 shell）会继承进程环境，密钥会跟着泄漏到用户随手开的每一个
+//! 终端里。这里只解析成结构体，绝不碰进程环境。
 
 use serde::Serialize;
 

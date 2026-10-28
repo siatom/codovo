@@ -9,7 +9,7 @@ export function onCloseRequested(handler: () => void): Promise<UnlistenFn> {
   return listen("app://close-requested", () => handler());
 }
 
-/** 真正退出：后端在 `RunEvent` 里会顺手收掉 shell、opencode 与目录监听 */
+/** 真正退出：后端在 `RunEvent` 里会顺手收掉 shell、预览与助手槽位 */
 export function quitApp(): Promise<void> {
   return invoke("app_quit");
 }

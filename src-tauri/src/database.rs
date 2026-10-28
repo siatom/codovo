@@ -112,8 +112,8 @@ impl Default for DbState {
 }
 
 /// `db_connect` 的入参。参数多，打包成一个对象传，免得命令签名太长。
-/// 也用作数据库 Agent 的目标连接文件（target.json）的读写结构。
-#[derive(Serialize, Deserialize)]
+/// 也用作数据库助手的「当前目标连接」（内存态，见 `agent::tools::db`）。
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbConnectRequest {
     pub conn_id: String,

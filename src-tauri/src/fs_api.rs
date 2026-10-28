@@ -300,7 +300,7 @@ pub fn workspace_register(
     Ok(resolved.iter().map(|root| display(root)).collect())
 }
 
-/// 关闭一个工作区：收掉它每个工作目录的终端与 opencode 进程、停掉各自的目录监听
+/// 关闭一个工作区：收掉它每个工作目录的终端与助手槽位、停掉各自的目录监听
 /// （只在正听着它时），并把根从白名单摘掉。前端「移除工作区」和「关闭工作区」都走这里。
 #[tauri::command]
 pub fn workspace_close(
@@ -312,10 +312,10 @@ pub fn workspace_close(
     roots: Vec<String>,
 ) {
     for root in &roots {
-        agent.kill_workspace(root);
-        // 预览助手挂在每个工作区自己的哨兵 root 下（见 preview_agent::agent_root），
-        // 关工作区时也要把它一并收掉，别留个游离的 opencode 进程
-        agent.kill_workspace(&crate::preview_agent::agent_root(root));
+        crate::agent::stop_root(&agent, root);
+        // 预览助手挂在每个工作区自己的哨兵 root 下（见 agent::preview_root），
+        // 关工作区时也要把它一并收掉，别留个还在跑的槽位
+        crate::agent::stop_root(&agent, &crate::agent::preview_root(root));
         let _ = pty.kill_workspace(root);
         let _ = runtime.kill_owner(root);
         watch.stop_if(Path::new(root));

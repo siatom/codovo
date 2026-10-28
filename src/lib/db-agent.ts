@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { DbConnection } from "./database";
 
 /**
- * 数据库 Agent 的哨兵 root。它不是工作区路径——后端据此把数据库 Agent 的 opencode
- * 进程与终端区智能体分开（cwd 落在应用配置目录下，见 src-tauri/src/agent.rs）。
+ * 数据库 Agent 的哨兵 root。它不是工作区路径——后端据此给数据库助手单独一个槽位
+ * （工作目录落在应用配置目录下，见 src-tauri/src/agent/mod.rs）。
  * 前端调 `agent_*` 那一组命令时统一用它。
  */
 export const DB_AGENT_ROOT = "__db_agent__";
@@ -32,10 +32,10 @@ export function writeDbAgentSession(sessionId: string) {
 }
 
 /**
- * 把「Agent 面向哪个连接」同步给后端。MCP 工具进程是独立的，拿不到主进程的连接池，
- * 靠后端写下的 target.json（不含密码）得知该查哪个库。
+ * 把「Agent 面向哪个连接」同步给后端。数据库工具和界面跑在同一个进程里，但工具拿不到
+ * 前端的选中状态，所以由这里把连接信息（不含密码）写进后端的内存目标。
  *
- * 没选连接时不动文件——保留上一次的目标，总比清空后让工具一律报错好。
+ * 没选连接时不动——保留上一次的目标，总比清空后让工具一律报错好。
  */
 export function dbAgentSetTarget(connection: DbConnection | null): Promise<void> {
   if (!connection) return Promise.resolve();

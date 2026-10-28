@@ -35,8 +35,8 @@ pub fn init(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
-            // 必须走 app.exit：`RunEvent` 里那套清理才会跑到，shell / opencode
-            // / 目录监听才收得干净，直接退进程会留下孤儿
+            // 必须走 app.exit：`RunEvent` 里那套清理才会跑到，shell / 预览进程 /
+            // 助手槽位 / 目录监听才收得干净，直接退进程会留下孤儿
             "quit" => app.exit(0),
             _ => {}
         })

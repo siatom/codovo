@@ -7,7 +7,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::agent::{hide_console, resolve_launch, wrap_with_cmd, Launch};
+use crate::launch::{hide_console, resolve_launch, wrap_with_cmd, Launch};
 use crate::fs_api::simplify;
 use crate::pty::home_dir;
 

@@ -1,6 +1,6 @@
 import type { AiProvider, ProviderModel, Settings } from "./settings";
 
-/** 一个可用的「提供商 + 模型」组合；`ref` 是发给 opencode 的 `provider/model` 引用 */
+/** 一个可用的「提供商 + 模型」组合；`ref` 是发给后端的 `provider/model` 引用 */
 export interface ModelRef {
   providerId: string;
   modelId: string;
@@ -24,8 +24,8 @@ export function emptyModel(): ProviderModel {
  * 由提供商名派生一个可用的 id：小写、非字母数字换成连字符；名字全是非字母数字
  * （比如中文）时退化成 `provider`。重名就往后加 `-2`、`-3`。
  *
- * 为什么不直接用名字：id 要当 opencode 的 provider key、模型引用前缀和密钥环境
- * 变量名，得是稳定的 ASCII 标识符。
+ * 为什么不直接用名字：id 要当模型引用前缀和钥匙串里密钥条目名的来源，
+ * 得是稳定的 ASCII 标识符。
  */
 export function newProviderId(name: string, existing: AiProvider[]): string {
   const base =

@@ -87,6 +87,17 @@ uuid = { version = "1", features = ["v4"] }
 # 查询结果导出为 Excel(.xlsx)。纯 Rust、默认无 C 依赖（不引 zlib 特性），只写不读，
 # 比前端 SheetJS 少一次「把整包数据搬到 WebView 再搬回来」的往返。
 rust_xlsxwriter = "0.99"
+# AI 运行时：Rig。对话式助手与内置生成能力都跑在进程内，不再起 opencode 子进程。
+# - 只依赖 rig-core / rig-agent / rig-memory，**不**用 rig 元 crate：它的默认特性会
+#   拉 lancedb、fastembed、milvus、vectorize，给桌面应用白装几百 MB 的向量库。
+# - 版本锁死：Rig 还在 pre-1.0，小版本之间就有破坏性改动（0.45 刚把 agent 拆成独立
+#   crate）。升级要照它的 MIGRATING.md 逐条过。
+# - rig-core 的 reqwest 特性带的是自己的传输层（rig-reqwest），rustls 走 aws-lc，
+#   和本仓库已有的 reqwest / russh / sqlx 是同一套 TLS 后端。
+rig-core = { version = "=0.45.0", default-features = false, features = ["derive", "reqwest", "rustls"] }
+rig-agent = "=0.45.0"
+rig-memory = { version = "=0.45.0", features = ["fs"] }
+futures = "0.3"
 
 
 # 自绘标题栏的右键要弹系统菜单（GetSystemMenu / TrackPopupMenuEx）。只用得到几个

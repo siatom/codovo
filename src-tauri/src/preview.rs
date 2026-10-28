@@ -18,7 +18,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::Emitter;
 
-use crate::agent::{self, ChildLog};
+use crate::launch::{self, ChildLog};
 use crate::fs_api::FsState;
 use crate::shell_env;
 
@@ -155,7 +155,7 @@ impl PreviewState {
             slot.generation.fetch_add(1, Ordering::SeqCst);
             let running = slot.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
             if let Some(mut running) = running {
-                agent::kill_child(&mut running.child);
+                launch::kill_child(&mut running.child);
             }
         }
     }
@@ -433,7 +433,7 @@ fn detect_project(root: &Path) -> PreviewDetection {
         }
         let pm = pm.unwrap_or("npm");
         let (program, args) = tauri_command(pm);
-        let cdp = agent::free_port().ok();
+        let cdp = launch::free_port().ok();
         return PreviewDetection {
             kind: "tauri".to_string(),
             package_manager: pm.to_string(),
@@ -526,13 +526,13 @@ fn spawn_preview(
         }
         candidate
     } else {
-        agent::find_on_path(program, path.as_deref())
+        launch::find_on_path(program, path.as_deref())
             .ok_or_else(|| format!("在 PATH 里找不到 {program}，请先安装"))?
     };
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut cmd = if agent::needs_cmd_wrapper(&program_path) {
-        agent::wrap_with_cmd(&program_path, &arg_refs)
+    let mut cmd = if launch::needs_cmd_wrapper(&program_path) {
+        launch::wrap_with_cmd(&program_path, &arg_refs)
     } else {
         let mut direct = Command::new(&program_path);
         direct.args(&arg_refs);
@@ -560,7 +560,7 @@ fn spawn_preview(
     #[cfg(not(windows))]
     let _ = cdp_port;
 
-    agent::hide_console(&mut cmd);
+    launch::hide_console(&mut cmd);
 
     #[cfg(unix)]
     {
@@ -570,10 +570,10 @@ fn spawn_preview(
 
     let mut child = cmd.spawn().map_err(|e| format!("启动预览失败: {e}"))?;
     if let Some(stdout) = child.stdout.take() {
-        agent::pump_child_log(stdout, Arc::clone(&log));
+        launch::pump_child_log(stdout, Arc::clone(&log));
     }
     if let Some(stderr) = child.stderr.take() {
-        agent::pump_child_log(stderr, Arc::clone(&log));
+        launch::pump_child_log(stderr, Arc::clone(&log));
     }
     Ok(child)
 }

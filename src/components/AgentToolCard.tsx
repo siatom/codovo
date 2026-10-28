@@ -97,7 +97,7 @@ function parseJson(text: string): Record<string, unknown> | null {
 }
 
 /**
- * 把工具输出解析成结果表。opencode 有时会在 JSON 前后缀点说明文字，所以先整段试，
+ * 把工具输出解析成结果表。工具有时会在 JSON 前后缀点说明文字，所以先整段试，
  * 失败再从第一个 `{` 到最后一个 `}` 截一段试。形状对不上就返回 null（按普通文本展示）。
  */
 function parseGrid(output: string | undefined): GridData | null {

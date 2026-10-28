@@ -67,7 +67,7 @@ fn executable_for(id: &str) -> Option<&'static str> {
 #[tauri::command]
 pub async fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        // PATH 必须和 agent 起 opencode 时用的一致：macOS 的 GUI 进程没有终端父进程，
+        // PATH 必须和终端里起这些 CLI 时用的一致：macOS 的 GUI 进程没有终端父进程，
         // 直接读进程环境拿不到用户装 Node 的那串路径，装了也会被全判成未安装。
         let path = crate::shell_env::resolved_path(&crate::shell_env::default_shell(), None);
         let path = path.as_deref();
@@ -198,14 +198,14 @@ fn locate(program: &str, path: Option<&OsStr>) -> Option<PathBuf> {
             inherited.as_deref()
         }
     };
-    crate::agent::find_on_path(program, path)
+    crate::launch::find_on_path(program, path)
 }
 
 /// 起一个已定位（或按名字交给系统）的命令并收下输出。
 fn run_found(found: Option<&Path>, program: &str, args: &[&str]) -> Result<String, String> {
     let mut command = match found {
-        Some(found) if crate::agent::needs_cmd_wrapper(found) => {
-            crate::agent::wrap_with_cmd(found, args)
+        Some(found) if crate::launch::needs_cmd_wrapper(found) => {
+            crate::launch::wrap_with_cmd(found, args)
         }
         Some(found) => {
             let mut command = Command::new(found);

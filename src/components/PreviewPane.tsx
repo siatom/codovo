@@ -18,7 +18,6 @@ import {
   abortAgentSession,
   createAgentSession,
   onAgentEvent,
-  onAgentExit,
   reduceAgentEvent,
   sendAgentMessage,
   startAgent,
@@ -59,7 +58,7 @@ const PREVIEW_MIN_HEIGHT = 120;
 
 /**
  * 把一轮对话压成日志行：助手正文原样铺开，工具调用收成一行 `▸ 名字 · 摘要`。
- * 面板没有对话界面，这些就是「opencode 的执行过程」。
+ * 面板没有对话界面，这些就是「助手的执行过程」。
  */
 function transcriptLines(conversation: AgentConversation): string[] {
   const lines: string[] = [];
@@ -107,7 +106,6 @@ export function PreviewPane({
   onToggleFullscreen: () => void;
 }) {
   const { settings } = useSettings();
-  const { agentCommand, agentPort } = settings;
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   const [detection, setDetection] = useState<PreviewDetection | null>(null);
@@ -152,7 +150,7 @@ export function PreviewPane({
     );
   };
 
-  /** 喂给 opencode 的提供商，和终端区智能体共用「设置 → 智能体」那一份 */
+  /** 喂给后端的提供商，和终端区智能体共用「设置 → 智能体」那一份 */
   const providers = useMemo(
     () =>
       enabledProviders(settings).map((provider) => ({
@@ -242,21 +240,8 @@ export function PreviewPane({
     void onAgentEvent((eventRoot, event) => {
       if (eventRoot !== sentinel) return;
       const sessionId = sessionIdRef.current;
-      if (!sessionId) return;
-      setConversation((current) => reduceAgentEvent(current, event, sessionId));
-    }).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
-  }, [root]);
-
-  // 助手进程自己挂了：把还在流式的状态收干净，免得按钮一直转
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const sentinel = previewAgentRoot(root);
-    void onAgentExit((eventRoot) => {
-      if (eventRoot !== sentinel) return;
-      setConversation((current) => ({ ...current, streaming: false }));
+      if (!sessionId || event.sessionId !== sessionId) return;
+      setConversation((current) => reduceAgentEvent(current, event));
     }).then((fn) => {
       unlisten = fn;
     });
@@ -310,15 +295,12 @@ export function PreviewPane({
       prompt += " 起好后用一句话汇报地址或 CDP 调试端口。";
 
       await startAgent(previewAgentRoot(root), {
-        command: agentCommand,
-        port: agentPort,
         providers,
         defaultModel: modelRef,
         rules: "",
         memory: "",
         skills: [],
         agents: [],
-        primary: "",
         preview: true,
         workspaceRoot: root,
       });
@@ -340,8 +322,6 @@ export function PreviewPane({
     customCommand,
     customPort,
     detection,
-    agentCommand,
-    agentPort,
     providers,
     modelRef,
   ]);
@@ -352,7 +332,7 @@ export function PreviewPane({
       const sessionId = sessionIdRef.current;
       if (sessionId) {
         void abortAgentSession(previewAgentRoot(root), sessionId).catch(() => {
-          // 中止失败无所谓：进程停掉就行，事件那边也会以 session.idle 收尾
+          // 中止失败无所谓：进程停掉就行，事件那边也会以 runFinished 收尾
         });
       }
       await stopPreview(root);

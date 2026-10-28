@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   AUTOSAVE_DELAY_MAX,
   AUTOSAVE_DELAY_MIN,
@@ -17,26 +18,30 @@ import { RIGHT_TOOLS } from "../components/ToolRail";
 /**
  * 界面操作智能体（应用助手）的桥。
  *
- * 设置、工作区列表、界面布局全在前端 WebView 里（localStorage + React state），而工具调用
- * 发生在 opencode 拉起的**独立子进程**（`codovo.exe --mcp-app`，见
- * `src-tauri/src/app_agent.rs`）里，够不着这些状态。所以后端把每次工具调用写成一个请求文件，
- * 这里轮询取走、执行、再把结果写回，形成一个「后端工具 → 前端执行 → 回传结果」的环。
+ * 设置、工作区列表、界面布局全在前端 WebView 里（localStorage + React state），
+ * 而后端的工具跑在 Rust 侧，够不着这些状态。所以后端把每次工具调用作为事件推过来，
+ * 这里执行、再把结果写回，形成一个「后端工具 → 前端执行 → 回传结果」的环。
  */
 
-/** 一条待执行的界面操作请求，字段和后端 `AppAgentRequest` 对齐 */
+/** 请求事件名，与 `src-tauri/src/agent/tools/app.rs` 的常量对齐 */
+const REQUEST_EVENT = "app-agent-request";
+
+/** 一条待执行的界面操作请求，字段和后端 `AppBridge` 投递的载荷对齐 */
 export interface AppAgentRequest {
   id: string;
-  /** MCP 工具名（不带 opencode 加的 `app_` 前缀） */
+  /** 工具名（get_state / update_settings / …） */
   tool: string;
   args: Record<string, unknown>;
 }
 
-/** 取一条待执行的请求；没有就返回 null。取走即删除，同一条不会被处理两次。 */
-export function takeAppAgentRequest(): Promise<AppAgentRequest | null> {
-  return invoke<AppAgentRequest | null>("app_agent_take_request");
+/** 订阅界面操作请求。后端会一直等到回执或超时，所以这里必须每条都回。 */
+export function onAppAgentRequest(
+  handler: (request: AppAgentRequest) => void,
+): Promise<UnlistenFn> {
+  return listen<AppAgentRequest>(REQUEST_EVENT, (event) => handler(event.payload));
 }
 
-/** 把执行结果写回去，等着的 MCP 调用据此返回给模型 */
+/** 把执行结果写回去，等着的工具调用据此返回给模型 */
 export function respondAppAgent(id: string, ok: boolean, result: string): Promise<void> {
   return invoke<void>("app_agent_respond", { id, ok, result });
 }
@@ -205,14 +210,13 @@ function describeState(ctx: AppAgentContext) {
       editorMinimap: settings.editorMinimap,
       editorWordWrap: settings.editorWordWrap,
       editorIndent: settings.editorIndent,
-      agentCommand: settings.agentCommand,
-      agentPort: settings.agentPort,
       rightFilesVisible: settings.rightFilesVisible,
       rightChangesVisible: settings.rightChangesVisible,
       rightBrowserVisible: settings.rightBrowserVisible,
       rightRemoteVisible: settings.rightRemoteVisible,
       rightDatabaseVisible: settings.rightDatabaseVisible,
       rightPreviewVisible: settings.rightPreviewVisible,
+      rightDeployVisible: settings.rightDeployVisible,
       closeToTray: settings.closeToTray,
       restoreWorkspace: settings.restoreWorkspace,
     },
@@ -230,7 +234,6 @@ const NUMERIC_LIMITS: Record<string, [number, number]> = {
   terminalFontSize: [FONT_SIZE_MIN, FONT_SIZE_MAX],
   editorFontSize: [FONT_SIZE_MIN, FONT_SIZE_MAX],
   editorAutoSaveDelay: [AUTOSAVE_DELAY_MIN, AUTOSAVE_DELAY_MAX],
-  agentPort: [0, 65535],
 };
 
 const BOOLEAN_KEYS = new Set([
@@ -248,6 +251,7 @@ const BOOLEAN_KEYS = new Set([
   "rightRemoteVisible",
   "rightDatabaseVisible",
   "rightPreviewVisible",
+  "rightDeployVisible",
 ]);
 
 const STRING_KEYS = new Set([
@@ -257,7 +261,6 @@ const STRING_KEYS = new Set([
   "terminalTheme",
   "editorFontFamily",
   "uiMonoFontFamily",
-  "agentCommand",
 ]);
 
 const ENUM_KEYS: Record<string, string[]> = {

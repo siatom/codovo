@@ -26,7 +26,6 @@ import {
   fetchAgentMessages,
   listAgentSessions,
   onAgentEvent,
-  onAgentExit,
   parseSessions,
   reduceAgentEvent,
   renameAgentSession,
@@ -58,7 +57,7 @@ export interface AgentPaneHandle {
 }
 
 interface AgentPaneProps {
-  /** 这个助手面板属于哪个工作区。一个工作区一个 opencode 进程，各自独立 */
+  /** 这个助手面板属于哪个工作区。一个工作区一个后端槽位，各自独立 */
   root: string;
   /** 面板是否展示中；第一次变 true 时才去拉服务 */
   active: boolean;
@@ -173,12 +172,12 @@ function focusComposerEnd(root: HTMLElement): void {
 }
 
 /**
- * 应用助手面板：后端是一个 headless 的 opencode 服务（见 src-tauri/src/agent.rs），
- * 这里只负责发消息、把 SSE 事件渲染成对话。
+ * 应用助手面板：后端是进程内的 Rig 运行时（见 src-tauri/src/agent/），
+ * 这里只负责发消息、把推回来的事件渲染成对话。
  *
- * 它是**内置应用助手**的界面：靠内置的 `app` agent 问答 Codovo 用法、按指令改设置 /
- * 管工作区 / 切右栏模块（见 lib/app-agent.ts 的邮箱桥）。所以 primary agent 固定为
- * `app`，不给用户切换——要聊代码请用终端里的 AI CLI。
+ * 它是**内置应用助手**的界面：靠内置的工具问答 Codovo 用法、按指令改设置 /
+ * 管工作区 / 切右栏模块（见 lib/app-agent.ts 的事件桥）。后端按 `Kind::App`
+ * 装配提示词与工具，面板这边不给用户切换——要聊代码请用终端里的 AI CLI。
  */
 export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   const { settings } = useSettings();
@@ -220,9 +219,6 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   const [draft, setDraft] = useState("");
   /** 从编辑器浮窗送来、还没插进去的位置引用；服务没就绪时先挂起，ready 后补上 */
   const [pendingRef, setPendingRef] = useState<EditorLocation | null>(null);
-  /** 探测出来的 opencode 版本，只为在状态行显示（v1 / v2 装在不同机器上时一眼可辨） */
-  const [agentVersion, setAgentVersion] = useState("");
-
   const startedRef = useRef(false);
   const composerRef = useRef<HTMLDivElement | null>(null);
   // 对话流贴底跟随（上滚暂停、回到底部恢复），终端区智能体与数据库智能体共用这套逻辑
@@ -234,12 +230,11 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     reset: resetScroll,
   } = useStickToBottom(conversation);
 
-  const { agentCommand, agentPort } = settings;
   // 默认模型那家提供商走合并后的生效配置：开发调试版可能被 src-tauri/.env 覆盖
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   // 项目层配置以仓库根的 `.codovo/` 为准，异步读进来；读到之前保持 null，
-  // boot 会等它就绪再启动，免得把半截配置喂给 opencode。
+  // boot 会等它就绪再启动，免得把半截配置喂给后端。
   const [workspaceLayer, setWorkspaceLayer] = useState<AgentLayer | null>(null);
   useEffect(() => {
     if (!root) {
@@ -270,10 +265,10 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     () => mergeAgentLayer(emptyAgentLayer(), workspaceLayer ?? emptyAgentLayer()),
     [workspaceLayer],
   );
-  // primary 固定内置应用助手：这个面板只服务它（见上方组件注释）
-  const primary = APP_AGENT_NAME;
+  // 内置应用助手的名字：只用来找用户给它绑的模型（见上方组件注释）
+  const agentName = APP_AGENT_NAME;
 
-  /** 喂给 opencode 的提供商。只给启用的、地址填了的；密钥只说有没有，正文留后端取 */
+  /** 喂给后端的提供商。只给启用的、地址填了的；密钥只说有没有，正文留后端取 */
   const providers = useMemo(
     () =>
       enabledProviders(settings).map((provider) => ({
@@ -286,22 +281,22 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     [settings],
   );
 
-  // 写进 opencode 配置的全局默认模型。提供商为空但 aiReady（开发调试只写 .env）
-  // 时，后端会合成一个 id 为 codovo 的提供商，引用得跟它对上，
-  // 见 src-tauri/src/agent.rs 的 apply()
+  // 全局默认模型引用。提供商为空但 aiReady（开发调试只写 .env）时，
+  // 后端会合成一个 id 为 codovo 的提供商，引用得跟它对上，
+  // 见 src-tauri/src/agent/config.rs 的 apply()
   const fallbackRef = aiConfig.model ? `codovo/${aiConfig.model}` : "";
   const defaultModelRef = resolveDefaultModel(settings)?.ref ?? fallbackRef;
 
-  // 这一轮对话用哪个模型：primary agent 自己绑了就用绑的，否则跟随全局默认。
-  // 必须显式指定——不给的话 opencode 会用它自己的默认模型，多半不是这里配的那个。
-  const boundAgent = layer.agents.find((agent) => agent.name === primary);
+  // 这一轮对话用哪个模型：agent 自己绑了就用绑的，否则跟随全局默认。
+  // 必须显式指定——后端不会替我们猜用户想用哪个模型。
+  const boundAgent = layer.agents.find((agent) => agent.name === agentName);
   const sendModel = boundModelRef(settings, boundAgent?.model ?? "") ?? fallbackRef;
 
   /** 拉一次会话列表。失败不抛，返回空数组让调用方兜底 */
   const refreshSessions = useCallback(async (): Promise<AgentSessionSummary[]> => {
     if (!root) return [];
     try {
-      const list = parseSessions(await listAgentSessions(root), root);
+      const list = parseSessions(await listAgentSessions(root));
       setSessions(list);
       return list;
     } catch {
@@ -315,7 +310,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     async (id: string) => {
       if (!root) return;
       // 「打开即已读」：撤掉任务完成标记。等回应的 permission / question 不动，
-      // 那还得用户真的回应（opencode 答复后会自己发事件清除）
+      // 那还得用户真的回应（后端收到工具回执后会自己清）
       clearAttentionIf(agentTarget(id), "done");
       try {
         const history = await fetchAgentMessages(root, id);
@@ -352,19 +347,14 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     setFatal(null);
 
     try {
-      const info = await startAgent(root, {
-        command: agentCommand,
-        port: agentPort,
+      await startAgent(root, {
         providers,
         defaultModel: defaultModelRef,
         rules: layer.rules,
         memory: layer.memory,
         skills: layer.skills,
         agents: layer.agents,
-        primary,
       });
-      // 复用已有实例时后端回的是空版本号，那就保留上一次探到的
-      setAgentVersion((current) => info.version || current);
     } catch (reason) {
       setFatal(String(reason));
       setPhase("error");
@@ -389,19 +379,16 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   }, [
     root,
     aiReady,
-    agentCommand,
-    agentPort,
     providers,
     defaultModelRef,
     layer,
-    primary,
     refreshSessions,
     openSession,
     setCurrentId,
   ]);
 
   useEffect(() => {
-    // 等项目层配置读到再启动：boot 会把 layer 喂给 opencode，读到之前启动会漏配置
+    // 等项目层配置读到再启动：boot 会把 layer 喂给后端，读到之前启动会漏配置
     if (!active || startedRef.current || workspaceLayer === null) return;
     startedRef.current = true;
     void boot();
@@ -414,11 +401,12 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     let disposed = false;
 
     void onAgentEvent((eventRoot, event) => {
-      // 一个窗口里会同时开着几个工作区、各有一个 opencode 在跑，只认自己这份
+      // 一个窗口里会同时开着几个工作区、各有一个槽位在跑，只认自己这份
       if (!samePath(eventRoot, root)) return;
+      // 一个槽位里可能开着几条会话，只认当前这条（别的会话可能在后台跑）
       const sessionId = currentIdRef.current;
-      if (!sessionId) return;
-      setConversation((current) => reduceAgentEvent(current, event, sessionId));
+      if (!sessionId || event.sessionId !== sessionId) return;
+      setConversation((current) => reduceAgentEvent(current, event));
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -442,25 +430,6 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     setConversation(EMPTY_CONVERSATION);
     void openSession(requestedId);
   }, [requestedId, phase, clearRequest, currentIdRef, openSession, clearAttentionIf]);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-
-    void onAgentExit((eventRoot) => {
-      if (!samePath(eventRoot, root)) return;
-      setFatal("助手服务已退出，可能是被系统回收或端口被占");
-      setPhase("error");
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
 
   // 新内容进来就贴到底部（由 useStickToBottom 统一处理：上滚后暂停、回底恢复）
 
@@ -528,11 +497,11 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     if (!text || conversation.streaming) return;
 
     clearComposer();
-    // 用户消息不本地插：等 SSE 的 message.updated 回来，省得和真实消息对不上
+    // 用户消息不本地插：等 runStarted 回来，省得和真实消息对不上
     setConversation((current) => ({ ...current, streaming: true, error: null }));
 
     // 会话是发出第一句时才建的：还没会话就先建一个。
-    // 必须先 setCurrentId 再发消息——SSE 处理器靠 currentIdRef 认会话，晚一步这条消息的事件就被丢了
+    // 必须先 setCurrentId 再发消息——事件处理器靠 currentIdRef 认会话，晚一步这条消息的事件就被丢了
     let sessionId = currentIdRef.current;
     if (!sessionId) {
       try {
@@ -547,22 +516,22 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
       }
     }
 
-    void sendAgentMessage(root, sessionId, text, sendModel, primary).catch((reason) => {
+    void sendAgentMessage(root, sessionId, text, sendModel).catch((reason) => {
       setConversation((current) => ({
         ...current,
         streaming: false,
         error: String(reason),
       }));
     });
-  }, [draft, conversation.streaming, sendModel, primary, root, setCurrentId, refreshSessions, clearComposer]);
+  }, [draft, conversation.streaming, sendModel, root, setCurrentId, refreshSessions, clearComposer]);
 
   const stop = useCallback(() => {
     const sessionId = currentIdRef.current;
     if (!sessionId) return;
     void abortAgentSession(root, sessionId).catch(() => {
-      // 停不下来也无所谓：这一轮跑完自然会给 session.idle
+      // 掐不断也无所谓：那一轮跑完自然会给 runFinished
     });
-  }, [currentIdRef]);
+  }, [root, currentIdRef]);
 
   /** 新对话：只把面板清成「等第一句」，会话本身等发送时再建，免得留下一串空记录 */
   const newSession = useCallback(() => {
@@ -738,7 +707,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
         <span className="shrink-0 text-[12px] font-medium text-fg">{APP_AGENT_LABEL}</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-          opencode{agentVersion ? ` v${agentVersion}` : ""} ·{" "}
+          Rig ·{" "}
           {/* 只在真配了提供商时才把引用译成名字：开发调试下提供商是后端合成的，
               译出来会是 `codovo/xxx`，不如直接显示 .env 里的模型名 */}
           {(settings.aiProviders.length > 0 && sendModel

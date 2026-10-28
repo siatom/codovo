@@ -3,49 +3,34 @@
 mod agent;
 mod agent_config;
 mod ai;
-mod app_agent;
 mod cicd;
 mod agent_protocol;
 mod cli_sessions;
 mod database;
-mod db_agent;
 mod dev;
 mod encoding;
 mod feedback;
 mod fs_api;
 mod git;
 mod installer;
+mod launch;
+mod llm;
 mod local_fs;
 mod natural_sort;
 mod preview;
-mod preview_agent;
 mod pty;
 mod remote;
 mod runtime;
 mod secrets;
 mod shell_env;
 mod shells;
+#[cfg(test)]
+mod test_support;
 mod titlebar;
 mod tray;
 mod watcher;
 
 use tauri::{Emitter, Manager};
-
-/// 数据库 Agent 的 MCP 服务入口。main() 在 Tauri 初始化**之前**按 `--mcp-db` 分流到这里，
-/// 所以这条路径不会建窗口、也不碰任何 Tauri 状态。返回进程退出码。
-pub fn run_db_mcp() -> i32 {
-    db_agent::run_stdio()
-}
-
-/// 应用助手（界面操作）的 MCP 服务入口。同样在 Tauri 初始化之前分流，返回进程退出码。
-pub fn run_app_mcp() -> i32 {
-    app_agent::run_stdio()
-}
-
-/// 预览助手（启动/停止项目预览）的 MCP 服务入口。同样在 Tauri 初始化之前分流。
-pub fn run_preview_mcp() -> i32 {
-    preview_agent::run_stdio()
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -213,15 +198,12 @@ pub fn run() {
             database::db_table_structure,
             database::db_query,
             database::db_export,
-            db_agent::db_agent_set_target,
-            app_agent::app_agent_take_request,
-            app_agent::app_agent_respond,
+            agent::db_agent_set_target,
+            agent::app_agent_respond,
             preview::preview_detect,
             preview::preview_start,
             preview::preview_stop,
             preview::preview_status,
-            preview_agent::preview_agent_take_request,
-            preview_agent::preview_agent_respond,
             cicd::cicd_read_config,
             cicd::cicd_write_config,
             cicd::cicd_detect_config,
@@ -254,7 +236,7 @@ pub fn run() {
                 if let Some(state) = app.try_state::<pty::PtyState>() {
                     state.kill_all();
                 }
-                // 智能体是常驻的 opencode 子进程，退出时必须带走（每个工作区一个）
+                // 助手槽位是常驻的，退出时统一收摊（每个工作区一个）
                 if let Some(state) = app.try_state::<agent::AgentState>() {
                     state.kill_all();
                 }

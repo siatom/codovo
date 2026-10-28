@@ -24,16 +24,11 @@ import { ActivityProvider, useDropActivity, useTouchActivity } from "./lib/activ
 import { RemoteHostsProvider } from "./lib/remote-hosts";
 import { DbConnectionsProvider } from "./lib/db-connections";
 import {
+  onAppAgentRequest,
   respondAppAgent,
   runAppAgentTool,
-  takeAppAgentRequest,
   type AppAgentContext,
 } from "./lib/app-agent";
-import {
-  respondPreviewAgent,
-  runPreviewTool,
-  takePreviewAgentRequest,
-} from "./lib/preview-agent";
 import { useTheme } from "./lib/theme";
 import {
   isPathInside,
@@ -88,12 +83,6 @@ function parentDir(path: string): string {
   const dir = trimmed.slice(0, index);
   return /^[A-Za-z]:$/.test(dir) ? `${dir}\\` : dir;
 }
-
-/**
- * 应用助手桥的轮询间隔。后端 MCP 子进程只能把请求写成文件，没有推送通道，
- * 所以这里轮询——每轮就是读一个小文件，代价可以忽略。
- */
-const APP_AGENT_POLL_MS = 500;
 
 /**
  * 一个窗口，多个工作区并行。
@@ -503,7 +492,7 @@ function Shell() {
     [],
   );
 
-  /** 关闭一个已打开的工作区：收它的终端与 opencode 进程、丢掉它的界面实例 */
+  /** 关闭一个已打开的工作区：收它的终端与助手槽位、丢掉它的界面实例 */
   const closeWorkspace = useCallback(
     (workspace: Workspace) => {
       void workspaceClose(workspace.roots).catch(() => {});
@@ -543,7 +532,7 @@ function Shell() {
 
   /**
    * 从列表里移除一个工作区。只动 Codovo 自己的记录，不碰磁盘上的目录。
-   * 它还开着的话一并关掉——不然终端和 opencode 会一直在后台跑，用户却再也看不到。
+   * 它还开着的话一并关掉——不然终端和助手槽位会一直在后台跑，用户却再也看不到。
    */
   const removeWorkspace = useCallback(
     (workspace: Workspace) => {
@@ -679,63 +668,40 @@ function Shell() {
     confirm: confirmFromAgent,
   };
 
-  // 常驻轮询：工具调用可能发生在任何时候，不能只在智能体面板可见时才跑
+  // 常驻订阅：工具调用可能发生在任何时候，不能只在助手面板可见时才跑
   useEffect(() => {
-    let stopped = false;
-    let busy = false;
-    // 启动时先丢掉上一轮残留的请求：应用崩溃 / 退出时留下的那条此刻已经没有等待者，
-    // 执行它只会在界面上莫名其妙弹一个确认框
-    void takeAppAgentRequest().catch(() => {});
-    const tick = async () => {
-      if (stopped || busy) return;
-      busy = true;
-      try {
-        const request = await takeAppAgentRequest();
-        const ctx = appAgentCtxRef.current;
-        if (!request || !ctx || stopped) return;
-        const outcome = await runAppAgentTool(request, ctx);
-        await respondAppAgent(request.id, outcome.ok, outcome.text);
-      } catch (reason) {
-        // 这里失败意味着结果没能写回去，MCP 那边只能等到超时；留个日志方便排查
-        console.error("应用助手工具调用失败", reason);
-      } finally {
-        busy = false;
-      }
-    };
-    const timer = window.setInterval(() => void tick(), APP_AGENT_POLL_MS);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+    // 一次只跑一条：模型可能在同一轮里并行发起多个调用，界面操作（尤其是确认框）
+    // 串行执行才不会互相盖掉状态
+    let queue: Promise<void> = Promise.resolve();
 
-  /**
-   * 预览助手桥：和应用助手同一套（后端 MCP 子进程只能写请求文件），执行的是预览工具。
-   * 每条请求自带它所属的工作区路径（后端经 `CODOVO_PREVIEW_ROOT` 注入），
-   * 所以这里不依赖「当前活动工作区」——后台工作区的预览助手也能正常执行。
-   */
-  useEffect(() => {
-    let stopped = false;
-    let busy = false;
-    void takePreviewAgentRequest().catch(() => {});
-    const tick = async () => {
-      if (stopped || busy) return;
-      busy = true;
-      try {
-        const request = await takePreviewAgentRequest();
-        if (!request || stopped) return;
-        const outcome = await runPreviewTool(request);
-        await respondPreviewAgent(request.id, outcome.ok, outcome.text);
-      } catch (reason) {
-        console.error("预览助手工具调用失败", reason);
-      } finally {
-        busy = false;
-      }
-    };
-    const timer = window.setInterval(() => void tick(), APP_AGENT_POLL_MS);
+    void onAppAgentRequest((request) => {
+      queue = queue.then(async () => {
+        const ctx = appAgentCtxRef.current;
+        if (!ctx) {
+          // 界面还没装配好（理论上不会发生）：也要回一句，别让工具干等到超时
+          await respondAppAgent(request.id, false, "界面还没准备好，请稍后再试");
+          return;
+        }
+        try {
+          const outcome = await runAppAgentTool(request, ctx);
+          await respondAppAgent(request.id, outcome.ok, outcome.text);
+        } catch (reason) {
+          // 这里失败意味着结果没能写回去，工具那边只能等到超时；留个日志方便排查
+          console.error("应用助手工具调用失败", reason);
+        }
+      });
+    })
+      .then((off) => {
+        if (disposed) off();
+        else unlisten = off;
+      })
+      .catch((reason) => console.error("订阅应用助手请求失败", reason));
+
     return () => {
-      stopped = true;
-      window.clearInterval(timer);
+      disposed = true;
+      unlisten?.();
     };
   }, []);
 
@@ -750,7 +716,7 @@ function Shell() {
   }, []);
 
   // 启动时恢复上次用的工作区。只恢复**一个**：同时挂起多个工作区意味着一次起好几个
-  // shell 和 opencode，用户没点过的不该有这种代价
+  // shell，用户没点过的不该有这种代价
   useEffect(() => {
     let cancelled = false;
     // 旧版「一个目录一个工作区」的记录在这里就地升级成工作区实体

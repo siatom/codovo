@@ -80,8 +80,8 @@ export interface ProviderModel {
  * 一个 LLM 提供商。本次只支持 OpenAI 兼容协议，所以没有协议字段——
  * 换协议意味着换 AI SDK 包，不是加个下拉能兜住的，等真做时再加。
  *
- * `id` 一旦生成就不再变（改名也不变）：它同时是 opencode 的 provider key、
- * 模型引用的前缀（`provider/model`）和密钥环境变量名的来源。
+ * `id` 一旦生成就不再变（改名也不变）：它同时是模型引用的前缀（`provider/model`）
+ * 和钥匙串里密钥条目名的来源。
  */
 export interface AiProvider {
   id: string;
@@ -116,10 +116,6 @@ export interface Settings {
    * 不单独存接口地址 / 模型 / API Key。
    */
   translateTarget: TranslateTarget;
-  /** opencode 可执行文件；裸命令名会去 PATH 里找。应用助手（右栏抽屉）与数据库 / 预览助手共用它 */
-  agentCommand: string;
-  /** 助手服务监听的端口；0 表示自动挑一个空闲的 */
-  agentPort: number;
   /**
    * @deprecated 工作区层的智能体配置已改以工作区根下 `.codovo/` 的文件为准，
    * 这里只保留旧数据用于一次性迁移（见 lib/agent-config.ts 的 readWorkspaceLayer）。
@@ -263,8 +259,6 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "aiDefaultModel",
     // 翻译复用 AI 默认模型，放在「AI」分类里恢复默认更符合用户直觉
     "translateTarget",
-    "agentCommand",
-    "agentPort",
     "agentWorkspaces",
   ],
 };
@@ -299,7 +293,7 @@ export function resolveUiFont(value: string): string {
   return value.trim() || DEFAULT_UI_FONT;
 }
 
-/** 智能体的 mode 取值；和 opencode 的 AgentConfig.mode 对齐 */
+/** 智能体的 mode 取值；`.codovo/agents.json` 里也这么写 */
 const AGENT_MODES: AgentProfile["mode"][] = ["primary", "subagent", "all"];
 
 /** 新的一层空配置。工厂而不是常量：多处会各自持有、不能被共享引用串改 */
@@ -323,8 +317,6 @@ const DEFAULTS: Settings = {
   aiDefaultModel: "",
   // 默认译成简体中文；用户可以在设置或翻译视图里随时切换
   translateTarget: "zh",
-  agentCommand: "opencode",
-  agentPort: 0,
   agentWorkspaces: {},
   uiFontFamily: "",
   terminalShell: "",
@@ -378,12 +370,6 @@ function clampSize(value: unknown, fallback: number): number {
 function clampDelay(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(AUTOSAVE_DELAY_MAX, Math.max(AUTOSAVE_DELAY_MIN, Math.round(value)));
-}
-
-/** 端口；0 是合法的（表示自动分配） */
-function clampPort(value: unknown, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(65535, Math.max(0, Math.round(value)));
 }
 
 /** 存的是字符串，但值域是固定的四个；读坏了回落默认 */
@@ -463,7 +449,7 @@ function asModelList(value: unknown): ProviderModel[] {
 }
 
 /**
- * 逐条校验提供商。id 要能当 opencode 的 provider key 和 `provider/model` 的前缀用，
+ * 逐条校验提供商。id 要能当 `provider/model` 的前缀用，
  * 含 `/` 会把引用切错，缺了则整条作废——都没法补救，直接丢。
  *
  * 密钥那一栏兼容两种来源：新数据只有 `apiKeySet` 布尔位；老数据是明文 `apiKey`，
@@ -523,7 +509,7 @@ function asAgentMode(value: unknown): AgentProfile["mode"] {
     : "subagent";
 }
 
-/** 逐条校验技能：名字和描述是 opencode 认的必填项，缺了就丢掉这条 */
+/** 逐条校验技能：名字和描述是必填项（后端要把它们写进提示词），缺了就丢掉这条 */
 function asSkillList(value: unknown): AgentSkill[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): AgentSkill[] => {
@@ -603,9 +589,6 @@ function readSaved(): Settings {
     aiDefaultModel: asString(raw.aiDefaultModel, DEFAULTS.aiDefaultModel),
     // 老版本的设置里没有这一项，回落 zh
     translateTarget: asTranslateTarget(raw.translateTarget),
-    // 老版本的设置里没有这两个字段，asBoolean 回落 true 就是默认开着
-    agentCommand: asString(raw.agentCommand, DEFAULTS.agentCommand),
-    agentPort: clampPort(raw.agentPort, DEFAULTS.agentPort),
     // 老版本的设置里没有这一项，回落成空表；更早的字段叫 agentProjects，兜底读旧名。
     // 只用于一次性迁移到 `.codovo/`（见 lib/agent-config.ts 的 readWorkspaceLayer）
     agentWorkspaces: asWorkspaceLayers(raw.agentWorkspaces ?? raw.agentProjects),

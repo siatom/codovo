@@ -1,16 +1,15 @@
 //! 内置 AI 生成能力（翻译、提交方案、解读、反馈正文、CICD 建议与诊断）。
 //!
-//! 生成统一走 headless opencode 运行时（`agent::run_once`）：这里只负责拼提示词
-//! 与清理输出，真正调模型的是应用内那套 utility agent + 技能。直连 HTTP 只留给
-//! 「测试提供商」「列出模型」两个连通性探针——它们要测的就是用户填的接口本身，
-//! 走运行时反而测不准。
+//! 生成统一走 `llm::complete`：单轮、无工具、不落会话。这里只负责拼提示词与清理输出。
+//! 直连 HTTP 只留给「测试提供商」「列出模型」两个连通性探针——它们要测的就是用户填的
+//! 接口本身，走运行时反而测不准。
 
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::{self, AgentConfig, AgentState, SkillSpec};
+use crate::llm;
 use crate::dev;
 use crate::fs_api::FsState;
 use crate::git::{self, DiffSource};
@@ -40,9 +39,6 @@ pub struct AiConfig {
     /// 默认模型所在的提供商 id，密钥按它去钥匙串里查
     provider_id: String,
     model: String,
-    /// opencode 可执行文件（完整命令行）；生成能力都交给它跑
-    #[serde(default)]
-    command: String,
     /// 开发调试用：`src-tauri/.env` 里那个密钥。前端传不进来，只在 debug 构建里
     /// 由 `apply` 填上；它优先于钥匙串——`.env` 本来就该盖住界面上的配置。
     #[serde(skip)]
@@ -84,10 +80,6 @@ impl AiConfig {
                 "请先在「设置 → 智能体 → 模型提供商」里填写接口地址和模型".to_string()
             });
         }
-        if self.command.trim().is_empty() {
-            return Err("还没配置 opencode：请在「设置 → 智能体」里填写可执行文件路径".to_string());
-        }
-
         let has_key = match &self.dev_api_key {
             Some(key) => !key.trim().is_empty(),
             // provider id 为空时无从查起，交给下面的报错提示用户去配
@@ -115,82 +107,26 @@ impl AiConfig {
         Ok(())
     }
 
-    /// 转成 utility 运行时配置：单提供商、单模型，只带内置技能。
-    fn to_agent_config(&self) -> AgentConfig {
-        AgentConfig::for_utility(
-            self.command.trim().to_string(),
-            self.provider_id.clone(),
-            self.base_url.clone(),
-            self.model.clone(),
-            self.dev_api_key.clone(),
-            utility_skills(),
-        )
+    /// 转成一次生成要用的模型配置。密钥已经在 `prepare` 里确认过存在，
+    /// 这里再按 provider id 取一次正文（不落盘、不进前端）。
+    fn model_spec(&self) -> Result<llm::ModelSpec, String> {
+        let api_key = match &self.dev_api_key {
+            Some(key) => Some(key.clone()),
+            None => crate::secrets::get(&self.provider_id)?,
+        };
+        Ok(llm::ModelSpec {
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            api_key: api_key.filter(|key| !key.trim().is_empty()),
+        })
     }
 }
 
-/// 交给 utility 运行时的技能清单：每个能力一份任务说明，动态数据由 user 文本带入。
-///
-/// 只写 10 份固定技能，不再为每个能力各建一个 agent。
-fn utility_skills() -> Vec<SkillSpec> {
-    vec![
-        SkillSpec::new(
-            "commit-plan",
-            "把未提交改动按主题拆成一条或多条 git 提交，输出 JSON 数组",
-            PLAN_SYSTEM_PROMPT,
-        ),
-        SkillSpec::new(
-            "explain-diff",
-            "解释一次改动的 diff 改了什么，输出 markdown",
-            EXPLAIN_SYSTEM_PROMPT,
-        ),
-        SkillSpec::new(
-            "explain-file",
-            "说明一个文件的职责与实现逻辑，输出 markdown",
-            FILE_SYSTEM_PROMPT,
-        ),
-        SkillSpec::new(
-            "feedback-pick",
-            "根据线索从仓库文件清单里挑出相关文件，只输出路径",
-            PICK_FILES_PROMPT,
-        ),
-        SkillSpec::new(
-            "feedback-body",
-            "依据线索和给出的代码写一条 issue 的详细描述",
-            FEEDBACK_PROMPT,
-        ),
-        SkillSpec::new(
-            "translate-zh",
-            "把文档片段翻译成简体中文，保留结构与占位符",
-            &translate_skill_body("简体中文（Simplified Chinese）"),
-        ),
-        SkillSpec::new(
-            "translate-en",
-            "把文档片段翻译成英文，保留结构与占位符",
-            &translate_skill_body("英文（English）"),
-        ),
-        SkillSpec::new(
-            "cicd-config",
-            "根据项目标记起草 .local-cicd.yaml 配置，只输出 YAML",
-            CICD_CONFIG_SYSTEM_PROMPT,
-        ),
-        SkillSpec::new(
-            "cicd-diagnose",
-            "根据失败阶段、命令与日志给出部署排障建议",
-            DIAGNOSE_SYSTEM_PROMPT,
-        ),
-        SkillSpec::new(
-            "preview-diagnose",
-            "根据启动命令与日志给出预览启动失败的排障建议",
-            PREVIEW_DIAGNOSE_SYSTEM_PROMPT,
-        ),
-    ]
-}
-
-/// 翻译目标语言对应的技能名；未知取值直接拒绝，避免把任意字符串拼进提示词。
-fn translate_skill(lang: &str) -> Result<&'static str, String> {
+/// 翻译目标语言对应的提示词；未知取值直接拒绝，避免把任意字符串拼进提示词。
+fn translate_prompt(lang: &str) -> Result<String, String> {
     match lang {
-        "zh" => Ok("translate-zh"),
-        "en" => Ok("translate-en"),
+        "zh" => Ok(translate_skill_body("简体中文（Simplified Chinese）")),
+        "en" => Ok(translate_skill_body("英文（English）")),
         _ => Err("不支持的翻译目标语言，只支持 zh / en".to_string()),
     }
 }
@@ -238,14 +174,12 @@ fn clean_translate_output(raw: &str) -> String {
 /// 交给 utility 运行时，密钥由后端按 provider id 从系统钥匙串读取。
 #[tauri::command]
 pub async fn ai_translate_text(
-    app: tauri::AppHandle,
-    agent_state: tauri::State<'_, AgentState>,
     config: AiConfig,
     target_language: String,
     text: String,
     document_title: Option<String>,
 ) -> Result<String, String> {
-    let skill = translate_skill(&target_language)?;
+    let prompt = translate_prompt(&target_language)?;
 
     let text = text.trim();
     if text.is_empty() {
@@ -267,7 +201,7 @@ pub async fn ai_translate_text(
         .unwrap_or_default();
     let user = format!("{title_line}{text}");
 
-    let raw = agent::run_once(&app, &agent_state, config.to_agent_config(), skill, user).await?;
+    let raw = llm::complete(&config.model_spec()?, &prompt, &user).await?;
     let translated = clean_translate_output(&raw);
     if translated.is_empty() {
         return Err("大模型返回了空译文".to_string());
@@ -289,9 +223,7 @@ pub struct CommitPlan {
 /// 横跨多个主题才返回多条，前端弹预览、确认后逐条 stage+commit。
 #[tauri::command]
 pub async fn ai_generate_commit_plan(
-    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
-    agent_state: tauri::State<'_, AgentState>,
     root: String,
     config: AiConfig,
 ) -> Result<Vec<CommitPlan>, String> {
@@ -306,14 +238,7 @@ pub async fn ai_generate_commit_plan(
     }
 
     let user = build_plan_user(&context);
-    let raw = agent::run_once(
-        &app,
-        &agent_state,
-        config.to_agent_config(),
-        "commit-plan",
-        user,
-    )
-    .await?;
+    let raw = llm::complete(&config.model_spec()?, PLAN_SYSTEM_PROMPT, &user).await?;
     parse_commit_plan(&raw, &context.files)
 }
 
@@ -325,9 +250,7 @@ pub async fn ai_generate_commit_plan(
 /// 命令与运行时/错误处理，只是技能、喂给模型的正文不同。
 #[tauri::command]
 pub async fn ai_explain_change(
-    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
-    agent_state: tauri::State<'_, AgentState>,
     root: String,
     config: AiConfig,
     path: String,
@@ -339,14 +262,14 @@ pub async fn ai_explain_change(
 
     // 同 ai_generate_commit_plan：git / 读文件是同步阻塞的，先跑完再 await
     let root = state.checked_root(&root)?;
-    let (skill, user) = match &source {
+    let (prompt, user) = match &source {
         Some(source) => {
             let diff = git::file_diff_text(&root, &path, source)?;
             if diff.trim().is_empty() {
                 return Err("这个文件没有可解读的改动".to_string());
             }
             (
-                "explain-diff",
+                EXPLAIN_SYSTEM_PROMPT,
                 build_explain_user(&root, &path, source, &diff),
             )
         }
@@ -361,11 +284,11 @@ pub async fn ai_explain_change(
                 .strip_prefix(&root)
                 .map(|relative| relative.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| path.clone());
-            ("explain-file", build_file_user(&display, &content))
+            (FILE_SYSTEM_PROMPT, build_file_user(&display, &content))
         }
     };
 
-    let raw = agent::run_once(&app, &agent_state, config.to_agent_config(), skill, user).await?;
+    let raw = llm::complete(&config.model_spec()?, prompt, &user).await?;
 
     let text = raw.trim().to_string();
     if text.is_empty() {
@@ -621,9 +544,7 @@ fn build_feedback_user(title: &str, category: &str, context: &str) -> String {
 /// 单趟做不到「结合代码现状」——线索是自然语言，没法直接当关键词去搜文件。
 #[tauri::command]
 pub async fn ai_generate_feedback_body(
-    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
-    agent_state: tauri::State<'_, AgentState>,
     root: String,
     config: AiConfig,
     title: String,
@@ -647,27 +568,14 @@ pub async fn ai_generate_feedback_body(
 
     // 第一趟：挑相关文件
     let pick_user = build_pick_user(&title, &category, &files.join("\n"), truncated);
-    let picked_raw = agent::run_once(
-        &app,
-        &agent_state,
-        config.to_agent_config(),
-        "feedback-pick",
-        pick_user,
-    )
-    .await?;
+    let spec = config.model_spec()?;
+    let picked_raw = llm::complete(&spec, PICK_FILES_PROMPT, &pick_user).await?;
     let picked = parse_selected_files(&picked_raw, &files);
 
     // 第二趟：读文件、起草正文
     let context = read_context_files(&root, &picked);
     let user = build_feedback_user(&title, &category, &context);
-    let raw = agent::run_once(
-        &app,
-        &agent_state,
-        config.to_agent_config(),
-        "feedback-body",
-        user,
-    )
-    .await?;
+    let raw = llm::complete(&spec, FEEDBACK_PROMPT, &user).await?;
 
     let text = raw.trim().to_string();
     if text.is_empty() {
@@ -1127,9 +1035,7 @@ const MAX_LOG_CHARS: usize = 8_000;
 /// 返回 YAML 正文（已去掉可能的代码围栏），交给部署面板填进编辑器，用户确认后保存。
 #[tauri::command]
 pub async fn ai_suggest_cicd_config(
-    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
-    agent_state: tauri::State<'_, AgentState>,
     root: String,
     config: AiConfig,
 ) -> Result<String, String> {
@@ -1139,14 +1045,7 @@ pub async fn ai_suggest_cicd_config(
 
     let root = state.checked_root(&root)?;
     let user = build_cicd_config_user(&root);
-    let raw = agent::run_once(
-        &app,
-        &agent_state,
-        config.to_agent_config(),
-        "cicd-config",
-        user,
-    )
-    .await?;
+    let raw = llm::complete(&config.model_spec()?, CICD_CONFIG_SYSTEM_PROMPT, &user).await?;
 
     let text = clean_yaml_output(&raw);
     if text.is_empty() {
@@ -1161,9 +1060,7 @@ pub async fn ai_suggest_cicd_config(
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn ai_diagnose_cicd(
-    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
-    agent_state: tauri::State<'_, AgentState>,
     root: String,
     config: AiConfig,
     stage: String,
@@ -1175,14 +1072,7 @@ pub async fn ai_diagnose_cicd(
 
     let root = state.checked_root(&root)?;
     let user = build_diagnose_user(&root, &stage, &command, &log);
-    let raw = agent::run_once(
-        &app,
-        &agent_state,
-        config.to_agent_config(),
-        "cicd-diagnose",
-        user,
-    )
-    .await?;
+    let raw = llm::complete(&config.model_spec()?, DIAGNOSE_SYSTEM_PROMPT, &user).await?;
 
     let text = raw.trim().to_string();
     if text.is_empty() {
@@ -1197,9 +1087,7 @@ pub async fn ai_diagnose_cicd(
 /// 这里问的是「dev server / 桌面开发实例为什么起不来」，交给预览面板的弹窗渲染。
 #[tauri::command]
 pub async fn ai_diagnose_preview(
-    app: tauri::AppHandle,
     state: tauri::State<'_, FsState>,
-    agent_state: tauri::State<'_, AgentState>,
     root: String,
     config: AiConfig,
     command: String,
@@ -1210,14 +1098,7 @@ pub async fn ai_diagnose_preview(
 
     let root = state.checked_root(&root)?;
     let user = build_preview_diagnose_user(&root, &command, &log);
-    let raw = agent::run_once(
-        &app,
-        &agent_state,
-        config.to_agent_config(),
-        "preview-diagnose",
-        user,
-    )
-    .await?;
+    let raw = llm::complete(&config.model_spec()?, PREVIEW_DIAGNOSE_SYSTEM_PROMPT, &user).await?;
 
     let text = raw.trim().to_string();
     if text.is_empty() {
@@ -1549,32 +1430,9 @@ mod tests {
         assert!(body.contains("表格必须翻译"));
         assert!(body.contains("不要翻译代码"));
         // 未知目标语言不能拼进提示词
-        assert!(translate_skill("ja").is_err());
-        assert_eq!(translate_skill("zh").unwrap(), "translate-zh");
-        assert_eq!(translate_skill("en").unwrap(), "translate-en");
-    }
-
-    #[test]
-    fn utility_skills_cover_every_generation_task() {
-        let names: Vec<String> = utility_skills()
-            .iter()
-            .map(|skill| skill.name().to_string())
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "commit-plan",
-                "explain-diff",
-                "explain-file",
-                "feedback-pick",
-                "feedback-body",
-                "translate-zh",
-                "translate-en",
-                "cicd-config",
-                "cicd-diagnose",
-                "preview-diagnose",
-            ]
-        );
+        assert!(translate_prompt("ja").is_err());
+        assert!(translate_prompt("zh").unwrap().contains("简体中文"));
+        assert!(translate_prompt("en").unwrap().contains("英文"));
     }
 
     #[test]

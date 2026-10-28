@@ -15,7 +15,7 @@ const MENU_ITEM =
  * 就地改名 / 行内「⋯」菜单）。
  *
  * 终端区智能体和数据库智能体共用一套界面，数据的读写交给调用方——两边的会话分属
- * 不同 opencode 实例，只是长得一样。
+ * 不同后端槽位，只是长得一样。
  */
 export function AgentHistoryMenu({
   sessions,

@@ -19,7 +19,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::agent::{hide_console, resolve_launch, Launch};
+use crate::launch::{hide_console, resolve_launch, Launch};
 
 /// 反馈目标的仓库。换仓库只改这两行——网页兜底地址也由它们拼出来。
 const OWNER: &str = "silicon-atom";
@@ -42,7 +42,7 @@ const CLI_TIMEOUT: Duration = Duration::from_secs(30);
 /// 出错时回传给界面的输出片段上限，别把整段日志塞进弹窗。
 const MAX_ERROR_CHARS: usize = 500;
 
-/// 记录文件名，落在 `app_config_dir()` 下（与 opencode 配置同级）。
+/// 记录文件名，落在 `app_config_dir()` 下（与助手会话目录同级）。
 const STORE_FILE: &str = "feedback.json";
 
 /// 一条提交过的反馈。字段刻意保持精简：正文和大段讨论都在 Gitee 那边，
@@ -224,7 +224,7 @@ fn shim_to_node(shim: &Path, args: &[String]) -> Result<Command, String> {
         .filter(|path| path.is_file())
         .ok_or_else(|| format!("找不到 gitee CLI 的入口脚本（{NPM_ENTRY}），请改装原生版 gitee"))?;
     // node 跟着 npm 一起来，PATH 里应该有；没有就让 Command 自己报错
-    let node = crate::agent::find_on_path("node", std::env::var_os("PATH").as_deref())
+    let node = crate::launch::find_on_path("node", std::env::var_os("PATH").as_deref())
         .unwrap_or_else(|| PathBuf::from("node"));
     let mut command = Command::new(node);
     command.arg(entry).args(args);
@@ -241,7 +241,7 @@ fn shim_to_node(shim: &Path, args: &[String]) -> Result<Command, String> {
 
 /// 把 `gitee <args>` 解析成一个能 spawn 的命令。
 fn cli_command(args: &[String]) -> Result<Command, String> {
-    // GUI 进程从 Dock / 开始菜单启动时 PATH 可能不全，和起 opencode 时同一个理由
+    // GUI 进程从 Dock / 开始菜单启动时 PATH 可能不全，和起外部 CLI 时同一个理由
     let path = crate::shell_env::resolved_path(&crate::shell_env::default_shell(), None);
     let launch = resolve_launch(CLI, path.as_deref()).map_err(|_| {
         "在 PATH 里找不到 gitee 命令。请先安装官方 CLI（npm i -g @gitee/gitee-cli）\

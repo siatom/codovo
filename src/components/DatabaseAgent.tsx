@@ -11,7 +11,6 @@ import {
   fetchAgentMessages,
   listAgentSessions,
   onAgentEvent,
-  onAgentExit,
   parseSessions,
   reduceAgentEvent,
   renameAgentSession,
@@ -47,11 +46,11 @@ const HEAD_BUTTON =
 /**
  * 数据库模块的「Agent」子视图：自然语言 → 只读 SQL。
  *
- * 后端是一个**独立的** opencode 进程（哨兵 root，见 src-tauri/src/agent.rs）：它带一组
- * 只读数据库 MCP 工具和一份内置技能，目标库从 `db_agent_set_target` 写下的 target.json 读。
+ * 后端是一个**独立的** Rig 槽位（哨兵 root，见 src-tauri/src/agent/）：它带一组
+ * 只读数据库工具和一份内置技能，目标库由 `db_agent_set_target` 直接写进内存。
  *
  * 对话历史**所有连接共用一份**：对话本身不绑定库，执行 SQL 时才用当前目标连接，
- * 所以切连接不换会话。会话列表靠 `AgentInfo.cwd` 过滤（opencode 的会话是全局存的）。
+ * 所以切连接不换会话。会话按槽位目录存（`SessionStore`），天然不跟别的槽位混。
  */
 export function DatabaseAgent({
   connection,
@@ -63,7 +62,6 @@ export function DatabaseAgent({
   active: boolean;
 }) {
   const { settings } = useSettings();
-  const { agentCommand, agentPort } = settings;
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
   const [phase, setPhase] = useState<Phase>("idle");
@@ -84,14 +82,14 @@ export function DatabaseAgent({
     jumpToBottom,
     reset: resetScroll,
   } = useStickToBottom(conversation);
-  /** SSE 处理器只订阅一次，读 state 会拿到挂载那刻的旧值，所以会话 id 走 ref */
+  /** 事件处理器只订阅一次，读 state 会拿到挂载那刻的旧值，所以会话 id 走 ref */
   const sessionIdRef = useRef<string | null>(null);
-  /** 这个实例的工作目录，列表按它过滤；startAgent 之后才有值 */
+  /** 这个槽位的工作目录，startAgent 之后才有值；没有它就不去拉会话列表 */
   const cwdRef = useRef("");
-  /** 记上一帧的流式状态，好在这一轮结束时刷新列表（标题是 opencode 自动总结的） */
+  /** 记上一帧的流式状态，好在这一轮结束时刷新列表（标题由后端按首句起） */
   const wasStreamingRef = useRef(false);
 
-  /** 喂给 opencode 的提供商，和终端区智能体共用「设置 → 智能体」那一份 */
+  /** 喂给后端的提供商，和终端区智能体共用「设置 → 智能体」那一份 */
   const providers = useMemo(
     () =>
       enabledProviders(settings).map((provider) => ({
@@ -118,7 +116,7 @@ export function DatabaseAgent({
     const cwd = cwdRef.current;
     if (!cwd) return [];
     try {
-      const list = parseSessions(await listAgentSessions(DB_AGENT_ROOT), cwd);
+      const list = parseSessions(await listAgentSessions(DB_AGENT_ROOT));
       setSessions(list);
       return list;
     } catch {
@@ -156,18 +154,15 @@ export function DatabaseAgent({
     setFatal(null);
     try {
       const info = await startAgent(DB_AGENT_ROOT, {
-        command: agentCommand,
-        port: agentPort,
         providers,
         defaultModel: modelRef,
         rules: "",
         memory: "",
         skills: [],
         agents: [],
-        primary: "",
         database: true,
       });
-      cwdRef.current = info.cwd;
+      cwdRef.current = info.workspace;
     } catch (reason) {
       setFatal(String(reason));
       setPhase("error");
@@ -186,16 +181,7 @@ export function DatabaseAgent({
       setConversation(EMPTY_CONVERSATION);
     }
     setPhase("ready");
-  }, [
-    aiReady,
-    agentCommand,
-    agentPort,
-    providers,
-    modelRef,
-    refreshSessions,
-    openSession,
-    setCurrentId,
-  ]);
+  }, [aiReady, providers, modelRef, refreshSessions, openSession, setCurrentId]);
 
   // 没选连接就不用起服务；真的切到本视图且有连接时拉一次
   useEffect(() => {
@@ -211,28 +197,10 @@ export function DatabaseAgent({
 
     void onAgentEvent((root, event) => {
       if (root !== DB_AGENT_ROOT) return;
+      // 一个槽位里可能开着几条会话，只认当前这条
       const sessionId = sessionIdRef.current;
-      if (!sessionId) return;
-      setConversation((current) => reduceAgentEvent(current, event, sessionId));
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-
-    void onAgentExit((root) => {
-      if (root !== DB_AGENT_ROOT) return;
-      setFatal("智能体服务已退出，可能是被系统回收或端口被占");
-      setPhase("error");
+      if (!sessionId || event.sessionId !== sessionId) return;
+      setConversation((current) => reduceAgentEvent(current, event));
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -249,7 +217,7 @@ export function DatabaseAgent({
     void dbAgentSetTarget(connection).catch(() => {});
   }, [connection?.id]);
 
-  // 这一轮跑完（opencode 会自动总结会话标题）就刷一次列表，让标题及时更新
+  // 这一轮跑完（后端会按首句给空标题补上）就刷一次列表，让标题及时更新
   useEffect(() => {
     if (wasStreamingRef.current && !conversation.streaming) void refreshSessions();
     wasStreamingRef.current = conversation.streaming;
@@ -276,13 +244,13 @@ export function DatabaseAgent({
     const text = draft.trim();
     if (!text || conversation.streaming || !connection) return;
     setDraft("");
-    // 用户消息不本地插，等 SSE 的 message.updated 回来，省得和真实消息对不上
+    // 用户消息不本地插，等 runStarted 回来，省得和真实消息对不上
     setConversation((current) => ({ ...current, streaming: true, error: null }));
 
     let sessionId = sessionIdRef.current;
     if (!sessionId) {
       try {
-        // 标题留给 opencode 按首句自动总结：传连接名的话每条历史都同名，分不出来
+        // 标题留给后端按首句起：传连接名的话每条历史都同名，分不出来
         const session = await createAgentSession(DB_AGENT_ROOT);
         sessionId = session.id;
         setCurrentId(sessionId);
@@ -298,7 +266,7 @@ export function DatabaseAgent({
       }
     }
 
-    // primary agent 由后端在 database 模式下强制成内置的 database，这里不传
+    // agent 由后端按 database 模式装配成内置的那套，这里不用传
     void sendAgentMessage(DB_AGENT_ROOT, sessionId, text, modelRef).catch((reason) => {
       setConversation((current) => ({
         ...current,
@@ -312,7 +280,7 @@ export function DatabaseAgent({
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
     void abortAgentSession(DB_AGENT_ROOT, sessionId).catch(() => {
-      // 停不下来也无所谓：这一轮跑完自然会给 session.idle
+      // 掐不断也无所谓：那一轮跑完自然会给 runFinished
     });
   }, []);
 

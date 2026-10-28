@@ -148,7 +148,7 @@ const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   agents: "编程 Agent 列表，含名称、启动命令与环境变量",
   editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
   shortcuts: "全部快捷键键位",
-  agent: "模型提供商、密钥、文档翻译目标语言，以及助手运行用的 opencode 与端口",
+  agent: "模型提供商、密钥与文档翻译目标语言",
 };
 
 /** 依赖页只有环境检测与安装，没有可恢复的设置项 */
@@ -1017,7 +1017,7 @@ function ModelRow({
  * 「从接口拉取」之后的选择面板：把拉回来的模型列出来勾选。
  *
  * 为什么不直接全量并进列表：OpenRouter、SiliconFlow 这类动辄几百个模型，
- * 一次塞进去会把设置里这一节和 opencode.json 都撑爆。所以先看、再挑。
+ * 一次塞进去会把设置里这一节和下发配置都撑爆。所以先看、再挑。
  * 已经添加过的条目也在列表里（标成「已添加」且不可勾选），免得用户以为是漏了。
  */
 function ModelPicker({
@@ -1327,7 +1327,7 @@ function ProviderEditor({
           <Field
             label="API 密钥"
             hint="存进操作系统的凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service），
-              明文不写进设置、也不写进 opencode 配置文件；本地模型可以留空"
+              明文不写进设置；本地模型可以留空"
           >
             <input
               type={revealKey ? "text" : "password"}
@@ -3162,38 +3162,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         onChange={(next) =>
                           update({ translateTarget: next as TranslateTarget })
                         }
-                      />
-                    </Field>
-                  </Section>
-
-                  <Section
-                    title="运行"
-                    hint="应用助手与数据库 / 预览助手都靠一个 headless opencode 服务，需要单独安装"
-                  >
-                    <Field
-                      label="opencode 可执行文件"
-                      hint="填裸命令名会去 PATH 里找；找不到时填完整路径。改完下次启动才生效"
-                    >
-                      <input
-                        type="text"
-                        value={settings.agentCommand}
-                        spellCheck={false}
-                        placeholder="opencode"
-                        onChange={(event) => update({ agentCommand: event.target.value })}
-                        className={TEXT_INPUT}
-                      />
-                    </Field>
-                    <Field
-                      label="服务端口"
-                      hint="0 表示自动挑一个空闲端口；填固定值要保证没被别的程序占用"
-                    >
-                      <input
-                        type="number"
-                        min={0}
-                        max={65535}
-                        value={settings.agentPort}
-                        onChange={(event) => update({ agentPort: Number(event.target.value) })}
-                        className={TEXT_INPUT}
                       />
                     </Field>
                   </Section>

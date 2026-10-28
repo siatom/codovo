@@ -1,21 +1,19 @@
 import type { AgentLayer } from "./settings";
 
-/** 技能名 / agent 名的合法形态：和后端 validate_name、opencode 的技能名规则一致 */
+/** 技能名 / agent 名的合法形态：和后端 config.rs 的校验、内置技能命名一致 */
 const NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 /**
- * 内置「应用助手」primary agent 的名字与显示名。名字要和后端
- * `src-tauri/src/agent.rs` 的 `APP_AGENT_AGENT_NAME` 对齐——那边把它写进 opencode 的
- * agent map，右侧助手抽屉固定选它。
+ * 内置「应用助手」agent 的名字与显示名。名字要和后端
+ * `src-tauri/src/agent/prompt.rs` 的 `Kind::App` 对齐——那边按它去用户的 agent 列表里找
+ * 自定义提示词。前端只用它找用户给这个 agent 绑的模型。
  */
 export const APP_AGENT_NAME = "app";
 export const APP_AGENT_LABEL = "应用助手";
 
 /**
- * 内置「预览助手」primary agent 的名字与显示名。名字要和后端
- * `src-tauri/src/agent.rs` 的 `PREVIEW_AGENT_AGENT_NAME` 对齐——那边只有预览助手进程会把它
- * 写进 opencode 的 agent map 并强制成默认 agent。前端不拿名字去选，只留
- * `PREVIEW_AGENT_LABEL` 给面板显示。
+ * 内置「预览助手」agent 的名字与显示名。名字要和后端 `Kind::Preview` 对齐。
+ * 前端不拿名字去选，只留 `PREVIEW_AGENT_LABEL` 给面板显示。
  */
 export const PREVIEW_AGENT_NAME = "preview";
 export const PREVIEW_AGENT_LABEL = "预览助手";

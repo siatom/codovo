@@ -20,11 +20,8 @@ import type { AgentEvent } from "./types";
  * 点击标记能一键回到那个工作区并选中对应的标签 / 会话。
  *
  * 两类来源：
- * - 智能体（opencode）：全局订阅 SSE，按 opencode 自己那套语义判定——`permission.asked` /
- *   `form.created` 置位，`permission.replied` / `form.replied` / `form.cancelled` 清除；
- *   一轮跑完（`session.execution.succeeded` / `failed`）置 `done`，用户按停止或服务收摊
- *   （`interrupted`）以及新一轮开始（`started`）清除。
- *   （见 opencode.notifications 插件里的同款判断。）
+ * - 智能体：全局订阅 `agent-event`，一轮跑完 / 跑挂置 `done`，新一轮开始清除。
+ *   内置工具都是非交互的（不问权限、不弹表单），所以智能体这边只会有「任务完成」一种标记。
  * - 终端 CLI：由 TerminalSession 对 PTY 输出做启发式判断后上抛（见那边）。
  */
 
@@ -75,50 +72,27 @@ function without(current: ByRoot, key: string, target: string): ByRoot {
 
 const AttentionContext = createContext<Store | null>(null);
 
-function payloadOf(event: AgentEvent): Record<string, unknown> {
-  return (event.properties ?? event.data ?? {}) as Record<string, unknown>;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value ? value : null;
-}
-
 /**
- * 从一条 SSE 事件里读出「哪个会话、变成什么状态」。`kind` 为 null 表示清除。
- * 和本功能无关的事件返回 null。会话 id 取不到（载荷形状不认识）时也返回 null，别猜。
+ * 从一条助手事件里读出「哪个会话、变成什么状态」。`kind` 为 null 表示清除。
+ * 和本功能无关的事件返回 null。
  */
 function attentionChange(
   event: AgentEvent,
 ): { id: string; kind: AttentionKind | null } | null {
-  const payload = payloadOf(event);
-  const form = asRecord(payload.form);
-  // form.created 把会话 id 放在 data.form.sessionID 里，其余事件直接放在 data.sessionID
-  const id = asString(payload.sessionID) ?? (form ? asString(form.sessionID) : null);
+  const id = event.sessionId;
+  if (!id) return null;
 
   switch (event.type) {
-    case "permission.asked":
-      return id ? { id, kind: "permission" } : null;
-    case "form.created":
-      return id ? { id, kind: "question" } : null;
     // 一轮跑完（成功或失败）都是「任务结束、等用户下一步指令」。失败也要提醒——
     // 用户不来看就不知道它停了
-    case "session.execution.succeeded":
-    case "session.execution.failed":
-      return id ? { id, kind: "done" } : null;
-    // 用户答复 / 撤回了，或者新的一轮开始了——都不再是「在等用户」。
-    // interrupted 是用户自己按的停止（reason=user）或服务在收摊（reason=shutdown），
-    // 都不算「任务完成」，只清除
-    case "permission.replied":
-    case "permission.rejected":
-    case "form.replied":
-    case "form.cancelled":
-    case "session.execution.started":
-    case "session.execution.interrupted":
-      return id ? { id, kind: null } : null;
+    case "runFinished":
+    case "runFailed":
+      return { id, kind: "done" };
+    // 新的一轮开始了——不再是在等用户。
+    // 用户按停止时后端会补发一条 runFinished（被掐断的那一轮没机会收尾），
+    // 于是也会落成「已完成」：任务确实结束了，标一下不算错。
+    case "runStarted":
+      return { id, kind: null };
     default:
       return null;
   }
