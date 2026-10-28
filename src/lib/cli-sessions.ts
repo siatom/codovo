@@ -146,3 +146,55 @@ export async function listWorkspaceHistory(
   merged.sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
   return merged.slice(0, HISTORY_LIMIT);
 }
+
+/**
+ * 用户自己起的对话名，按 sessionTitleKey 存在本地。
+ *
+ * 不写回 CLI 的会话记录：那是各家自己的文件（jsonl / sqlite），格式随时会变，改它
+ * 既可能把记录写坏，也会被 CLI 下次保存时覆盖。改名只是侧栏里的显示名。
+ */
+const SESSION_TITLES_KEY = "codovo.cliSessionTitles";
+
+/** 改名表的键。会话 id 只在自己那家 CLI 里唯一，所以必须带上 provider */
+export function sessionTitleKey(provider: string, id: string): string {
+  return `${provider}:${id}`;
+}
+
+/** 读整张改名表。读坏了当没改过名 */
+export function readSessionTitles(): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(SESSION_TITLES_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const titles: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim()) titles[key] = value;
+    }
+    return titles;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 改一条对话的显示名，返回新的整张表（调用方直接拿去 setState）。
+ * 名字清空 = 恢复 CLI 自己起的标题，顺手把这条从表里删掉。
+ */
+export function saveSessionTitle(
+  provider: string,
+  id: string,
+  title: string,
+): Record<string, string> {
+  const next = readSessionTitles();
+  const key = sessionTitleKey(provider, id);
+  const trimmed = title.trim();
+  if (trimmed) next[key] = trimmed;
+  else delete next[key];
+  try {
+    window.localStorage.setItem(SESSION_TITLES_KEY, JSON.stringify(next));
+  } catch {
+    // 写不进去只影响下次启动，本次会话照常显示
+  }
+  return next;
+}
