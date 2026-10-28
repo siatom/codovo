@@ -216,50 +216,6 @@ export interface WorkstreamInfo {
   merged: boolean;
 }
 
-/** 审阅工作台里的一个文件 */
-export interface ReviewFile {
-  /** 绝对路径；未检出分支的文件是仓库根下的拼接路径 */
-  path: string;
-  /** 相对仓库根的正斜杠路径 */
-  relative: string;
-  /** A / M / D / R / C / ?（未跟踪） */
-  status: string;
-  /** 未提交文件里，改动是否在暂存区 */
-  staged: boolean;
-  /** 是不是未提交改动 */
-  dirty: boolean;
-  additions: number;
-  deletions: number;
-}
-
-/** 审阅工作台里的一条提交 */
-export interface ReviewCommit {
-  hash: string;
-  short: string;
-  author: string;
-  /** Unix 秒 */
-  time: number;
-  subject: string;
-}
-
-/** 一条工作线的审阅数据 */
-export interface WorkstreamReview {
-  branch: string;
-  base: string;
-  baseSha: string | null;
-  head: string | null;
-  detached: boolean;
-  commits: ReviewCommit[];
-  /** 已提交部分的文件 */
-  files: ReviewFile[];
-  /** 工作树里还没提交的文件 */
-  dirtyFiles: ReviewFile[];
-  changed: number;
-  conflicts: number;
-  additions: number;
-  deletions: number;
-}
-
 /**
  * 终端会话的归属：雷达要靠它判断「哪个工作树上有终端在跑、有没有在等用户」。
  *

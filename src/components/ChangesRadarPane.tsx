@@ -4,30 +4,11 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { pathKey } from "../lib/fs";
 import { folderName } from "../lib/workspaces";
 import type { GitController } from "../lib/git";
-import type { DiffSource } from "../lib/tabs";
-import type {
-  ReviewFile,
-  TerminalSessionInfo,
-  WorkstreamInfo,
-  WorkstreamReview,
-} from "../lib/types";
-import {
-  workstreamList,
-  workstreamMerge,
-  workstreamRemove,
-  workstreamReview,
-  type ReviewTarget,
-} from "../lib/workstreams";
+import type { TerminalSessionInfo, WorkstreamInfo } from "../lib/types";
+import { workstreamList, workstreamMerge, workstreamRemove } from "../lib/workstreams";
 import { workstreamState, type WorkstreamState } from "../lib/workstream-state";
 import { ConfirmDialog } from "./ConfirmDialog";
-import {
-  IconArrowLeftToLine,
-  IconBranch,
-  IconMerge,
-  IconMore,
-  IconTerminal,
-  IconWorktree,
-} from "./icons";
+import { IconBranch, IconMore, IconTerminal, IconWorktree } from "./icons";
 
 interface ChangesRadarPaneProps {
   /** 工作区活动根（主检出）；所有 git 命令都以它为仓库边界 */
@@ -48,13 +29,11 @@ interface ChangesRadarPaneProps {
   gitTargets: Record<string, string>;
   /** 终端会话归属：判断哪个工作树在跑、谁在等用户 */
   sessions: readonly TerminalSessionInfo[];
-  /** 打开一个文件的差异视图 */
-  onOpenDiff: (path: string, source: DiffSource) => void;
   /** 切到某个目录的终端（没有就新开一个） */
   onOpenTerminal: (cwd: string) => void;
-  /** 打开全宽审阅工作台 */
-  onReview: (target: ReviewTarget) => void;
-  /** 打开完整 Git 面板（暂存 / 提交 / 时间线） */
+  /** 打开某个目录的完整 Git 面板（暂存 / 提交 / 时间线）：点行就是进它的 Git 面板 */
+  onOpenGit: (root: string, target: string) => void;
+  /** 打开完整 Git 面板（暂存 / 提交 / 时间线），不改目标 */
   onOpenAdvanced: () => void;
 }
 
@@ -131,20 +110,6 @@ function signalsOf(
   };
 }
 
-function reviewTargetOf(root: string, item: WorkstreamInfo, base: string): ReviewTarget {
-  return {
-    root,
-    path: item.kind === "branch" ? null : item.path,
-    // 游离 HEAD 没有分支名；用 HEAD 作为审阅目标，避免把目录名当成分支
-    branch: item.branch ?? (item.detached ? "HEAD" : item.name),
-    base: item.base ?? base,
-    baseSha: item.baseSha,
-    head: item.head,
-    name: item.branch ?? item.name,
-    kind: item.kind,
-  };
-}
-
 /**
  * 「变更」模块的主视图：仓库状态雷达。
  *
@@ -155,8 +120,9 @@ function reviewTargetOf(root: string, item: WorkstreamInfo, base: string): Revie
  * 顶部两个列表回答两个不同的问题：
  * - 工作树：这台机器上现在有哪些检出（含 main / master 本身），各自改了什么、谁在跑；
  * - 分支：仓库里有哪些本地分支，谁被检出、检出在哪，相对基准还差多少提交。
- * 点任一行进入面板内的详情（提交历史 + 改动文件），点文件打开差异标签；
- * 行尾主按钮切到那棵树上的终端。刻意不做分支检出，保持「面板不抢终端上下文」。
+ * 点一行直接进它的完整 Git 面板（暂存 / 提交 / 提交历史 / 储藏），不在这里再
+ * 嵌一层只读详情；行尾主按钮切到那棵树上的终端。刻意不做分支检出，保持
+ * 「面板不抢终端上下文」——未检出的分支没有目录，也就进不去 Git 面板。
  */
 export function ChangesRadarPane({
   root,
@@ -168,9 +134,8 @@ export function ChangesRadarPane({
   gitByRoot,
   gitTargets,
   sessions,
-  onOpenDiff,
   onOpenTerminal,
-  onReview,
+  onOpenGit,
   onOpenAdvanced,
 }: ChangesRadarPaneProps) {
   const [selectedRoot, setSelectedRoot] = useState(root);
@@ -179,7 +144,6 @@ export function ChangesRadarPane({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [detail, setDetail] = useState<WorkstreamInfo | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState<WorkstreamInfo | null>(null);
   const [pendingMerge, setPendingMerge] = useState<WorkstreamInfo | null>(null);
@@ -194,9 +158,8 @@ export function ChangesRadarPane({
     setSelectedRoot(root);
   }, [root]);
 
-  // 换根时退出详情：详情里的 git 命令都以旧根为边界，留着会指错仓库
+  // 换根时收起行内菜单：菜单里的操作都以旧根为边界，留着会指错仓库
   useEffect(() => {
-    setDetail(null);
     setMenu(null);
   }, [selectedRoot]);
 
@@ -373,38 +336,16 @@ export function ChangesRadarPane({
 
   const keyOf = (item: WorkstreamInfo) => item.path || item.branch || item.name;
 
-  /** 分支被某棵工作树检出时，详情 / 审阅都落到那棵树上，才看得到未提交改动 */
-  const dirOf = (item: WorkstreamInfo) =>
-    item.path || (item.branch ? (checkedOutBy.get(item.branch)?.path ?? "") : "");
-
-  const openDetail = (item: WorkstreamInfo) => {
+  /**
+   * 点一行就进它的完整 Git 面板：工作树用自己那个目录，分支用检出它的那棵树
+   * （分支没有目录时行本身不可点，所以这里一定能拿到目录）。
+   */
+  const openGit = (item: WorkstreamInfo) => {
     setMenu(null);
-    setDetail(item);
+    const dir = item.path || (item.branch ? (checkedOutBy.get(item.branch)?.path ?? "") : "");
+    if (!dir) return;
+    onOpenGit(selectedRoot, dir);
   };
-
-  if (detail) {
-    // 详情跟着轮询走：agent 还在写的时候，列表会 15 秒刷一次，详情不该停在旧快照上
-    const fresh = items.find((item) => keyOf(item) === keyOf(detail)) ?? detail;
-    // 分支若已被检出，完整审阅按那棵工作树的目标打开（能带上未提交改动）
-    const reviewItem =
-      fresh.kind === "branch"
-        ? (fresh.branch ? (checkedOutBy.get(fresh.branch) ?? fresh) : fresh)
-        : fresh;
-    return (
-      <WorkstreamDetail
-        root={selectedRoot}
-        item={fresh}
-        dir={dirOf(fresh)}
-        base={base}
-        sessions={sessions}
-        onBack={() => setDetail(null)}
-        onOpenDiff={onOpenDiff}
-        onOpenTerminal={onOpenTerminal}
-        onReview={() => onReview(reviewTargetOf(selectedRoot, reviewItem, base))}
-        onAdvanced={onOpenAdvanced}
-      />
-    );
-  }
 
   return (
     <>
@@ -478,7 +419,7 @@ export function ChangesRadarPane({
                         state={state}
                         terminals={signalsOf(sessions, item.path).terminals}
                         menuOpen={menu === keyOf(item)}
-                        onOpen={() => openDetail(item)}
+                        onOpen={() => openGit(item)}
                         onTerminal={() => onOpenTerminal(item.path)}
                         onToggleMenu={() =>
                           setMenu((current) => (current === keyOf(item) ? null : keyOf(item)))
@@ -514,7 +455,7 @@ export function ChangesRadarPane({
                       item={item}
                       state={state}
                       checkedOut={item.branch ? checkedOutBy.get(item.branch) : undefined}
-                      onOpen={() => openDetail(item)}
+                      onOpen={() => openGit(item)}
                     />
                   </li>
                 ))}
@@ -729,6 +670,9 @@ function WorktreeRow({
  *
  * 检出状态放第二行开头——第一行已经有状态标签，再塞一个「已检出」两个都看不清；
  * 第二行本来就短，放得下目录名。
+ *
+ * 点一行进的是检出它的那棵树的完整 Git 面板；未检出的分支没有工作目录，
+ * 进不去，所以那种行只作展示、不给点击反馈。
  */
 function BranchRow({
   item,
@@ -748,12 +692,8 @@ function BranchRow({
   const tone: WorkstreamState["tone"] = isBase ? "muted" : state.tone;
   const label = isBase ? "基准" : state.label;
 
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="block w-full px-2 py-1.5 text-left hover:bg-hover"
-    >
+  const body = (
+    <>
       {/* 按钮里只放行内元素：button 的内容模型是 phrasing content，塞 div 是非法结构 */}
       <span className="flex min-w-0 items-center gap-1.5">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[tone]}`} />
@@ -780,6 +720,21 @@ function BranchRow({
         {item.behind > 0 && <span className="shrink-0">↓{item.behind}</span>}
         <span className="ml-auto shrink-0">{relativeTime(item.lastCommitTime)}</span>
       </span>
+    </>
+  );
+
+  if (!checkedOut) {
+    return <div className="block w-full px-2 py-1.5 text-left">{body}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`打开 ${folderName(checkedOut.path)} 的完整 Git`}
+      className="block w-full px-2 py-1.5 text-left hover:bg-hover"
+    >
+      {body}
     </button>
   );
 }
@@ -806,245 +761,3 @@ function MenuItem({
   );
 }
 
-/** 文件状态字母的颜色。和完整 Git 面板里的标记同一套语义 */
-function statusTone(status: string): string {
-  if (status === "A" || status === "?") return "text-ok";
-  if (status === "D") return "text-danger";
-  if (status === "R" || status === "C") return "text-accent";
-  return "text-warn";
-}
-
-function SectionHeader({ label, count }: { label: string; count: number }) {
-  return (
-    <div className="flex h-7 items-center gap-2 px-3 text-[11px] font-medium tracking-wide text-fg-dim">
-      <span>{label}</span>
-      <span className="text-[10px] font-normal text-fg-faint tabular-nums">{count}</span>
-    </div>
-  );
-}
-
-/**
- * 一条工作线的详情：右栏内的一屏，不是全宽审阅工作台。
- *
- * 只回答「它改了什么、提交了哪些」：提交历史在前（agent 一轮干完最该看的是它写了
- * 什么），未提交的文件其次（那是下一轮的半成品），已提交的文件最后。
- * 点文件直接在编辑器里开差异标签，不在这里内嵌 diff——右栏宽度放不下两侧代码。
- *
- * 工作树和分支共用这一个视图：分支没被检出时 `dir` 为空，改动从仓库根上读，
- * 差异标签也落到仓库根（没有工作区就没有未提交那一节）。
- */
-function WorkstreamDetail({
-  root,
-  item,
-  dir,
-  base,
-  sessions,
-  onBack,
-  onOpenDiff,
-  onOpenTerminal,
-  onReview,
-  onAdvanced,
-}: {
-  root: string;
-  item: WorkstreamInfo;
-  /** 读改动 / 开差异的目录：工作树路径，或分支被检出时的那棵树；未检出分支为空 */
-  dir: string;
-  base: string;
-  sessions: readonly TerminalSessionInfo[];
-  onBack: () => void;
-  onOpenDiff: (path: string, source: DiffSource) => void;
-  onOpenTerminal: (cwd: string) => void;
-  onReview: () => void;
-  onAdvanced: () => void;
-}) {
-  const [review, setReview] = useState<WorkstreamReview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const signals = signalsOf(sessions, dir);
-  const state = workstreamState(item, signals);
-  const branch = item.detached ? "HEAD" : (item.branch ?? item.name);
-  const kindLabel = item.kind === "main" ? "主检出" : item.kind === "branch" ? "分支" : "工作树";
-  // 基准分支和自己零差异，说「已合并」是假话；和分支列表同一套说法
-  const isBaseBranch = item.kind === "branch" && item.base === branch;
-  const tone: WorkstreamState["tone"] = isBaseBranch ? "muted" : state.tone;
-  const stateLabel = isBaseBranch ? "基准" : state.label;
-
-  // item 每次轮询都是新对象：agent 还在写的时候详情要跟着刷新，不能停在旧快照上
-  useEffect(() => {
-    let disposed = false;
-    setReview(null);
-    setError(null);
-    workstreamReview(root, dir || null, branch, item.base ?? base)
-      .then((next) => {
-        if (!disposed) setReview(next);
-      })
-      .catch((reason) => {
-        if (!disposed) setError(String(reason));
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [base, branch, dir, item, item.base, root]);
-
-  /** 未提交文件跟 index 比；已提交文件跟基准比。两侧都要有提交号才能开 range */
-  const openFile = (file: ReviewFile) => {
-    if (file.dirty) {
-      if (!dir) return;
-      onOpenDiff(file.path, { mode: "unstaged", root: dir });
-      return;
-    }
-    if (!review?.baseSha || !review.head) return;
-    onOpenDiff(file.path, {
-      mode: "range",
-      from: review.baseSha,
-      to: review.head,
-      root: dir || undefined,
-    });
-  };
-
-  const fileRow = (file: ReviewFile) => (
-    <li key={`${file.dirty ? "d" : "c"}:${file.relative}`}>
-      <button
-        type="button"
-        onClick={() => openFile(file)}
-        className="flex w-full min-w-0 items-center gap-1.5 px-2 py-0.5 text-left hover:bg-hover"
-      >
-        <span className={`w-3 shrink-0 font-mono text-[10px] ${statusTone(file.status)}`}>
-          {file.status}
-        </span>
-        <span className="min-w-0 flex-1 truncate text-[11px] text-fg-muted">{file.relative}</span>
-        {file.additions > 0 && <span className="shrink-0 text-[10px] text-ok">+{file.additions}</span>}
-        {file.deletions > 0 && (
-          <span className="shrink-0 text-[10px] text-danger">-{file.deletions}</span>
-        )}
-      </button>
-    </li>
-  );
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-      <div className="flex shrink-0 items-center gap-1 border-b border-line px-2 py-1.5">
-        <button
-          type="button"
-          onClick={onBack}
-          title="返回列表"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-        >
-          <IconArrowLeftToLine className="h-3.5 w-3.5" />
-        </button>
-        <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
-          {item.detached ? "游离 HEAD" : (item.branch ?? item.name)}
-        </span>
-        <span className="shrink-0 rounded border border-line-strong px-1 text-[9px] leading-4 text-fg-faint">
-          {kindLabel}
-        </span>
-        <span className={`shrink-0 rounded border px-1 text-[10px] leading-4 ${CHIP[tone]}`}>
-          {stateLabel}
-        </span>
-        {dir && (
-          <button
-            type="button"
-            onClick={() => onOpenTerminal(dir)}
-            title="在这个工作树里打开终端"
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-active hover:text-fg"
-          >
-            <IconTerminal className="h-3.5 w-3.5" />
-          </button>
-        )}
-      </div>
-
-      <div className="shrink-0 border-b border-line px-3 py-2 text-[10px] text-fg-faint">
-        <div className="flex items-center gap-2">
-          <span className="min-w-0 truncate">{dir ? folderName(dir) : "未检出"}</span>
-          {signals.terminals > 0 && (
-            <span className="shrink-0 text-accent">{signals.terminals} 终端</span>
-          )}
-          <span className="ml-auto shrink-0">对比 {item.base ?? base}</span>
-        </div>
-        <div className="mt-0.5 flex items-center gap-2">
-          {review ? (
-            <>
-              <span>{review.commits.length} 提交</span>
-              <span>{review.files.length} 文件</span>
-              {review.additions > 0 && <span className="text-ok">+{review.additions}</span>}
-              {review.deletions > 0 && <span className="text-danger">-{review.deletions}</span>}
-              {review.dirtyFiles.length > 0 && (
-                <span className="text-warn">{review.dirtyFiles.length} 未提交</span>
-              )}
-            </>
-          ) : (
-            <span>正在读取改动…</span>
-          )}
-        </div>
-      </div>
-
-      {error ? (
-        <p className="px-3 py-3 text-[11px] leading-relaxed text-danger">{error}</p>
-      ) : review ? (
-        <>
-          <section className="shrink-0 border-b border-line">
-            <SectionHeader label="提交历史" count={review.commits.length} />
-            {review.commits.length === 0 ? (
-              <p className="px-3 pb-2 text-[11px] text-fg-faint">
-                {isBaseBranch ? "这是基准分支本身，没有相对自己的提交。" : "相对基准还没有提交。"}
-              </p>
-            ) : (
-              <ul className="pb-1">
-                {review.commits.map((commit) => (
-                  <li
-                    key={commit.hash}
-                    title={`${commit.author} · ${new Date(commit.time * 1000).toLocaleString()}`}
-                    className="flex min-w-0 items-baseline gap-1.5 px-3 py-0.5"
-                  >
-                    <span className="shrink-0 font-mono text-[10px] text-accent">
-                      {commit.short}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-[11px] text-fg-muted">
-                      {commit.subject}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-fg-faint">
-                      {relativeTime(commit.time)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {review.dirtyFiles.length > 0 && (
-            <section className="shrink-0 border-b border-line">
-              <SectionHeader label="未提交" count={review.dirtyFiles.length} />
-              <ul className="pb-1">{review.dirtyFiles.map(fileRow)}</ul>
-            </section>
-          )}
-
-          <section className="shrink-0">
-            <SectionHeader label="已提交" count={review.files.length} />
-            {review.files.length === 0 ? (
-              <p className="px-3 pb-2 text-[11px] text-fg-faint">相对基准还没有文件改动。</p>
-            ) : (
-              <ul className="pb-1">{review.files.map(fileRow)}</ul>
-            )}
-          </section>
-        </>
-      ) : null}
-
-      <div className="mt-auto flex shrink-0 items-center gap-1.5 border-t border-line px-2 py-1.5">
-        <button
-          type="button"
-          onClick={onReview}
-          className="flex items-center gap-1 rounded border border-line-strong px-2 py-0.5 text-[10px] text-fg-muted hover:bg-hover hover:text-fg"
-        >
-          <IconMerge className="h-3 w-3" />
-          完整审阅
-        </button>
-        <button
-          type="button"
-          onClick={onAdvanced}
-          className="ml-auto text-[10px] text-fg-faint hover:text-fg"
-        >
-          完整 Git
-        </button>
-      </div>
-    </div>
-  );
-}

@@ -128,8 +128,6 @@ pub fn run() {
             git::git_worktree_prune,
             git::git_worktree_status,
             git::workstream_list,
-            git::workstream_review,
-            git::workstream_file_hunks,
             git::workstream_merge,
             git::workstream_remove,
             git::workstream_create,

@@ -16,9 +16,7 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { ReviewWorkspace } from "./ReviewWorkspace";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
-import type { ReviewTarget } from "../lib/workstreams";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
 import { beginLayoutAnimation } from "../lib/layout-motion";
@@ -151,12 +149,6 @@ export function WorkspacePane({
   const filesRevealNonceRef = useRef(0);
   /** 已经触发过打开请求的 nonce：父级移除状态前可能多渲染一帧，别重复打开 */
   const handledOpenRequestRef = useRef(0);
-  /**
-   * 变更中心打开的审阅工作台。非空时以绝对定位盖住整个工作区，
-   * 下面的终端 / 编辑器 / 文件树保持挂载和原尺寸，关闭后原样露出。
-   */
-  const [review, setReview] = useState<ReviewTarget | null>(null);
-
   // 工作区内换了活动根（比如把另一个工作目录设为主要），右栏模块跟着换成那个根上次看的。
   // 实例不重建，所以初始值那一次不会重跑，得显式同步
   useEffect(() => {
@@ -770,7 +762,6 @@ export function WorkspacePane({
                         onOpenDiff={openDiff}
                         onOpenMatch={openMatch}
                         onPickWorktree={pickWorktree}
-                        onReview={setReview}
                         sessions={terminalSessions}
                         onOpenTerminal={openTerminalAt}
                         onBeforeReplace={saveAllEdits}
@@ -834,7 +825,6 @@ export function WorkspacePane({
                     onOpenDiff={openDiff}
                     onOpenMatch={openMatch}
                     onPickWorktree={pickWorktree}
-                    onReview={setReview}
                     sessions={terminalSessions}
                     onOpenTerminal={openTerminalAt}
                     onBeforeReplace={saveAllEdits}
@@ -917,14 +907,6 @@ export function WorkspacePane({
           </div>
         }
       />
-      {review && (
-        <ReviewWorkspace
-          target={review}
-          onClose={() => setReview(null)}
-          // 合并成功后用 focus 事件让变更中心立刻重拉，不用干等下一轮 10 秒轮询
-          onMerged={() => window.dispatchEvent(new Event("focus"))}
-        />
-      )}
     </div>
   );
 }

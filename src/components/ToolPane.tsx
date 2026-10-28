@@ -10,7 +10,6 @@ import { FilesPane } from "./FilesPane";
 import { GitChangesPane } from "./GitChangesPane";
 import { WorkflowPane } from "./WorkflowPane";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconCommit, IconRefresh } from "./icons";
-import type { ReviewTarget } from "../lib/workstreams";
 import type { TerminalSessionInfo } from "../lib/types";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
@@ -95,8 +94,6 @@ interface ToolPaneProps {
    * 传回原根（选中它自己）表示恢复默认。
    */
   onPickWorktree: (root: string, target: string) => void;
-  /** 变更雷达里点「审阅」：打开全宽审阅工作台 */
-  onReview: (target: ReviewTarget) => void;
   /** 终端会话归属：雷达据此显示哪个工作树在跑、谁在等用户 */
   sessions: readonly TerminalSessionInfo[];
   /** 雷达里点「去看」：切到该目录的终端，没有就新开一个 */
@@ -144,7 +141,6 @@ export function ToolPane({
   onOpenDiff,
   onOpenMatch,
   onPickWorktree,
-  onReview,
   sessions,
   onOpenTerminal,
   onBeforeReplace,
@@ -295,9 +291,18 @@ export function ToolPane({
             gitByRoot={gitByRoot}
             gitTargets={gitTargets}
             sessions={sessions}
-            onOpenDiff={onOpenDiff}
             onOpenTerminal={onOpenTerminal}
-            onReview={onReview}
+            onOpenGit={(targetRoot, target) => {
+              onPickWorktree(targetRoot, target);
+              // 目标根被折叠着的话先展开，否则点进去只看到一行标题
+              setCollapsedRoots((current) => {
+                if (!current.has(pathKey(targetRoot))) return current;
+                const next = new Set(current);
+                next.delete(pathKey(targetRoot));
+                return next;
+              });
+              setAdvancedOpen(true);
+            }}
             onOpenAdvanced={() => setAdvancedOpen(true)}
           />
         ) : (
