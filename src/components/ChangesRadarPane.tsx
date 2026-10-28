@@ -21,6 +21,8 @@ interface ChangesRadarPaneProps {
   moduleVisible: boolean;
   /** 标题栏刷新信号 */
   reloadSignal: number;
+  /** 手动刷新 / 首次加载的进行中状态，交给标题栏那个刷新按钮做转圈反馈 */
+  onBusyChange?: (busy: boolean) => void;
   /** 目录是不是 git 仓库；false 时给空状态 */
   gitReady: boolean;
   /** 各根的 git 控制器（2 秒轮询），比 workstream_list 新 */
@@ -130,6 +132,7 @@ export function ChangesRadarPane({
   visible,
   moduleVisible,
   reloadSignal,
+  onBusyChange,
   gitReady,
   gitByRoot,
   gitTargets,
@@ -173,9 +176,18 @@ export function ChangesRadarPane({
     if (!visible || !moduleVisible) return;
     let disposed = false;
     let inFlight = false;
-    const load = async () => {
-      if (inFlight) return;
+    /**
+     * `busy` 只标「用户看得见的那一次」：首次挂载、换根、点标题栏刷新都会重跑这个
+     * effect，那时按钮要转圈；15 秒定时器和窗口 focus 属于静默补拉，转了反而莫名其妙。
+     * 手动刷新撞上定时器在跑时也不短路——后端本来就是现算，多拉一次比让按钮没反应强。
+     */
+    const load = async (busy = false) => {
+      if (inFlight && !busy) return;
       inFlight = true;
+      if (busy) {
+        setLoading(true);
+        onBusyChange?.(true);
+      }
       try {
         const next = await workstreamList(selectedRoot);
         if (!disposed) {
@@ -186,11 +198,13 @@ export function ChangesRadarPane({
         if (!disposed) setError(String(reason));
       } finally {
         inFlight = false;
-        if (!disposed) setLoading(false);
+        if (!disposed) {
+          setLoading(false);
+          if (busy) onBusyChange?.(false);
+        }
       }
     };
-    setLoading(true);
-    void load();
+    void load(true);
     const timer = window.setInterval(() => void load(), POLL_MS);
     const onFocus = () => void load();
     window.addEventListener("focus", onFocus);
@@ -198,8 +212,10 @@ export function ChangesRadarPane({
       disposed = true;
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
+      // 面板被藏起来 / 卸载时把按钮的转圈收掉，否则会一直转下去
+      onBusyChange?.(false);
     };
-  }, [selectedRoot, visible, moduleVisible, reloadSignal]);
+  }, [selectedRoot, visible, moduleVisible, reloadSignal, onBusyChange]);
 
   useEffect(() => {
     if (!menu) return;
@@ -209,14 +225,17 @@ export function ChangesRadarPane({
   }, [menu]);
 
   const refresh = useCallback(async () => {
+    onBusyChange?.(true);
     try {
       const next = await workstreamList(selectedRoot);
       setItems(next);
       setError(null);
     } catch (reason) {
       setError(String(reason));
+    } finally {
+      onBusyChange?.(false);
     }
-  }, [selectedRoot]);
+  }, [selectedRoot, onBusyChange]);
 
   const current = useMemo(
     () => items.find((item) => item.kind === "main") ?? items[0] ?? null,

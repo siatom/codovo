@@ -173,6 +173,11 @@ export function ToolPane({
    * worktree / 储藏全重拉一遍。多根时一次刷新重载这一模块下的所有面板。
    */
   const [reloadKey, setReloadKey] = useState(0);
+  /**
+   * 雷达是不是正在拉数据。刷新按钮自己不带加载态的话，点完数据没变化就等于什么都没
+   * 发生——用户会以为按钮坏了。这里把面板的进行中状态提到标题栏，按钮跟着转圈。
+   */
+  const [radarBusy, setRadarBusy] = useState(false);
 
   const toggleRoot = (root: string) => {
     const key = pathKey(root);
@@ -273,10 +278,12 @@ export function ToolPane({
                 for (const controller of Object.values(gitByRoot)) controller.refresh();
                 setReloadKey((key) => key + 1);
               }}
-              title="刷新"
-              className={ICON_BUTTON}
+              // 拉取期间不再接受点击：重活是后端的 git status，连点只会排队
+              disabled={radarBusy}
+              title={radarBusy ? "正在刷新…" : "刷新"}
+              className={`${ICON_BUTTON} disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent`}
             >
-              <IconRefresh className="h-3.5 w-3.5" />
+              <IconRefresh className={`h-3.5 w-3.5${radarBusy ? " animate-spin" : ""}`} />
             </button>
           </div>
         </div>
@@ -287,6 +294,7 @@ export function ToolPane({
             visible={visible}
             moduleVisible={changesVisible}
             reloadSignal={reloadKey}
+            onBusyChange={setRadarBusy}
             gitReady={gitReady}
             gitByRoot={gitByRoot}
             gitTargets={gitTargets}
