@@ -66,14 +66,6 @@ import {
   installDependency,
   type DependencyStatus,
 } from "../lib/installer";
-import {
-  listAgentSessions,
-  reconcileControlPlane,
-  scanAgentRegistry,
-  type AgentInstallation,
-  type AgentSessionRecord,
-} from "../lib/control-plane";
-import { listGoals, listTasks, listRuns, listVerifications, upsertGoal, upsertTask, type Goal, type Task, type TaskRun, type Verification } from "../lib/task-plane";
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
@@ -2051,16 +2043,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   /** 编程 Agent 的安装状态，key 见 lib/agents.ts 的 catalogStatusId / commandStatusId */
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentCliStatus>>({});
   const [checkingAgents, setCheckingAgents] = useState(true);
-  const [controlInstallations, setControlInstallations] = useState<AgentInstallation[]>([]);
-  const [controlSessions, setControlSessions] = useState<AgentSessionRecord[]>([]);
-  const [checkingControlPlane, setCheckingControlPlane] = useState(false);
-  const [m2Goals, setM2Goals] = useState<Goal[]>([]);
-  const [m2Tasks, setM2Tasks] = useState<Task[]>([]);
-  const [m2Title, setM2Title] = useState("");
-  const [m2GoalTitle, setM2GoalTitle] = useState("");
-  const [m2SelectedTask, setM2SelectedTask] = useState<string | null>(null);
-  const [m2Runs, setM2Runs] = useState<TaskRun[]>([]);
-  const [m2Verifications, setM2Verifications] = useState<Verification[]>([]);
   /** 已配置 Agent 的手风琴：一次只展开一条 */
   const [openAgent, setOpenAgent] = useState<number | null>(null);
   /** 检测批次的序号，用来丢掉过期结果 */
@@ -2096,7 +2078,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   const rightVisible: Record<ToolId, boolean> = {
     files: settings.rightFilesVisible,
     changes: settings.rightChangesVisible,
-    workflow: settings.rightWorkflowVisible,
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
@@ -2169,26 +2150,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     }
   };
 
-  const refreshControlPlane = async () => {
-    setCheckingControlPlane(true);
-    try {
-      const installations = await scanAgentRegistry(
-        AGENT_CATALOG.map((item) => ({
-          id: item.key,
-          commands: [item.command, ...item.aliases],
-        })),
-      );
-      await reconcileControlPlane();
-      const sessions = await listAgentSessions();
-      setControlInstallations(installations);
-      setControlSessions(sessions);
-    } catch {
-      // 控制面状态只是诊断信息，不能阻塞已有的 Agent 设置和 PTY。
-    } finally {
-      setCheckingControlPlane(false);
-    }
-  };
-
   // 命令文本变了才需要重新探测：改名、改环境变量都不影响可执行文件在不在。
   // 防抖是为了不在输入命令时每敲一个字就起一批子进程；打开设置面板也会走这一趟。
   const agentCommandSignature = settings.aiCommands
@@ -2198,32 +2159,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     const timer = window.setTimeout(() => void refreshAgents(), 500);
     return () => window.clearTimeout(timer);
   }, [agentCommandSignature]);
-
-  useEffect(() => {
-    if (tab !== "agents") return;
-    void refreshControlPlane();
-  }, [tab]);
-
-  const refreshM2 = async () => {
-    try {
-      const goals = await listGoals();
-      setM2Goals(goals);
-      setM2Tasks(await listTasks(goals[0]?.id));
-    } catch {
-      // 控制面尚未初始化时，设置页仍可正常使用。
-    }
-  };
-
-  const openM2Task = async (task: Task) => {
-    setM2SelectedTask(task.id);
-    const runs = await listRuns(task.id);
-    setM2Runs(runs);
-    setM2Verifications(runs[0] ? await listVerifications(runs[0].id) : []);
-  };
-
-  useEffect(() => {
-    if (tab === "agents") void refreshM2();
-  }, [tab]);
 
   // ---- 模型提供商 ----
 
@@ -2695,14 +2630,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                         onChange={(rightChangesVisible) => update({ rightChangesVisible })}
                       />
                     </Row>
-                    <Row label="工作流" hint="目标、任务 DAG、Agent 执行、验收与提案审批">
-                      <BoolToggle
-                        value={settings.rightWorkflowVisible}
-                        options={VISIBLE_OPTIONS}
-                        disabledValue={lastVisible === "workflow" ? false : undefined}
-                        onChange={(rightWorkflowVisible) => update({ rightWorkflowVisible })}
-                      />
-                    </Row>
                     <Row label="浏览器">
                       <BoolToggle
                         value={settings.rightBrowserVisible}
@@ -3136,131 +3063,6 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                     />
                   </Section>
 
-                  <Section
-                    title="M1 控制面"
-                    hint="Registry、Profile 和 Native Session 的平台状态；未知能力不会被显示为已支持"
-                    action={
-                      <button
-                        type="button"
-                        onClick={() => void refreshControlPlane()}
-                        disabled={checkingControlPlane}
-                        title="刷新控制面状态"
-                        className={HEAD_ACTION + " disabled:opacity-40"}
-                      >
-                        <IconRefresh className={checkingControlPlane ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
-                      </button>
-                    }
-                  >
-                    <div className="flex w-full flex-col gap-2">
-                      {controlInstallations.length === 0 ? (
-                        <p className="text-[11px] text-fg-faint">尚未完成控制面探测</p>
-                      ) : (
-                        controlInstallations.map((installation) => (
-                          <div key={installation.adapterId} className="flex items-center justify-between rounded-md border border-line px-3 py-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-[12px] text-fg">{installation.adapterId}</p>
-                              <p className="truncate text-[10px] text-fg-faint">
-                                {installation.version ?? "版本未知"} · {installation.supportedModes.join(", ")}
-                              </p>
-                            </div>
-                            <span className={installation.auth === "unavailable" ? "text-[10px] text-fg-faint" : "text-[10px] text-amber-500"}>
-                              {installation.auth === "unavailable" ? "未安装" : "认证未核实"}
-                            </span>
-                          </div>
-                        ))
-                      )}
-                      <div className="flex items-center justify-between border-t border-line pt-2 text-[11px] text-fg-faint">
-                        <span>Native Session</span>
-                        <span>{controlSessions.length} 条</span>
-                      </div>
-                      {controlSessions.slice(0, 3).map((session) => (
-                        <div key={session.id} className="flex items-center justify-between text-[11px] text-fg-muted">
-                          <span className="truncate">{session.nativeSessionId ?? session.id}</span>
-                          <span className="ml-2 shrink-0">{session.status}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </Section>
-
-                  <Section
-                    title="M2 任务"
-                    hint="手工 Goal/Task 与 Proposal 的基础看板；任务状态仍由后端状态机校验"
-                    action={
-                      <button
-                        type="button"
-                        onClick={() => void refreshM2()}
-                        title="刷新任务"
-                        className={HEAD_ACTION}
-                      >
-                        <IconRefresh className="h-3.5 w-3.5" />
-                      </button>
-                    }
-                  >
-                    <div className="flex w-full flex-col gap-2">
-                      <div className="flex gap-2">
-                        <input
-                          value={m2GoalTitle}
-                          onChange={(event) => setM2GoalTitle(event.target.value)}
-                          placeholder="新 Goal 标题"
-                          className={TEXT_INPUT}
-                        />
-                        <button
-                          type="button"
-                          className={BUTTON}
-                          onClick={async () => {
-                            if (!m2GoalTitle.trim()) return;
-                            await upsertGoal({ title: m2GoalTitle.trim() });
-                            setM2GoalTitle("");
-                            await refreshM2();
-                          }}
-                        >
-                          <IconPlus className="h-3 w-3" /> Goal
-                        </button>
-                      </div>
-                      {m2Goals.slice(0, 3).map((goal) => (
-                        <div key={goal.id} className="rounded-md border border-line px-3 py-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] text-fg">{goal.title}</span>
-                            <span className="text-[10px] text-fg-faint">{goal.status}</span>
-                          </div>
-                          <div className="mt-2 flex gap-2">
-                            <input
-                              value={m2Title}
-                              onChange={(event) => setM2Title(event.target.value)}
-                              placeholder="新 Task 标题"
-                              className={TEXT_INPUT}
-                            />
-                            <button
-                              type="button"
-                              className={BUTTON}
-                              onClick={async () => {
-                                if (!m2Title.trim()) return;
-                                await upsertTask({ goalId: goal.id, title: m2Title.trim() });
-                                setM2Title("");
-                                await refreshM2();
-                              }}
-                            >
-                              <IconPlus className="h-3 w-3" /> Task
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                      {m2Tasks.slice(0, 8).map((task) => (
-                        <button key={task.id} type="button" onClick={() => void openM2Task(task)} className="flex items-center justify-between border-b border-line py-1 text-left text-[11px] hover:bg-active">
-                          <span className="truncate text-fg-muted">{task.title}</span>
-                          <span className="ml-2 shrink-0 text-fg-faint">{task.status}</span>
-                        </button>
-                      ))}
-                      {m2SelectedTask && (
-                        <div className="mt-1 rounded-md border border-line bg-surface-raised px-3 py-2 text-[10px] text-fg-faint">
-                          <div className="flex items-center justify-between"><span>Run 历史</span><span>{m2Runs.length} 次</span></div>
-                          {m2Runs.slice(0, 3).map((run) => <div key={run.id} className="mt-1 flex justify-between"><span>#{run.attemptNo} · {run.status}</span><span>{run.finalSha?.slice(0, 8) ?? "无 final SHA"}</span></div>)}
-                          {m2Verifications.length > 0 && <div className="mt-2 border-t border-line pt-1">验收：{m2Verifications.map((item) => `${item.kind}/${item.status}`).join("、")}</div>}
-                        </div>
-                      )}
-                      {m2Goals.length === 0 && <p className="text-[11px] text-fg-faint">还没有 Goal</p>}
-                    </div>
-                  </Section>
                 </>
               )}
 

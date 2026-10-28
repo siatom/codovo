@@ -8,16 +8,15 @@ import { matchesShortcut } from "../lib/shortcuts";
 import { ChangesRadarPane } from "./ChangesRadarPane";
 import { FilesPane } from "./FilesPane";
 import { GitChangesPane } from "./GitChangesPane";
-import { WorkflowPane } from "./WorkflowPane";
 import { IconChevronDown, IconChevronLeft, IconChevronRight, IconCommit, IconRefresh } from "./icons";
 import type { TerminalSessionInfo } from "../lib/types";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
-export type ToolId = "files" | "changes" | "workflow" | "browser" | "remote" | "database" | "preview" | "deploy";
+export type ToolId = "files" | "changes" | "browser" | "remote" | "database" | "preview" | "deploy";
 
 const TOOL_KEY = "codovo.rightTool.";
 
-const TOOLS: ToolId[] = ["files", "changes", "workflow", "browser", "remote", "database", "preview", "deploy"];
+const TOOLS: ToolId[] = ["files", "changes", "browser", "remote", "database", "preview", "deploy"];
 
 /** 标题栏图标按钮的样式，和「文件」模块标题栏那几个按钮一致 */
 const ICON_BUTTON =
@@ -378,9 +377,6 @@ export function ToolPane({
         })}
           </div>
         )}
-      </div>
-      <div className={tool === "workflow" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <WorkflowPane root={activeRoot} visible={visible && tool === "workflow"} />
       </div>
     </section>
   );

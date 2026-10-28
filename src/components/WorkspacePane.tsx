@@ -238,7 +238,6 @@ export function WorkspacePane({
   const toolVisible: Record<ToolId, boolean> = {
     files: settings.rightFilesVisible,
     changes: settings.rightChangesVisible,
-    workflow: settings.rightWorkflowVisible,
     browser: settings.rightBrowserVisible,
     remote: settings.rightRemoteVisible,
     database: settings.rightDatabaseVisible,
@@ -729,7 +728,6 @@ export function WorkspacePane({
                     activeTool !== "browser" &&
                     activeTool !== "remote" &&
                     activeTool !== "database" &&
-                    activeTool !== "workflow" &&
                     activeTool !== "preview" &&
                     activeTool !== "deploy"
                       ? "flex min-h-0 min-w-0 flex-1"
@@ -798,42 +796,6 @@ export function WorkspacePane({
                         onOpenSettings={onOpenSettings}
                       />
                     }
-                  />
-                </div>
-                <div
-                  className={
-                    activeTool === "workflow"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <ToolPane
-                    tool={activeTool}
-                    roots={workspace.roots}
-                    activeRoot={root}
-                    visible={visible}
-                    filesVisible={filesVisible}
-                    changesVisible={changesVisible}
-                    selected={activeTab?.kind === "file" ? activeTab.path : null}
-                    gitByRoot={gitByRoot}
-                    gitTargets={wtMap}
-                    gitMarks={git.marks}
-                    gitReady={gitReady}
-                    onSelectFile={openFile}
-                    onOpenInBrowser={openInBrowser}
-                    onFormatFile={formatFile}
-                    onOpenDiff={openDiff}
-                    onOpenMatch={openMatch}
-                    onPickWorktree={pickWorktree}
-                    sessions={terminalSessions}
-                    onOpenTerminal={openTerminalAt}
-                    onBeforeReplace={saveAllEdits}
-                    onAfterReplace={reloadAfterReplace}
-                    onBeforeRename={saveAllEdits}
-                    onEntryRenamed={renameOpenTabs}
-                    onEntryDeleted={dropOpenTabs}
-                    onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
-                    filesReveal={filesReveal}
                   />
                 </div>
                 <div

@@ -10,7 +10,6 @@ import {
   IconPlay,
   IconRocket,
   IconServer,
-  IconTarget,
 } from "./icons";
 
 /** 和左侧栏收起时同宽，两条竖栏看起来才是一套。
@@ -35,7 +34,6 @@ const BUTTON_ON = "bg-selected text-fg";
 export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[] = [
   { id: "files", label: "文件", Icon: IconFile },
   { id: "changes", label: "变更", Icon: IconBranch },
-  { id: "workflow", label: "工作流", Icon: IconTarget },
   { id: "browser", label: "浏览器", Icon: IconGlobe },
   { id: "remote", label: "远程连接", Icon: IconServer },
   { id: "database", label: "数据库", Icon: IconDatabase },

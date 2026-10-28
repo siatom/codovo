@@ -5,9 +5,7 @@ mod agent_config;
 mod ai;
 mod app_agent;
 mod cicd;
-mod control_plane;
 mod agent_protocol;
-mod adapters;
 mod cli_sessions;
 mod database;
 mod db_agent;
@@ -24,8 +22,6 @@ mod preview_agent;
 mod pty;
 mod remote;
 mod runtime;
-mod orchestration;
-mod task_plane;
 mod secrets;
 mod shell_env;
 mod shells;
@@ -71,19 +67,10 @@ pub fn run() {
         .manage(database::DbState::new())
         .manage(preview::PreviewState::new())
         .manage(cicd::CicdState::new())
-        .manage(control_plane::ControlPlaneState::new())
         .manage(runtime::RuntimeState::new())
         .setup(|app| {
             // 托盘是「关掉窗口后还能回来」的唯一入口，起不来就没法后台常驻了
             tray::init(app.handle())?;
-            // 应用重启后先把上次未收敛的运行状态标为 unknown，避免 UI 误判为仍在运行。
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Some(state) = handle.try_state::<control_plane::ControlPlaneState>() {
-                    let _ = state.mark_unknown(&handle).await;
-                    let _ = task_plane::initialize(&state, &handle).await;
-                }
-            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -241,17 +228,6 @@ pub fn run() {
             cicd::cicd_run,
             cicd::cicd_stop,
             cicd::cicd_status,
-            control_plane::control_registry_scan,
-            control_plane::control_registry_list,
-            control_plane::control_profile_list,
-            control_plane::control_profile_upsert,
-            control_plane::control_profile_delete,
-            control_plane::control_session_create,
-            control_plane::control_session_list,
-            control_plane::control_session_update_status,
-            control_plane::control_event_record,
-            control_plane::control_event_list,
-            control_plane::control_reconcile,
             runtime::runtime_start,
             runtime::runtime_cancel,
             runtime::runtime_stop,
@@ -261,44 +237,6 @@ pub fn run() {
             agent_protocol::protocol_resource_conflicts,
             agent_protocol::protocol_index_workspace_resources,
             agent_protocol::protocol_sanitize_diagnostics,
-            adapters::adapter_catalog,
-            adapters::adapter_capability_summary,
-            adapters::adapter_start,
-            adapters::adapter_normalize_output,
-            orchestration::orchestration_validate_plan,
-            orchestration::orchestration_ready_candidates,
-            orchestration::orchestration_schedule,
-            orchestration::orchestration_store_plan,
-            orchestration::orchestration_load_plan,
-            orchestration::orchestration_workflow_transition,
-            orchestration::orchestration_dedupe,
-            orchestration::orchestration_handoff,
-            orchestration::orchestration_verify,
-            orchestration::orchestration_policy_default,
-            task_plane::task_goal_upsert,
-            task_plane::task_goal_list,
-            task_plane::task_milestone_upsert,
-            task_plane::task_milestone_list,
-            task_plane::task_upsert,
-            task_plane::task_list,
-            task_plane::task_transition,
-            task_plane::task_dependency_add,
-            task_plane::task_dependency_list,
-            task_plane::proposal_create,
-            task_plane::proposal_from_session,
-            task_plane::proposal_list,
-            task_plane::proposal_decide,
-            task_plane::task_run_start,
-            task_plane::task_run_list,
-            task_plane::task_run_finish,
-            task_plane::verification_record,
-            task_plane::verification_list,
-            task_plane::project_upsert,
-            task_plane::repository_register,
-            task_plane::repository_list,
-            task_plane::worktree_lease_acquire,
-            task_plane::worktree_lease_release,
-            task_plane::worktree_lease_list,
             agent_config::agent_config_read,
             agent_config::agent_config_write,
             tray::app_quit,
