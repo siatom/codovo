@@ -12,7 +12,6 @@ import {
   type AttentionKind,
   type AttentionMap,
 } from "../lib/attention";
-import { readCliChoice, saveCliChoice } from "../lib/cli-sessions";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import {
   alignToDevice,
@@ -22,11 +21,12 @@ import {
 import type { Workspace } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
-import { CliHistory } from "./CliHistory";
 import { FeedbackDialog } from "./FeedbackDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import {
   IconAlert,
+  IconChevronDown,
+  IconChevronRight,
   IconClose,
   IconExternalLink,
   IconFeedback,
@@ -45,13 +45,14 @@ import {
   IconSun,
   IconTrash,
 } from "./icons";
+import { WorkspaceHistory } from "./WorkspaceHistory";
 
 interface SidebarProps {
   /** 全部工作区，按存储顺序（新建的插在最前）；列表展示时另行按置顶 + 最近活动排序 */
   workspaces: Workspace[];
   /** 当前工作区的 id；null 表示还没选 */
   currentId: string | null;
-  /** 当前工作区的活动根。会话历史 / 设置 / CLI 选择这些还按根记的东西用它 */
+  /** 当前工作区的活动根。意见反馈这类还按根记的东西用它 */
   activeRoot: string | null;
   /** 已经打开（挂着工作区实例、后台仍在跑）的工作区 id，用来在列表里点出「已打开」 */
   opened: string[];
@@ -67,8 +68,11 @@ interface SidebarProps {
   onClose: (workspace: Workspace) => void;
   /** 切换置顶：置顶的工作区排在列表最前 */
   onTogglePin: (workspace: Workspace) => void;
-  /** 点一条 CLI 会话历史：由 App 转成"新开终端标签跑 resume"，title 作新标签的标题 */
-  onResumeSession: (command: string, title: string) => void;
+  /**
+   * 点一条对话历史：由 App 切到这条记录所属的工作区（不是当前的就先打开），
+   * 再新开一个终端标签跑 resume。title 作新标签的标题
+   */
+  onResumeSession: (workspace: Workspace, command: string, title: string) => void;
   /** 点「在等用户」的提示：由 App 切到该工作区并选中对应的标签 / 会话 */
   onFocusAttention: (workspace: Workspace, target: string) => void;
   /** 打开「应用助手」：由 App 展开右栏的助手抽屉 */
@@ -286,8 +290,8 @@ export function Sidebar({
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
   /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
   const [menu, setMenu] = useState<{ workspace: Workspace; x: number; y: number } | null>(null);
-  /** 底部会话历史里当前选的是哪条命令；按活动根记住 */
-  const [cliChoice, setCliChoice] = useState(() => readCliChoice(activeRoot));
+  /** 展开了对话历史的工作区 id。只存内存：切走工作区也留着，重启从收起开始 */
+  const [expanded, setExpanded] = useState<string[]>([]);
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
 
@@ -296,21 +300,10 @@ export function Sidebar({
   const attentionByRoot = useAttentionAll();
   // 「最近活动」时间（终端 / 助手用过才算）。工作区行按它排序，取全局那一份
   const activityByRoot = useActivityAll();
-  // 空命令是用户在设置里加了还没填的，不进菜单
+  // 空命令是用户在设置里加了还没填的，不进菜单；对话历史也按它决定 resume 走哪条命令
   const aiCommands = settings.aiCommands
     .map((item) => ({ ...item, name: item.name.trim(), command: item.command.trim() }))
     .filter((item) => item.command);
-
-  // 底部会话历史选中的命令。存的那条可能已经从设置里删掉了，回落第一条
-  const activeCliCommand =
-    aiCommands.find((item) => item.command === cliChoice)?.command ??
-    aiCommands[0]?.command ??
-    "";
-
-  // 换工作区要跟着换回这个工作区上次选的 CLI
-  useEffect(() => {
-    setCliChoice(readCliChoice(activeRoot));
-  }, [activeRoot]);
 
   // 工作区只剩 1 个时过滤入口（图标 / 输入框）会因长度不足被卸载，残留的过滤词会把
   // 列表卡在「没有匹配的工作区」且没有任何清除入口。数量不够就直接复位过滤态。
@@ -326,10 +319,11 @@ export function Sidebar({
     if (collapsed) setMenu(null);
   }, [collapsed]);
 
-  /** 选 CLI：改状态并按活动根落盘。工作区行的 + 和底部选择器共用它 */
-  const pickCli = (command: string) => {
-    setCliChoice(command);
-    saveCliChoice(activeRoot, command);
+  /** 展开 / 收起某个工作区的对话历史。多个工作区可以同时展开 */
+  const toggleHistory = (id: string) => {
+    setExpanded((list) =>
+      list.includes(id) ? list.filter((item) => item !== id) : [...list, id],
+    );
   };
 
   /*
@@ -492,6 +486,8 @@ export function Sidebar({
             const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
             // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
             const waiting = firstWaitingTarget(attentionByRoot, workspace);
+            /** 这一行的对话历史是否展开 */
+            const historyOpen = expanded.includes(workspace.id);
             const waitingTitle =
               waiting?.kind === "done"
                 ? "有 AI 会话任务已完成，点击跳过去"
@@ -501,6 +497,26 @@ export function Sidebar({
                 {/* 选中底色罩住整项（含下面的对话历史），不然高亮会在中间断掉 */}
                 <div className={`group rounded-lg ${isCurrent ? "bg-selected" : ""}`}>
                   <div className={`${ROW} ${isCurrent ? "text-fg" : ""}`}>
+                    {/* 展开对话历史的箭头。平时藏起来，悬停这一行才出现——每个工作区都
+                        挂一个常显的箭头太吵；展开后一直亮着，也顺手当收起入口。
+                        pointer-events 跟着显隐走，免得点到看不见的按钮 */}
+                    <button
+                      type="button"
+                      onClick={() => toggleHistory(workspace.id)}
+                      title={historyOpen ? "收起对话历史" : "展开对话历史"}
+                      aria-expanded={historyOpen}
+                      className={`-ml-1.5 flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-fg ${
+                        historyOpen
+                          ? "opacity-100"
+                          : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                      }`}
+                    >
+                      {historyOpen ? (
+                        <IconChevronDown className="h-3 w-3" />
+                      ) : (
+                        <IconChevronRight className="h-3 w-3" />
+                      )}
+                    </button>
                     <button
                       type="button"
                       onClick={() => onSelect(workspace)}
@@ -575,22 +591,23 @@ export function Sidebar({
                       </button>
                     </div>
                   </div>
+                  {/* 展开的对话历史：这个工作区里各家 AI CLI 的会话按时间合并成一条列表 */}
+                  {historyOpen && (
+                    <div className="pr-1 pl-7">
+                      <WorkspaceHistory
+                        roots={workspace.roots}
+                        commands={aiCommands}
+                        onResume={(command, title) =>
+                          onResumeSession(workspace, command, title)
+                        }
+                      />
+                    </div>
+                  )}
                 </div>
               </li>
             );
           })}
         </ul>
-
-        {/* 当前 AI CLI 的会话历史。启动 CLI 在中间区顶栏，这里只负责翻历史、点一条 resume */}
-        {activeRoot && aiCommands.length > 0 && (
-          <CliHistory
-            cwd={activeRoot}
-            commands={aiCommands}
-            value={activeCliCommand}
-            onChange={pickCli}
-            onResume={onResumeSession}
-          />
-        )}
 
         {/* 展开态两个按钮横着排：竖排要吃掉一截高度，白白挤掉下面工作区列表的空间 */}
         <footer className="flex shrink-0 items-center gap-1 border-t border-line px-2 py-2">

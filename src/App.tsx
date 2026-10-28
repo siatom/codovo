@@ -237,15 +237,6 @@ function Shell() {
     handlesRef.current.set(workspaceId, handles);
   }, []);
 
-  /**
-   * 侧栏底部点了某条 CLI 历史会话：新开一个终端标签跑 resume，不动正在用的那个。
-   * `title`（被恢复会话的标题）作新标签的标题
-   */
-  const resumeSession = useCallback((command: string, title: string) => {
-    if (!activeIdRef.current) return;
-    handlesRef.current.get(activeIdRef.current)?.terminal?.runInNewSession(command, title);
-  }, []);
-
   /** 编辑器浮窗「送给助手」：展开抽屉并把位置引用插进它的输入框 */
   const openAssistantAt = useCallback((location?: EditorLocation) => {
     setAssistantOpen(true);
@@ -285,6 +276,31 @@ function Shell() {
       return null;
     }
   }, []);
+
+  /**
+   * 侧栏工作区下点了某条对话历史：切到那个工作区（没打开就先打开），再新开一个终端
+   * 标签跑 resume，不动正在用的那个。`title`（被恢复对话的标题）作新标签的标题
+   */
+  const resumeSession = useCallback(
+    async (workspace: Workspace, command: string, title: string) => {
+      if (activeIdRef.current !== workspace.id) {
+        const next = await openWorkspace(workspace);
+        // 目录打不开时 openWorkspace 已经提示过，这里不再往下走
+        if (!next) return;
+      }
+      // 刚打开的工作区要等实例挂载完才把终端 handle 交回来，给它几帧；
+      // 等不到就作罢——不弹错，用户再点一次即可
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const terminal = handlesRef.current.get(workspace.id)?.terminal;
+        if (terminal) {
+          terminal.runInNewSession(command, title);
+          return;
+        }
+        await new Promise<void>((resolve) => window.setTimeout(() => resolve(), 50));
+      }
+    },
+    [openWorkspace],
+  );
 
   /**
    * 侧栏点了「在等用户」的提示：切到那个工作区，并选中对应的标签 / 会话。
