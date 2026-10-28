@@ -67,7 +67,10 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
     const silent = pollRef.current;
     pollRef.current = false;
     if (!silent) setItems(null);
-    void listWorkspaceHistory(roots, commands).then((list) => {
+    void listWorkspaceHistory(roots, commands, (partial) => {
+      // 谁先回来先画谁：等 opencode 那种要起子进程的一家，整块列表会被拖住
+      if (!cancelled && partial.length > 0) setItems(partial);
+    }).then((list) => {
       // 丢掉作废请求的迟到结果（换工作区 / 收起再展开时旧的慢请求可能后回来）
       if (!cancelled) setItems(list);
     });

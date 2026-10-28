@@ -120,6 +120,8 @@ const HISTORY_LIMIT = 20;
 export async function listWorkspaceHistory(
   roots: string[],
   commands: AiCommand[],
+  /** 每回来一家就调一次，先用已有结果画出来，别等最慢的那家 */
+  onPartial?: (entries: CliHistoryEntry[]) => void,
 ): Promise<CliHistoryEntry[]> {
   const jobs: Promise<CliHistoryEntry[]>[] = [];
   for (const provider of CLI_PROVIDERS) {
@@ -142,9 +144,24 @@ export async function listWorkspaceHistory(
       );
     }
   }
-  const merged = (await Promise.all(jobs)).flat();
-  merged.sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
-  return merged.slice(0, HISTORY_LIMIT);
+
+  const parts: CliHistoryEntry[][] = [];
+  const merged = () => {
+    const all = parts.flat();
+    all.sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
+    return all.slice(0, HISTORY_LIMIT);
+  };
+  await Promise.all(
+    jobs.map((job, index) =>
+      job.then((list) => {
+        parts[index] = list;
+        // opencode 那一支要起子进程，慢的时候几秒；等它一家会把整块列表拖住，
+        // 所以谁先回来先把谁画出来
+        onPartial?.(merged());
+      }),
+    ),
+  );
+  return merged();
 }
 
 /**

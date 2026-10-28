@@ -16,6 +16,9 @@ use crate::pty::home_dir;
 /// 绝不读整个文件——本机有 4.3MB 的会话，一百多个文件全读是几十 MB。
 const HEAD_BYTES: u64 = 128 * 1024;
 
+/// 先探开头这一小段找 cwd。cwd 一般写在第一条记录里，8KB 够；够不着再退回整段。
+const PEEK_BYTES: u64 = 8 * 1024;
+
 /// 返回条数上限。侧边栏那块地方只放得下十来条，剩下的靠滚动，
 /// 同时兜住"某个项目目录里堆了几百个会话"的情况。
 const MAX_SESSIONS: usize = 50;
@@ -294,17 +297,18 @@ struct HeadScan {
 /// 抽出来是为了能在单测里直接造夹具验证过滤与排序规则（同 fs_api::list_entries）。
 fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSession> {
     let target = cwd_key(cwd);
-    let mut found = Vec::new();
     // 目录不存在 = 没装过 / 没跑过这个 CLI，是正常情况
     let Ok(entries) = fs::read_dir(projects) else {
-        return found;
+        return Vec::new();
     };
 
+    // 先把候选文件连 mtime 一起收齐：目录遍历没法并行，读文件可以
+    let mut files: Vec<(PathBuf, u64)> = Vec::new();
     // 布局固定是 <项目目录>/<会话 id>.jsonl，只扫两层。旁边的 <id>/tool-results/、
     // memory/ 这些目录被"只认 .jsonl 文件"挡在外面
     for entry in entries.flatten() {
         let dir = entry.path();
-        let files: Vec<PathBuf> = if provider == "codex" {
+        let batch: Vec<PathBuf> = if provider == "codex" {
             let mut paths = Vec::new();
             collect_jsonl_files(&dir, &mut paths);
             paths
@@ -314,7 +318,7 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
             };
             entries.flatten().map(|file| file.path()).collect()
         };
-        for path in files {
+        for path in batch {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
@@ -325,33 +329,74 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
             if !meta.is_file() || meta.len() == 0 {
                 continue;
             }
-            let Some(head) = read_head(&path) else {
-                continue;
-            };
-            let Some(scan) = scan_head(&head, provider) else {
-                continue;
-            };
-            // 按 cwd 字段正向匹配。不去反算 slug——slug 有损，路径里本身的 '-'
-            // 和分隔符是撞的，各家 CLI 的规则还不一样
-            if cwd_key(&scan.cwd) != target {
-                continue;
-            }
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            found.push(CliSession {
-                id: scan.id.as_deref().unwrap_or(id).to_string(),
-                title: scan.title,
-                updated: mtime_ms(&meta),
-                cwd: scan.cwd,
-            });
+            files.push((path, mtime_ms(&meta)));
         }
     }
+
+    // 读文件按 CPU 数切片并行：几百个会话时单线程光读文件头就要几百毫秒
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4)
+        .min(8);
+    let chunk = files.len().div_ceil(workers).max(1);
+    let mut found = Vec::new();
+    std::thread::scope(|scope| {
+        // 借出去而不是搬进去：每个线程都要用同一个目标目录
+        let target = &target;
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|slice| {
+                scope.spawn(move || {
+                    let mut out = Vec::new();
+                    for (path, updated) in slice {
+                        if let Some(session) = read_session(path, provider, target, *updated) {
+                            out.push(session);
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        for handle in handles {
+            // 某个线程 panic 了就只丢它那一份，别把整个列表变成空
+            if let Ok(part) = handle.join() {
+                found.extend(part);
+            }
+        }
+    });
 
     // 最近活动的在前；同毫秒并列时按 id 兜底，保证同样的磁盘状态给出同样的顺序
     found.sort_by(|a, b| b.updated.cmp(&a.updated).then_with(|| a.id.cmp(&b.id)));
     found.truncate(MAX_SESSIONS);
     found
+}
+
+/// 读一个会话文件，cwd 对不上就返回 None。
+///
+/// 先只读开头一小段找 cwd：绝大多数文件属于别的项目，到此为止就够了（128KB 全读
+/// 一遍的话，几百个会话就是几十 MB）。命中的才读满 HEAD_BYTES 去抠标题。
+///
+/// 开头这段没读出 cwd（第一条就是一大段粘贴内容之类）时退回整段重扫，别漏掉会话。
+fn read_session(path: &Path, provider: &str, target: &str, updated: u64) -> Option<CliSession> {
+    if let Some(scan) = read_prefix(path, PEEK_BYTES).and_then(|peek| scan_head(&peek, provider)) {
+        // 按 cwd 字段正向匹配。不去反算 slug——slug 有损，路径里本身的 '-'
+        // 和分隔符是撞的，各家 CLI 的规则还不一样
+        if cwd_key(&scan.cwd) != target {
+            return None;
+        }
+    }
+    let head = read_head(path)?;
+    let scan = scan_head(&head, provider)?;
+    if cwd_key(&scan.cwd) != target {
+        return None;
+    }
+    let id = path.file_stem().and_then(|stem| stem.to_str())?;
+    Some(CliSession {
+        id: scan.id.as_deref().unwrap_or(id).to_string(),
+        title: scan.title,
+        updated,
+        cwd: scan.cwd,
+    })
 }
 
 fn collect_jsonl_files(path: &Path, output: &mut Vec<PathBuf>) {
@@ -369,13 +414,18 @@ fn collect_jsonl_files(path: &Path, output: &mut Vec<PathBuf>) {
 }
 
 fn read_head(path: &Path) -> Option<String> {
+    read_prefix(path, HEAD_BYTES)
+}
+
+/// 读文件开头最多 `limit` 字节。
+///
+/// 用 lossy 而不是严格 UTF-8：截断处可能刚好落在多字节序列中间，替换成 U+FFFD
+/// 就行——那一行本来就是半行，JSON 解析必然失败被跳过，前面完整的行不受影响。
+fn read_prefix(path: &Path, limit: u64) -> Option<String> {
     // take() 按值吃掉 file，所以不用 mut
     let file = fs::File::open(path).ok()?;
-    let mut buf = Vec::with_capacity(HEAD_BYTES as usize);
-    file.take(HEAD_BYTES).read_to_end(&mut buf).ok()?;
-    // 用 lossy 而不是严格 UTF-8：截断处可能刚好落在多字节序列中间，
-    // 替换成 U+FFFD 就行——那一行本来就是半行，JSON 解析必然失败被跳过，
-    // 前面完整的行不受影响
+    let mut buf = Vec::with_capacity(limit as usize);
+    file.take(limit).read_to_end(&mut buf).ok()?;
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
