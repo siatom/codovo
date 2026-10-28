@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
@@ -40,9 +40,32 @@ function buildStamp(): string {
 
 const stamp = buildStamp();
 
+/**
+ * KaTeX 的每套字体都同时给了 woff2 / woff / ttf 三种格式，全打包进产物就是 60 个
+ * 文件、1.16 MB，而真正会被用到的只有 woff2 那一份——构建 target 已经是 chrome110，
+ * WebView2 / WKWebView 对 woff2 都是原生支持，另外两套纯属白占体积。
+ *
+ * 做法是在 Vite 收集 CSS 里的字体引用之前，把 woff / ttf 的 url() 从 @font-face 的
+ * src 里摘掉：没人引用的字体文件就不会被 emit。只对 KaTeX 的样式生效，不碰项目自己
+ * 的 CSS。dev 下同样走这个钩子，行为与打包后一致。
+ */
+function katexWoff2Only(): Plugin {
+  return {
+    name: "codovo:katex-woff2-only",
+    enforce: "pre",
+    transform(code, id) {
+      if (!id.includes("katex/dist/katex.min.css")) return null;
+      return code.replace(
+        /,\s*url\([^)]*\.(?:woff|ttf)\)\s*format\("(?:woff|truetype)"\)/g,
+        "",
+      );
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), katexWoff2Only()],
 
   define: {
     __APP_VERSION__: JSON.stringify(stamp ? `${version}+${stamp}` : version),
