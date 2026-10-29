@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -14,7 +14,15 @@ use crate::pty::home_dir;
 /// 只读文件头就够：cwd 和标题在本机实测最远 32KB（claude 的首条提问），
 /// 留到 128KB 兜住"第一轮就粘贴超大内容"的极端情况。
 /// 绝不读整个文件——本机有 4.3MB 的会话，一百多个文件全读是几十 MB。
+///
+/// codex 不走这条：它的头比别家重得多，见 CODEX_SCAN_BYTES。
 const HEAD_BYTES: u64 = 128 * 1024;
+
+/// Codex 会话的扫描上限。它第一行 session_meta 里就带整份 base_instructions（本机约 19KB），
+/// 后面还有 memory、多 agent 角色等 developer 消息，真正的用户提问实测落在 120KB～390KB
+/// 之间（Codex Desktop 起的会话最靠后）。固定读一段头必然漏标题，所以 codex 按行往后读、
+/// 拿到标题就停，这里只是兜住"整份都是注入内容"的会话。
+const CODEX_SCAN_BYTES: u64 = 2 * 1024 * 1024;
 
 /// 先探开头这一小段找 cwd。cwd 一般写在第一条记录里，8KB 够；够不着再退回整段。
 const PEEK_BYTES: u64 = 8 * 1024;
@@ -31,8 +39,12 @@ const TITLE_CHARS: usize = 60;
 const OPENCODE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// CLI 自己塞进会话里的模板文本，不是用户说的话。
-/// 末尾那条是 claude 的中断标记，本机 9 个会话的首条 user 就是它——
+/// 中断标记那条是 claude 的：本机 9 个会话的首条 user 就是它——
 /// 那种会话压根没有真正的提问，显示「未命名会话」比显示这个标记诚实。
+///
+/// codex 那几条是它自己往会话里写的注入内容：工作区指令（AGENTS.md）、环境上下文、
+/// Desktop 打开的页面占位、附件清单、以及「之前的 agent 历史」补丁。它们都以 user
+/// 身份落盘，不挡掉就会变成标题。
 const NOISE_PREFIXES: &[&str] = &[
     "<command-name>",
     "<command-message>",
@@ -41,6 +53,11 @@ const NOISE_PREFIXES: &[&str] = &[
     "<system-reminder",
     "<user-prompt-submit-hook",
     "[Request interrupted by user",
+    "# AGENTS.md instructions",
+    "<environment_context",
+    "<external_codex_apps",
+    "# Files mentioned by the user",
+    "The following is the Codex agent history",
 ];
 
 /// 把会话记录写成 jsonl 文件的那几家 CLI -> 相对用户主目录的位置。
@@ -290,8 +307,6 @@ impl Titles {
 struct HeadScan {
     cwd: String,
     title: String,
-    /// Codex 的文件名带 rollout 前缀，resume 必须使用 session_meta 里的 UUID。
-    id: Option<String>,
 }
 
 /// 抽出来是为了能在单测里直接造夹具验证过滤与排序规则（同 fs_api::list_entries）。
@@ -378,6 +393,10 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
 ///
 /// 开头这段没读出 cwd（第一条就是一大段粘贴内容之类）时退回整段重扫，别漏掉会话。
 fn read_session(path: &Path, provider: &str, target: &str, updated: u64) -> Option<CliSession> {
+    // codex 的标题落在头部 128KB 之后是常态，得单独按行往后读
+    if provider == "codex" {
+        return read_codex_session(path, target, updated);
+    }
     if let Some(scan) = read_prefix(path, PEEK_BYTES).and_then(|peek| scan_head(&peek, provider)) {
         // 按 cwd 字段正向匹配。不去反算 slug——slug 有损，路径里本身的 '-'
         // 和分隔符是撞的，各家 CLI 的规则还不一样
@@ -392,10 +411,78 @@ fn read_session(path: &Path, provider: &str, target: &str, updated: u64) -> Opti
     }
     let id = path.file_stem().and_then(|stem| stem.to_str())?;
     Some(CliSession {
-        id: scan.id.as_deref().unwrap_or(id).to_string(),
+        id: id.to_string(),
         title: scan.title,
         updated,
         cwd: scan.cwd,
+    })
+}
+
+/// 读一个 Codex 会话文件。
+///
+/// 不能像别家那样"读一段头就够"：真正的提问在 120KB～390KB 之后（见 CODEX_SCAN_BYTES）。
+/// 所以按行往后读，拿到第一条像样的用户输入就停；cwd 只认第一行的 session_meta，
+/// 对不上（绝大多数文件属于别的项目）立刻返回，不为别的项目白读几百 KB。
+///
+/// resume 用的是 session_meta 里的 UUID 而不是文件名：文件名带 rollout- 前缀和时间戳。
+fn read_codex_session(path: &Path, target: &str, updated: u64) -> Option<CliSession> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let mut titles = Titles::default();
+    let mut cwd = String::new();
+    let mut id = None;
+    let mut consumed = 0u64;
+    let mut buf = Vec::new();
+
+    while consumed < CODEX_SCAN_BYTES {
+        buf.clear();
+        let read = reader.read_until(b'\n', &mut buf).ok()?;
+        if read == 0 {
+            break;
+        }
+        consumed += read as u64;
+        // 整行都读到了，不会切在多字节序列中间；lossy 只是兜住万一写坏的字节
+        let line = String::from_utf8_lossy(&buf);
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue; // 非 JSON 的行，丢掉继续
+        };
+        if cwd.is_empty() {
+            if let Some(text) = value
+                .pointer("/payload/cwd")
+                .or_else(|| value.get("cwd"))
+                .and_then(|v| v.as_str())
+            {
+                cwd = text.to_string();
+                if cwd_key(&cwd) != target {
+                    return None;
+                }
+            }
+        }
+        // 只认 session_meta 里的 id：response_item 也带 payload.id，但那是 msg_ 开头的
+        // 消息 id，拿去 resume 会失败
+        if id.is_none() && value.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
+            id = value
+                .pointer("/payload/id")
+                .and_then(|v| v.as_str())
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+        }
+        scan_codex(&value, &mut titles);
+        if !titles.first.is_empty() {
+            break;
+        }
+    }
+
+    // 抠不出 cwd 就没法归属到哪个项目，只能丢
+    if cwd.is_empty() || cwd_key(&cwd) != target {
+        return None;
+    }
+    let stem = path.file_stem().and_then(|stem| stem.to_str())?;
+    Some(CliSession {
+        id: id.unwrap_or_else(|| stem.to_string()),
+        title: titles.pick(),
+        updated,
+        cwd,
     })
 }
 
@@ -432,7 +519,6 @@ fn read_prefix(path: &Path, limit: u64) -> Option<String> {
 fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
     let mut cwd = String::new();
     let mut titles = Titles::default();
-    let mut id = None;
 
     // 整段头扫完、不提前退出：实测 codebuddy 的 ai-title 排在 summary 后面，
     // 一见到 summary 就收工会把更好的标题漏掉
@@ -451,17 +537,9 @@ fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
                 cwd = text.to_string();
             }
         }
-        if id.is_none() && provider == "codex" {
-            id = value
-                .pointer("/payload/id")
-                .and_then(|v| v.as_str())
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-        }
         match provider {
             "codebuddy" => scan_codebuddy(&value, &mut titles),
             "claude" => scan_claude(&value, &mut titles),
-            "codex" => scan_codex(&value, &mut titles),
             "qoder" => scan_claude(&value, &mut titles),
             _ => {}
         }
@@ -474,7 +552,6 @@ fn scan_head(head: &str, provider: &str) -> Option<HeadScan> {
     Some(HeadScan {
         cwd,
         title: titles.pick(),
-        id,
     })
 }
 
@@ -495,9 +572,10 @@ fn scan_codex(value: &serde_json::Value, titles: &mut Titles) {
         .and_then(non_empty_title)
         .or_else(|| codex_content_title(payload.and_then(|v| v.get("content"))));
 
-    // Codex 新版把工作区指令作为首条 user message 写进日志；它不是用户这轮对话的标题。
-    // 跳过后继续扫描，才能拿到后面真正的提问，而旧版 event_msg 格式仍走同一条路径。
-    if let Some(title) = title.filter(|title| !is_codex_context(title)) {
+    // Codex 新版把工作区指令、环境上下文、附件清单这些注入内容都以 user 身份写进日志；
+    // 它们不是用户这轮对话的标题。clean_title 按 NOISE_PREFIXES 丢掉后继续往下扫，
+    // 才能拿到后面真正的提问，而旧版 event_msg 格式仍走同一条路径。
+    if let Some(title) = title {
         titles.first = title;
     }
 }
@@ -513,10 +591,6 @@ fn codex_content_title(content: Option<&serde_json::Value>) -> Option<String> {
         Some(serde_json::Value::Array(_)) => non_empty_title(&block_text(content, "input_text")),
         _ => None,
     }
-}
-
-fn is_codex_context(title: &str) -> bool {
-    title.starts_with("# AGENTS.md instructions")
 }
 
 fn scan_codebuddy(value: &serde_json::Value, titles: &mut Titles) {
@@ -915,6 +989,71 @@ mod tests {
         let found = list_sessions_in(&projects, "codex", WORK);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].title, "优化 Codex 历史对话名称");
+        fs::remove_dir_all(&projects).ok();
+    }
+
+    #[test]
+    fn codex_finds_the_title_beyond_the_plain_head_limit() {
+        let projects = temp_projects();
+        let dir = projects.join("2026").join("03").join("18");
+        fs::create_dir_all(&dir).unwrap();
+        // Codex 的头部有整份 base_instructions + memory + 多 agent 角色，本机实测真正的
+        // 提问落在 120KB～390KB 之后。这里用一个 200KB 的 developer 消息复现那个形状。
+        let filler = "x".repeat(200 * 1024);
+        let lines = [
+            r#"{"type":"session_meta","payload":{"id":"session-big","cwd":"/Users/someone/work"}}"#
+                .to_string(),
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"developer","content":[{{"type":"input_text","text":"{filler}"}}]}}}}"#
+            ),
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"补充常用 AI CLI 的图标"}]}}"#
+                .to_string(),
+        ];
+        fs::write(
+            dir.join("rollout-2026-03-18T00-00-00-12345678-eeee-ffff.jsonl"),
+            lines.join("\n"),
+        )
+        .unwrap();
+        // 同一个目录里放一个别的项目的会话：读第一行就该跳过，不该被算进来
+        let other = [
+            r#"{"type":"session_meta","payload":{"id":"session-other","cwd":"/Users/someone/other"}}"#
+                .to_string(),
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"别的目录"}]}}"#
+                .to_string(),
+        ];
+        fs::write(
+            dir.join("rollout-2026-03-18T00-00-01-12345678-aaaa-bbbb.jsonl"),
+            other.join("\n"),
+        )
+        .unwrap();
+
+        let found = list_sessions_in(&projects, "codex", WORK);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "session-big");
+        assert_eq!(found[0].title, "补充常用 AI CLI 的图标");
+        fs::remove_dir_all(&projects).ok();
+    }
+
+    #[test]
+    fn codex_skips_injected_app_and_attachment_blocks() {
+        let projects = temp_projects();
+        let dir = projects.join("2026").join("03").join("19");
+        fs::create_dir_all(&dir).unwrap();
+        let lines = [
+            r#"{"type":"session_meta","payload":{"id":"session-noise","cwd":"/Users/someone/work"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<external_codex_apps_open_page>{\"page_id\":null}</external_codex_apps_open_page>"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":" # Files mentioned by the user: ## shot.png: C:/tmp/shot.png"}]}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"确认"}]}}"#,
+        ];
+        fs::write(
+            dir.join("rollout-2026-03-19T00-00-00-12345678-cccc-dddd.jsonl"),
+            lines.join("\n"),
+        )
+        .unwrap();
+
+        let found = list_sessions_in(&projects, "codex", WORK);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "确认");
         fs::remove_dir_all(&projects).ok();
     }
 
