@@ -521,6 +521,13 @@ export function WorkspacePane({
   /** 从「变更」列表或时间线点进来的：开的是差异视图，不是文件内容 */
   const openDiff = useCallback(
     (path: string, source: DiffSource) => {
+      const name = toDisplayPath(path).split("/").pop()?.toLowerCase() ?? "";
+      const extension = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
+      // 图片是二进制内容，差异视图无法展示有意义的变更；直接打开文件预览。
+      if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"].includes(extension)) {
+        openTab(openFileTab(path));
+        return;
+      }
       openTab({ kind: "diff", path, source });
     },
     [openTab],
