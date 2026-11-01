@@ -57,3 +57,4 @@ desktop.ini
 # opencode 本地 worktree（全局配置 worktree.directory 指向项目内 .worktrees/）
 .worktrees/
 .silyn/
+.agents
