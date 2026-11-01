@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { GitController, GitMark } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
 import { pathKey, toDisplayPath, type MovePair } from "../lib/fs";
@@ -8,7 +8,7 @@ import { matchesShortcut } from "../lib/shortcuts";
 import { ChangesRadarPane } from "./ChangesRadarPane";
 import { FilesPane } from "./FilesPane";
 import { GitChangesPane } from "./GitChangesPane";
-import { IconChevronDown, IconChevronLeft, IconChevronRight, IconCommit, IconRefresh } from "./icons";
+import { IconChevronDown, IconChevronRight, IconRefresh } from "./icons";
 import type { TerminalSessionInfo } from "../lib/types";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
@@ -155,11 +155,8 @@ export function ToolPane({
    * 「变更」只有雷达一个主视图，完整 Git 面板是它上面的一个覆盖视图。
    * 不落盘：这是低频入口，每次进应用都该从雷达起步。
    */
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  // 换活动根 / 切到别的模块时收起完整面板，免得回来时停在一个旧仓库的提交框上
-  useEffect(() => {
-    setAdvancedOpen(false);
-  }, [activeRoot, tool]);
+  // 「变更」直接进入完整 Git；工作树概览与分支查看都在 Git 面板内。
+  const [advancedOpen, setAdvancedOpen] = useState(true);
   /**
    * 变更面板里被整块收起的工作目录（归一化路径）。收起只留根名那一行。
    * 初始只展开第一个根、其余收起：多根时几份改动加时间线全铺开，一屏根本看不完。
@@ -242,31 +239,10 @@ export function ToolPane({
         {/* 模块标题行：雷达是唯一主视图，完整 Git 收成右侧一个图标入口。
             不再用两个 tab 平分注意力——Agent 编程下绝大多数时间只需要看状态。 */}
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-          {advancedOpen && (
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen(false)}
-              title="返回工作树雷达"
-              className={ICON_BUTTON}
-            >
-              <IconChevronLeft className="h-3.5 w-3.5" />
-            </button>
-          )}
           <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
             变更
           </span>
-          {advancedOpen && <span className="shrink-0 text-[10px] text-fg-faint">完整 Git</span>}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            {!advancedOpen && (
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen(true)}
-                title="完整 Git：暂存 / 提交 / 提交历史 / 储藏"
-                className={ICON_BUTTON}
-              >
-                <IconCommit className="h-3.5 w-3.5" />
-              </button>
-            )}
             <button
               type="button"
               onClick={() => {
