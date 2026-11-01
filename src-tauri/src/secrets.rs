@@ -43,22 +43,35 @@ fn describe(error: &keyring::Error) -> String {
 
 /// 取某个提供商的凭据条目。id 非法时直接报错，不去碰系统接口。
 fn entry(provider_id: &str) -> Result<Entry, String> {
+    let id = validated_provider_id(provider_id)?;
+    Entry::new(SERVICE, id).map_err(|error| describe(&error))
+}
+
+fn validated_provider_id(provider_id: &str) -> Result<&str, String> {
     let id = provider_id.trim();
     if id.is_empty() || id.chars().count() > MAX_ID_CHARS {
         return Err(format!("非法的提供商 ID「{provider_id}」"));
     }
-    Entry::new(SERVICE, id).map_err(|error| describe(&error))
+    Ok(id)
 }
 
 /// 写入（或覆盖）一个提供商的密钥。空密钥按删除处理——界面上清空输入框就是不想留了。
 pub fn set(provider_id: &str, key: &str) -> Result<(), String> {
-    let key = key.trim();
-    if key.is_empty() {
+    let Some(key) = normalized_key(key) else {
         return delete(provider_id);
-    }
+    };
     entry(provider_id)?
         .set_password(key)
         .map_err(|error| describe(&error))
+}
+
+fn normalized_key(key: &str) -> Option<&str> {
+    let key = key.trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
 }
 
 /// 读一个提供商的密钥。没存过返回 `None`（不是错误：本地模型本来就不需要密钥）。
@@ -156,18 +169,17 @@ mod tests {
 
     #[test]
     fn entry_rejects_bad_provider_ids() {
-        assert!(entry("").is_err());
-        assert!(entry("   ").is_err());
-        assert!(entry(&"x".repeat(MAX_ID_CHARS + 1)).is_err());
-        // id 正常时不该被本地校验拦下（至于系统那边成不成是另一回事）
-        assert!(entry(&"x".repeat(MAX_ID_CHARS)).is_ok());
+        assert!(validated_provider_id("").is_err());
+        assert!(validated_provider_id("   ").is_err());
+        assert!(validated_provider_id(&"x".repeat(MAX_ID_CHARS + 1)).is_err());
+        assert_eq!(validated_provider_id(" provider ").unwrap(), "provider");
+        assert!(validated_provider_id(&"x".repeat(MAX_ID_CHARS)).is_ok());
     }
 
     #[test]
     fn empty_key_is_a_delete() {
-        // 空密钥不该往凭据库里塞一条空记录，等价于清除
-        assert!(set("codovo-test-empty", "   ").is_ok());
-        // 清除一个本来就没有的条目也算成功
-        assert!(delete("codovo-test-not-there").is_ok());
+        // 空密钥会走删除分支，普通密钥则先去掉首尾空白。
+        assert_eq!(normalized_key("   "), None);
+        assert_eq!(normalized_key(" secret "), Some("secret"));
     }
 }
