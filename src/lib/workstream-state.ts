@@ -38,8 +38,8 @@ export function workstreamState(
   item: WorkstreamInfo,
   signals: WorkstreamSignals = IDLE,
 ): WorkstreamState {
-  // 目录都没了，点进去也什么都做不了，排最前让用户清掉
-  if (item.prunable || !item.exists) {
+  // Git 的 prunable 标记可能滞后于目录实际状态；目录存在时仍可进入，不能报失联。
+  if (!item.exists) {
     return { label: "目录失联", tone: "danger", weight: 100, needsYou: true };
   }
   // 冲突 / 合并中：下一步只能人来做，排在「在等你」前面
