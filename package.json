@@ -10,9 +10,6 @@
     "tauri": "tauri",
     "gen:file-icons": "node scripts/gen-file-icons.mjs",
     "test:translate": "node scripts/test-translate-split.mjs",
-    "test:fake-agent": "node scripts/test-fake-agent.mjs",
-    "test:adapter-contracts": "node scripts/test-adapter-contracts.mjs",
-    "test:m3-m4": "node scripts/test-m3-m4-e2e.mjs",
     "postinstall": "node scripts/gen-file-icons.mjs"
   },
   "dependencies": {
