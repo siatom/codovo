@@ -1852,7 +1852,12 @@ export function GitChangesPane({
   const [draggingLog, setDraggingLog] = useState(false);
   /** 拖动起点，null 表示没在拖。startHeight 是像素，位移要除以面板高度才换得成比例 */
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const latestLogRatioRef = useRef(logRatio);
+  latestLogRatioRef.current = logRatio;
+  const stopLogDragRef = useRef<(() => void) | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => () => stopLogDragRef.current?.(), []);
 
   /**
    * 时间线的实际像素高度，由比例和面板高度现算。
@@ -3061,41 +3066,43 @@ export function GitChangesPane({
     });
   }, []);
 
-  /**
-   * 拖动时间线的上边缘改高度。
-   * 走指针捕获而不是监听 window：指针移出这个 1px 的细条后照样收得到事件。
-   */
+  /** 拖动时间线的上边缘改高度。 */
   const onHandleDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    stopLogDragRef.current?.();
     dragRef.current = { startY: event.clientY, startHeight: logHeight };
+    const onMove = (moveEvent: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const height = panelRef.current?.clientHeight ?? 0;
+      const next = ratioForHeight(
+        drag.startHeight - (moveEvent.clientY - drag.startY),
+        height,
+      );
+      latestLogRatioRef.current = next;
+      setLogRatio(next);
+    };
+    const onUp = () => {
+      if (!dragRef.current) return;
+      dragRef.current = null;
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      stopLogDragRef.current = null;
+      setDraggingLog(false);
+      document.body.classList.remove("codovo-dragging-row");
+      try {
+        window.sessionStorage.setItem(LOG_RATIO_KEY + root, String(latestLogRatioRef.current));
+      } catch {
+        // 记不住就下次还是默认高度
+      }
+    };
+    stopLogDragRef.current = onUp;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
     setDraggingLog(true);
     document.body.classList.add("codovo-dragging-row");
-  };
-
-  const onHandleMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    // 上下限不在这儿夹，交给派生高度那一处；这里只把位移换算成比例
-    const height = panelRef.current?.clientHeight ?? 0;
-    const next = drag.startHeight - (event.clientY - drag.startY);
-    setLogRatio(ratioForHeight(next, height));
-  };
-
-  const onHandleUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    dragRef.current = null;
-    setDraggingLog(false);
-    document.body.classList.remove("codovo-dragging-row");
-    try {
-      // 用 state 里最新的值：拖动过程中它一直在变
-      window.sessionStorage.setItem(LOG_RATIO_KEY + root, String(logRatio));
-    } catch {
-      // 记不住就下次还是默认高度
-    }
   };
 
   /**
@@ -4710,9 +4717,6 @@ export function GitChangesPane({
           aria-valuemin={MIN_LOG_HEIGHT}
           aria-valuemax={MAX_LOG_HEIGHT}
           onPointerDown={onHandleDown}
-          onPointerMove={onHandleMove}
-          onPointerUp={onHandleUp}
-          onPointerCancel={onHandleUp}
           onKeyDown={onHandleKeyDown}
           title="拖动调整提交历史的高度"
           className={`relative h-px shrink-0 cursor-row-resize bg-line-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-strong ${
