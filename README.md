@@ -183,12 +183,13 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 
 ## 安装与运行
 
-已打包的版本在 [Gitee Releases](https://gitee.com/silicon-atom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。
+已打包的版本在 [GitHub Releases](https://github.com/siatom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。
 
 | 方式 | 适合谁 |
 | --- | --- |
 | **Windows 安装包** `Codovo_<版本>_x64-setup.exe` | 常规安装，开始菜单与托盘 |
 | **macOS 安装包** `Codovo_<版本>_aarch64.dmg` | Apple Silicon |
+| **Linux 安装包** AppImage / `.deb` / `.rpm` | 按发行版选择 |
 | **源码构建** | 想改它、或想自己打包的人 |
 
 ```bash
@@ -265,6 +266,8 @@ cargo clippy                        # Rust 静态检查
 界面验证可使用 `scripts/cdp-check.cjs` 连接 WebView2 的 CDP 端口；指定窗口时用 `target` 标题片段。用 Codovo 开发自身时，开发服务器的 HMR 会重载界面并重置终端与编辑器，建议在另一个工作区里运行开发命令。
 
 版本号以 `package.json` 为来源，通过 `pnpm version patch|minor|major` 更新。界面显示 `<版本号>+<Git 短 hash>[.dirty]`，`.dirty` 表示构建包含未提交改动，安装包版本仍为纯数字。
+
+推送 `v<版本号>` tag 会触发 GitHub Actions，为 Windows、Apple Silicon macOS 与 Linux 构建安装包并发布到 GitHub Releases。tag 必须与 `package.json` 版本一致；PR 和 `main` 更新会运行前端构建、Rust 单测与 Clippy。
 
 </details>
 
