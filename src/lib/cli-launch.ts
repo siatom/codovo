@@ -73,6 +73,23 @@ function isOpencode(command: string): boolean {
 }
 
 /**
+ * 自带多标签页 / 多会话切换的 CLI。opencode 的 TUI 里本来就能开多个会话，
+ * 顶栏点它时应该切回已经开着的那个终端，而不是再叠一个重复的标签。
+ *
+ * 其余 CLI 没有这层能力，多开终端标签是并行跑的唯一办法，所以仍按「每次新开」处理。
+ */
+const INTERNAL_TAB_CLIS = new Set(["opencode"]);
+
+/** 这条启动命令对应的 CLI 是不是自带多标签页；`npx opencode` 这种写法也认得出来 */
+export function hasInternalTabs(command: string): boolean {
+  return command
+    .trim()
+    .split(/\s+/)
+    .map(cliKey)
+    .some((word) => INTERNAL_TAB_CLIS.has(word));
+}
+
+/**
  * opencode 没有 `--add-dir`，权限写在 V2 的 `permissions` 数组里。
  *
  * `external_directory` 的默认策略就是全量 allow，只写几个 allow 规则等于没写。

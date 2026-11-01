@@ -13,7 +13,7 @@ import {
 } from "./TerminalSession";
 import { useSettings } from "../lib/settings";
 import { agentEnvFor } from "../lib/agents";
-import { prepareLaunch } from "../lib/cli-launch";
+import { hasInternalTabs, prepareLaunch } from "../lib/cli-launch";
 import { pathKey, samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
@@ -50,7 +50,8 @@ function formatLocation({ path, start, end }: EditorLocation): string {
 
 export interface TerminalPaneHandle {
   /**
-   * 新开一个终端标签并在里面执行命令（顶栏 AI CLI 切换条与侧栏 CLI 会话 resume 都用它）。
+   * 新开一个终端标签并在里面执行命令（顶栏 AI CLI 切换条与侧栏 CLI 会话 resume 都用它；
+   * 顶栏对自带多标签页的 CLI 会先复用已经开着的标签，见 launchCli）。
    * 不能写进当前活动会话——那儿可能正跑着别的东西，命令会被当成它的输入。
    * 命令会按工作区的附加目录自动注入 CLI 参数（见 lib/cli-launch.ts）。
    * `title` 直接作新标签的标题：AI CLI 传 CLI 名，resume 传被恢复会话的标题。
@@ -96,8 +97,9 @@ interface TerminalPaneProps {
  * 终端区：管一组会话，标签栏负责新增/关闭/切换。
  * 每个会话各自持有一个 PTY，切走只是隐藏，shell 不会被打断。
  *
- * 顶栏是 **AI CLI 快速切换条**：配了哪些 CLI 就摆哪几个按钮，点一下——该 CLI 已经开着标签
- * 就切过去，没有就新开一个标签跑它。想聊代码走这条线（真正的 CLI，原样运行）；
+ * 顶栏是 **AI CLI 快速切换条**：配了哪些 CLI 就摆哪几个按钮，点一下——自带多标签页的
+ * CLI（opencode）已经开着就切过去，没有才新开一个；其余 CLI 每次新开，允许同时跑多个实例。
+ * 想聊代码走这条线（真正的 CLI，原样运行）；
  * 需要改 Codovo 自身的设置与界面时，用右栏的「应用助手」抽屉。
  */
 export function TerminalPane({
@@ -405,29 +407,33 @@ export function TerminalPane({
     [settings.aiCommands],
   );
 
-  /** 某个命令当前对应的终端标签 id；没有（或已被关掉）返回 null */
-  const sessionForCommand = (command: string): number | null =>
-    sessions.find((id) => hintByIdRef.current.get(id) === command) ?? null;
-
   /**
-   * 顶栏点某个 AI CLI：**已有则切过去，没有则新开**。
+   * 顶栏点某个 AI CLI。
    *
-   * 一个新标签只跑一个 CLI，所以「切过去」不会打断任何正在跑的会话；标签被关掉后再点，
-   * 自然就新开一个。只看精确命令：`claude --resume xxx` 那种恢复出来的标签不匹配，
-   * 免得点「Claude Code」跳到一条恢复会话上。
+   * opencode 这类自带多标签页的 CLI 已经有标签就切过去——它自己就能在 TUI 里开多个会话，
+   * 再叠一个终端标签只是多一份重复的界面。有多个（历史遗留 / resume 开的）时取最近创建的。
+   * 其余 CLI 仍然每次新开，允许同一 CLI 同时运行多个实例。
    */
   const launchCli = useCallback(
     (command: string, title: string) => {
-      const existing = sessionForCommand(command);
-      if (existing !== null) {
-        setActiveId(existing);
-        handlesRef.current.get(existing)?.focus();
-        return;
+      if (hasInternalTabs(command)) {
+        let existing: number | undefined;
+        for (const id of sessions) {
+          if (!hasInternalTabs(hintByIdRef.current.get(id) ?? "")) continue;
+          if (existing === undefined || id > existing) existing = id;
+        }
+        if (existing !== undefined) {
+          setActiveId(existing);
+          const handle = handlesRef.current.get(existing);
+          // 当前就在这个标签时 setActiveId 是空操作，清「已完成」标记得直接走 handle
+          handle?.markSeen();
+          handle?.focus();
+          return;
+        }
       }
       runInNewSession(command, title);
     },
-    // sessionForCommand 读的是 sessions / hint ref 的最新值，这里跟着 sessions 走
-    [sessions, runInNewSession],
+    [runInNewSession, sessions],
   );
 
   return (
@@ -448,8 +454,8 @@ export function TerminalPane({
                   type="button"
                   onClick={() => launchCli(item.command, item.name)}
                   title={
-                    sessionForCommand(item.command) !== null
-                      ? `${item.name}：切到已打开的标签`
+                    hasInternalTabs(item.command)
+                      ? `${item.name}：切到已打开的标签，没有就新开一个`
                       : `${item.name}：新开一个终端标签启动`
                   }
                   className={`flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] ${
