@@ -86,6 +86,8 @@ interface TerminalPaneProps {
    * 谁在等我」落到具体工作树上（attention store 是按工作区根记的，落不到树）。
    */
   onSessionsReport?: (sessions: TerminalSessionInfo[]) => void;
+  /** 点击终端里的文件引用时路由到编辑器 */
+  onOpenFile?: (path: string, line: number) => void;
   /** React 19 起 ref 可以直接当普通 prop 传，不必再包 forwardRef */
   ref?: Ref<TerminalPaneHandle>;
 }
@@ -105,6 +107,7 @@ export function TerminalPane({
   fullscreen,
   onToggleFullscreen,
   onSessionsReport,
+  onOpenFile,
   ref,
 }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
@@ -640,7 +643,9 @@ export function TerminalPane({
                 <TerminalSession
                   ref={attachHandle(id)}
                   root={root}
+                  roots={roots}
                   cwd={cwdByIdRef.current.get(id)}
+                  onOpenFile={onOpenFile}
                   // undefined = 跟随设置里的默认；只有在下拉里明确选过 shell 的会话才有值
                   shell={shellByIdRef.current.get(id)}
                   // Ctrl/Cmd+W 关的是「当前这个」标签；只剩一个时会换新会话顶上，

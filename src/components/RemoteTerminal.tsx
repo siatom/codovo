@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   readImage,
   readText,
@@ -162,6 +164,11 @@ export function RemoteTerminal({
 
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(
+      new WebLinksAddon((_event, url) => {
+        if (/^https?:\/\//i.test(url)) void openUrl(url).catch(() => {});
+      }),
+    );
     term.open(container);
     let webgl: WebglAddon | null = null;
     try {

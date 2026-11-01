@@ -8,6 +8,8 @@ import {
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   readImage,
   readText,
@@ -25,6 +27,7 @@ import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
 import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
 import { resolveTerminalTheme } from "../lib/terminal-themes";
+import { registerTerminalFileLinks } from "../lib/terminal-file-links";
 import { useTheme } from "../lib/theme";
 import { pauseDevicePixelSync } from "../lib/xterm-webgl";
 import { IconArrowDownToLine } from "./icons";
@@ -242,6 +245,8 @@ function judgeActivity(term: Terminal): CliActivity | null {
 interface TerminalSessionProps {
   /** 这个会话属于哪个工作区；后端按它归属会话 */
   root: string;
+  /** 工作区允许打开的文件根目录 */
+  roots: string[];
   /**
    * shell 的落点。不传就落在 root。
    *
@@ -286,6 +291,8 @@ interface TerminalSessionProps {
    * 单纯打开 / 切换工作区不算——shell 启动的提示符不触发（见 engaged）。
    */
   onActivity?: () => void;
+  /** 点击终端里的工作区文件路径时打开并定位 */
+  onOpenFile?: (path: string, line: number) => void;
 }
 
 /**
@@ -298,6 +305,7 @@ export const TerminalSession = forwardRef<
 >(function TerminalSession(
   {
     root,
+    roots,
     cwd,
     active,
     visible = active,
@@ -308,6 +316,7 @@ export const TerminalSession = forwardRef<
     onRequestNew,
     onAttentionChange,
     onActivity,
+    onOpenFile,
   },
   ref,
 ) {
@@ -408,7 +417,15 @@ export const TerminalSession = forwardRef<
 
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(
+      new WebLinksAddon((_event, url) => {
+        if (/^https?:\/\//i.test(url)) void openUrl(url).catch(() => {});
+      }),
+    );
     term.open(container);
+    const fileLinks = onOpenFile
+      ? registerTerminalFileLinks(term, cwd ?? root, roots, onOpenFile)
+      : null;
 
     let webgl: WebglAddon | null = null;
     try {
@@ -776,6 +793,7 @@ export const TerminalSession = forwardRef<
       dataDisposable.dispose();
       scrollDisposable.dispose();
       writeParsedDisposable.dispose();
+      fileLinks?.dispose();
       container.removeEventListener("keydown", onKeyDown, true);
       container.removeEventListener("contextmenu", onContextMenu);
       ptyRef.current?.kill();

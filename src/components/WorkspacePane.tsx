@@ -582,6 +582,26 @@ export function WorkspacePane({
     [openTab],
   );
 
+  /** 终端输出里的文件引用：打开文件并跳到行首 */
+  const openTerminalFile = useCallback(
+    (path: string, line: number) => {
+      if (ownerRoot(workspace.roots, path) === null) return;
+      setTool("files");
+      saveTool(root, "files");
+      setRightOpen(true);
+      onExitFullscreen();
+      openFile(path);
+      editorRef.current?.revealAt({
+        path,
+        line,
+        column: 1,
+        length: 0,
+        nonce: (revealNonceRef.current += 1),
+      });
+    },
+    [openFile, onExitFullscreen, root, workspace.roots],
+  );
+
   /** 替换前先把编辑器里没保存的改动落盘；存不成功就不替换 */
   const saveAllEdits = useCallback(async () => {
     return (await editorRef.current?.saveAll()) ?? true;
@@ -694,6 +714,7 @@ export function WorkspacePane({
             fullscreen={leftFullscreen}
             onToggleFullscreen={onToggleLeftFullscreen}
             onSessionsReport={setTerminalSessions}
+            onOpenFile={openTerminalFile}
           />
         }
         second={
