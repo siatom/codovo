@@ -13,8 +13,7 @@ public/material-icons/
 
 # 日志
 logs/
-*.log
-*-debug.log*
+*.log*
 
 # 本地环境变量：可能含密钥，一律不进仓库（示例文件除外）
 .env
@@ -39,6 +38,7 @@ desktop.ini
 
 # 临时文件
 .tmp*
+*.tmp
 
 # AI 工具本地目录
 # CodeBuddy：只放行随仓库共享的项目级技能与斜杠命令（.codebuddy/skills/、.codebuddy/commands/），
