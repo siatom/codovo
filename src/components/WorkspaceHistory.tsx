@@ -8,7 +8,7 @@ import {
   type CliHistoryEntry,
 } from "../lib/cli-sessions";
 import type { AiCommand } from "../lib/settings";
-import { AgentLogo, IconMore, IconPencil } from "./icons";
+import { AgentLogo, IconMore, IconPencil, IconPlay } from "./icons";
 
 interface WorkspaceHistoryProps {
   /** 这个工作区的全部根。每个根单独查，最后按时间合并 */
@@ -28,12 +28,12 @@ const HINT = "px-2 py-1 text-[11px] text-fg-faint";
 const MENU_ACTION =
   "pointer-events-none mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/item:pointer-events-auto group-hover/item:opacity-100";
 
-/** 会话菜单的宽度（px）。目前只有「重命名」一项，以后加操作直接往菜单里添 */
+/** 会话菜单的宽度（px） */
 const MENU_W = 144;
 
 /**
  * 工作区行下面展开的对话历史：这个工作区里各家 AI CLI 的会话，按最后活动时间
- * 合并成一条列表，显示标题、CLI 和时间，点一条就在新终端标签里 resume。
+ * 合并成一条列表，显示标题、CLI 和时间，通过行尾菜单恢复对话或重命名。
  *
  * 不放在侧栏底部单独占一块：历史天然属于某个工作区，挂在行下既能一次看几个
  * 工作区的状态，也不用为它单独管高度。
@@ -182,9 +182,7 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
           return (
             <li key={key}>
               <div className="group/item flex items-start rounded-md pr-1 hover:bg-hover">
-                <button
-                  type="button"
-                  onClick={() => onResume(item.resume, name)}
+                <div
                   title={`${name}\n${item.label} · ${item.id}`}
                   className="flex min-w-0 flex-1 items-start gap-2 py-1 pl-2 text-left"
                 >
@@ -201,7 +199,7 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
                       {meta}
                     </span>
                   </span>
-                </button>
+                </div>
                 <button
                   type="button"
                   onClick={(event) => openMenu(item, event.currentTarget)}
@@ -231,9 +229,21 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
               width: MENU_W,
               // 菜单贴按钮右缘展开，再夹住视口，免得贴近窗口边缘时跑出去
               left: Math.max(4, menu.x - MENU_W),
-              top: Math.min(menu.y + 4, window.innerHeight - 52),
+              top: Math.min(menu.y + 4, window.innerHeight - 76),
             }}
           >
+            <button
+              type="button"
+              onClick={() => {
+                const { item } = menu;
+                setMenu(null);
+                onResume(item.resume, titleOf(item) || "未命名对话");
+              }}
+              className="flex items-center gap-2 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+            >
+              <IconPlay className="h-3.5 w-3.5 shrink-0" />
+              恢复对话
+            </button>
             <button
               type="button"
               onClick={() => {
