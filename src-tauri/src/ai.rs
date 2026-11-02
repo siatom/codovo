@@ -481,10 +481,9 @@ const PICK_FILES_PROMPT: &str = "\
 3. 一个相关的都没有时，只输出「无」。
 4. 不要输出解释、序号、行号或任何其它文字。";
 
-/// 第二趟用的 system 提示：结构照仓库里的 `.codebuddy/commands/gitee-issue-add.md`——
-/// 只写有内容的小节，判断必须落在真实代码上。
+/// 第二趟用的 system 提示：只写有内容的小节，判断必须落在真实代码上。
 const FEEDBACK_PROMPT: &str = "\
-你是 Gitee issue 起草助手，负责把用户给的线索写成本仓库一条 issue 的「详细描述」。
+你是 GitHub issue 起草助手，负责把用户给的线索写成本仓库一条 issue 的「详细描述」。
 
 严格按下面的 markdown 结构输出，只写有内容的小节，没有的整节省略，不要加前言、结尾或代码围栏：
 

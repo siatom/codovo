@@ -1,15 +1,4 @@
-//! 意见反馈：把用户填的内容直接建成 Gitee issue，并在本地留一份记录用于跟踪状态。
-//!
-//! **为什么走本机 gitee CLI 而不是自己发 HTTP**：Gitee 前面挂着 WAF（响应带
-//! `bdwaf-request-id`），按客户端指纹放行。同一令牌、同一 URL、同一秒，curl /
-//! PowerShell / openssl / WebView fetch / 官方 CLI 都能过，只有 reqwest 的请求被固定
-//! 判成「令牌不存在」（401）——rustls 和 SChannel 两种后端都试过，HTTP 层能改的都改过。
-//! 顺带的好处是令牌完全不用进本应用：CLI 自己存凭据，我们既不碰钥匙串也不碰明文。
-//!
-//! **Windows 上 npm 装的 `gitee` 只有 `.cmd` 垫片**：`CreateProcess` 不认垫片，得借
-//! cmd.exe 起，而 cmd.exe 按换行切命令行——实测多行正文只留下第一行。所以垫片这条改成
-//! 用 node 跑它的入口脚本（垫片自己干的就是这件事），参数走 argv，多行原样送达。
-//! 原生 exe（go install / release 包）直接 spawn 即可，参数数组天然安全。
+//! 意见反馈：通过本机 GitHub CLI 创建 issue，并在本地留一份记录用于跟踪状态。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,15 +15,7 @@ const OWNER: &str = "silicon-atom";
 const REPO: &str = "codovo";
 
 /// 官方 CLI 的命令名，走 PATH 找（复用 agent 那套 Windows 后缀探测）。
-const CLI: &str = "gitee";
-
-/// npm 包装层里入口脚本相对垫片所在目录的位置。垫片内容就是
-/// `node <pkgroot>/bin/index.js %*`，只是它得经 cmd.exe 才跑得起来，会被换行截断。
-///
-/// 只有 Windows 版 `shim_to_node` 用它（别的平台垫片自己就能跑），跟着一起 cfg，
-/// 否则在 macOS / Linux 上会因「当前平台用不到」报 dead_code。
-#[cfg(windows)]
-const NPM_ENTRY: &str = "node_modules/@gitee/gitee-cli/bin/index.js";
+const CLI: &str = "gh";
 
 /// 单次调用的超时。CLI 是本地进程，正常几百毫秒内返回。
 const CLI_TIMEOUT: Duration = Duration::from_secs(30);
@@ -45,12 +26,12 @@ const MAX_ERROR_CHARS: usize = 500;
 /// 记录文件名，落在 `app_config_dir()` 下（与助手会话目录同级）。
 const STORE_FILE: &str = "feedback.json";
 
-/// 一条提交过的反馈。字段刻意保持精简：正文和大段讨论都在 Gitee 那边，
+/// 一条提交过的反馈。字段刻意保持精简：正文和大段讨论都在 GitHub 那边，
 /// 这里只是「本机提过什么、现在什么状态」的索引。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeedbackRecord {
-    /// Gitee issue 编号，形如 `IKIHSS`——**不是**数字 id
+    /// GitHub issue 编号
     pub number: String,
     pub title: String,
     /// 网页地址，界面点它跳浏览器
@@ -95,13 +76,13 @@ pub struct FeedbackTarget {
     pub web_new_issue: String,
 }
 
-/// gitee CLI 能不能用。没装 / 没登录都要如实告诉界面，好让它切到网页兜底。
+/// GitHub CLI 能不能用。没装 / 没登录都要如实告诉界面，好让它切到网页兜底。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliStatus {
     /// PATH 里找不找得到 CLI
     pub available: bool,
-    /// `gitee auth status` 是否成功（CLI 自己那套凭据）
+    /// `gh auth status` 是否成功（CLI 自己那套凭据）
     pub logged_in: bool,
     /// 给用户看的原文：找不到时的提示，或 CLI 自己吐的原因
     pub detail: String,
@@ -122,37 +103,44 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 从 Gitee 返回的 issue 对象里取编号 / 网页地址 / 状态。
-///
-/// 用 `Value` 逐层取而不是定义严格结构体：Gitee 换字段名或加字段时，反序列化
-/// 失败会把整个功能打死，逐层取最多少一个字段。缺编号就没法跟踪，那才算失败。
+/// 从 GitHub CLI 返回的 issue 对象里取编号 / 网页地址 / 状态。
 fn parse_issue(value: &serde_json::Value) -> Result<(String, String, String), String> {
     let number = value
         .get("number")
-        .and_then(|item| item.as_str())
+        .and_then(|item| {
+            item.as_u64()
+                .map(|number| number.to_string())
+                .or_else(|| item.as_str().map(str::to_string))
+        })
         .filter(|item| !item.trim().is_empty())
         .ok_or_else(|| {
             format!(
-                "Gitee 响应里没有 issue 编号: {}",
+                "GitHub 响应里没有 issue 编号: {}",
                 truncate(&value.to_string(), MAX_ERROR_CHARS)
             )
-        })?
-        .to_string();
+        })?;
 
-    // html_url 缺失时自己拼一个：链接是给人点的，不能因为少个字段就变成死文本
+    // url 缺失时自己拼一个：链接是给人点的，不能因为少个字段就变成死文本
     let url = value
-        .get("html_url")
+        .get("url")
         .and_then(|item| item.as_str())
         .filter(|item| !item.trim().is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("https://gitee.com/{OWNER}/{REPO}/issues/{number}"));
+        .unwrap_or_else(|| format!("https://github.com/{OWNER}/{REPO}/issues/{number}"));
 
     // 状态读不到时当 open：刚建出来的必然没关，比空字符串好判断
     let state = value
         .get("state")
         .and_then(|item| item.as_str())
-        .unwrap_or("open")
-        .to_string();
+        .unwrap_or("OPEN");
+    let state = if state.eq_ignore_ascii_case("OPEN") {
+        "open"
+    } else if state.eq_ignore_ascii_case("CLOSED") {
+        "closed"
+    } else {
+        state
+    }
+    .to_string();
 
     Ok((number, url, state))
 }
@@ -212,54 +200,25 @@ fn write_to(path: &Path, records: &[FeedbackRecord]) -> Result<(), String> {
     std::fs::rename(&temp, path).map_err(|reason| format!("保存反馈记录失败: {reason}"))
 }
 
-/// Windows 上 npm 装出来的垫片得换成「node + 入口脚本」，理由见模块头。
-///
-/// 只在垫片旁边找入口脚本：npm 的全局 bin 目录和包目录是固定的相对位置。
-/// 找不到就报错让用户改用原生 exe，不去别处瞎猜。
-#[cfg(windows)]
-fn shim_to_node(shim: &Path, args: &[String]) -> Result<Command, String> {
-    let entry = shim
-        .parent()
-        .map(|dir| dir.join(NPM_ENTRY))
-        .filter(|path| path.is_file())
-        .ok_or_else(|| format!("找不到 gitee CLI 的入口脚本（{NPM_ENTRY}），请改装原生版 gitee"))?;
-    // node 跟着 npm 一起来，PATH 里应该有；没有就让 Command 自己报错
-    let node = crate::launch::find_on_path("node", std::env::var_os("PATH").as_deref())
-        .unwrap_or_else(|| PathBuf::from("node"));
-    let mut command = Command::new(node);
-    command.arg(entry).args(args);
-    Ok(command)
-}
-
-/// 非 Windows 上 npm 的垫片是个 shell 脚本，Process 直接能跑，不用绕。
-#[cfg(not(windows))]
-fn shim_to_node(shim: &Path, args: &[String]) -> Result<Command, String> {
-    let mut command = Command::new(shim);
-    command.args(args);
-    Ok(command)
-}
-
-/// 把 `gitee <args>` 解析成一个能 spawn 的命令。
+/// 把 `gh <args>` 解析成一个能 spawn 的命令。
 fn cli_command(args: &[String]) -> Result<Command, String> {
     // GUI 进程从 Dock / 开始菜单启动时 PATH 可能不全，和起外部 CLI 时同一个理由
     let path = crate::shell_env::resolved_path(&crate::shell_env::default_shell(), None);
     let launch = resolve_launch(CLI, path.as_deref()).map_err(|_| {
-        "在 PATH 里找不到 gitee 命令。请先安装官方 CLI（npm i -g @gitee/gitee-cli）\
-         并执行 gitee auth login"
+        "在 PATH 里找不到 gh 命令。请先安装 GitHub CLI（https://cli.github.com/）\
+         并执行 gh auth login"
             .to_string()
     })?;
-    match launch {
-        Launch::Direct(found) => {
-            let mut command = Command::new(found);
-            command.args(args);
-            Ok(command)
-        }
-        Launch::ViaCmd(found) => shim_to_node(&found, args),
-    }
+    let found = match launch {
+        Launch::Direct(found) | Launch::ViaCmd(found) => found,
+    };
+    let mut command = Command::new(found);
+    command.args(args);
+    Ok(command)
 }
 
 /// 跑一次 CLI 并收下 stdout。失败时把 stderr（没有就 stdout）整段带出来——
-/// Gitee 的报错常常多行，截成一句反而看不出问题在哪。
+/// GitHub CLI 的报错常常多行，截成一句反而看不出问题在哪。
 fn run_cli(args: &[String]) -> Result<String, String> {
     let mut command = cli_command(args)?;
     command
@@ -276,8 +235,8 @@ fn run_cli(args: &[String]) -> Result<String, String> {
     });
     let output = match receiver.recv_timeout(CLI_TIMEOUT) {
         Ok(Ok(output)) => output,
-        Ok(Err(reason)) => return Err(format!("无法执行 gitee: {reason}")),
-        Err(_) => return Err(format!("gitee 超过 {} 秒没有响应", CLI_TIMEOUT.as_secs())),
+        Ok(Err(reason)) => return Err(format!("无法执行 gh: {reason}")),
+        Err(_) => return Err(format!("gh 超过 {} 秒没有响应", CLI_TIMEOUT.as_secs())),
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -285,7 +244,7 @@ fn run_cli(args: &[String]) -> Result<String, String> {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let detail = if stderr.is_empty() { &stdout } else { &stderr };
         return Err(if detail.is_empty() {
-            "gitee 命令执行失败，没有输出".to_string()
+            "gh 命令执行失败，没有输出".to_string()
         } else {
             truncate(detail, MAX_ERROR_CHARS)
         });
@@ -298,14 +257,14 @@ pub fn feedback_target() -> FeedbackTarget {
     FeedbackTarget {
         owner: OWNER.to_string(),
         repo: REPO.to_string(),
-        web_new_issue: format!("https://gitee.com/{OWNER}/{REPO}/issues/new"),
+        web_new_issue: format!("https://github.com/{OWNER}/{REPO}/issues/new"),
     }
 }
 
 /// CLI 是否可用、是否已登录。界面据此决定给「提交反馈」还是「在浏览器中打开」。
 #[tauri::command]
 pub fn feedback_cli_status() -> CliStatus {
-    let args: Vec<String> = ["auth", "status", "--no-tui"]
+    let args: Vec<String> = ["auth", "status"]
         .iter()
         .map(|item| item.to_string())
         .collect();
@@ -317,7 +276,7 @@ pub fn feedback_cli_status() -> CliStatus {
         };
     }
     match run_cli(&args) {
-        // 成功时 CLI 会打印「Logged in to gitee.com as …」，界面用不上，不带回去了
+        // 成功时 CLI 的登录信息界面用不上，不带回去了
         Ok(_) => CliStatus {
             available: true,
             logged_in: true,
@@ -337,7 +296,7 @@ pub fn feedback_list(app: tauri::AppHandle) -> Result<Vec<FeedbackRecord>, Strin
     read_from(&store_path(&app)?)
 }
 
-/// 提交一条反馈：借 CLI 建成 Gitee issue，并把索引记到本地。
+/// 提交一条反馈：借 CLI 建成 GitHub issue，并把索引记到本地。
 ///
 /// `body` 由前端拼好（分类行 + 正文 + 环境信息）——浏览器兜底路径也要用同一段文案，
 /// 放前端一处生成才不会两边漂移。
@@ -356,20 +315,37 @@ pub fn feedback_submit(
 
     // repo 用 -R 显式指定：工作区可能根本不是这个仓库，不能靠 CLI 去推断
     let repo = format!("{OWNER}/{REPO}");
-    let args: Vec<String> = [
-        "issue", "create", "-R", &repo, "--no-tui", "-j", "-t", &title, "-b", &body,
+    let args: Vec<String> = ["issue", "create", "-R", &repo, "-t", &title, "-b", &body]
+        .iter()
+        .map(|item| item.to_string())
+        .collect();
+    let stdout = run_cli(&args)?;
+
+    let number = stdout
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|part| part.parse::<u64>().is_ok())
+        .ok_or_else(|| {
+            format!(
+                "无法解析 gh 创建 issue 的 URL: {}",
+                truncate(&stdout, MAX_ERROR_CHARS)
+            )
+        })?;
+    let view_args: Vec<String> = [
+        "issue",
+        "view",
+        number,
+        "-R",
+        &repo,
+        "--json",
+        "number,url,state",
     ]
     .iter()
     .map(|item| item.to_string())
     .collect();
-    let stdout = run_cli(&args)?;
-
-    let value: serde_json::Value = serde_json::from_str(&stdout).map_err(|_| {
-        format!(
-            "无法解析 gitee 的输出: {}",
-            truncate(&stdout, MAX_ERROR_CHARS)
-        )
-    })?;
+    let value: serde_json::Value = serde_json::from_str(&run_cli(&view_args)?)
+        .map_err(|_| "无法解析 gh issue view 的 JSON 输出".to_string())?;
     let (number, url, state) = parse_issue(&value)?;
 
     let record = FeedbackRecord {
@@ -415,8 +391,8 @@ pub fn feedback_refresh(app: tauri::AppHandle) -> Result<RefreshResult, String> 
             "view",
             "-R",
             &repo,
-            "--no-tui",
-            "-j",
+            "--json",
+            "number,url,state",
             &record.number,
         ]
         .iter()
@@ -424,7 +400,7 @@ pub fn feedback_refresh(app: tauri::AppHandle) -> Result<RefreshResult, String> 
         .collect();
         let parsed = run_cli(&args).and_then(|stdout| {
             serde_json::from_str::<serde_json::Value>(&stdout)
-                .map_err(|_| format!("无法解析 gitee 的输出: {}", truncate(&stdout, 120)))
+                .map_err(|_| format!("无法解析 gh 的输出: {}", truncate(&stdout, 120)))
         });
         match parsed.and_then(|value| parse_issue(&value)) {
             Ok((number, _, state)) => {
@@ -438,7 +414,7 @@ pub fn feedback_refresh(app: tauri::AppHandle) -> Result<RefreshResult, String> 
     Ok(RefreshResult { records, errors })
 }
 
-/// 从本地历史里删掉一条。只清索引，**不动 Gitee 上的 issue**。
+/// 从本地历史里删掉一条。只清索引，**不动 GitHub 上的 issue**。
 #[tauri::command]
 pub fn feedback_delete(
     app: tauri::AppHandle,
@@ -459,7 +435,7 @@ mod tests {
         FeedbackRecord {
             number: number.to_string(),
             title: format!("标题 {number}"),
-            url: format!("https://gitee.com/{OWNER}/{REPO}/issues/{number}"),
+            url: format!("https://github.com/{OWNER}/{REPO}/issues/{number}"),
             state: state.to_string(),
             category: "bug".to_string(),
             created_at: 1,
@@ -471,23 +447,23 @@ mod tests {
     fn parse_issue_reads_the_three_fields() {
         let value = serde_json::json!({
             "id": 34455196,
-            "number": "IKIHSS",
-            "state": "open",
-            "html_url": "https://gitee.com/y_project/RuoYi/issues/IKIHSS",
+            "number": 21,
+            "state": "OPEN",
+            "url": "https://github.com/silicon-atom/codovo/issues/21",
         });
         let (number, url, state) = parse_issue(&value).unwrap();
-        assert_eq!(number, "IKIHSS");
-        assert_eq!(url, "https://gitee.com/y_project/RuoYi/issues/IKIHSS");
+        assert_eq!(number, "21");
+        assert_eq!(url, "https://github.com/silicon-atom/codovo/issues/21");
         assert_eq!(state, "open");
     }
 
     #[test]
     fn parse_issue_falls_back_for_missing_optional_fields() {
         // 少了链接和状态仍要能用：链接自己拼，状态按刚创建算 open
-        let value = serde_json::json!({ "number": "IKING7" });
+        let value = serde_json::json!({ "number": 22 });
         let (number, url, state) = parse_issue(&value).unwrap();
-        assert_eq!(number, "IKING7");
-        assert!(url.ends_with("/issues/IKING7"));
+        assert_eq!(number, "22");
+        assert!(url.ends_with("/issues/22"));
         assert_eq!(state, "open");
     }
 

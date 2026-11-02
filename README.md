@@ -200,7 +200,7 @@ pnpm tauri build                     # 打包安装包
 
 从源码构建需要 Rust、Node.js、pnpm，以及对应平台的 Tauri 2 原生构建依赖（Windows 的 C++ 构建工具与 WebView2、macOS 的 Xcode Command Line Tools、Linux 的 WebKitGTK 等）。
 
-Windows 需要 WebView2 Runtime（Windows 11 自带）；Git 功能需要安装 Git；AI CLI 需要各自安装。**「设置 → 依赖」**可以检测 Git、Node.js、opencode、Codex、CodeBuddy、Claude Code 与 Gitee CLI 的安装状态，并提供安装入口。
+Windows 需要 WebView2 Runtime（Windows 11 自带）；Git 功能需要安装 Git；AI CLI 需要各自安装。**「设置 → 依赖」**可以检测 Git、Node.js、opencode、Codex、CodeBuddy、Claude Code 与 GitHub CLI（`gh`）的安装状态。反馈功能需要 GitHub CLI 并完成 `gh auth login`。
 
 ---
 

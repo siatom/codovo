@@ -90,14 +90,13 @@ function statusTextClass(kind: Status["kind"]): string {
 }
 
 /**
- * 意见反馈：填完直接建成本项目 Gitee 仓库的 issue，并在这里跟踪自己提过的那些状态。
+ * 意见反馈：填完直接建成本项目 GitHub 仓库的 issue，并在这里跟踪自己提过的那些状态。
  *
  * 外壳照 `SettingsDialog` / `ConfirmDialog`（遮罩 + 圆角卡片，Esc / 点遮罩关闭），
  * 刻意不用 `window.confirm` / `prompt`——WKWebView 不支持，会静默失效。
  *
- * 提交与查询都交给本机 gitee 官方 CLI：Gitee 的 WAF 按客户端指纹放行，应用自己的
- * HTTP 客户端过不去（详见 `feedback.rs` 的头注释）。CLI 没装或没登录时退成
- * 「浏览器打开新建 issue 页 + 正文写进剪贴板」——预填参数 Gitee 不一定认，
+ * 提交与查询都交给本机 GitHub CLI（`gh`），凭据由 CLI 自己保管。CLI 没装或没登录时退成
+ * 「浏览器打开新建 issue 页 + 正文写进剪贴板」作为无 CLI 时的兜底，
  * 剪贴板是兜底；这条路产生不了可跟踪的记录，界面上如实说明。
  */
 export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
@@ -160,7 +159,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       const list = await listFeedback().catch(() => []);
       if (!alive) return;
       setRecords(list);
-      // 一条都没有就不用去问 Gitee 了
+      // 一条都没有就不用去问 GitHub 了
       if (ok && list.length > 0) void refreshHistory();
     })();
     // 仓库地址由后端给（owner/repo 只在 feedback.rs 里写一份）
@@ -258,7 +257,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
 
   /**
    * CLI 用不了时的兜底：浏览器打开新建 issue 页。
-   * 正文先写进剪贴板——预填参数 Gitee 不一定认，认不了用户还能直接粘贴。
+   * 正文先写进剪贴板；如果预填参数没有生效，用户仍可直接粘贴。
    */
   const openInBrowser = async () => {
     const body = buildBody();
@@ -364,7 +363,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       )}
       {pendingDelete && (
         <ConfirmDialog
-          message={`从本地历史里移除 #${pendingDelete.number}？只清 Codovo 这边的记录，Gitee 上的 issue 不受影响。`}
+          message={`从本地历史里移除 #${pendingDelete.number}？只清 Codovo 这边的记录，GitHub 上的 issue 不受影响。`}
           confirmLabel="移除"
           onConfirm={() => void removeRecord(pendingDelete.number)}
           onCancel={() => setPendingDelete(null)}
@@ -380,16 +379,16 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       <div className="mb-3 rounded-lg border border-line bg-surface p-2.5">
         <p className="text-[11px] leading-relaxed text-fg-muted">
           {cli.available
-            ? "本机 gitee CLI 还没登录。"
-            : "本机没有找到 gitee CLI，反馈功能需要它代发。"}
+            ? "本机 GitHub CLI 还没登录。"
+            : "本机没有找到 GitHub CLI，反馈功能需要它代发。"}
         </p>
         {cli.detail && (
           <p className="mt-1 text-[11px] leading-relaxed text-fg-faint">{cli.detail}</p>
         )}
         <p className="mt-1 text-[11px] leading-relaxed text-fg-faint">
           {cli.available
-            ? "在终端执行 gitee auth login 后回来重新检测。"
-            : "安装：npm i -g @gitee/gitee-cli，然后 gitee auth login。"}
+            ? "在终端执行 gh auth login 后回来重新检测。"
+            : "安装：https://cli.github.com/，然后 gh auth login。"}
         </p>
         <div className="mt-2 flex items-center gap-2">
           <button
@@ -416,7 +415,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
         {ready ? (
           <div className="mb-3 flex items-center gap-2 text-[11px] text-fg-faint">
             <IconCheck className="h-3.5 w-3.5 text-ok" />
-            <span>将由本机 gitee CLI 提交</span>
+            <span>将由本机 GitHub CLI 提交</span>
           </div>
         ) : (
           renderCliHint()
@@ -496,7 +495,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
               disabled={cli === null || !target}
               title={
                 cli === null
-                  ? "正在检测本机 gitee CLI…"
+                  ? "正在检测本机 GitHub CLI…"
                   : target
                     ? "在浏览器里打开新建 issue 页面"
                     : "拿不到仓库地址，稍后再试"
@@ -525,7 +524,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
             onClick={() => void refreshHistory()}
             disabled={!ready || refreshing || records.length === 0}
             title={
-              ready ? "重新向 Gitee 查询状态" : "本机 gitee CLI 不可用，刷新不了状态"
+              ready ? "重新向 GitHub 查询状态" : "本机 GitHub CLI 不可用，刷新不了状态"
             }
             className={`ml-auto flex items-center gap-1 ${GHOST_BUTTON}`}
           >

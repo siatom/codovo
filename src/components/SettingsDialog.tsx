@@ -1536,7 +1536,7 @@ function DependencyRow({
   installing: boolean;
   checking: boolean;
   status?: DependencyStatus;
-  onInstall: (id: string) => void;
+  onInstall?: (id: string) => void;
 }) {
   const installed = status?.installed === true;
   return (
@@ -1574,7 +1574,7 @@ function DependencyRow({
       </div>
       {installed ? (
         <span className="shrink-0 text-[11px] text-ok">就绪</span>
-      ) : (
+      ) : onInstall ? (
         <button
           type="button"
           disabled={checking || installing}
@@ -1583,6 +1583,8 @@ function DependencyRow({
         >
           {checking ? "检查中…" : installing ? "安装中…" : "安装"}
         </button>
+      ) : (
+        <span className="shrink-0 text-[11px] text-fg-faint">需手动安装</span>
       )}
     </div>
   );
@@ -2959,16 +2961,15 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
 
                   <Section
                     title="可选扩展"
-                    hint="只在使用 Codovo 的 Gitee 反馈功能时需要。"
+                    hint="只在使用 Codovo 的 GitHub 反馈功能时需要。"
                   >
                     <DependencyRow
-                      id="gitee"
-                      label="Gitee CLI"
-                      detail="npm install -g @gitee/gitee-cli"
-                      installing={installing === "gitee"}
+                      id="gh"
+                      label="GitHub CLI"
+                      detail="https://cli.github.com/ · 安装后运行 gh auth login"
+                      installing={false}
                       checking={checkingDependencies}
-                      status={dependencyStatuses.gitee}
-                      onInstall={install}
+                      status={dependencyStatuses.gh}
                     />
                   </Section>
                   {installMessage && (

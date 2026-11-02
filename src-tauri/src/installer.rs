@@ -31,11 +31,6 @@ const NPM_PACKAGES: &[PackageSpec] = &[
         label: "Claude Code",
         package: "@anthropic-ai/claude-code",
     },
-    PackageSpec {
-        id: "gitee",
-        label: "Gitee CLI",
-        package: "@gitee/gitee-cli",
-    },
 ];
 
 #[derive(serde::Serialize)]
@@ -55,7 +50,7 @@ fn executable_for(id: &str) -> Option<&'static str> {
     match id {
         "node" => Some("node"),
         "git" => Some("git"),
-        "gitee" => Some("gitee"),
+        "gh" => Some("gh"),
         "opencode" => Some("opencode"),
         "codex" => Some("codex"),
         "codebuddy" => Some("codebuddy"),
@@ -78,7 +73,7 @@ pub async fn check_dependencies() -> Result<Vec<DependencyStatus>, String> {
             "codex",
             "codebuddy",
             "claude",
-            "gitee",
+            "gh",
         ]
         .into_iter()
         .map(|id| {
@@ -173,7 +168,7 @@ fn version_of(program: &Path) -> Option<String> {
 /// 这里必须自己解析可执行文件，不能直接 `Command::new("opencode")`：Windows 上
 /// npm 全局装出来的 CLI 只有 `.cmd` 垫片和无扩展名的 sh 脚本，没有 `.exe`，而
 /// `CreateProcess` 只会自动补 `.exe`——直接起必然失败，依赖面板就会把装好的东西
-/// 全报成未安装（opencode / codex / codebuddy / claude / gitee 都是这种）。
+/// 全报成未安装（opencode / codex / codebuddy / claude 都是这种）。
 /// 后缀探测与 `cmd /c` 包装复用 agent 那套，三端差异只留一份。
 fn run(program: &str, args: &[&str], path: Option<&OsStr>) -> Result<String, String> {
     let found = locate(program, path);

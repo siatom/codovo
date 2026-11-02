@@ -1,7 +1,7 @@
 //! 启动外部命令行工具：跨三端最容易踩空的一块。
 //!
 //! 这里原本长在 `agent.rs` 里（给 opencode 子进程用）。切 Rig 之后没有 opencode 子进程了，
-//! 但终端里的 AI CLI（`cli_sessions`）、意见反馈的 gitee CLI（`feedback`）、
+//! 但终端里的 AI CLI（`cli_sessions`）、意见反馈的 GitHub CLI（`feedback`）、
 //! CICD 的构建命令（`cicd`）都还要用这套解析，所以单独成模块。
 
 use std::ffi::OsStr;

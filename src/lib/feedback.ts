@@ -1,11 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 
 /**
- * 一条提交过的反馈。正文和大段讨论都在 Gitee 那边，这里只有索引信息——
+ * 一条提交过的反馈。正文和大段讨论都在 GitHub 那边，这里只有索引信息——
  * 界面要正文就点 `url` 跳过去。
  */
 export interface FeedbackRecord {
-  /** Gitee issue 编号，形如 `IKIHSS`（不是数字 id） */
+  /** GitHub issue 编号 */
   number: string;
   title: string;
   url: string;
@@ -20,7 +20,7 @@ export interface FeedbackRecord {
 }
 
 /**
- * 刷新结果。`errors` 是那些查不动的记录（比如 Gitee 那边被删了），
+ * 刷新结果。`errors` 是那些查不动的记录（比如 GitHub 那边被删了），
  * 剩下的照样更新——一条坏编号不该挡住整份列表。
  */
 export interface FeedbackRefresh {
@@ -37,11 +37,11 @@ export interface FeedbackTarget {
 }
 
 /**
- * 本机 gitee CLI 的状态。反馈的提交与状态查询都交给它——令牌由 CLI 自己保管，
+ * 本机 GitHub CLI 的状态。反馈的提交与状态查询都交给它——令牌由 CLI 自己保管，
  * 本应用既不存也拿不到。
  */
 export interface CliStatus {
-  /** PATH 里找不找得到 gitee 命令 */
+  /** PATH 里找不找得到 gh 命令 */
   available: boolean;
   /** CLI 自己那套凭据是否已登录 */
   loggedIn: boolean;
@@ -63,7 +63,7 @@ export function categoryLabel(value: string): string {
   return CATEGORIES.find((item) => item.value === value)?.label ?? value;
 }
 
-/** issue 状态的中文名。Gitee 的四种状态，认不出的原样返回 */
+/** issue 状态的中文名。认不出的原样返回 */
 export function stateLabel(state: string): string {
   switch (state) {
     case "open":
@@ -84,7 +84,7 @@ export function feedbackTarget(): Promise<FeedbackTarget> {
   return invoke<FeedbackTarget>("feedback_target");
 }
 
-/** 本机 gitee CLI 是否可用、是否已登录 */
+/** 本机 GitHub CLI 是否可用、是否已登录 */
 export function cliStatus(): Promise<CliStatus> {
   return invoke<CliStatus>("feedback_cli_status");
 }
@@ -108,7 +108,7 @@ export function refreshFeedback(): Promise<FeedbackRefresh> {
   return invoke<FeedbackRefresh>("feedback_refresh");
 }
 
-/** 删掉一条本地记录。只清索引，不动 Gitee 上的 issue */
+/** 删掉一条本地记录。只清索引，不动 GitHub 上的 issue */
 export function deleteFeedback(number: string): Promise<FeedbackRecord[]> {
   return invoke<FeedbackRecord[]>("feedback_delete", { number });
 }
@@ -138,15 +138,15 @@ export function environmentInfo(): string {
 }
 
 /**
- * 没有令牌时的兜底地址：Gitee 的新建 issue 页 + 预填标题正文。
+ * GitHub CLI 不可用时的兜底地址：GitHub 新建 issue 页 + 预填标题正文。
  *
- * 预填参数算是尽力而为——Gitee 不认这两个参数时页面照常打开，只是空的，
+ * 预填参数用于填入标题和正文，剪贴板作为兜底，
  * 所以调用方还要把正文写进剪贴板兜住这种情况。
  */
 export function newIssueUrl(base: string, title: string, body: string): string {
   const query = new URLSearchParams({
-    "issue[title]": title,
-    "issue[description]": body,
+    title,
+    body,
   });
   return `${base}?${query.toString()}`;
 }
