@@ -98,6 +98,11 @@ rig-core = { version = "=0.45.0", default-features = false, features = ["derive"
 rig-agent = "=0.45.0"
 rig-memory = { version = "=0.45.0", features = ["fs"] }
 futures = "0.3"
+# ACP 对话面板：把 AI CLI 当 stdio 子进程接进来（见 src/acp/）。
+# - 只用稳定 v1（`Client.v1()`），不打开任何 unstable_* 特性；v2 还在草案期。
+# - `process` 提供 `AcpAgent`：起子进程、按行读写 JSON-RPC、退出时回收进程组。
+# - 5.x 与 protocol v1 稳定版对齐；升级前先跑 `cargo test --lib acp_probe -- --ignored`。
+agent-client-protocol = { version = "5", features = ["process"] }
 
 
 # 自绘标题栏的右键要弹系统菜单（GetSystemMenu / TrackPopupMenuEx）。只用得到几个

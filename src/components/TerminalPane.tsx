@@ -14,6 +14,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { agentEnvFor } from "../lib/agents";
 import { hasInternalTabs, prepareLaunch } from "../lib/cli-launch";
+import { acpProviderKey } from "../lib/acp";
 import { pathKey, samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
@@ -21,15 +22,18 @@ import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import { useTabReorder } from "../lib/use-tab-reorder";
 import type { EditorLocation, TerminalSessionInfo } from "../lib/types";
+import { AcpChatPane, type AcpCliOption } from "./AcpChatPane";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   AgentLogo,
+  IconBot,
   IconChevronDown,
   IconClose,
   IconLayoutColumns,
   IconLayoutRows,
   IconLayoutSingle,
   IconPlus,
+  IconTerminal,
   ShellIcon,
 } from "./icons";
 
@@ -115,6 +119,10 @@ export function TerminalPane({
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
   const [layout, setLayout] = useState<"tabs" | "horizontal" | "vertical">("tabs");
+  /** 中间区在「终端 / 对话」之间切换；对话面板只是藏起来，ACP 会话不因此断开 */
+  const [view, setView] = useState<"terminal" | "chat">("terminal");
+  /** 对话面板选中的 CLI，存整条命令（设置里可能同名多条） */
+  const [chatCommand, setChatCommand] = useState<string | null>(null);
   /**
    * 新建标签时要自动敲进去的命令，按会话 id 记。和 sessions 在同一次事件里更新，
    * 新会话第一次渲染就带着它——不存在"先挂载、后补命令"的时间窗。
@@ -407,12 +415,32 @@ export function TerminalPane({
     [settings.aiCommands],
   );
 
+  /** 顶栏里真正能进对话面板的 CLI：命令能被认出来，且后端接了 ACP */
+  const acpCommands = useMemo<AcpCliOption[]>(
+    () =>
+      aiCommands.flatMap((item) => {
+        const key = acpProviderKey(item.command, item.name);
+        if (!key) return [];
+        const env = item.env
+          .map((entry) => ({ key: entry.key.trim(), value: entry.value }))
+          .filter((entry) => entry.key !== "");
+        return [{ key, label: item.name, command: item.command, env }];
+      }),
+    [aiCommands],
+  );
+  const chatCli = useMemo(
+    () => acpCommands.find((item) => item.command === chatCommand) ?? acpCommands[0] ?? null,
+    [acpCommands, chatCommand],
+  );
+
   /**
    * 顶栏点某个 AI CLI。
    *
    * opencode 这类自带多标签页的 CLI 已经有标签就切过去——它自己就能在 TUI 里开多个会话，
    * 再叠一个终端标签只是多一份重复的界面。有多个（历史遗留 / resume 开的）时取最近创建的。
    * 其余 CLI 仍然每次新开，允许同一 CLI 同时运行多个实例。
+   *
+   * 对话视图下同一排按钮改成切换「跟哪家聊」，不新开终端。
    */
   const launchCli = useCallback(
     (command: string, title: string) => {
@@ -441,27 +469,45 @@ export function TerminalPane({
       {/* 顶栏是 AI CLI 快速切换条：配了哪些 CLI 就摆哪几个按钮，点一下切过去或新开。
           一个都没配时整条栏不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
       {aiCommands.length > 0 && (
-        <header className="flex h-9 shrink-0 items-center justify-center border-b border-line px-2">
+        <header className="flex h-9 shrink-0 items-center justify-center gap-2 border-b border-line px-2">
           {/* 命令少时居中摆放；多到放不下时 `justify-center-safe` 会自动退回从左侧开始，
               横向滚动才够得着第一项（纯 justify-center 会把开头挤到滚动区外面） */}
           <div className="no-scrollbar flex min-w-0 flex-1 items-center justify-center-safe gap-1 overflow-x-auto">
             {aiCommands.map((item, index) => {
-              // 当前活动标签正好是这个 CLI 时高亮，一眼看出「现在在跟谁说话」
-              const isActive = hintByIdRef.current.get(activeId) === item.command;
+              const chatOption = acpCommands.find((option) => option.command === item.command);
+              // 终端视图看活动标签，对话视图看选中的 CLI
+              const isActive =
+                view === "chat"
+                  ? chatCli?.command === item.command
+                  : hintByIdRef.current.get(activeId) === item.command;
+              const chatUnsupported = view === "chat" && !chatOption;
               return (
                 <button
                   key={`${item.name}-${item.command}-${index}`}
                   type="button"
-                  onClick={() => launchCli(item.command, item.name)}
+                  disabled={chatUnsupported}
+                  onClick={() => {
+                    if (view === "chat") {
+                      if (chatOption) setChatCommand(item.command);
+                      return;
+                    }
+                    launchCli(item.command, item.name);
+                  }}
                   title={
-                    hasInternalTabs(item.command)
-                      ? `${item.name}：切到已打开的标签，没有就新开一个`
-                      : `${item.name}：新开一个终端标签启动`
+                    chatUnsupported
+                      ? `${item.name} 还没有接入 ACP 对话`
+                      : view === "chat"
+                        ? `${item.name}：切到这个 CLI 的对话`
+                        : hasInternalTabs(item.command)
+                          ? `${item.name}：切到已打开的标签，没有就新开一个`
+                          : `${item.name}：新开一个终端标签启动`
                   }
                   className={`flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] ${
                     isActive
                       ? "bg-selected text-fg shadow-sm"
-                      : "text-fg-dim hover:bg-hover hover:text-fg"
+                      : chatUnsupported
+                        ? "text-fg-faint opacity-40"
+                        : "text-fg-dim hover:bg-hover hover:text-fg"
                   }`}
                 >
                   <AgentLogo name={item.name} command={item.command} className="h-3.5 w-3.5" />
@@ -470,11 +516,47 @@ export function TerminalPane({
               );
             })}
           </div>
+          {/* 终端 / 对话分段开关。做成两个小段而不是新标签，终端标签模型不用动 */}
+          <div className="flex shrink-0 items-center rounded-md bg-raised p-0.5">
+            <button
+              type="button"
+              onClick={() => setView("terminal")}
+              title="终端：原样跑 CLI 的 TUI"
+              aria-label="终端"
+              className={`flex h-6 items-center gap-1 rounded px-1.5 text-[11px] ${
+                view === "terminal" ? "bg-selected text-fg shadow-sm" : "text-fg-dim hover:text-fg"
+              }`}
+            >
+              <IconTerminal className="h-3 w-3" />
+              终端
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const active = hintByIdRef.current.get(activeId);
+                if (acpCommands.some((option) => option.command === active)) {
+                  setChatCommand(active ?? null);
+                } else if (!chatCli && acpCommands[0]) {
+                  setChatCommand(acpCommands[0].command);
+                }
+                setView("chat");
+              }}
+              title="对话：用 ACP 接同一个 CLI，消息和工具卡在界面里呈现"
+              aria-label="对话"
+              className={`flex h-6 items-center gap-1 rounded px-1.5 text-[11px] ${
+                view === "chat" ? "bg-selected text-fg shadow-sm" : "text-fg-dim hover:text-fg"
+              }`}
+            >
+              <IconBot className="h-3 w-3" />
+              对话
+            </button>
+          </div>
         </header>
       )}
 
-      {/* 终端本体：标签栏和终端都归这一套自己管 */}
-      <div className="flex min-h-0 flex-1 flex-col">
+      {/* 终端本体：标签栏和终端都归这一套自己管。切到对话时整套藏起来，
+          PTY 会话和标签状态都留着，切回来还是原样 */}
+      <div className={view === "chat" ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
           <div
             ref={tabsScrollRef}
@@ -708,6 +790,11 @@ export function TerminalPane({
             ];
           })}
         </div>
+      </div>
+
+      {/* 对话面板始终挂载：切回终端只是 hidden，ACP 会话和消息都留着 */}
+      <div className={view === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        <AcpChatPane root={root} roots={roots} cli={chatCli} />
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，

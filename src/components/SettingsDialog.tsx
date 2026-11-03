@@ -42,6 +42,7 @@ import {
   type AgentCatalogItem,
   type AgentCliStatus,
 } from "../lib/agents";
+import { acpProviderKey } from "../lib/acp";
 import {
   TERMINAL_THEME_OPTIONS,
   resolveTerminalTheme,
@@ -1964,6 +1965,8 @@ function SupportedAgentList({
         const status = statuses[catalogStatusId(item.key)];
         const installed = status?.installed === true;
         const missing = status !== undefined && !status.installed;
+        // 支持 ACP 的这几家还能在中间区的「对话」视图里用
+        const canChat = acpProviderKey(item.command) !== null;
         return (
           <div
             key={item.key}
@@ -1992,6 +1995,14 @@ function SupportedAgentList({
               <div className="flex items-center gap-2">
                 <p className="truncate text-[12px] font-medium text-fg">{item.name}</p>
                 <AgentStatusBadge status={status} checking={checking} />
+                {canChat && (
+                  <span
+                    title="可以在中间区的「对话」视图里用 ACP 接入"
+                    className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim"
+                  >
+                    支持对话
+                  </span>
+                )}
               </div>
               <p className="mt-0.5 truncate font-mono text-[10px] text-fg-faint">
                 {item.command}

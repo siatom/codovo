@@ -1,5 +1,6 @@
 #![allow(linker_messages)]
 
+mod acp;
 mod agent;
 mod agent_config;
 mod ai;
@@ -48,6 +49,7 @@ pub fn run() {
         .manage(watcher::WatchState::new())
         .manage(local_fs::LocalWatchState::new())
         .manage(agent::AgentState::new())
+        .manage(acp::AcpState::new())
         .manage(remote::RemoteState::new())
         .manage(database::DbState::new())
         .manage(preview::PreviewState::new())
@@ -170,6 +172,13 @@ pub fn run() {
             agent::agent_abort,
             agent::agent_delete_session,
             agent::agent_rename_session,
+            acp::acp_start,
+            acp::acp_list_sessions,
+            acp::acp_prompt,
+            acp::acp_cancel,
+            acp::acp_respond_permission,
+            acp::acp_stop,
+            acp::acp_status,
             remote::remote_connect,
             remote::remote_test_connection,
             remote::remote_write,
@@ -238,6 +247,10 @@ pub fn run() {
                 }
                 // 助手槽位是常驻的，退出时统一收摊（每个工作区一个）
                 if let Some(state) = app.try_state::<agent::AgentState>() {
+                    state.kill_all();
+                }
+                // 对话面板的 ACP 子进程同样常驻，退出时一起带走
+                if let Some(state) = app.try_state::<acp::AcpState>() {
                     state.kill_all();
                 }
                 // 目录监听的防抖线程也跟着收摊，别留游离线程

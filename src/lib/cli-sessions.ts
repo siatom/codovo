@@ -145,11 +145,59 @@ export async function listWorkspaceHistory(
     }
   }
 
+  // ACP Agent 自己提供的历史补充常规 CLI 磁盘记录。只查询已配置的 ACP CLI，避免为
+  // 未使用的 provider 启动 npx 适配器；结果短暂缓存，侧栏定时刷新不会反复拉进程。
+  const acpProviders = [
+    { key: "codebuddy", label: "CodeBuddy", bin: "codebuddy", resumeFlag: "--resume" },
+    { key: "claude", label: "Claude Code", bin: "claude", resumeFlag: "--resume" },
+    { key: "codex", label: "Codex", bin: "codex", resumeFlag: "resume" },
+    { key: "opencode", label: "opencode", bin: "opencode", resumeFlag: "--session" },
+    { key: "gemini", label: "Gemini CLI", bin: "gemini", resumeFlag: "--resume" },
+    { key: "copilot", label: "GitHub Copilot", bin: "copilot", resumeFlag: "--resume" },
+    { key: "qoder", label: "Qoder", bin: "qodercli", resumeFlag: "--resume" },
+  ];
+  for (const provider of acpProviders) {
+    const configured = commands.find((item) => {
+      if (cliProvider(item.command, item.name)?.key === provider.key) return true;
+      if (provider.key !== "gemini" && provider.key !== "copilot") return false;
+      const words = `${item.command} ${item.name}`
+        .toLowerCase()
+        .split(/[\s/\\]+/)
+        .map((word) => word.replace(/\.(exe|cmd|bat|ps1)$/i, ""));
+      return words.includes(provider.bin);
+    });
+    if (!configured) continue;
+    const command = configured.command.trim() || provider.bin;
+    for (const root of roots) {
+      jobs.push(
+        listAcpSessions(root, provider.key, command, configured.env)
+          .then((sessions) =>
+            sessions.map((session) => ({
+              id: session.sessionId,
+              title: session.title || "ACP 对话",
+              updated: session.updatedAt ? Date.parse(session.updatedAt) || 0 : 0,
+              cwd: session.cwd,
+              provider: provider.key,
+              label: `${provider.label} · ACP`,
+              resume: `${command} ${provider.resumeFlag} ${session.sessionId}`,
+            })),
+          )
+          .catch(() => []),
+      );
+    }
+  }
+
   const parts: CliHistoryEntry[][] = [];
   const merged = () => {
     const all = parts.flat();
     all.sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
-    return all.slice(0, HISTORY_LIMIT);
+    const seen = new Set<string>();
+    return all.filter((item) => {
+      const key = `${item.provider}\u0000${item.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, HISTORY_LIMIT);
   };
   await Promise.all(
     jobs.map((job, index) =>
@@ -162,6 +210,43 @@ export async function listWorkspaceHistory(
     ),
   );
   return merged();
+}
+
+interface AcpListedSession {
+  sessionId: string;
+  cwd: string;
+  title?: string;
+  updatedAt?: string;
+}
+
+const ACP_HISTORY_CACHE_MS = 60_000;
+const acpHistoryCache = new Map<string, { at: number; promise: Promise<AcpListedSession[]> }>();
+
+function listAcpSessions(
+  root: string,
+  provider: string,
+  command: string,
+  env: AiCommand["env"],
+): Promise<AcpListedSession[]> {
+  let envFingerprint = 2166136261;
+  for (const char of JSON.stringify(env)) {
+    envFingerprint = Math.imul(envFingerprint ^ char.charCodeAt(0), 16777619);
+  }
+  const key = `${root}\u0000${provider}\u0000${command}\u0000${(envFingerprint >>> 0).toString(36)}`;
+  const now = Date.now();
+  for (const [entryKey, entry] of acpHistoryCache) {
+    if (now - entry.at > ACP_HISTORY_CACHE_MS * 5) acpHistoryCache.delete(entryKey);
+  }
+  const cached = acpHistoryCache.get(key);
+  if (cached && now - cached.at < ACP_HISTORY_CACHE_MS) return cached.promise;
+  const promise = invoke<AcpListedSession[]>("acp_list_sessions", {
+    root,
+    provider,
+    command,
+    env,
+  });
+  acpHistoryCache.set(key, { at: now, promise });
+  return promise;
 }
 
 /**

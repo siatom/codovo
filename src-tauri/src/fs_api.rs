@@ -308,11 +308,14 @@ pub fn workspace_close(
     watch: tauri::State<'_, crate::watcher::WatchState>,
     pty: tauri::State<'_, crate::pty::PtyState>,
     agent: tauri::State<'_, crate::agent::AgentState>,
+    acp: tauri::State<'_, crate::acp::AcpState>,
     runtime: tauri::State<'_, crate::runtime::RuntimeState>,
     roots: Vec<String>,
 ) {
     for root in &roots {
         crate::agent::stop_root(&agent, root);
+        // 对话面板按 root 分片，关工作区时一并收掉
+        crate::acp::stop_root(&acp, root);
         // 预览助手挂在每个工作区自己的哨兵 root 下（见 agent::preview_root），
         // 关工作区时也要把它一并收掉，别留个还在跑的槽位
         crate::agent::stop_root(&agent, &crate::agent::preview_root(root));
