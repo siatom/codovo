@@ -218,6 +218,34 @@ export const TERMINAL_THEME_OPTIONS = COMMON_KEYS.map((key) => ({
   label: LABEL_OVERRIDES[key] ?? key.replace(/_/g, " "),
 }));
 
+/**
+ * 按界面透明度把配色里的底色换成半透明，让终端也透出桌面。
+ *
+ * 只有开着 xterm 的 `allowTransparency` 才认带 alpha 的底色（见 TerminalSession）。
+ * 光标上的字（cursorAccent）不跟着透明：它压在光标色上，透了会露出底下的字。
+ */
+export function translucentTheme(theme: ITheme, percent: number): ITheme {
+  // 没写底色的配色由 xterm 自己兜底（用默认黑），这里不动它
+  if (percent >= 100 || !theme.background) return theme;
+  const alpha = Math.max(0, Math.min(1, percent / 100));
+  return { ...theme, background: withAlpha(theme.background, alpha) };
+}
+
+/** `#rgb` / `#rrggbb` 转成 rgba()；认不出的写法原样返回——宁可完全不透明也别画错颜色 */
+function withAlpha(color: string, alpha: number): string {
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (!match) return color;
+  const hex =
+    match[1].length === 3
+      ? match[1]
+          .split("")
+          .map((char) => char + char)
+          .join("")
+      : match[1];
+  const value = Number.parseInt(hex, 16);
+  return `rgba(${(value >> 16) & 0xff}, ${(value >> 8) & 0xff}, ${value & 0xff}, ${alpha})`;
+}
+
 /** 空 key 表示跟随界面主题；未知 key（比如包换了版本、主题被删）也回落内置配色 */
 export function resolveTerminalTheme(
   key: string,

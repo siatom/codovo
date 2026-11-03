@@ -3,6 +3,7 @@
 mod acp;
 mod agent;
 mod agent_config;
+mod backdrop;
 mod ai;
 mod cicd;
 mod agent_protocol;
@@ -237,6 +238,7 @@ pub fn run() {
             titlebar::window_is_maximized,
             titlebar::window_close,
             titlebar::window_show_system_menu,
+            backdrop::window_set_transparency,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

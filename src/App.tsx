@@ -919,7 +919,7 @@ function Shell() {
   if (booting) {
     // 启动期也挂标题栏：系统标题栏已经去掉了，没有它这块窗口就拖不动
     return (
-      <div className="flex h-full w-full flex-col overflow-hidden bg-app">
+      <div className="flex h-full w-full flex-col overflow-hidden bg-window">
         <TitleBar workspace={null} />
         <div className="flex flex-1 items-center justify-center text-[12px] text-fg-faint">
           正在恢复上次的工作区…
@@ -929,7 +929,7 @@ function Shell() {
   }
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden bg-app">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-window">
       {/* 自绘标题栏横跨整个窗口：窗口按钮固定在右上角，和系统标题栏的位置一致 */}
       <TitleBar workspace={activeName} />
       <div className="flex min-h-0 flex-1 overflow-hidden">

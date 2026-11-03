@@ -9,7 +9,7 @@ import {
   type DbKind,
   type QueryResult,
 } from "../lib/database";
-import { monaco, monacoThemeFor } from "../lib/monaco-setup";
+import { monaco, monacoThemeFor, setMonacoTransparency } from "../lib/monaco-setup";
 import { resolveFont, useSettings } from "../lib/settings";
 import { formatSql } from "../lib/sql-format";
 import { useTheme } from "../lib/theme";
@@ -189,8 +189,9 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
 
   // 主题跟随界面
   useEffect(() => {
+    setMonacoTransparency(settings.uiOpacity);
     monaco.editor.setTheme(monacoThemeFor(palette, theme));
-  }, [palette, theme]);
+  }, [palette, theme, settings.uiOpacity]);
 
   // 字体跟随编辑器设置（放在单独的 effect 里，编辑器本身不因字体变化重建）
   useEffect(() => {

@@ -10,7 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type Ref,
 } from "react";
-import { monaco, monacoThemeFor } from "../lib/monaco-setup";
+import { monaco, monacoThemeFor, setMonacoTransparency } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -2265,6 +2265,7 @@ export function EditorPane({
     if (!container) return;
 
     const themeName = monacoThemeFor(paletteRef.current, themeRef.current);
+    setMonacoTransparency(settings.uiOpacity);
     monaco.editor.setTheme(themeName);
     const editor = monaco.editor.create(container, {
       theme: themeName,
@@ -2372,8 +2373,9 @@ export function EditorPane({
 
   // 切主题不重建 editor，只换配色（差分编辑器共用全局主题）
   useEffect(() => {
+    setMonacoTransparency(settings.uiOpacity);
     monaco.editor.setTheme(monacoThemeFor(palette, theme));
-  }, [palette, theme]);
+  }, [palette, theme, settings.uiOpacity]);
 
   // 字体/字号/字重同理。换字体后要让 Monaco 重新量一遍字宽，否则列宽还是旧字体的
   useEffect(() => {
@@ -3438,9 +3440,11 @@ export function EditorPane({
     },
   ];
 
+  // 整块不铺底色：编辑器自己画（跟着界面透明度走），这里再铺一层就叠成两层 alpha。
+  // 需要底色的只有标签栏和图片预览（其余视图各自带 bg-surface）
   return (
-    <section ref={paneRef} className="relative flex h-full min-h-0 flex-col bg-surface" onKeyDownCapture={onPaneKeyDown}>
-      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
+    <section ref={paneRef} className="relative flex h-full min-h-0 flex-col" onKeyDownCapture={onPaneKeyDown}>
+      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line bg-surface px-2">
         <div
           ref={tabsScrollRef}
           onClickCapture={onClickCapture}
@@ -3950,7 +3954,7 @@ export function EditorPane({
 
         {/* 图片按原比例整体放进可视区，不放大也不让横竖滚动条出场 */}
         {status.kind === "image" && (
-          <div className="absolute inset-0 flex items-center justify-center overflow-hidden p-4">
+          <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-surface p-4">
             <img
               src={status.src}
               alt={active ? tabName(active) : ""}

@@ -26,7 +26,7 @@ import { matchesShortcut } from "../lib/shortcuts";
 import { spawnPty, type PtyHandle } from "../lib/pty";
 import { resolveFont, useSettings } from "../lib/settings";
 import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
-import { resolveTerminalTheme } from "../lib/terminal-themes";
+import { resolveTerminalTheme, translucentTheme } from "../lib/terminal-themes";
 import { registerTerminalFileLinks } from "../lib/terminal-file-links";
 import { useTheme } from "../lib/theme";
 import { pauseDevicePixelSync } from "../lib/xterm-webgl";
@@ -345,6 +345,9 @@ export const TerminalSession = forwardRef<
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+  // 界面透明度同理：建实例时读一次（底色要在 open() 前定好），之后改设置走下面的 effect
+  const opacityRef = useRef(settings.uiOpacity);
+  opacityRef.current = settings.uiOpacity;
   // GPU 加速同理：建实例时读一次，改设置只影响之后新建的会话
   const gpuAccelRef = useRef(settings.terminalGpuAcceleration);
   gpuAccelRef.current = settings.terminalGpuAcceleration;
@@ -412,7 +415,14 @@ export const TerminalSession = forwardRef<
       scrollback: 5000,
       // 右键在我们这儿是复制/粘贴，别让它顺带按词选中，不然会先把选区改掉再复制
       rightClickSelectsWord: false,
-      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current, paletteRef.current),
+      // 底色跟着界面透明度走：终端也透出桌面，不再是一块实心板
+      theme: translucentTheme(
+        resolveTerminalTheme(terminalThemeRef.current, themeRef.current, paletteRef.current),
+        opacityRef.current,
+      ),
+      // 带 alpha 的底色只有开了这个选项才认。xterm 要求它在 open() 之前定好、之后改不了，
+      // 而透明度是随时可调的，所以一律打开；代价是少了不透明底色的一条快速路径
+      allowTransparency: true,
     });
 
     const fit = new FitAddon();
@@ -811,10 +821,13 @@ export const TerminalSession = forwardRef<
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme, palette);
+    term.options.theme = translucentTheme(
+      resolveTerminalTheme(settings.terminalTheme, theme, palette),
+      settings.uiOpacity,
+    );
     // 只改 options 时 WebGL 渲染器不保证重画整屏，显式刷一遍底色才跟着换
     term.refresh(0, Math.max(0, term.rows - 1));
-  }, [theme, palette, settings.terminalTheme]);
+  }, [theme, palette, settings.terminalTheme, settings.uiOpacity]);
 
   // 字体/字号/字重同理，改完补一次 fit，把新的行列数告诉 PTY
   useEffect(() => {
@@ -872,10 +885,9 @@ export const TerminalSession = forwardRef<
   // FitAddon 只按整数行列铺，容器高度是像素分数，底部会剩不到一行的空当。
   // 把它涂成终端自己的底色，否则会露出外面面板的底色——上下并列时那道空当
   // 正好贴在分割线上方，看着像一条平行的白色阴影。
-  const terminalBg = resolveTerminalTheme(
-    settings.terminalTheme,
-    theme,
-    palette,
+  const terminalBg = translucentTheme(
+    resolveTerminalTheme(settings.terminalTheme, theme, palette),
+    settings.uiOpacity,
   ).background;
 
   return (

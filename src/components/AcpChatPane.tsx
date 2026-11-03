@@ -640,8 +640,9 @@ export function AcpChatPane({ root, roots, cli }: AcpChatPaneProps) {
         </button>
       </header>
 
-      {/* 对话标签：同一家 CLI 可并行开几条，各自一个 ACP session */}
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line bg-surface px-2">
+      {/* 对话标签：同一家 CLI 可并行开几条，各自一个 ACP session。
+          不单独铺底色：外壳已经是 bg-surface，再叠一层半透明时会比外壳实一截 */}
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
         <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {slot?.chats.map((item) => {
             const active = item.chatId === slot.active;

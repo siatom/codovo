@@ -44,6 +44,16 @@ export function closeWindow(): Promise<void> {
   return invoke("window_close");
 }
 
+/**
+ * 设置界面透明度（百分比）。
+ *
+ * 界面本身靠 CSS 变量 `--ui-alpha` 变半透明（窗口是透明的，所以能透出桌面）；
+ * 这里只是顺带通知系统：macOS 用 Vibrancy、Windows 用 Acrylic，Linux 由桌面合成器处理。
+ */
+export function setWindowTransparency(percent: number, dark: boolean): Promise<void> {
+  return invoke("window_set_transparency", { percent, dark });
+}
+
 /** 标题栏右键：弹系统菜单（还原 / 移动 / 大小 / 最小化 / 最大化 / 关闭） */
 export function showWindowSystemMenu(): Promise<void> {
   return invoke("window_show_system_menu");

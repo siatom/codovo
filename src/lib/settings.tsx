@@ -8,7 +8,9 @@ import {
 } from "react";
 import { secretStatus, setSecret } from "./secrets";
 import { defaultShortcuts, resolveShortcuts } from "./shortcuts";
+import { useTheme } from "./theme";
 import type { TranslateTarget } from "./types";
+import { setWindowTransparency } from "./window";
 
 /** 自动保存时机，四种跟 VS Code 的 files.autoSave 对齐 */
 export type AutoSaveMode = "off" | "afterDelay" | "onFocusChange" | "onWindowChange";
@@ -122,6 +124,12 @@ export interface Settings {
    * 新代码不要再读写它。
    */
   agentWorkspaces: Record<string, AgentLayer>;
+  /**
+   * 界面透明度（百分比，100 表示不透明）。调低后窗口底色透出桌面，同时让系统在窗口后面
+   * 铺一层毛玻璃（Windows 用 Mica / Acrylic、macOS 用 Vibrancy）。终端与编辑器各自画
+   * 底色，也跟着一起变半透明——透出来的是它们自己主题的颜色，不是外面板子的色。
+   */
+  uiOpacity: number;
   /** 界面字体（CSS font-family），留空用默认无衬线栈；只作用于界面，终端与编辑器各自另设 */
   uiFontFamily: string;
   /** 终端启动的 shell 候选 id；空串表示自动（后端按平台挑） */
@@ -214,6 +222,7 @@ export type SettingsSection =
  */
 const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   appearance: [
+    "uiOpacity",
     "uiFontFamily",
     "terminalFontFamily",
     "terminalFontSize",
@@ -265,6 +274,9 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
 
 export const FONT_SIZE_MIN = 11;
 export const FONT_SIZE_MAX = 20;
+/** 界面透明度的取值范围（百分比）。下限 50 是为了半透明状态下文字还看得清 */
+export const UI_OPACITY_MIN = 50;
+export const UI_OPACITY_MAX = 100;
 export const AUTOSAVE_DELAY_MIN = 300;
 export const AUTOSAVE_DELAY_MAX = 10000;
 
@@ -318,6 +330,8 @@ const DEFAULTS: Settings = {
   // 默认译成简体中文；用户可以在设置或翻译视图里随时切换
   translateTarget: "zh",
   agentWorkspaces: {},
+  // 默认不透明：透明窗口在部分平台（无合成器的 Linux）会露底，得用户主动开
+  uiOpacity: UI_OPACITY_MAX,
   uiFontFamily: "",
   terminalShell: "",
   terminalFontFamily: "",
@@ -365,6 +379,12 @@ const DEFAULTS: Settings = {
 function clampSize(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, Math.round(value)));
+}
+
+/** 透明度同样是百分比整数；读坏了（含老版本没有这个字段）回落 100，也就是不透明 */
+function clampOpacity(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(UI_OPACITY_MAX, Math.max(UI_OPACITY_MIN, Math.round(value)));
 }
 
 function clampDelay(value: unknown, fallback: number): number {
@@ -592,6 +612,7 @@ function readSaved(): Settings {
     // 老版本的设置里没有这一项，回落成空表；更早的字段叫 agentProjects，兜底读旧名。
     // 只用于一次性迁移到 `.codovo/`（见 lib/agent-config.ts 的 readWorkspaceLayer）
     agentWorkspaces: asWorkspaceLayers(raw.agentWorkspaces ?? raw.agentProjects),
+    uiOpacity: clampOpacity(raw.uiOpacity, DEFAULTS.uiOpacity),
     uiFontFamily: asString(raw.uiFontFamily, DEFAULTS.uiFontFamily),
     terminalShell: asString(raw.terminalShell, DEFAULTS.terminalShell),
     terminalFontFamily: asString(raw.terminalFontFamily, DEFAULTS.terminalFontFamily),
@@ -695,6 +716,8 @@ function freshDefaults(): Settings {
 }
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
+  // 窗口背景效果要按当前主题深浅着色（跟随系统时这里拿到的已经是解析后的结果）
+  const { theme } = useTheme();
   const [settings, setSettings] = useState<Settings>(readSaved);
   /** 钥匙串读不了 / 明文没搬成功时的原因，界面据此提示 */
   const [secretNotice, setSecretNotice] = useState("");
@@ -706,6 +729,25 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       // 写不进去只影响下次启动，本次会话照常生效
     }
   }, [settings]);
+
+  // 低于 100% 时给 macOS / Windows 铺系统 backdrop；Linux 交给桌面合成器处理。
+  useEffect(() => {
+    void setWindowTransparency(settings.uiOpacity, theme === "dark").catch(() => {});
+  }, [settings.uiOpacity, theme]);
+
+  /**
+   * 界面的透明度：styles.css 里各层底色（bg-app / bg-panel / bg-surface …）都按它折算成
+   * rgba，改这一个变量整片界面就一起半透明，组件里不用各自处理。
+   *
+   * 根节点那层底色（--ui-window-alpha）跟它不同步：半透明时根节点必须全透明，否则侧栏
+   * 底下先垫一层 85%、侧栏自己再叠一层 85%，乘起来是 98%，看着跟没开一样。
+   */
+  useEffect(() => {
+    const root = document.documentElement.style;
+    const opaque = settings.uiOpacity >= UI_OPACITY_MAX;
+    root.setProperty("--ui-alpha", opaque ? "100%" : `${settings.uiOpacity}%`);
+    root.setProperty("--ui-window-alpha", opaque ? "100%" : "0%");
+  }, [settings.uiOpacity]);
 
   // 界面字体挂到 <html> 的 CSS 变量上；styles.css 里 body 按它取字体
   useEffect(() => {

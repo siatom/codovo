@@ -22,7 +22,14 @@ serde_json = "1"
 [dependencies]
 # tray-icon：系统托盘（关闭窗口后驻留后台的入口）；image-png：托盘图标解码；
 # protocol-asset：asset 协议，内置浏览器用它加载工作区里的 html（只多一个 http-range 小依赖）
-tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
+# macos-private-api：macOS 上窗口透明 + Vibrancy 要用私有 API（tauri.conf.json 的
+# macOSPrivateApi 跟它是配套的，缺了 build 阶段会直接报错）
+tauri = { version = "2", features = [
+  "tray-icon",
+  "image-png",
+  "protocol-asset",
+  "macos-private-api",
+] }
 # 单实例：已有一个实例在跑时（可能收进了托盘），再启动只唤回它，不新开进程
 tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
@@ -35,6 +42,9 @@ serde_yaml = "0.9"
 base64 = "0.22"
 tauri-plugin-opener = "2.5.5"
 tauri-plugin-clipboard-manager = "2"
+# 窗口背景模糊：界面半透明时给窗口铺一层系统毛玻璃（Windows Mica / Acrylic、macOS Vibrancy）。
+# Tauri 官方维护，只依赖 raw-window-handle，不额外引窗口系统绑定；Linux 上是个空实现。
+window-vibrancy = "0.8"
 regex = "1.13.1"
 notify = "8.2"
 # 内容搜索要跳过 .gitignore 忽略掉的文件：ignore 是 ripgrep 的遍历库，负责

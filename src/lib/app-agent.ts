@@ -5,6 +5,8 @@ import {
   AUTOSAVE_DELAY_MIN,
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
+  UI_OPACITY_MAX,
+  UI_OPACITY_MIN,
   type Settings,
   type SettingsSection,
 } from "./settings";
@@ -193,6 +195,7 @@ function describeState(ctx: AppAgentContext) {
     fullscreen: ctx.fullscreen,
     activeWorkspace: ctx.activeWorkspace?.name ?? null,
     settings: {
+      uiOpacity: settings.uiOpacity,
       uiFontFamily: settings.uiFontFamily,
       terminalFontFamily: settings.terminalFontFamily,
       terminalFontSize: settings.terminalFontSize,
@@ -234,6 +237,7 @@ const NUMERIC_LIMITS: Record<string, [number, number]> = {
   terminalFontSize: [FONT_SIZE_MIN, FONT_SIZE_MAX],
   editorFontSize: [FONT_SIZE_MIN, FONT_SIZE_MAX],
   editorAutoSaveDelay: [AUTOSAVE_DELAY_MIN, AUTOSAVE_DELAY_MAX],
+  uiOpacity: [UI_OPACITY_MIN, UI_OPACITY_MAX],
 };
 
 const BOOLEAN_KEYS = new Set([

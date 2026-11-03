@@ -51,9 +51,30 @@ export function monacoThemeFor(preference: Theme, theme: "dark" | "light") {
 }
 
 let themeRegistered = false;
+let backgroundOpacity = 100;
 
-export function setupMonacoTheme() {
-  if (themeRegistered) return;
+/** Monaco 主题色支持 #RRGGBBAA；把 alpha 写进主题本身，canvas 与 gutter 也会一致透明。 */
+function translucentBackground(color: string): string {
+  if (backgroundOpacity >= 100) return color;
+  const alpha = Math.round((backgroundOpacity / 100) * 255)
+    .toString(16)
+    .padStart(2, "0");
+  return `${color}${alpha}`;
+}
+
+/**
+ * Monaco 会把主题色展开为自己的 CSS 变量，外层 CSS 覆盖不到全部绘制节点。
+ * 因此透明度必须在定义主题时进入 editor / gutter / minimap 的背景色。
+ */
+export function setMonacoTransparency(percent: number) {
+  const next = Math.min(100, Math.max(0, Math.round(percent)));
+  if (next === backgroundOpacity) return;
+  backgroundOpacity = next;
+  setupMonacoTheme(true);
+}
+
+export function setupMonacoTheme(redefine = false) {
+  if (themeRegistered && !redefine) return;
   themeRegistered = true;
 
   monaco.editor.defineTheme(DARK_THEME, {
@@ -61,9 +82,9 @@ export function setupMonacoTheme() {
     inherit: true,
     rules: [],
     colors: {
-      "editor.background": "#080b0f",
+      "editor.background": translucentBackground("#080b0f"),
       "editor.foreground": "#d7dce5",
-      "editorGutter.background": "#080b0f",
+      "editorGutter.background": translucentBackground("#080b0f"),
       "editorLineNumber.foreground": "#3d4553",
       "editorLineNumber.activeForeground": "#8b93a3",
       "editor.selectionBackground": "#2c3445",
@@ -75,7 +96,7 @@ export function setupMonacoTheme() {
       "scrollbarSlider.background": "#2a313d80",
       "scrollbarSlider.hoverBackground": "#39414f80",
       "scrollbarSlider.activeBackground": "#39414faa",
-      "minimap.background": "#080b0f",
+      "minimap.background": translucentBackground("#080b0f"),
     },
   });
 
@@ -85,9 +106,9 @@ export function setupMonacoTheme() {
     inherit: true,
     rules: [],
     colors: {
-      "editor.background": "#ffffff",
+      "editor.background": translucentBackground("#ffffff"),
       "editor.foreground": "#1f2430",
-      "editorGutter.background": "#ffffff",
+      "editorGutter.background": translucentBackground("#ffffff"),
       "editorLineNumber.foreground": "#a9b3c0",
       "editorLineNumber.activeForeground": "#4a5261",
       "editor.selectionBackground": "#cfdffb",
@@ -99,7 +120,7 @@ export function setupMonacoTheme() {
       "scrollbarSlider.background": "#c9cfd880",
       "scrollbarSlider.hoverBackground": "#aeb6c280",
       "scrollbarSlider.activeBackground": "#aeb6c2aa",
-      "minimap.background": "#ffffff",
+      "minimap.background": translucentBackground("#ffffff"),
     },
   });
 
@@ -123,14 +144,14 @@ export function setupMonacoTheme() {
     monaco.editor.defineTheme(`codovo-${name}`, {
       base, inherit: true, rules: [],
       colors: {
-        "editor.background": background,
+        "editor.background": translucentBackground(background),
         "editor.foreground": foreground,
-        "editorGutter.background": background,
+        "editorGutter.background": translucentBackground(background),
         "editorLineHighlightBackground": raised,
         "editorCursor.foreground": accent,
         "editor.selectionBackground": selection,
         "editorWidget.background": raised,
-        "minimap.background": background,
+        "minimap.background": translucentBackground(background),
       },
     });
   }

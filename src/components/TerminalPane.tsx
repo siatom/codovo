@@ -464,12 +464,14 @@ export function TerminalPane({
     [runInNewSession, sessions],
   );
 
+  // 整块不铺底色：终端自己画（跟着界面透明度走），这里再铺一层就叠成两层 alpha，
+  // 半透明时看着比侧栏实一大截。需要底色的只有顶栏和标签栏这两条
   return (
-    <section className="flex h-full min-h-0 flex-col bg-surface">
+    <section className="flex h-full min-h-0 flex-col">
       {/* 顶栏是 AI CLI 快速切换条：配了哪些 CLI 就摆哪几个按钮，点一下切过去或新开。
           一个都没配时整条栏不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
       {aiCommands.length > 0 && (
-        <header className="flex h-9 shrink-0 items-center justify-center gap-2 border-b border-line px-2">
+        <header className="flex h-9 shrink-0 items-center justify-center gap-2 border-b border-line bg-surface px-2">
           {/* 命令少时居中摆放；多到放不下时 `justify-center-safe` 会自动退回从左侧开始，
               横向滚动才够得着第一项（纯 justify-center 会把开头挤到滚动区外面） */}
           <div className="no-scrollbar flex min-w-0 flex-1 items-center justify-center-safe gap-1 overflow-x-auto">
@@ -557,7 +559,7 @@ export function TerminalPane({
       {/* 终端本体：标签栏和终端都归这一套自己管。切到对话时整套藏起来，
           PTY 会话和标签状态都留着，切回来还是原样 */}
       <div className={view === "chat" ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-2">
           <div
             ref={tabsScrollRef}
             onClickCapture={onClickCapture}

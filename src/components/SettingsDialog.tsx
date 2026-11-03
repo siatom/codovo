@@ -11,6 +11,8 @@ import {
   useSettings,
   FONT_SIZE_MIN,
   FONT_SIZE_MAX,
+  UI_OPACITY_MIN,
+  UI_OPACITY_MAX,
   AUTOSAVE_DELAY_MIN,
   AUTOSAVE_DELAY_MAX,
   DEFAULT_MONO_FONT,
@@ -99,7 +101,7 @@ const TABS = [
   {
     id: "appearance",
     label: "外观",
-    desc: "主题配色、界面字体与右栏模块",
+    desc: "主题配色、界面透明度、界面字体与右栏模块",
     icon: IconPalette,
   },
   {
@@ -144,7 +146,8 @@ type TabId = (typeof TABS)[number]["id"];
 
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
-  appearance: "主题、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
+  appearance:
+    "主题、界面透明度、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
   terminal: "终端程序与配色",
   agents: "编程 Agent 列表，含名称、启动命令与环境变量",
   editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
@@ -454,6 +457,35 @@ function SizeSlider({
       />
       <span className="w-11 shrink-0 rounded-md bg-hover px-1 py-0.5 text-center text-[11px] text-fg-dim tabular-nums">
         {value}px
+      </span>
+    </>
+  );
+}
+
+/** 百分比滑块：外观页的界面透明度用它，视觉与字号滑块保持一致，只是单位换成 % */
+function PercentSlider({
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  value: number;
+  min: number;
+  max: number;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="codovo-range min-w-0 flex-1"
+      />
+      <span className="w-11 shrink-0 rounded-md bg-hover px-1 py-0.5 text-center text-[11px] text-fg-dim tabular-nums">
+        {value}%
       </span>
     </>
   );
@@ -2542,6 +2574,20 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
                   <Section title="主题" dense>
                     <Row label="配色方案">
                       <ThemeSelect />
+                    </Row>
+                  </Section>
+                  <Section
+                    title="窗口"
+                    dense
+                    hint="调低后窗口底色变半透明、透出桌面，系统会在窗口后面铺一层毛玻璃。终端与编辑器跟着一起透，用的还是各自主题的配色。"
+                  >
+                    <Row label="界面透明度">
+                      <PercentSlider
+                        value={settings.uiOpacity}
+                        min={UI_OPACITY_MIN}
+                        max={UI_OPACITY_MAX}
+                        onChange={(uiOpacity) => update({ uiOpacity })}
+                      />
                     </Row>
                   </Section>
                   <Section

@@ -9,6 +9,13 @@
 :root {
   color-scheme: dark;
 
+  /* 界面透明度：设置里的「界面透明度」把它写成百分比（100% 就是完全不透明）。
+     下面 @theme 里的各层底色都按它折算成 rgba，所以只改这一个变量，
+     整片界面就一起变半透明——组件里不用各自处理透明度 */
+  --ui-alpha: 100%;
+  /* 窗口根节点那层底色的 alpha，和 --ui-alpha 不同步：见 @theme 里 --color-window 的说明 */
+  --ui-window-alpha: 100%;
+
   --c-app: #06080b;
   --c-panel: #0d1014;
   --c-surface: #080b0f;
@@ -256,14 +263,21 @@
      组件里写 ease-dock；换手感只改这一处 */
   --ease-dock: cubic-bezier(0.22, 1, 0.36, 1);
 
-  --color-app: var(--c-app);
-  --color-panel: var(--c-panel);
-  --color-surface: var(--c-surface);
-  --color-content: var(--c-content);
-  --color-raised: var(--c-raised);
-  --color-hover: var(--c-hover);
-  --color-active: var(--c-active);
-  --color-selected: var(--c-selected);
+  /* 窗口根节点铺的那层底（bg-window）。半透明时它直接透明：根节点底下还压着侧栏 /
+     面板 / 内容好几层，每层都带 alpha 的话两层 85% 叠起来就是 98%，桌面根本透不过来。
+     所以只让真正可见的那一层上色，根节点只在完全不透明时兜底 */
+  --color-window: color-mix(in srgb, var(--c-app) var(--ui-window-alpha), transparent);
+
+  /* 底色带 --ui-alpha：窗口本身透明，这几层半透明之后就能透出桌面。
+     文字色、描边色、图表色不参与——半透明下它们要维持原来的对比度 */
+  --color-app: color-mix(in srgb, var(--c-app) var(--ui-alpha), transparent);
+  --color-panel: color-mix(in srgb, var(--c-panel) var(--ui-alpha), transparent);
+  --color-surface: color-mix(in srgb, var(--c-surface) var(--ui-alpha), transparent);
+  --color-content: color-mix(in srgb, var(--c-content) var(--ui-alpha), transparent);
+  --color-raised: color-mix(in srgb, var(--c-raised) var(--ui-alpha), transparent);
+  --color-hover: color-mix(in srgb, var(--c-hover) var(--ui-alpha), transparent);
+  --color-active: color-mix(in srgb, var(--c-active) var(--ui-alpha), transparent);
+  --color-selected: color-mix(in srgb, var(--c-selected) var(--ui-alpha), transparent);
   --color-line: var(--c-line);
   --color-line-strong: var(--c-line-strong);
   --color-line-hover: var(--c-line-hover);
@@ -303,7 +317,9 @@ body,
 }
 
 body {
-  background: var(--c-app);
+  /* 窗口是透明的（tauri.conf.json 的 transparent），底色由根节点上的 bg-window 提供。
+     body 自己再刷一层实心色就把桌面挡死了 */
+  background: transparent;
   color: var(--c-fg);
   /* 界面字体由设置注入到 --ui-font-family；兜底栈跟 settings.tsx 的 DEFAULT_UI_FONT 保持一致 */
   font-family: var(
@@ -350,6 +366,13 @@ body.codovo-dragging-list * {
      浏览器会自动冒出横向滚动条，把可视高度吃掉几像素，终端画面跟着抖一下。
      终端永远按列换行，不需要横向滚动，直接切掉 */
   overflow-x: hidden;
+}
+
+/* xterm 的主题背景由 canvas 绘制；DOM 外壳不能再铺一层默认主题色，否则 canvas
+   带 alpha 时仍会被这层实色挡住。终端自己的底色由 TerminalSession 容器承载。 */
+.xterm,
+.xterm-screen {
+  background-color: transparent !important;
 }
 
 /* 终端标签栏：标签多了要能横向滚，但不该占一条滚动条的高度 */

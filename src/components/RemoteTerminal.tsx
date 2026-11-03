@@ -24,7 +24,7 @@ import {
 } from "../lib/remote";
 import { resolveFont, useSettings } from "../lib/settings";
 import { TUI_MODE_RESET, watchAltScreenExit } from "../lib/terminal-modes";
-import { resolveTerminalTheme } from "../lib/terminal-themes";
+import { resolveTerminalTheme, translucentTheme } from "../lib/terminal-themes";
 import { useTheme } from "../lib/theme";
 import { pauseDevicePixelSync } from "../lib/xterm-webgl";
 import { IconArrowDownToLine } from "./icons";
@@ -120,6 +120,8 @@ export function RemoteTerminal({
   fontBoldRef.current = settings.terminalFontBold;
   const terminalThemeRef = useRef(settings.terminalTheme);
   terminalThemeRef.current = settings.terminalTheme;
+  const opacityRef = useRef(settings.uiOpacity);
+  opacityRef.current = settings.uiOpacity;
   // GPU 加速：建实例时读一次，改设置只影响之后新建的会话
   const gpuAccelRef = useRef(settings.terminalGpuAcceleration);
   gpuAccelRef.current = settings.terminalGpuAcceleration;
@@ -159,7 +161,12 @@ export function RemoteTerminal({
       lineHeight: 1.25,
       scrollback: 5000,
       rightClickSelectsWord: false,
-      theme: resolveTerminalTheme(terminalThemeRef.current, themeRef.current, paletteRef.current),
+      theme: translucentTheme(
+        resolveTerminalTheme(terminalThemeRef.current, themeRef.current, paletteRef.current),
+        opacityRef.current,
+      ),
+      // xterm 的 canvas 只有在建实例时允许 alpha，远程终端也必须和本地终端保持一致。
+      allowTransparency: true,
     });
 
     const fit = new FitAddon();
@@ -389,9 +396,12 @@ export function RemoteTerminal({
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.theme = resolveTerminalTheme(settings.terminalTheme, theme, palette);
+    term.options.theme = translucentTheme(
+      resolveTerminalTheme(settings.terminalTheme, theme, palette),
+      settings.uiOpacity,
+    );
     term.refresh(0, Math.max(0, term.rows - 1));
-  }, [theme, palette, settings.terminalTheme]);
+  }, [theme, palette, settings.terminalTheme, settings.uiOpacity]);
 
   // 字体 / 字号 / 字重同理，改完补一次 fit
   useEffect(() => {
@@ -431,10 +441,9 @@ export function RemoteTerminal({
     return () => cancelAnimationFrame(frame);
   }, [active, visible, sessionKey]);
 
-  const terminalBg = resolveTerminalTheme(
-    settings.terminalTheme,
-    theme,
-    palette,
+  const terminalBg = translucentTheme(
+    resolveTerminalTheme(settings.terminalTheme, theme, palette),
+    settings.uiOpacity,
   ).background;
 
   return (
