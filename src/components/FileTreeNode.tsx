@@ -1,6 +1,7 @@
 import type { KeyboardEvent, MouseEvent, PointerEvent } from "react";
 import type { FileEntry } from "../lib/types";
 import { pathKey, toDisplayPath } from "../lib/fs";
+import { formatBytes } from "../lib/remote";
 import type { GitMark } from "../lib/git";
 import { GitMarkBadge } from "./GitMarkBadge";
 import { FileTypeIcon, FolderTypeIcon } from "./fileIcons";
@@ -77,7 +78,9 @@ interface FileTreeNodeProps {
 
 const INDENT = 12;
 
-/** 悬停提示里的修改时间。自己拼而不用 toLocaleString：别处显示的格式不该随后端语言飘 */
+/**
+ * 悬停提示里的修改时间。自己拼而不用 toLocaleString：别处显示的格式不该随后端语言飘
+ */
 function formatModified(ms: number): string {
   if (!ms) return "未知";
   const d = new Date(ms);
@@ -85,6 +88,20 @@ function formatModified(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
     d.getHours(),
   )}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * 悬停提示：路径 +（文件）大小 + 修改时间。搜索命中的条目没有 size，不硬编一个 0 B；
+ * 目录也没有大小可看。
+ */
+function rowTooltip(entry: FileEntry): string {
+  const lines = [toDisplayPath(entry.path)];
+  if (!entry.isDir && entry.size !== undefined) {
+    // formatBytes 对 0 返回空串，空文件要显示成 0 B 而不是一片空白
+    lines.push(`大小：${formatBytes(entry.size) || "0 B"}`);
+  }
+  lines.push(`最近修改：${formatModified(entry.modified)}`);
+  return lines.join("\n");
 }
 
 export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
@@ -164,7 +181,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
           data-row-key={pathKey(entry.path)}
           // roving tabindex：整棵树只有一个入口，方向键在树内移动焦点
           tabIndex={(tree.focusedKey ?? tree.firstKey) === pathKey(entry.path) ? 0 : -1}
-          title={`${toDisplayPath(entry.path)}\n最近修改：${formatModified(entry.modified)}`}
+          title={rowTooltip(entry)}
           onClick={(event) => tree.onRowClick(entry, event)}
           onDoubleClick={(event) => tree.onRowDoubleClick(entry, event)}
           onContextMenu={(event) => tree.openMenu(entry, event)}

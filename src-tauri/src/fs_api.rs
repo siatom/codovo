@@ -184,6 +184,8 @@ pub struct Entry {
     name: String,
     path: String,
     is_dir: bool,
+    /// 文件大小（字节）。目录固定 0；读不到也按 0 处理
+    size: u64,
     /// 最近修改时间（Unix 毫秒）。读不到就是 0，前端当「未知」处理
     modified: u64,
 }
@@ -356,10 +358,14 @@ fn list_entries(dir: &Path) -> Result<Vec<Entry>, String> {
         let name = item.file_name().to_string_lossy().to_string();
         let item_path = item.path();
         let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        // 多一次 stat，只为悬停时能显示修改时间。目录列不长，值这点开销
-        let modified = item
-            .metadata()
-            .ok()
+        // 多一次 stat，只为悬停时能显示大小和修改时间。目录列不长，值这点开销
+        let meta = item.metadata().ok();
+        let size = if is_dir {
+            0
+        } else {
+            meta.as_ref().map(|m| m.len()).unwrap_or(0)
+        };
+        let modified = meta
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64)
@@ -368,6 +374,7 @@ fn list_entries(dir: &Path) -> Result<Vec<Entry>, String> {
             name,
             path: display(&item_path),
             is_dir,
+            size,
             modified,
         });
     }
@@ -1868,6 +1875,11 @@ mod tests {
         assert!(names.contains(&".env"), "隐藏文件应该被列出: {names:?}");
         assert!(names.contains(&".github"), "隐藏目录应该被列出: {names:?}");
         assert_eq!(entries[0].name, ".github", "目录要排在文件前面: {names:?}");
+        // 悬停提示要用文件大小；目录没有意义，按 0 上报
+        let size_of = |name: &str| entries.iter().find(|entry| entry.name == name).unwrap().size;
+        assert_eq!(size_of(".env"), 3);
+        assert_eq!(size_of("main.rs"), 0);
+        assert_eq!(size_of(".github"), 0);
         fs::remove_dir_all(&root).ok();
     }
 

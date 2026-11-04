@@ -2,6 +2,11 @@ export interface FileEntry {
   name: string;
   path: string;
   isDir: boolean;
+  /**
+   * 文件大小（字节）。目录没有意义，固定 0；
+   * 文件名搜索拼出来的条目拿不到 stat，缺这个字段（悬停时不显示大小）
+   */
+  size?: number;
   /** 最近修改时间（Unix 毫秒），0 表示读不到 */
   modified: number;
 }
