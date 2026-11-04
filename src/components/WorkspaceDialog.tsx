@@ -11,15 +11,25 @@ import {
 } from "../lib/fs";
 import type { CloneProgress } from "../lib/types";
 import { folderName } from "../lib/workspaces";
-import { IconCloudDownload, IconClose, IconFolder, IconFolderPlus } from "./icons";
+import {
+  IconCloudDownload,
+  IconClose,
+  IconFolder,
+  IconFolderPlus,
+  IconTree,
+} from "./icons";
 
 interface WorkspaceDialogProps {
   mode: "create" | "edit";
   /** 编辑时的初值；创建时留空 */
   initialName?: string;
   initialRoots?: string[];
+  /** 编辑时的分组名；创建时留空 */
+  initialGroup?: string;
+  /** 已有的分组名，作为输入提示（不限制只能选这些） */
+  groups?: string[];
   onCancel: () => void;
-  onSubmit: (value: { name: string; roots: string[] }) => void;
+  onSubmit: (value: { name: string; roots: string[]; group?: string }) => void;
   /** 编辑模式才有：「移除本地工作区」——只从 Codovo 的列表里去掉，不碰磁盘 */
   onRemove?: () => void;
 }
@@ -56,12 +66,15 @@ export function WorkspaceDialog({
   mode,
   initialName,
   initialRoots,
+  initialGroup,
+  groups,
   onCancel,
   onSubmit,
   onRemove,
 }: WorkspaceDialogProps) {
   const [name, setName] = useState(initialName ?? "");
   const [roots, setRoots] = useState<string[]>(initialRoots ?? []);
+  const [group, setGroup] = useState(initialGroup ?? "");
   const [error, setError] = useState<string | null>(null);
   /** 选择框开着，防止连点重复弹 */
   const [picking, setPicking] = useState(false);
@@ -170,7 +183,11 @@ export function WorkspaceDialog({
       });
       // 用户已取消 / 对话框已卸载：这次克隆作废，别再把结果交给上层建工作区
       if (cancelledRef.current) return;
-      onSubmit({ name: dirName.trim() || repoNameFromUrl(url), roots: [target] });
+      onSubmit({
+        name: dirName.trim() || repoNameFromUrl(url),
+        roots: [target],
+        group: group.trim() || undefined,
+      });
     } catch (reason) {
       if (cancelledRef.current) return;
       setError(String(reason));
@@ -219,7 +236,7 @@ export function WorkspaceDialog({
       setError("至少要添加一个工作目录");
       return;
     }
-    onSubmit({ name: name.trim() || folderName(roots[0]), roots });
+    onSubmit({ name: name.trim() || folderName(roots[0]), roots, group: group.trim() || undefined });
   };
 
   return (
@@ -285,6 +302,27 @@ export function WorkspaceDialog({
                 placeholder="工作区名称"
                 className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-fg-faint"
               />
+            </div>
+
+            {/* 分组：留空即「未分组」；组名会作为左侧列表的一级标题 */}
+            <div className="mt-2 flex h-9 items-center gap-2 rounded-lg border border-line-strong bg-surface px-2.5 focus-within:border-accent">
+              <IconTree className="h-4 w-4 shrink-0 text-fg-dim" />
+              <input
+                list="workspace-group-options"
+                value={group}
+                onChange={(event) => setGroup(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submit();
+                }}
+                placeholder="分组名称（可选，会显示为左侧标题）"
+                title="留空表示未分组；组名相同的会归到同一组"
+                className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-fg-faint"
+              />
+              <datalist id="workspace-group-options">
+                {(groups ?? []).map((item) => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
             </div>
 
             <div className="mt-3 mb-1 flex items-baseline justify-between">

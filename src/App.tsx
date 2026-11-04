@@ -54,6 +54,7 @@ import {
   readLastWorkspaceId,
   saveLastWorkspaceId,
   saveWorkspace,
+  workspaceGroupNames,
   type Workspace,
 } from "./lib/workspaces";
 import { clearSession } from "./lib/session";
@@ -329,7 +330,7 @@ function Shell() {
 
   /** 「新建工作区」提交：新建一个工作区并打开它 */
   const createWorkspace = useCallback(
-    async (value: { name: string; roots: string[] }) => {
+    async (value: { name: string; roots: string[]; group?: string }) => {
       setDialog(null);
       // 新建是有意动作，记一次活动，让它立刻排到非置顶组最前（否则活动为 0 会沉到末尾）
       for (const root of value.roots) touchActivity(root);
@@ -338,6 +339,7 @@ function Shell() {
         name: value.name,
         roots: value.roots,
         activeRoot: value.roots[0],
+        group: value.group?.trim() || undefined,
       });
     },
     [openWorkspace, touchActivity],
@@ -481,7 +483,7 @@ function Shell() {
    * 换目录监听，后台工作区只登记（`workspace_register`），免得监听被抢走。
    */
   const applyEdit = useCallback(
-    async (workspace: Workspace, value: { name: string; roots: string[] }) => {
+    async (workspace: Workspace, value: { name: string; roots: string[]; group?: string }) => {
       setDialog(null);
       const index = value.roots.findIndex((root) => samePath(root, workspace.activeRoot));
       const next: Workspace = {
@@ -489,6 +491,8 @@ function Shell() {
         name: value.name,
         roots: value.roots,
         activeRoot: value.roots[index >= 0 ? index : 0] ?? workspace.activeRoot,
+        // 编辑时清空分组要真的去掉字段，不能靠展开旧值留着
+        group: value.group?.trim() || undefined,
       };
 
       if (openedRef.current.includes(workspace.id)) {
@@ -565,6 +569,11 @@ function Shell() {
   /** 置顶 / 取消置顶。只改记录里的标记，「置顶的排最前」由侧边栏渲染时排序实现 */
   const togglePin = useCallback((workspace: Workspace) => {
     setWorkspaces(saveWorkspace({ ...workspace, pinned: !workspace.pinned }));
+  }, []);
+
+  /** 把工作区归入某个分组；空串表示移出分组（回到「未分组」） */
+  const setWorkspaceGroup = useCallback((workspace: Workspace, group: string) => {
+    setWorkspaces(saveWorkspace({ ...workspace, group: group.trim() || undefined }));
   }, []);
 
   /** 右栏（编辑器 / 浏览器）全屏，按钮挂在这两个面板的标题栏上 */
@@ -949,6 +958,7 @@ function Shell() {
               onRemove={setPendingRemove}
               onClose={closeWorkspace}
               onTogglePin={togglePin}
+              onSetGroup={setWorkspaceGroup}
               onResumeSession={resumeSession}
               onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
               onOpenAppAgent={openAppAgent}
@@ -1016,6 +1026,8 @@ function Shell() {
           mode={dialog.mode}
           initialName={dialog.mode === "edit" ? dialog.workspace.name : undefined}
           initialRoots={dialog.mode === "edit" ? dialog.workspace.roots : undefined}
+          initialGroup={dialog.mode === "edit" ? dialog.workspace.group : undefined}
+          groups={workspaceGroupNames(workspaces)}
           onCancel={() => setDialog(null)}
           onSubmit={(value) => {
             if (dialog.mode === "create") void createWorkspace(value);

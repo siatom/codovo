@@ -17,6 +17,11 @@ export interface Workspace {
   activeRoot: string;
   /** 置顶：排在工作区列表最前。老数据没有这个字段，缺省即不置顶 */
   pinned?: boolean;
+  /**
+   * 分组名：侧栏按它把工作区分成若干段，组名作为一级标题展示。
+   * 空 / 未设置即「未分组」，与有分组的工作区一起排在最后一段。
+   */
+  group?: string;
 }
 
 const WORKSPACES_KEY = "codovo.workspaceList";
@@ -80,7 +85,18 @@ function normalizeWorkspace(value: unknown): Workspace | null {
     activeRoot: active,
     // 只有明确的 true 才算置顶，坏值一律当没置顶
     pinned: raw.pinned === true,
+    // 分组名只保留非空字符串；空串等价于未分组，不写进记录
+    group: typeof raw.group === "string" && raw.group.trim() ? raw.group.trim() : undefined,
   };
+}
+
+/** 列表里出现过的分组名，去重后按显示顺序排好，供新建 / 编辑工作区时提示 */
+export function workspaceGroupNames(list: Workspace[]): string[] {
+  const names = new Set<string>();
+  for (const workspace of list) {
+    if (workspace.group) names.add(workspace.group);
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
 }
 
 export function readWorkspaces(): Workspace[] {

@@ -227,6 +227,7 @@ function describeState(ctx: AppAgentContext) {
       name: workspace.name,
       roots: workspace.roots,
       pinned: workspace.pinned === true,
+      group: workspace.group ?? null,
       activeRoot: workspace.activeRoot,
     })),
   };
@@ -355,6 +356,8 @@ async function addWorkspace(
     name,
     roots: [path],
     activeRoot: path,
+    group:
+      typeof args.group === "string" && args.group.trim() ? args.group.trim() : undefined,
   };
   const opened = await ctx.openWorkspace(workspace);
   if (!opened) {

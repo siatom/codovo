@@ -25,7 +25,7 @@ cd src-tauri && cargo clippy
 ## 关键实现决定
 
 - 多工作区状态按 root 隔离；切换时保留会话与界面状态。
-- 工作区列表按「最近活动」排序：置顶组固定在前，组内按终端 / 助手最近使用时间倒序（活动按 root 记、存 `codovo.workspaceActivity`，`src/lib/activity.tsx`）。列表不提供拖拽手动排序。
+- 工作区列表按「最近活动」排序：置顶组固定在前，组内按终端 / 助手最近使用时间倒序（活动按 root 记、存 `codovo.workspaceActivity`，`src/lib/activity.tsx`）。列表不提供拖拽手动排序。工作区可分组（`Workspace.group`）：有分组时侧栏按「置顶 / 各分组 / 未分组」分段，组名作为一级标题，组内沿用同一套排序；没有分组时保持原来的平铺列表。
 - 左栏不再有单独的「对话历史」模块：历史挂在每个工作区行下，悬停行首的箭头展开，把该工作区各根下各家 AI CLI 的会话按最后活动时间合并成一条列表（`WorkspaceHistory.tsx` + `lib/cli-sessions.ts` 的 `listWorkspaceHistory`），每条显示标题、CLI、时间；点一条先切到那个工作区再新开终端标签跑 resume；悬停行尾的「⋯」打开会话菜单（目前只有「重命名」，后续的会话管理操作都往这里加），改名只存本地覆盖表 `codovo.cliSessionTitles`，不写回 CLI 自己的会话记录，清空即恢复原名。记录直接读各家 CLI 写在磁盘上的文件，所以没在设置里配过的 CLI 也看得见历史，resume 用设置里的命令、没配过就退回 `CliProvider.bin`。单个 CLI 读失败只当它没有记录，不打断整块列表。
 - 所有文件访问必须校验工作区边界；凭据存系统凭据库。
 - 启动终端里的 AI CLI 时，把工作区中除活动根以外的目录按各家 CLI 支持的参数注入（`src/lib/cli-launch.ts`，Claude Code / CodeBuddy / Codex / Antigravity / Copilot 用 `--add-dir`，Gemini / Qwen / iFlow 用 `--include-directories`），保证 CLI 的权限范围与工作区一致。用户自己已在命令里写了同名参数时不重复注入。opencode（v2）通过 `OPENCODE_CONFIG_CONTENT` 注入 `permissions` 并加 `--standalone` 起私有服务，显式 `--server` 时不注入；V2 的 `external_directory` 默认全量 allow，所以必须写 `*` 的 ask 兜底 + 工作区目录的 allow 例外，只写 allow 等于没写；单根工作区只有 ask 兜底，也照样注入；PTY 的环境变量由 `pty_spawn` 的 `env` 参数传入。

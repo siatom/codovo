@@ -18,7 +18,7 @@ import {
   devicePixelStep,
   easeDock,
 } from "../lib/layout-motion";
-import type { Workspace } from "../lib/workspaces";
+import { workspaceGroupNames, type Workspace } from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
 import { FeedbackDialog } from "./FeedbackDialog";
@@ -27,6 +27,7 @@ import {
   IconAlert,
   IconChevronDown,
   IconChevronRight,
+  IconCheck,
   IconClose,
   IconExternalLink,
   IconFeedback,
@@ -44,6 +45,7 @@ import {
   IconSparkle,
   IconSun,
   IconTrash,
+  IconTree,
 } from "./icons";
 import { WorkspaceHistory } from "./WorkspaceHistory";
 
@@ -68,6 +70,8 @@ interface SidebarProps {
   onClose: (workspace: Workspace) => void;
   /** 切换置顶：置顶的工作区排在列表最前 */
   onTogglePin: (workspace: Workspace) => void;
+  /** 把工作区放进某个分组；传空串表示移出分组（回到「未分组」） */
+  onSetGroup: (workspace: Workspace, group: string) => void;
   /**
    * 点一条对话历史：由 App 切到这条记录所属的工作区（不是当前的就先打开），
    * 再新开一个终端标签跑 resume。title 作新标签的标题
@@ -153,6 +157,11 @@ const ROW_ACTION =
 /** 工作区行「⋯」弹出来的菜单项 */
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
+/** 分组子面板里的已有分组：小胶囊，当前所在组描边强调 */
+const GROUP_CHIP =
+  "flex max-w-[140px] items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg";
+const GROUP_CHIP_ACTIVE = "border-accent text-fg";
+
 /** 工作区菜单比别处宽：里面要列出工作目录的完整路径 */
 const WORKSPACE_MENU_W = 320;
 
@@ -205,6 +214,7 @@ export function Sidebar({
   onRemove,
   onClose,
   onTogglePin,
+  onSetGroup,
   onResumeSession,
   onFocusAttention,
   onOpenAppAgent,
@@ -290,8 +300,13 @@ export function Sidebar({
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
   /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
   const [menu, setMenu] = useState<{ workspace: Workspace; x: number; y: number } | null>(null);
+  /** 「⋯」菜单里「分组」子面板是否展开，以及新分组名 */
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const [newGroup, setNewGroup] = useState("");
   /** 展开了对话历史的工作区 id。只存内存：切走工作区也留着，重启从收起开始 */
   const [expanded, setExpanded] = useState<string[]>([]);
+  /** 收起的分组名。只存内存，重启从全部展开开始 */
+  const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
 
@@ -376,6 +391,23 @@ export function Sidebar({
   const openMenu = (workspace: Workspace, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
     setMenu({ workspace, x: rect.right, y: rect.bottom });
+    // 每次重新打开都从收起的分组子面板开始
+    setGroupMenuOpen(false);
+    setNewGroup("");
+  };
+
+  /** 把当前菜单里的工作区放进分组；空串 = 移出分组 */
+  const applyGroup = (group: string) => {
+    if (!menu) return;
+    onSetGroup(menu.workspace, group);
+    setMenu(null);
+  };
+
+  /** 新建分组：名字就是输入框里那串，落到当前菜单的工作区上 */
+  const createGroup = () => {
+    const name = newGroup.trim();
+    if (!name) return;
+    applyGroup(name);
   };
 
   /*
@@ -395,17 +427,57 @@ export function Sidebar({
     return pin !== 0 ? pin : activityOf(b) - activityOf(a);
   });
 
-  // 过滤只是渲染层的子集：名字、或任一工作目录的末级目录名命中即可（统一小写比，
+  // 过滤只是渲染层的子集：名字、分组名、或任一工作目录的末级目录名命中即可（统一小写比，
   // 与平台的大小写敏感性无关——这里筛的是给人看的名字，不是路径）
   const query = wsQuery.trim().toLowerCase();
   const visible = query
     ? ordered.filter((workspace) =>
-        [workspace.name, ...workspace.roots.map((root) => baseName(root))]
+        [workspace.name, workspace.group ?? "", ...workspace.roots.map((root) => baseName(root))]
           .join("\n")
           .toLowerCase()
           .includes(query),
       )
     : ordered;
+
+  /*
+   * 分组后的段落。没有分组时保持原来的平铺列表（不额外加标题，视觉上和以前一样）；
+   * 一旦有工作区分了组，就按「置顶 / 各分组 / 未分组」分段，组名作为一级标题。
+   * 分组顺序跟着 visible 走，而 visible 已按活动倒序——所以最近动过的组排在最前。
+   */
+  const groupNames = workspaceGroupNames(workspaces);
+  const sections: Array<{ key: string; title: string | null; items: Workspace[] }> = [];
+  if (groupNames.length === 0) {
+    if (visible.length > 0) sections.push({ key: "all", title: null, items: visible });
+  } else {
+    const pinned = visible.filter((workspace) => workspace.pinned === true);
+    if (pinned.length > 0) sections.push({ key: "pinned", title: "置顶", items: pinned });
+
+    const groups = new Map<string, Workspace[]>();
+    const ungrouped: Workspace[] = [];
+    for (const workspace of visible) {
+      if (workspace.pinned === true) continue;
+      if (!workspace.group) {
+        ungrouped.push(workspace);
+        continue;
+      }
+      const items = groups.get(workspace.group);
+      if (items) items.push(workspace);
+      else groups.set(workspace.group, [workspace]);
+    }
+    for (const [name, items] of groups) {
+      sections.push({ key: `group:${name}`, title: name, items });
+    }
+    if (ungrouped.length > 0) {
+      sections.push({ key: "ungrouped", title: "未分组", items: ungrouped });
+    }
+  }
+
+  /** 收起 / 展开一个分组。过滤时强制展开，免得匹配项被折叠藏起来 */
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups((list) =>
+      list.includes(key) ? list.filter((item) => item !== key) : [...list, key],
+    );
+  };
 
   return (
     <div
@@ -478,133 +550,169 @@ export function Sidebar({
           {ordered.length > 0 && visible.length === 0 && (
             <li className="px-2 py-1 text-[12px] text-fg-faint">没有匹配的工作区</li>
           )}
-          {visible.map((workspace) => {
-            const isCurrent = workspace.id === currentId;
-            // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
-            const isOpen = opened.includes(workspace.id);
-            // 任一工作目录失效（被删 / 换盘）就在行上标一枚警告：点开必然失败，先给个预警
-            const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
-            // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
-            const waiting = firstWaitingTarget(attentionByRoot, workspace);
-            /** 这一行的对话历史是否展开 */
-            const historyOpen = expanded.includes(workspace.id);
-            const waitingTitle =
-              waiting?.kind === "done"
-                ? "有 AI 会话任务已完成，点击跳过去"
-                : "有 AI 会话在等你输入，点击跳过去";
+          {sections.map((section) => {
+            // 过滤时强制展开：命中项被折叠藏起来，用户会以为没搜到
+            const groupCollapsed = !query && collapsedGroups.includes(section.key);
             return (
-              <li key={workspace.id} data-ws-row className="relative">
-                {/* 选中底色只铺在工作区这一行上：连下面的对话历史一起染会变成一大块
-                    蓝底，展开后反而看不清哪些是行、哪些是历史 */}
-                <div className="group rounded-lg">
-                  <div className={`${ROW} ${isCurrent ? "bg-selected text-fg" : ""}`}>
-                    {/* 展开对话历史的箭头。平时藏起来，悬停这一行才出现——每个工作区都
-                        挂一个常显的箭头太吵；展开后一直亮着，也顺手当收起入口。
-                        pointer-events 跟着显隐走，免得点到看不见的按钮 */}
+              <li key={section.key}>
+                {section.title && (
+                  /* 分组名就是这一段的标题：可点击折叠，数量跟在后面提示组里有多少个工作区 */
+                  <div className="flex items-center px-1 pt-3 pb-0.5">
                     <button
                       type="button"
-                      onClick={() => toggleHistory(workspace.id)}
-                      title={historyOpen ? "收起对话历史" : "展开对话历史"}
-                      aria-expanded={historyOpen}
-                      className={`-ml-1.5 flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-fg ${
-                        historyOpen
-                          ? "opacity-100"
-                          : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-                      }`}
+                      onClick={() => toggleGroup(section.key)}
+                      aria-expanded={!groupCollapsed}
+                      title={groupCollapsed ? `展开「${section.title}」` : `收起「${section.title}」`}
+                      className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left text-fg-faint hover:bg-hover hover:text-fg"
                     >
-                      {historyOpen ? (
-                        <IconChevronDown className="h-3 w-3" />
+                      {groupCollapsed ? (
+                        <IconChevronRight className="h-3 w-3 shrink-0" />
                       ) : (
-                        <IconChevronRight className="h-3 w-3" />
+                        <IconChevronDown className="h-3 w-3 shrink-0" />
                       )}
+                      <span className="truncate text-[12px] font-semibold tracking-wide">
+                        {section.title}
+                      </span>
+                      <span className="shrink-0 text-[10px] font-normal text-fg-faint">
+                        {section.items.length}
+                      </span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => onSelect(workspace)}
-                      title={workspace.roots.map((root) => toDisplayPath(root)).join("\n")}
-                      className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
-                    >
-                      {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
-                      {isOpen ? <IconFolderOpen /> : <IconFolder />}
-                      <span className="truncate">{workspace.name}</span>
-                      {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区）。
-                          非当前工作区额外挂一枚文字徽章——橙点太小，视线不在侧栏时容易漏看；
-                          当前工作区已经能在终端标签上看到脉冲点，不必再加文字 */}
-                      {waiting && (
-                        <span
-                          title={waitingTitle}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            onFocusAttention(workspace, waiting.target);
-                          }}
-                          className="flex shrink-0 cursor-pointer items-center gap-1"
-                        >
-                          <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
-                          {!isCurrent && (
-                            <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
-                              {waiting.kind === "done" ? "已完成" : "等待输入"}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                      {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
-                      {broken && (
-                        <span
-                          title="工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除"
-                          className="shrink-0 text-warn"
-                        >
-                          <IconAlert className="h-3.5 w-3.5" />
-                        </span>
-                      )}
-                      {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
-                      {workspace.roots.length > 1 && (
-                        <span
-                          title={`包含 ${workspace.roots.length} 个工作目录`}
-                          className="shrink-0 rounded bg-active px-1 text-[10px] leading-4 text-fg-faint"
-                        >
-                          {workspace.roots.length}
-                        </span>
-                      )}
-                      {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
-                      {workspace.pinned && (
-                        <span title="已置顶" className="shrink-0 text-fg-faint">
-                          <IconPin className="h-3 w-3" />
-                        </span>
-                      )}
-                      {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
-                      {isOpen && (
-                        <span
-                          title="工作区已打开"
-                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
-                        />
-                      )}
-                    </button>
-                    {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}
-                    <div className="flex shrink-0 items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={(event) => openMenu(workspace, event.currentTarget)}
-                        title="更多操作"
-                        className={ROW_ACTION}
-                      >
-                        <IconMore className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
                   </div>
-                  {/* 展开的对话历史：这个工作区里各家 AI CLI 的会话按时间合并成一条列表 */}
-                  {historyOpen && (
-                    <div className="pr-1 pl-7">
-                      <WorkspaceHistory
-                        roots={workspace.roots}
-                        commands={aiCommands}
-                        onResume={(command, title) =>
-                          onResumeSession(workspace, command, title)
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
+                )}
+                <ul className={groupCollapsed ? "hidden" : undefined}>
+                  {section.items.map((workspace) => {
+                    const isCurrent = workspace.id === currentId;
+                    // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
+                    const isOpen = opened.includes(workspace.id);
+                    // 任一工作目录失效（被删 / 换盘）就在行上标一枚警告：点开必然失败，先给个预警
+                    const broken = workspace.roots.some((root) => missingRoots.has(pathKey(root)));
+                    // 这个工作区里有没有 AI 会话正等着用户（切到后台的也要看得见）
+                    const waiting = firstWaitingTarget(attentionByRoot, workspace);
+                    /** 这一行的对话历史是否展开 */
+                    const historyOpen = expanded.includes(workspace.id);
+                    const waitingTitle =
+                      waiting?.kind === "done"
+                        ? "有 AI 会话任务已完成，点击跳过去"
+                        : "有 AI 会话在等你输入，点击跳过去";
+                    return (
+                      <li key={workspace.id} data-ws-row className="relative">
+                        {/* 选中底色只铺在工作区这一行上：连下面的对话历史一起染会变成一大块
+                            蓝底，展开后反而看不清哪些是行、哪些是历史 */}
+                        <div className="group rounded-lg">
+                          <div className={`${ROW} ${isCurrent ? "bg-selected text-fg" : ""}`}>
+                            {/* 展开对话历史的箭头。平时藏起来，悬停这一行才出现——每个工作区都
+                                挂一个常显的箭头太吵；展开后一直亮着，也顺手当收起入口。
+                                pointer-events 跟着显隐走，免得点到看不见的按钮 */}
+                            <button
+                              type="button"
+                              onClick={() => toggleHistory(workspace.id)}
+                              title={historyOpen ? "收起对话历史" : "展开对话历史"}
+                              aria-expanded={historyOpen}
+                              className={`-ml-1.5 flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-fg ${
+                                historyOpen
+                                  ? "opacity-100"
+                                  : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
+                              }`}
+                            >
+                              {historyOpen ? (
+                                <IconChevronDown className="h-3 w-3" />
+                              ) : (
+                                <IconChevronRight className="h-3 w-3" />
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onSelect(workspace)}
+                              title={workspace.roots
+                                .map((root) => toDisplayPath(root))
+                                .join("\n")}
+                              className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                            >
+                              {/* 已打开的工作区（哪怕切到后台）用打开态的文件夹，只在列表里的用闭合态 */}
+                              {isOpen ? <IconFolderOpen /> : <IconFolder />}
+                              <span className="truncate">{workspace.name}</span>
+                              {/* 有 AI 会话在等用户：点它直接跳到那个标签 / 会话（哪怕在别的工作区）。
+                                  非当前工作区额外挂一枚文字徽章——橙点太小，视线不在侧栏时容易漏看；
+                                  当前工作区已经能在终端标签上看到脉冲点，不必再加文字 */}
+                              {waiting && (
+                                <span
+                                  title={waitingTitle}
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    onFocusAttention(workspace, waiting.target);
+                                  }}
+                                  className="flex shrink-0 cursor-pointer items-center gap-1"
+                                >
+                                  <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
+                                  {!isCurrent && (
+                                    <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
+                                      {waiting.kind === "done" ? "已完成" : "等待输入"}
+                                    </span>
+                                  )}
+                                </span>
+                              )}
+                              {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
+                              {broken && (
+                                <span
+                                  title="工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除"
+                                  className="shrink-0 text-warn"
+                                >
+                                  <IconAlert className="h-3.5 w-3.5" />
+                                </span>
+                              )}
+                              {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
+                              {workspace.roots.length > 1 && (
+                                <span
+                                  title={`包含 ${workspace.roots.length} 个工作目录`}
+                                  className="shrink-0 rounded bg-active px-1 text-[10px] leading-4 text-fg-faint"
+                                >
+                                  {workspace.roots.length}
+                                </span>
+                              )}
+                              {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
+                              {workspace.pinned && (
+                                <span title="已置顶" className="shrink-0 text-fg-faint">
+                                  <IconPin className="h-3 w-3" />
+                                </span>
+                              )}
+                              {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
+                              {isOpen && (
+                                <span
+                                  title="工作区已打开"
+                                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
+                                />
+                              )}
+                            </button>
+                            {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(event) => openMenu(workspace, event.currentTarget)}
+                                title="更多操作"
+                                className={ROW_ACTION}
+                              >
+                                <IconMore className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          {/* 展开的对话历史：这个工作区里各家 AI CLI 的会话按时间合并成一条列表 */}
+                          {historyOpen && (
+                            <div className="pr-1 pl-7">
+                              <WorkspaceHistory
+                                roots={workspace.roots}
+                                commands={aiCommands}
+                                onResume={(command, title) =>
+                                  onResumeSession(workspace, command, title)
+                                }
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
               </li>
             );
           })}
@@ -740,16 +848,22 @@ export function Sidebar({
           {/* 铺一层透明遮罩接住外部点击 */}
           <div className="fixed inset-0 z-30" onClick={() => setMenu(null)} />
           <div
-            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
               width: WORKSPACE_MENU_W,
               left: Math.max(4, menu.x - WORKSPACE_MENU_W),
-              // 条目数随工作目录数量变，按实际行数折算高度，免得贴底时被顶出可视区
+              // 条目数随工作目录数量变，按实际行数折算高度，免得贴底时被顶出可视区；
+              // 分组子面板展开时再多让一截，并允许整体滚动
               top: Math.min(
                 menu.y + 4,
-                window.innerHeight - (menu.workspace.roots.length * 24 + 140),
+                Math.max(
+                  4,
+                  window.innerHeight -
+                    (menu.workspace.roots.length * 24 + (groupMenuOpen ? 300 : 150)),
+                ),
               ),
+              maxHeight: window.innerHeight - 8,
             }}
+            className="fixed z-40 flex flex-col overflow-y-auto rounded border border-line-strong bg-raised py-1 shadow-lg"
           >
             <div className="flex items-center gap-2 px-3 py-1">
               <IconFolder className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
@@ -790,6 +904,83 @@ export function Sidebar({
               <IconPin className="h-3.5 w-3.5 shrink-0" />
               {menu.workspace.pinned ? "取消置顶" : "置顶"}
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                setGroupMenuOpen((open) => !open);
+                setNewGroup("");
+              }}
+              className={`${MENU_ITEM} flex items-center gap-2`}
+            >
+              <IconTree className="h-3.5 w-3.5 shrink-0" />
+              <span className="flex-1">分组</span>
+              {menu.workspace.group && (
+                <span className="max-w-[120px] truncate text-[11px] text-fg-faint">
+                  {menu.workspace.group}
+                </span>
+              )}
+              {groupMenuOpen ? (
+                <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+              ) : (
+                <IconChevronRight className="h-3 w-3 shrink-0 text-fg-faint" />
+              )}
+            </button>
+            {groupMenuOpen && (
+              /* 分组子面板：点已有分组直接归入；也可以在下面输入新名字 */
+              <div className="flex flex-col gap-1.5 px-3 pt-1 pb-2">
+                {groupNames.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {groupNames.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => applyGroup(name)}
+                        title={`归入「${name}」`}
+                        className={`${GROUP_CHIP} ${
+                          menu.workspace.group === name ? GROUP_CHIP_ACTIVE : ""
+                        }`}
+                      >
+                        {menu.workspace.group === name && (
+                          <IconCheck className="h-3 w-3 shrink-0" />
+                        )}
+                        <span className="truncate">{name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {menu.workspace.group && (
+                  <button
+                    type="button"
+                    onClick={() => applyGroup("")}
+                    className={`${MENU_ITEM} flex items-center gap-2 rounded px-1`}
+                  >
+                    <IconClose className="h-3.5 w-3.5 shrink-0" />
+                    移出分组
+                  </button>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    value={newGroup}
+                    onChange={(event) => setNewGroup(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") createGroup();
+                    }}
+                    placeholder={groupNames.length > 0 ? "新分组…" : "输入分组名…"}
+                    spellCheck={false}
+                    className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={createGroup}
+                    disabled={!newGroup.trim()}
+                    className="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-40"
+                  >
+                    归入
+                  </button>
+                </div>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => {
