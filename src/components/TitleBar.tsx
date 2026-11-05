@@ -11,6 +11,7 @@ import {
 
 /** 直接复用 exe 打包用的那份图标；dev 构建用琥珀橙那套，和托盘 / 任务栏的区分一致 */
 const appLogo = import.meta.env.DEV ? appLogoDev : appLogoRelease;
+const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 
 /**
  * 窗口按钮：46px 宽、整条标题栏高，悬停铺满底色——和系统标题栏的命中区一个手感。
@@ -88,7 +89,7 @@ export function TitleBar({ workspace }: TitleBarProps) {
 
   return (
     <div
-      className="flex h-9 shrink-0 select-none items-center gap-2 bg-panel pl-3"
+      className={`flex h-9 shrink-0 select-none items-center gap-2 bg-panel ${isMacOS ? "pl-[78px]" : "pl-3"}`}
       // 空白处、logo、文字都是拖动区；按钮是 <button>，Tauri 的脚本会自己放行
       data-tauri-drag-region
       // 右键弹系统菜单：还原 / 移动 / 大小 / 最小化 / 最大化 / 关闭，
@@ -125,7 +126,7 @@ export function TitleBar({ workspace }: TitleBarProps) {
         </>
       )}
 
-      <div className="ml-auto flex h-full shrink-0 items-stretch">
+      {!isMacOS && <div className="ml-auto flex h-full shrink-0 items-stretch">
         <button
           type="button"
           title="最小化"
@@ -170,7 +171,7 @@ export function TitleBar({ workspace }: TitleBarProps) {
             <path d="m2.5 2.5 7 7M9.5 2.5l-7 7" />
           </ControlIcon>
         </button>
-      </div>
+      </div>}
     </div>
   );
 }
