@@ -74,6 +74,12 @@ export interface TerminalSessionHandle {
   focus(): void;
   /** 「用户看到了」：撤掉 done 标记。切到已经活动的标签时 prop 不变，只能走 handle */
   markSeen(): void;
+  /**
+   * 重启这个会话的 shell：杀掉当前 PTY 再拉起一个新的，标签本身不动。
+   * 环境变量因此重新读取（Windows 重读注册表、macOS 重探登录 shell），
+   * 代价是滚动历史清空、正在跑的命令被中断。
+   */
+  restart(): void;
 }
 
 /**
@@ -395,6 +401,11 @@ export const TerminalSession = forwardRef<
       },
       markSeen() {
         seenRef.current?.();
+      },
+      // 和退出提示条上的「重开」同一条路径：换 key 让建实例的 effect 重跑，
+      // 旧 PTY 在 cleanup 里被 kill，新 shell 用同一个 cwd / shell / 环境重新拉起
+      restart() {
+        setSessionKey((key) => key + 1);
       },
     }),
     [],

@@ -39,6 +39,9 @@ import {
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
 const SHELL_MENU_W = 200;
+/** 标签右键菜单的宽度与高度，用来把菜单往可视区内收 */
+const TAB_MENU_W = 160;
+const TAB_MENU_H = 34;
 const SHELL_MENU_ITEM =
   "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
@@ -172,6 +175,11 @@ export function TerminalPane({
   const [shellMenuPos, setShellMenuPos] = useState<{ left: number; top: number } | null>(
     null,
   );
+  /**
+   * 右键标签打开的会话菜单。坐标是视口坐标：标签栏是横向滚动容器，
+   * 绝对定位的菜单会被它裁掉，所以和上面的 shell 菜单一样用 fixed。
+   */
+  const [tabMenu, setTabMenu] = useState<{ id: number; x: number; y: number } | null>(null);
   const { settings } = useSettings();
 
   /** root 之外的工作目录：启动 AI CLI 时作为附加目录传给 CLI */
@@ -592,6 +600,11 @@ export function TerminalPane({
                   key={id}
                   data-tab-item
                   onPointerDown={onTabDown(index)}
+                  onContextMenu={(event) => {
+                    // 右键标签开这个会话的菜单。onTabDown 只认左键，不会和拖动重排打架
+                    event.preventDefault();
+                    setTabMenu({ id, x: event.clientX, y: event.clientY });
+                  }}
                   className={`relative flex shrink-0 items-center rounded ${
                     isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
                   } ${dragFrom === index ? "opacity-40" : ""}`}
@@ -828,6 +841,43 @@ export function TerminalPane({
                 {item.label}
               </button>
             ))}
+          </div>
+        </>
+      )}
+
+      {/* 标签右键菜单。标签栏横向滚动，绝对定位会被裁掉，所以和上面的 shell 菜单一样用 fixed */}
+      {tabMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setTabMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setTabMenu(null);
+            }}
+          />
+          <div
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              width: TAB_MENU_W,
+              left: Math.min(tabMenu.x, window.innerWidth - TAB_MENU_W - 4),
+              top: Math.min(tabMenu.y, window.innerHeight - TAB_MENU_H - 4),
+            }}
+          >
+            <button
+              type="button"
+              title="重新拉起这个标签的 shell（环境变量按当前系统设置重新读取，滚动历史会清空）"
+              onClick={() => {
+                const id = tabMenu.id;
+                setTabMenu(null);
+                // 重启后台标签时切过去：新 shell 的输出得看得见才有意义
+                setActiveId(id);
+                handlesRef.current.get(id)?.restart();
+              }}
+              className={SHELL_MENU_ITEM}
+            >
+              重启会话
+            </button>
           </div>
         </>
       )}
