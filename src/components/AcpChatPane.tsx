@@ -24,7 +24,8 @@ import {
   type AcpToolCall,
   type AcpToolContent,
 } from "../lib/acp";
-import { useHighlightedMarkdown } from "../lib/highlight";
+import { resolveLanguage, useHighlightedCode, useHighlightedMarkdown } from "../lib/highlight";
+import { languageOf } from "../lib/languages";
 import { useMermaidBlocks } from "../lib/mermaid";
 import { ScrollToBottomButton, useStickToBottom } from "./ScrollToBottom";
 import {
@@ -32,6 +33,8 @@ import {
   IconAlert,
   IconBot,
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconPlus,
   IconSend,
   IconStop,
@@ -65,18 +68,30 @@ const STOP_BUTTON =
 const HEAD_BUTTON =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40";
 
-function MarkdownText({ text, streaming }: { text: string; streaming: boolean }) {
+function MarkdownText({
+  text,
+  streaming,
+  className = "text-[14px]",
+  bodyClass = "agent-text",
+}: {
+  text: string;
+  streaming: boolean;
+  /** 流式与 markdown 两条分支共用的字号：切换排版时不能跳一下 */
+  className?: string;
+  /** markdown 分支的排版变体：正文 agent-text，思考过程 thought-text */
+  bodyClass?: string;
+}) {
   // 流式期间不跑 markdown：半截 ``` 会来回跳，等这一轮结束再上排版
   const html = useHighlightedMarkdown(text, !streaming);
   const bodyRef = useRef<HTMLDivElement>(null);
   useMermaidBlocks(bodyRef, html);
   if (streaming) {
-    return <div className="text-[14px] leading-[1.75] whitespace-pre-wrap">{text}</div>;
+    return <div className={`${className} leading-[1.75] whitespace-pre-wrap`}>{text}</div>;
   }
   return (
     <div
       ref={bodyRef}
-      className="markdown-body agent-text text-[14px]"
+      className={`markdown-body ${bodyClass} ${className}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
@@ -95,14 +110,41 @@ function statusTone(status: string | undefined): string {
   }
 }
 
-function ToolContent({ content }: { content: AcpToolContent }) {
+/** 工具正文 / diff 的高亮块：语言认不出、或者高亮还没算好时按纯文本渲染 */
+function CodeText({
+  text,
+  language,
+  className,
+}: {
+  text: string;
+  language: string | null;
+  className: string;
+}) {
+  const html = useHighlightedCode(text, language);
+  if (html === null) return <pre className={className}>{text}</pre>;
+  return <pre className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/**
+ * 猜工具正文该按什么语言上色：执行类工具的输出按 shell，读 / 写文件的正文看
+ * locations 里的路径，diff 看它自己的路径。认不出就返回 null（纯文本）。
+ */
+function toolContentLanguage(call: AcpToolCall, path?: string): string | null {
+  if (call.kind === "execute") return "shell";
+  const file = path ?? call.locations?.[0]?.path;
+  return file ? resolveLanguage(languageOf(file)) : null;
+}
+
+function ToolContent({ content, call }: { content: AcpToolContent; call: AcpToolCall }) {
   if (content.type === "content") {
     const block = (content as { content?: AcpContentBlock }).content;
     if (block && block.type === "text" && typeof block.text === "string") {
       return (
-        <pre className="mt-1 max-h-48 overflow-auto rounded bg-surface px-2 py-1.5 text-[11px] leading-relaxed whitespace-pre-wrap text-fg-muted">
-          {block.text}
-        </pre>
+        <CodeText
+          text={block.text}
+          language={toolContentLanguage(call)}
+          className="mt-1 max-h-48 overflow-auto rounded bg-surface px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg-muted"
+        />
       );
     }
     return null;
@@ -115,9 +157,11 @@ function ToolContent({ content }: { content: AcpToolContent }) {
         <div className="border-b border-line bg-surface px-2 py-1 font-mono text-[10px] text-fg-faint">
           {diff.path ?? ""}
         </div>
-        <pre className="max-h-56 overflow-auto bg-surface px-2 py-1.5 font-mono text-[11px] leading-relaxed text-fg-muted">
-          {text.length > 4000 ? `${text.slice(0, 4000)}\n…` : text}
-        </pre>
+        <CodeText
+          text={text.length > 4000 ? `${text.slice(0, 4000)}\n…` : text}
+          language={toolContentLanguage(call, diff.path)}
+          className="max-h-56 overflow-auto bg-surface px-2 py-1.5 font-mono text-[11px] leading-relaxed text-fg-muted"
+        />
       </div>
     );
   }
@@ -149,7 +193,7 @@ function ToolBlock({ call }: { call: AcpToolCall }) {
           ))}
         </div>
       )}
-      {call.content?.map((content, index) => <ToolContent key={index} content={content} />)}
+      {call.content?.map((content, index) => <ToolContent key={index} content={content} call={call} />)}
     </div>
   );
 }
@@ -187,16 +231,83 @@ function PlanBlock({ entries }: { entries: AcpPlanEntry[] }) {
   );
 }
 
+/**
+ * 思考过程：流式时展开，思考结束后自动收起成一行摘要。
+ *
+ * 用户点过之后就以用户的选择为准（`open` 不为 null），没点过才跟着 streaming 走——
+ * 否则每轮结束都会把用户手动展开的内容再收回去。
+ */
+function ThoughtBlock({ block }: { block: Extract<AcpBlock, { kind: "thought" }> }) {
+  const [open, setOpen] = useState<boolean | null>(null);
+  const expanded = open ?? block.streaming;
+  const text = block.text.trim();
+  // 收起时留一句开头，扫一眼就知道这段在琢磨什么；顺手去掉行首的 markdown 标记
+  const preview = (text.split("\n")[0] ?? "").replace(/^[#>*\-\s]+/, "").trim();
+  return (
+    <div className="my-2 rounded-lg bg-raised text-[12px] leading-relaxed text-fg-dim">
+      <button
+        type="button"
+        onClick={() => setOpen(!expanded)}
+        title={expanded ? "收起思考过程" : "展开思考过程"}
+        className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-hover"
+      >
+        {expanded ? (
+          <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
+        ) : (
+          <IconChevronRight className="h-3 w-3 shrink-0 text-fg-faint" />
+        )}
+        <span
+          className={`shrink-0 text-[10px] font-medium ${
+            block.streaming ? "text-accent-strong" : "text-fg-dim"
+          }`}
+        >
+          {block.streaming ? "思考中…" : "思考过程"}
+        </span>
+        {!expanded &&
+          (preview ? (
+            <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">{preview}</span>
+          ) : (
+            <span className="flex-1" />
+          ))}
+        {!expanded && (
+          <span className="shrink-0 text-[10px] tabular-nums text-fg-faint">{text.length} 字</span>
+        )}
+      </button>
+      {expanded && (
+        <div className="px-2.5 pb-2">
+          <MarkdownText
+            text={block.text}
+            streaming={block.streaming}
+            className="text-[12px]"
+            bodyClass="thought-text"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BlockView({ block }: { block: AcpBlock }) {
   switch (block.kind) {
-    case "user":
+    case "user": {
+      // 用户粘进来的代码块也走高亮；普通指令仍按纯文本，别把换行和缩进重排掉
+      const withCode = block.text.includes("```");
       return (
         <div className="my-3 flex justify-end">
-          <div className="max-w-[85%] rounded-2xl bg-selected px-3.5 py-2 text-[14px] leading-relaxed whitespace-pre-wrap text-fg">
-            {block.text}
+          <div
+            className={`max-w-[85%] rounded-2xl bg-selected px-3.5 py-2 text-[14px] leading-relaxed text-fg ${
+              withCode ? "" : "whitespace-pre-wrap"
+            }`}
+          >
+            {withCode ? (
+              <MarkdownText text={block.text} streaming={Boolean(block.streaming)} />
+            ) : (
+              block.text
+            )}
           </div>
         </div>
       );
+    }
     case "assistant":
       return (
         <div className="my-3 text-fg">
@@ -204,14 +315,7 @@ function BlockView({ block }: { block: AcpBlock }) {
         </div>
       );
     case "thought":
-      return (
-        <div className="my-2 rounded-lg bg-raised px-2.5 py-1.5 text-[12px] leading-relaxed text-fg-faint">
-          <span className="mr-1.5 text-[10px] font-medium text-fg-dim">
-            {block.streaming ? "思考中…" : "思考过程"}
-          </span>
-          <span className="whitespace-pre-wrap">{block.text}</span>
-        </div>
-      );
+      return <ThoughtBlock block={block} />;
     case "tool":
       return <ToolBlock call={block.call} />;
     case "plan":

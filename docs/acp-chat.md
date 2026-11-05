@@ -91,8 +91,12 @@
   - 面板重新挂载时先读存档，再用 `acp_status` 问后端进程还在不在：还在就接上，
     不在就等下一条消息按 `sessionId` 恢复；Agent 不支持恢复时清空旧记录并提示。
   - 消息区复用 `useStickToBottom`；助手正文复用 `useHighlightedMarkdown` +
-    `useMermaidBlocks`，和 `AgentMessageView` 同一套渲染规则。
-  - 工具卡展示状态、类型、路径，以及 text / diff 内容。
+    `useMermaidBlocks`，和 `AgentMessageView` 同一套渲染规则；用户消息里带围栏代码块时
+    也走这套 markdown，普通指令仍是纯文本。
+  - 工具卡展示状态、类型、路径，以及 text / diff 内容；正文按 `locations` / diff 路径
+    推断语言后用 `useHighlightedCode` 上色（执行类工具按 shell），认不出就按纯文本。
+  - 思考块流式时展开，思考结束后自动收起成一行摘要（首行 + 字数），点开可再看全文；
+    展开后的正文按 markdown 渲染，代码同样上色。
   - 顶栏有会话模式下拉（Agent 声明了 modes 时出现），切换走 `acp_set_mode`；
     Claude Code 切到 `default` 后写文件会弹权限卡。
   - 权限卡固定在输入框上方，默认一次一确认，不做自动批准。
