@@ -962,7 +962,8 @@ fn rename_at(source: &Path, new_name: &str) -> Result<String, String> {
     Ok(display(&target))
 }
 
-/// 删除文件或整个目录（递归）。**不可撤销**，前端必须先跟用户确认。
+/// 直接删掉文件或整个目录（递归），不进回收站。
+/// 只给内部操作用：粘贴撞名时的覆盖写、移动前的清场——这些没有「用户刚删了什么」的语义。
 fn delete_at(target: &Path) -> Result<(), String> {
     // 路径已经过 resolve 的 canonicalize，指向的就是磁盘上真实的那一项
     if target.is_dir() {
@@ -981,12 +982,20 @@ fn rename_entry(root: &Path, path: &str, new_name: &str) -> Result<String, Strin
     rename_at(&source, new_name)
 }
 
-fn delete_entry(root: &Path, path: &str) -> Result<(), String> {
+/// 删除文件或整个目录。`to_trash` 为真时移到系统回收站——文件树里默认的「删除」
+/// 走这条，删错了能从回收站捞回来；为假时直接删掉（右键的「永久删除」，以及测试：
+/// 测试不该往开发者的回收站里塞东西）。
+fn delete_entry(root: &Path, path: &str, to_trash: bool) -> Result<(), String> {
     let target = resolve(root, path)?;
     if target == root {
         return Err("不能删除工作区根目录".to_string());
     }
-    delete_at(&target)
+    if to_trash {
+        crate::recycle::move_to_trash(&target)
+            .map_err(|e| format!("移到回收站失败 {}: {e}", display(&target)))
+    } else {
+        delete_at(&target)
+    }
 }
 
 /// 重命名，返回改名后的绝对路径——前端据此把编辑器标签上的路径一起换掉。
@@ -1000,13 +1009,16 @@ pub fn fs_rename(
     rename_entry(&state.checked_root(&root)?, &path, &new_name)
 }
 
+/// 删除文件或整个目录。默认移到系统回收站；`permanent` 为真时直接删掉，不进回收站
+/// （文件树右键菜单里的「永久删除」，不可恢复）。
 #[tauri::command]
 pub fn fs_delete(
     state: tauri::State<'_, FsState>,
     root: String,
     path: String,
+    permanent: bool,
 ) -> Result<(), String> {
-    delete_entry(&state.checked_root(&root)?, &path)
+    delete_entry(&state.checked_root(&root)?, &path, !permanent)
 }
 
 /// 把一项（文件或目录）移动到目标目录下，返回移动后的绝对路径——前端据此把编辑器
@@ -2075,22 +2087,40 @@ mod tests {
 
         let file = workspace.join("a.txt");
         fs::write(&file, "").unwrap();
-        delete_entry(&workspace_root(&state), file.to_str().unwrap()).unwrap();
+        // 传 false 走永久删除：这条测试只验递归与边界，不该往回收站里塞东西
+        delete_entry(&workspace_root(&state), file.to_str().unwrap(), false).unwrap();
         assert!(!file.exists());
 
         let dir = workspace.join("src");
         fs::create_dir_all(dir.join("deep")).unwrap();
         fs::write(dir.join("deep").join("main.rs"), "").unwrap();
-        delete_entry(&workspace_root(&state), dir.to_str().unwrap()).unwrap();
+        delete_entry(&workspace_root(&state), dir.to_str().unwrap(), false).unwrap();
         assert!(!dir.exists(), "目录要连里面的文件一起删掉");
 
         // 越界和工作区根都不许删
         let outside = root.join("outside");
         fs::create_dir_all(&outside).unwrap();
-        assert!(delete_entry(&workspace_root(&state), outside.to_str().unwrap()).is_err());
+        assert!(delete_entry(&workspace_root(&state), outside.to_str().unwrap(), false).is_err());
         assert!(outside.is_dir(), "越界时不能真删");
-        assert!(delete_entry(&workspace_root(&state), workspace.to_str().unwrap()).is_err());
+        assert!(delete_entry(&workspace_root(&state), workspace.to_str().unwrap(), false).is_err());
         assert!(workspace.is_dir());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 回收站这条路要真调系统 API（Windows 的 IFileOperation / Linux 的 XDG trash），
+    /// 常规测试跑它会往开发者自己的回收站里塞文件，所以标了 `#[ignore]`。
+    /// 需要验证时手动跑：`cargo test --lib deletes_to_trash -- --ignored`
+    #[test]
+    #[ignore]
+    fn deletes_to_trash() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let file = workspace.join("trash-me.txt");
+        fs::write(&file, "bye").unwrap();
+
+        delete_entry(&workspace_root(&state), file.to_str().unwrap(), true).unwrap();
+        assert!(!file.exists(), "删除后源文件不该还在工作区里");
+
         fs::remove_dir_all(&root).ok();
     }
 

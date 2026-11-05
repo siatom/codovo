@@ -185,15 +185,16 @@ function pruneNested(paths: string[]): string[] {
   return paths.filter((path) => !paths.some((other) => other !== path && isPathInside(path, other)));
 }
 
-/** 批量删除确认框的文案 */
-function deleteMessage(items: FileEntry[]): string {
+/** 批量删除确认框的文案。永久删除没有回收站兜底，措辞得把话说死 */
+function deleteMessage(items: FileEntry[], permanent: boolean): string {
+  const tail = permanent ? "此操作不可撤销。" : "会移到系统回收站。";
   if (items.length === 1) {
     const entry = items[0];
     return entry.isDir
-      ? `删除文件夹「${entry.name}」及其中全部内容？此操作不可撤销。`
-      : `删除文件「${entry.name}」？此操作不可撤销。`;
+      ? `删除文件夹「${entry.name}」及其中全部内容？${tail}`
+      : `删除文件「${entry.name}」？${tail}`;
   }
-  return `删除选中的 ${items.length} 项？此操作不可撤销。`;
+  return `删除选中的 ${items.length} 项？${tail}`;
 }
 
 /** roots 数组每次渲染都是新引用，effect 的依赖得靠这个字符串来判断「换没换」 */
@@ -360,8 +361,11 @@ export function ExplorerPane({
   const [menu, setMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<RenamingState | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  /** 等着确认删除的那一批；非空时弹确认框 */
-  const [pendingDelete, setPendingDelete] = useState<FileEntry[] | null>(null);
+  /** 等着确认删除的那一批；非空时弹确认框。`permanent` 区分回收站与永久删除 */
+  const [pendingDelete, setPendingDelete] = useState<{
+    items: FileEntry[];
+    permanent: boolean;
+  } | null>(null);
 
   /**
    * 应用内的文件剪贴板：复制 / 剪切的是路径列表，`cut` 为 true 表示粘贴时要移动。
@@ -809,21 +813,25 @@ export function ExplorerPane({
     }
   }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter]);
 
-  /** 请求删除：这一行在选中集合里就删整批（VS Code 语义），否则只删它自己 */
+  /**
+   * 请求删除：这一行在选中集合里就删整批（VS Code 语义），否则只删它自己。
+   * `permanent` 来自右键菜单的「永久删除」或 Shift+Delete——那样就不进回收站。
+   */
   const requestDelete = useCallback(
-    (entry: FileEntry) => {
+    (entry: FileEntry, permanent = false) => {
       setMenu(null);
       const items = selection.has(pathKey(entry.path))
         ? [...selection.values()]
         : [entry];
-      if (items.length > 0) setPendingDelete(items);
+      if (items.length > 0) setPendingDelete({ items, permanent });
     },
     [selection],
   );
 
   const confirmDelete = useCallback(async () => {
-    const items = pendingDelete;
-    if (!items || items.length === 0 || busy) return;
+    const pending = pendingDelete;
+    if (!pending || pending.items.length === 0 || busy) return;
+    const { items, permanent } = pending;
     setPendingDelete(null);
     setBusy(true);
     setActionError(null);
@@ -838,7 +846,7 @@ export function ExplorerPane({
         continue;
       }
       try {
-        await deleteEntry(owner, path);
+        await deleteEntry(owner, path, permanent);
         removed.push(path);
       } catch (reason) {
         failures.push(String(reason));
@@ -1550,7 +1558,8 @@ export function ExplorerPane({
         }
         case "Delete": {
           event.preventDefault();
-          requestDelete(entry);
+          // Shift+Delete 是各平台通行的「彻底删除」，和右键菜单里那一项同一个动作
+          requestDelete(entry, event.shiftKey);
           break;
         }
       }
@@ -2111,11 +2120,11 @@ export function ExplorerPane({
         </div>
       )}
 
-      {/* 删除不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
+      {/* 删除默认进回收站、也能选永久删除，都走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
         <ConfirmDialog
-          message={deleteMessage(pendingDelete)}
-          confirmLabel="删除"
+          message={deleteMessage(pendingDelete.items, pendingDelete.permanent)}
+          confirmLabel={pendingDelete.permanent ? "永久删除" : "删除"}
           onConfirm={() => void confirmDelete()}
           onCancel={() => setPendingDelete(null)}
         />
@@ -2294,6 +2303,15 @@ export function ExplorerPane({
             >
               <IconTrash className="h-3.5 w-3.5" />
               删除
+            </button>
+            {/* 回收站兜不住的时候用：不进回收站、直接删，确认框里会写明不可恢复 */}
+            <button
+              type="button"
+              onClick={() => requestDelete(menu.entry, true)}
+              className={`${MENU_ITEM} text-danger hover:text-danger`}
+            >
+              <IconTrash className="h-3.5 w-3.5" />
+              永久删除
             </button>
           </div>
         </>

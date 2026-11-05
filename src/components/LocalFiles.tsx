@@ -126,8 +126,8 @@ export function LocalFiles({
   );
 
   const remove = useCallback(
-    async (entry: PanelEntry) => {
-      await localRemove(entry.path);
+    async (entry: PanelEntry, permanent: boolean) => {
+      await localRemove(entry.path, permanent);
       reload();
     },
     [reload],
@@ -156,6 +156,8 @@ export function LocalFiles({
       onMkdir={mkdir}
       onRename={rename}
       onDelete={remove}
+      canTrash
+      deleteNote="删除后会移到系统回收站。"
       onTransfer={onTransfer}
       onDropEntry={onDropEntry}
       dropDir={path}

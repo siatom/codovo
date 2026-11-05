@@ -21,6 +21,7 @@ mod local_fs;
 mod natural_sort;
 mod preview;
 mod pty;
+mod recycle;
 mod remote;
 mod runtime;
 mod secrets;

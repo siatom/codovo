@@ -35,9 +35,9 @@ export function localRename(path: string, newName: string): Promise<string> {
   return invoke<string>("local_rename", { path, newName });
 }
 
-/** 删除文件或整个目录（递归）。**不可撤销**，调用前必须先确认 */
-export function localRemove(path: string): Promise<void> {
-  return invoke<void>("local_remove", { path });
+/** 删除文件或整个目录：默认移到系统回收站；`permanent` 为真时直接删掉。调用前必须先确认 */
+export function localRemove(path: string, permanent = false): Promise<void> {
+  return invoke<void>("local_remove", { path, permanent });
 }
 
 /**

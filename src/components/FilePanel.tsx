@@ -86,7 +86,18 @@ export interface FilePanelProps {
   onRefresh: () => void;
   onMkdir: (name: string) => Promise<void>;
   onRename: (entry: PanelEntry, name: string) => Promise<void>;
-  onDelete: (entry: PanelEntry) => Promise<void>;
+  /**
+   * 删除一项。`permanent` 为真表示不进回收站、直接删掉（本地面板才有这个选择；
+   * 远程本来就没有回收站，忽略这个参数即可）。
+   */
+  onDelete: (entry: PanelEntry, permanent: boolean) => Promise<void>;
+  /**
+   * 删除确认框里的补充说明。本地删的是系统里的真实文件，进回收站还能找回；
+   * 远程删了就没了——两边共用这个面板，所以文案由调用方给。
+   */
+  deleteNote?: string;
+  /** 这一侧有没有系统回收站：本地为真，菜单里才给「永久删除」这一项 */
+  canTrash?: boolean;
   onTransfer: (entry: PanelEntry) => void;
   onDismissError: () => void;
   /**
@@ -126,6 +137,8 @@ export function FilePanel({
   onMkdir,
   onRename,
   onDelete,
+  deleteNote = "此操作不可撤销。",
+  canTrash = false,
   onTransfer,
   onDismissError,
   onDropEntry,
@@ -135,7 +148,10 @@ export function FilePanel({
   const [createDraft, setCreateDraft] = useState("");
   const [renaming, setRenaming] = useState<PanelEntry | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<PanelEntry | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    entry: PanelEntry;
+    permanent: boolean;
+  } | null>(null);
   const [actionError, setActionError] = useState("");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   /** 拖拽落点高亮：正在拖入的目录行（空串表示落在空白 = 当前目录） */
@@ -172,12 +188,12 @@ export function FilePanel({
   };
 
   const confirmDelete = async () => {
-    const target = pendingDelete;
+    const pending = pendingDelete;
     setPendingDelete(null);
-    if (!target) return;
+    if (!pending) return;
     setActionError("");
     try {
-      await onDelete(target);
+      await onDelete(pending.entry, pending.permanent);
     } catch (reason) {
       setActionError(String(reason));
     }
@@ -486,22 +502,38 @@ export function FilePanel({
               onClick={() => {
                 if (!selected) return;
                 setMenu(null);
-                setPendingDelete(selected);
+                // 远程没有回收站，它那一侧的「删除」本来就是永久删除
+                setPendingDelete({ entry: selected, permanent: !canTrash });
               }}
             >
               <IconTrash className="mr-2 h-3.5 w-3.5 shrink-0" />
               删除
             </button>
+            {canTrash && (
+              <button
+                type="button"
+                disabled={!selected}
+                className={`${MENU_ITEM} text-danger hover:text-danger`}
+                onClick={() => {
+                  if (!selected) return;
+                  setMenu(null);
+                  setPendingDelete({ entry: selected, permanent: true });
+                }}
+              >
+                <IconTrash className="mr-2 h-3.5 w-3.5 shrink-0" />
+                永久删除
+              </button>
+            )}
           </div>
         </>
       )}
 
       {pendingDelete && (
         <ConfirmDialog
-          message={`删除${pendingDelete.isDir ? "目录" : "文件"}「${pendingDelete.name}」${
-            pendingDelete.isDir ? "及其中全部内容" : ""
-          }？此操作不可撤销。`}
-          confirmLabel="删除"
+          message={`删除${pendingDelete.entry.isDir ? "目录" : "文件"}「${pendingDelete.entry.name}」${
+            pendingDelete.entry.isDir ? "及其中全部内容" : ""
+          }？${pendingDelete.permanent ? "此操作不可撤销。" : deleteNote}`}
+          confirmLabel={pendingDelete.permanent ? "永久删除" : "删除"}
           onConfirm={() => void confirmDelete()}
           onCancel={() => setPendingDelete(null)}
         />

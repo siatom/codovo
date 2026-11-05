@@ -173,9 +173,10 @@ pub fn local_rename(path: String, new_name: String) -> Result<String, String> {
     Ok(display(&target))
 }
 
-/// 删除文件或整个目录（递归）。**不可撤销**，前端必须先确认。
+/// 删除文件或整个目录：默认移到系统回收站（和文件树里的删除一致）；
+/// `permanent` 为真时直接删掉，不可恢复。前端先确认。
 #[tauri::command]
-pub fn local_remove(path: String) -> Result<(), String> {
+pub fn local_remove(path: String, permanent: bool) -> Result<(), String> {
     let target = PathBuf::from(path.trim());
     if !target.exists() {
         return Err(format!("路径不存在: {}", display(&target)));
@@ -184,10 +185,15 @@ pub fn local_remove(path: String) -> Result<(), String> {
     if target.parent().is_none() {
         return Err("不能删除文件系统根目录".to_string());
     }
-    if target.is_dir() {
-        fs::remove_dir_all(&target).map_err(|e| format!("删除失败 {}: {e}", display(&target)))
+    if permanent {
+        if target.is_dir() {
+            fs::remove_dir_all(&target).map_err(|e| format!("删除失败 {}: {e}", display(&target)))
+        } else {
+            fs::remove_file(&target).map_err(|e| format!("删除失败 {}: {e}", display(&target)))
+        }
     } else {
-        fs::remove_file(&target).map_err(|e| format!("删除失败 {}: {e}", display(&target)))
+        crate::recycle::move_to_trash(&target)
+            .map_err(|e| format!("移到回收站失败 {}: {e}", display(&target)))
     }
 }
 

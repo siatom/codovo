@@ -293,9 +293,16 @@ export function copyEntry(params: {
   });
 }
 
-/** 删除文件或整个目录（递归）。**不可撤销**，调用前必须先跟用户确认。 */
-export function deleteEntry(root: string, path: string): Promise<void> {
-  return invoke("fs_delete", { root, path });
+/**
+ * 删除文件或整个目录：默认移到系统回收站；`permanent` 为真时直接删掉，不可恢复。
+ * 两种情况调用前都要先跟用户确认。
+ */
+export function deleteEntry(
+  root: string,
+  path: string,
+  permanent = false,
+): Promise<void> {
+  return invoke("fs_delete", { root, path, permanent });
 }
 
 /**

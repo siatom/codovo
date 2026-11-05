@@ -52,6 +52,10 @@ notify = "8.2"
 # （`!` 否定、嵌套 .gitignore、只忽略目录的规则、父目录被忽略后子文件救不回来……），
 # 自己实现一遍必然对不齐，用被 ripgrep / VS Code 搜索长期验证过的实现。
 ignore = "0.4"
+# 删除到系统回收站：Windows 回收站 / macOS 废纸篓 / Linux freedesktop Trash。
+# 三端的回收站机制完全不同（Windows 走 IFileOperation，Linux 要按 XDG 规范写 .trashinfo），
+# 自己实现必然漏掉挂载点、权限、跨盘这些情况，用被大量桌面应用验证过的实现。
+trash = "5"
 # 文本文件按原编码读写（见 `encoding.rs`）：GBK / Big5 / UTF-16 的老工程
 # 不能被 UTF-8 覆盖。encoding_rs 是 WHATWG 编码标准的实现，chardetng 是
 # Firefox 的编码探测器，两者同作者、依赖同一版 encoding_rs。
