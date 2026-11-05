@@ -84,7 +84,7 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+      className="codovo-modal-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
       // 认「按下点就在遮罩上」而不是 click：click 会派发到 mousedown/mouseup 的共同
       // 祖先，从弹窗内按下、拖到遮罩上松开也会误判成点外部
       onMouseDown={(event) => {

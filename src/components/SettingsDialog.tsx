@@ -2460,7 +2460,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
   return (
     <div
       ref={overlayRef}
-      className="codovo-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-[2px]"
+      className="codovo-modal-scrim codovo-overlay-in fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6 backdrop-blur-[2px]"
       // 认「按下点就在遮罩上」而不是 click：从弹窗内按下、拖到遮罩上松开会误判成点外部
       onMouseDown={(event) => {
         if (event.button !== 0 || event.target !== event.currentTarget) return;
@@ -2521,7 +2521,8 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
             type="button"
             onClick={onClose}
             title="关闭"
-            className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-fg-dim transition-colors hover:bg-hover hover:text-fg"
+            aria-label="关闭设置"
+            className="codovo-mac-close-button flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-fg-dim transition-colors hover:bg-hover hover:text-fg"
           >
             <IconClose className="h-3.5 w-3.5" />
           </button>

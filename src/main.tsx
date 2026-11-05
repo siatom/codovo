@@ -8,6 +8,11 @@ import App from "./App";
 import { SettingsProvider } from "./lib/settings";
 import { ThemeProvider, applyTheme, readSavedTheme, resolveTheme } from "./lib/theme";
 
+// macOS 的原生红绿灯叠在窗口顶部；弹窗遮罩留出标题栏高度，避免遮暗或挡住窗口控件。
+if (/Macintosh|Mac OS X/.test(navigator.userAgent)) {
+  document.documentElement.classList.add("codovo-macos");
+}
+
 // 首帧渲染前先把主题落到 <html> 上，否则会先闪一下深色
 applyTheme(resolveTheme(readSavedTheme()));
 
