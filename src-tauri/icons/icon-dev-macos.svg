@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- macOS Dock 的开发版图标：和 icon-dev.svg 保持相同的配色与图形，整体缩至 80%，
+       给高亮橙色图标留出光学边距。只生成 icons/dev/icon.icns；其他平台继续用原图标。 -->
+  <g transform="translate(102.4 102.4) scale(0.8)">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#1a212b" />
+        <stop offset="1" stop-color="#0b0d11" />
+      </linearGradient>
+      <linearGradient id="fg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#fcd34d" />
+        <stop offset="1" stop-color="#f59e0b" />
+      </linearGradient>
+    </defs>
+    <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)" />
+    <g fill="none" stroke="url(#fg)" stroke-width="88" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M347 360 L222 512 L347 664" />
+      <path d="M566 350 L458 674" />
+      <path d="M677 360 L802 512 L677 664" />
+    </g>
+  </g>
+</svg>
