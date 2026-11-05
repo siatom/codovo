@@ -67,6 +67,8 @@ import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { TranslationView } from "./TranslationView";
 import { PdfPreview } from "./PdfPreview";
+import { OfficePreview } from "./OfficePreview";
+import { legacyOfficeExtension, officeKindOf } from "../lib/office";
 import { SplitPane } from "./SplitPane";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
@@ -494,6 +496,8 @@ type Status =
   | { kind: "emptyDiff" }
   | { kind: "image"; src: string }
   | { kind: "pdf" }
+  | { kind: "office" }
+  | { kind: "officeLegacy"; format: string }
   | { kind: "error"; message: string };
 
 /**
@@ -2550,6 +2554,25 @@ export function EditorPane({
       return;
     }
 
+    // Word / Excel / PowerPoint 同样是二进制、打开即预览，不进 Monaco。
+    // 渲染库由 OfficePreview 按类型懒加载，这里只按扩展名切状态
+    if (officeKindOf(active.path) !== null) {
+      editor.setModel(null);
+      setStatus({ kind: "office" });
+      dropPendingFormat(key);
+      return;
+    }
+
+    // 旧版二进制格式（.doc / .xls / .ppt）不在前端渲染库的支持范围里，
+    // 给一条明确提示，别落进「二进制文件，无法以文本方式编辑」那条泛化文案
+    const legacyOffice = legacyOfficeExtension(active.path);
+    if (legacyOffice !== null) {
+      editor.setModel(null);
+      setStatus({ kind: "officeLegacy", format: legacyOffice });
+      dropPendingFormat(key);
+      return;
+    }
+
     const cached = modelsRef.current.get(key);
     if (cached) {
       attachModel(key, cached.model);
@@ -3073,6 +3096,13 @@ export function EditorPane({
   // PDF 同理：打开即预览，没有编辑模式
   const isPdfTab = active?.kind === "file" && isPdfPath(active.path);
 
+  // Office 文档：现代格式交给 OfficePreview，旧版格式只给提示；
+  // 两种都不进 Monaco，容器藏起来免得露出上一个标签的残留内容
+  const officeKind = active?.kind === "file" ? officeKindOf(active.path) : null;
+  const isOfficeTab =
+    active?.kind === "file" &&
+    (officeKind !== null || legacyOfficeExtension(active.path) !== null);
+
   // 有预览可切的文件：markdown 实时渲染，html / htm / svg 走 asset 协议读磁盘。
   // 判据是 status.kind === "ready"：加载中和加载失败时不给预览入口
   const canPreview =
@@ -3275,7 +3305,7 @@ export function EditorPane({
       diffRef.current?.layout();
     });
     return () => cancelAnimationFrame(frame);
-  }, [isPreview, isSplitPreview, isDiffTab, isImageTab, isPdfTab, visible]);
+  }, [isPreview, isSplitPreview, isDiffTab, isImageTab, isPdfTab, isOfficeTab, visible]);
 
   // 标签过多、栏溢出时，激活标签可能落在可视区外，需要滚进来。
   // 用两边的 rect 差算滚动量、只挪横向，避免 scrollIntoView 连祖先的纵向滚动一起动。
@@ -3894,7 +3924,11 @@ export function EditorPane({
           first={
             <div
               ref={containerRef}
-              className={isPreview || isDiffTab || isImageTab || isPdfTab || isTranslate ? "hidden" : "h-full w-full"}
+              className={
+                isPreview || isDiffTab || isImageTab || isPdfTab || isOfficeTab || isTranslate
+                  ? "hidden"
+                  : "h-full w-full"
+              }
             />
           }
           second={
@@ -3952,6 +3986,11 @@ export function EditorPane({
           <PdfPreview path={activeFile.path} />
         )}
 
+        {/* Office 文档：docx / xlsx / pptx 由前端渲染库解析，只读 */}
+        {officeKind !== null && activeFile && activeFile.path !== null && (
+          <OfficePreview path={activeFile.path} kind={officeKind} />
+        )}
+
         {/* 图片按原比例整体放进可视区，不放大也不让横竖滚动条出场 */}
         {status.kind === "image" && (
           <div className="absolute inset-0 flex items-center justify-center overflow-hidden bg-surface p-4">
@@ -3966,6 +4005,7 @@ export function EditorPane({
         {overlay.kind !== "ready" &&
           overlay.kind !== "image" &&
           overlay.kind !== "pdf" &&
+          overlay.kind !== "office" &&
           // 没有标签时上面已经铺了欢迎页，这里不再叠一句「从左侧文件树选一个文件」
           !(tabs.length === 0 && overlay.kind === "idle") && (
           <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
@@ -3991,6 +4031,12 @@ export function EditorPane({
                   : isImageTab
                     ? "图片超过 10MB，已跳过预览"
                     : "文件超过 2MB，已跳过加载"}
+              </p>
+            )}
+            {overlay.kind === "officeLegacy" && (
+              <p className="text-[12px] text-warn">
+                .{overlay.format} 是旧版 Office 格式，暂不支持预览，请另存为 .
+                {overlay.format}x 后再打开
               </p>
             )}
             {overlay.kind === "emptyDiff" && (

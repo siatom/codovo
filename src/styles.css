@@ -949,6 +949,16 @@ body.codovo-dragging-list * {
   transition: flex-basis 280ms var(--ease-dock);
 }
 
+/* Office 预览。docx-preview 自带的 wrapper 是纯灰底，换成应用的面板色，
+   文档页本身仍是白纸；pptx 的舞台色压暗，和白色幻灯片拉开层次 */
+.office-docx .codovo-docx-wrapper {
+  background: var(--color-surface);
+}
+
+.pptx-preview-wrapper {
+  background: #1f1f1f !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .codovo-overlay-in,
   .codovo-dialog-in,
