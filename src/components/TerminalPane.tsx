@@ -121,6 +121,8 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
+  /** ACP Agent 提供的会话名临时覆盖对应终端标签；没有标题时仍显示原标签名 */
+  const [agentTitleById, setAgentTitleById] = useState<Record<number, string>>({});
   const [layout, setLayout] = useState<"tabs" | "horizontal" | "vertical">("tabs");
   /** 中间区在「终端 / 对话」之间切换；对话面板只是藏起来，ACP 会话不因此断开 */
   const [view, setView] = useState<"terminal" | "chat">("terminal");
@@ -194,6 +196,16 @@ export function TerminalPane({
   // 同上：runInNewSession 的句柄要稳定，但 Agent 的环境变量随时可能在设置里改
   const aiCommandsRef = useRef(settings.aiCommands);
   aiCommandsRef.current = settings.aiCommands;
+
+  const syncAgentTitle = useCallback((title: string | undefined) => {
+    setAgentTitleById((current) => {
+      const next = { ...current };
+      const clean = title?.trim();
+      if (clean) next[activeId] = clean;
+      else delete next[activeId];
+      return next;
+    });
+  }, [activeId]);
 
   // 标签页要显示每个会话的 shell 图标和名字，所以候选一挂载就拉，不用等到点开菜单
   useEffect(() => {
@@ -586,7 +598,7 @@ export function TerminalPane({
               const launchedCommand = launchCommandByIdRef.current.get(id) ?? launchCommand;
               const seq = shellSeqByIdRef.current.get(id) ?? 1;
               const shellName = shell?.name ?? `终端 ${index + 1}`;
-              const title = custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
+              const title = agentTitleById[id] ?? custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
               // 悬停提示：启动过的会话报实际命令，普通会话报 shell 全名
               const hint = launchedCommand ?? shell?.label ?? shellName;
               // 这个标签有没有「在等用户」的标记：等回应（prompt）或任务完成（done）
@@ -809,7 +821,7 @@ export function TerminalPane({
 
       {/* 对话面板始终挂载：切回终端只是 hidden，ACP 会话和消息都留着 */}
       <div className={view === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <AcpChatPane root={root} roots={roots} cli={chatCli} />
+        <AcpChatPane root={root} roots={roots} cli={chatCli} onActiveTitleChange={syncAgentTitle} />
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，

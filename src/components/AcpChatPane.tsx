@@ -56,6 +56,8 @@ interface AcpChatPaneProps {
   roots: string[];
   /** 当前选中的 CLI；为空时给个空状态 */
   cli: AcpCliOption | null;
+  /** Agent 更新活动会话标题时，同步通知终端标签 */
+  onActiveTitleChange?: (title: string | undefined) => void;
 }
 
 /** 发送键和 AgentPane 同一套：实心圆钮是这一屏唯一的主操作 */
@@ -393,7 +395,7 @@ function PermissionCard({
  * 每个 CLI 各留一份会话状态（按 provider key 归档），所以在顶栏来回切 CLI 不会
  * 丢掉上一家的对话；后端会话一直活着，直到切工作区 / 关应用。
  */
-export function AcpChatPane({ root, roots, cli }: AcpChatPaneProps) {
+export function AcpChatPane({ root, roots, cli, onActiveTitleChange }: AcpChatPaneProps) {
   const [slots, setSlots] = useState<Record<string, ChatSlot>>({});
   const slotsRef = useRef(slots);
   const [draft, setDraft] = useState("");
@@ -409,6 +411,9 @@ export function AcpChatPane({ root, roots, cli }: AcpChatPaneProps) {
   const command = cli?.command ?? "";
   const slot = slots[key];
   const chat = useMemo(() => activeChatOf(slot), [slot]);
+  useEffect(() => {
+    onActiveTitleChange?.(chat?.title);
+  }, [chat?.chatId, chat?.title, onActiveTitleChange]);
   const blocks = useMemo(() => chat?.blocks ?? [], [chat]);
   const { ref: scrollRef, atBottom, onScroll, jumpToBottom, reset } = useStickToBottom(blocks);
 
@@ -916,6 +921,8 @@ function activeChatOf(slot: ChatSlot | undefined): AcpChat | undefined {
 
 /** 标签页标题：取第一条用户消息，没有就用「新对话」 */
 function chatTitle(chat: AcpChat): string {
+  const generatedTitle = chat.title?.trim();
+  if (generatedTitle) return generatedTitle;
   const first = chat.blocks.find((block) => block.kind === "user" && block.text.trim() !== "");
   const text = first && first.kind === "user" ? first.text.trim().replace(/\s+/g, " ") : "";
   if (!text) return "新对话";

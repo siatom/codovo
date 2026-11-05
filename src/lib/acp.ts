@@ -187,6 +187,8 @@ export interface AcpChat {
   chatId: string;
   /** ACP session id；拿到后可以跨重启恢复 */
   sessionId?: string;
+  /** Agent 通过 ACP session_info_update 自动生成的会话标题 */
+  title?: string;
   phase: AcpChatPhase;
   info?: AcpInfo;
   blocks: AcpBlock[];
@@ -216,6 +218,7 @@ export function chatFromStored(stored: StoredChat): AcpChat {
   return {
     chatId: stored.chatId,
     sessionId: stored.sessionId,
+    title: stored.title,
     phase: "idle",
     blocks: stored.blocks,
     busy: false,
@@ -329,6 +332,14 @@ export function reduceAcpEvent(chat: AcpChat, event: AcpEvent): AcpChat {
     case "update": {
       const update = event.update;
       switch (update.sessionUpdate) {
+        case "session_info_update": {
+          const title = (update as { title?: unknown }).title;
+          return typeof title === "string"
+            ? { ...chat, title: title.trim() || undefined }
+            : title === null
+              ? { ...chat, title: undefined }
+              : chat;
+        }
         case "agent_message_chunk": {
           const text = contentText((update as { content?: AcpContentBlock }).content);
           return text ? appendStreaming(chat, "assistant", text) : chat;
@@ -500,6 +511,7 @@ export const MAX_CHATS = 6;
 export interface StoredChat {
   chatId: string;
   sessionId: string;
+  title?: string;
   provider: string;
   blocks: AcpBlock[];
   updatedAt: number;
@@ -589,6 +601,7 @@ export function saveStoredSlot(root: string, command: string, chats: AcpChat[], 
     .map<StoredChat>((chat) => ({
       chatId: chat.chatId,
       sessionId: chat.sessionId as string,
+      title: chat.title,
       provider: chat.info?.provider ?? "",
       blocks: pruneBlocks(chat.blocks),
       updatedAt: Date.now(),
