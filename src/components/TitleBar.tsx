@@ -1,6 +1,4 @@
 import { useEffect, useState, type ReactNode } from "react";
-import appLogoRelease from "../../src-tauri/icons/128x128.png";
-import appLogoDev from "../../src-tauri/icons/dev/128x128.png";
 import {
   closeWindow,
   isWindowMaximized,
@@ -9,8 +7,6 @@ import {
   toggleMaximizeWindow,
 } from "../lib/window";
 
-/** 直接复用 exe 打包用的那份图标；dev 构建用琥珀橙那套，和托盘 / 任务栏的区分一致 */
-const appLogo = import.meta.env.DEV ? appLogoDev : appLogoRelease;
 const isMacOS = /Macintosh|Mac OS X/.test(navigator.userAgent);
 
 /**
@@ -89,7 +85,7 @@ export function TitleBar({ workspace }: TitleBarProps) {
 
   return (
     <div
-      className={`flex h-9 shrink-0 select-none items-center gap-2 bg-panel ${isMacOS ? "pl-[78px]" : "pl-3"}`}
+      className={`relative flex h-9 shrink-0 select-none items-center bg-panel ${isMacOS ? "justify-center px-20" : "gap-2 pl-3"}`}
       // 空白处、logo、文字都是拖动区；按钮是 <button>，Tauri 的脚本会自己放行
       data-tauri-drag-region
       // 右键弹系统菜单：还原 / 移动 / 大小 / 最小化 / 最大化 / 关闭，
@@ -101,30 +97,33 @@ export function TitleBar({ workspace }: TitleBarProps) {
         });
       }}
     >
-      <img src={appLogo} alt="" className="h-4 w-4 shrink-0" data-tauri-drag-region />
-      <span className="shrink-0 text-[12px] font-semibold text-fg-muted" data-tauri-drag-region>
-        Codovo
-      </span>
-      {import.meta.env.DEV && (
-        <span
-          className="shrink-0 rounded border border-warn-line-strong px-1 text-[9px] font-medium leading-[13px] text-warn"
-          data-tauri-drag-region
-        >
-          dev
+      <div
+        className={`flex min-w-0 items-center gap-2 ${isMacOS ? "max-w-full" : ""}`}
+        data-tauri-drag-region
+      >
+        <span className="shrink-0 text-[12px] font-semibold text-fg-muted" data-tauri-drag-region>
+          Codovo
         </span>
-      )}
-      {/* 工作区名跟在应用名后面。工作区恰好也叫 Codovo（本仓库自己就是）时不再重复一遍，
-          左侧永远只有一个名字 */}
-      {workspace && workspace !== "Codovo" && (
-        <>
-          <span className="shrink-0 text-[11px] text-fg-faint" data-tauri-drag-region>
-            /
+        {import.meta.env.DEV && (
+          <span
+            className="shrink-0 rounded border border-warn-line-strong px-1 text-[9px] font-medium leading-[13px] text-warn"
+            data-tauri-drag-region
+          >
+            dev
           </span>
-          <span className="min-w-0 truncate text-[12px] text-fg-dim" data-tauri-drag-region>
-            {workspace}
-          </span>
-        </>
-      )}
+        )}
+        {/* 工作区名跟在应用名后面。工作区恰好也叫 Codovo 时不重复显示 */}
+        {workspace && workspace !== "Codovo" && (
+          <>
+            <span className="shrink-0 text-[11px] text-fg-faint" data-tauri-drag-region>
+              {isMacOS ? "·" : "/"}
+            </span>
+            <span className="min-w-0 truncate text-[12px] text-fg-dim" data-tauri-drag-region>
+              {workspace}
+            </span>
+          </>
+        )}
+      </div>
 
       {!isMacOS && <div className="ml-auto flex h-full shrink-0 items-stretch">
         <button
