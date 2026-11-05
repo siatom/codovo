@@ -28,6 +28,19 @@ pub struct AcpInfo {
     pub can_load: bool,
     /// Agent 是否支持 `session/resume`（不带历史重放）
     pub can_resume: bool,
+    /// Agent 提供的会话模式（Claude Code 的 default / acceptEdits / plan 这类）
+    pub modes: Vec<AcpMode>,
+    /// 当前模式 id；Agent 没提供模式时为空
+    pub current_mode_id: Option<String>,
+}
+
+/// 会话模式的可选值，对应 ACP `SessionMode`。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpMode {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

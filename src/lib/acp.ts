@@ -49,6 +49,12 @@ export interface AcpEnvVar {
   value: string;
 }
 
+export interface AcpMode {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface AcpInfo {
   provider: string;
   /** Agent 自报的名字 / 版本 */
@@ -63,6 +69,10 @@ export interface AcpInfo {
   canLoad: boolean;
   /** Agent 支持 `session/resume`：恢复但不重放历史 */
   canResume: boolean;
+  /** Agent 提供的会话模式（default / acceptEdits / plan 这类） */
+  modes: AcpMode[];
+  /** 当前模式 id */
+  currentModeId?: string;
 }
 
 export interface AcpPermissionOption {
@@ -310,6 +320,8 @@ export function reduceAcpEvent(chat: AcpChat, event: AcpEvent): AcpChat {
         phase: "ready",
         info,
         sessionId: info.sessionId,
+        // 模式以 Agent 的 current_mode_update 为准；先拿启动响应里的初值兜底
+        mode: chat.mode ?? info.currentModeId,
         error: undefined,
         blocks,
       };
@@ -431,6 +443,11 @@ export interface AcpStatus {
 /** 面板重新挂载时问后端：这条对话的子进程还活着吗 */
 export function getAcpStatus(root: string, chatId: string): Promise<AcpStatus> {
   return invoke<AcpStatus>("acp_status", { root, chatId });
+}
+
+/** 切换会话模式（default / acceptEdits / plan 这类）；结果以 Agent 的更新事件为准 */
+export function setAcpMode(root: string, chatId: string, modeId: string): Promise<void> {
+  return invoke<void>("acp_set_mode", { root, chatId, modeId });
 }
 
 export function sendAcpMessage(root: string, chatId: string, text: string): Promise<void> {

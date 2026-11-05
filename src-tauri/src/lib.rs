@@ -179,6 +179,7 @@ pub fn run() {
             acp::acp_prompt,
             acp::acp_cancel,
             acp::acp_respond_permission,
+            acp::acp_set_mode,
             acp::acp_stop,
             acp::acp_status,
             remote::remote_connect,

@@ -12,6 +12,7 @@ import {
   respondAcpPermission,
   saveStoredSlot,
   sendAcpMessage,
+  setAcpMode,
   startAcpChat,
   stopAcpChat,
   type AcpBlock,
@@ -575,6 +576,23 @@ export function AcpChatPane({ root, roots, cli }: AcpChatPaneProps) {
     [key],
   );
 
+  /** 切换模式：先乐观更新，Agent 的 current_mode_update 再对齐一次；失败回滚 */
+  const changeMode = useCallback(
+    async (modeId: string) => {
+      const current = activeChatOf(slotsRef.current[key]);
+      if (!current?.chatId) return;
+      const before = current.mode;
+      const chatId = current.chatId;
+      patchChat(setSlots, key, chatId, (item) => ({ ...item, mode: modeId }));
+      try {
+        await setAcpMode(root, chatId, modeId);
+      } catch {
+        patchChat(setSlots, key, chatId, (item) => ({ ...item, mode: before }));
+      }
+    },
+    [key, root],
+  );
+
   if (!cli) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface px-8 text-center">
@@ -617,11 +635,29 @@ export function AcpChatPane({ root, roots, cli }: AcpChatPaneProps) {
         {chat?.info?.resumed && (
           <span className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim">已恢复</span>
         )}
-        {chat?.mode && (
+        {chat?.info?.modes && chat.info.modes.length > 0 ? (
+          /* 模式由 Agent 声明（Claude Code 有 default / acceptEdits / plan）。
+             选 default 时工具调用会发权限请求，acceptEdits 之类会自动放行。 */
+          <select
+            value={chat.mode ?? chat.info.currentModeId ?? ""}
+            onChange={(event) => void changeMode(event.target.value)}
+            disabled={phase !== "ready"}
+            title={
+              chat.info.modes.find((mode) => mode.id === chat.mode)?.description ?? "会话模式"
+            }
+            className="shrink-0 cursor-pointer rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim outline-none disabled:cursor-default disabled:opacity-50"
+          >
+            {chat.info.modes.map((mode) => (
+              <option key={mode.id} value={mode.id} title={mode.description}>
+                {mode.name}
+              </option>
+            ))}
+          </select>
+        ) : chat?.mode ? (
           <span className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim">
             {chat.mode}
           </span>
-        )}
+        ) : null}
         <span className="min-w-0 flex-1" />
         {chat?.usage?.size ? (
           <span className="shrink-0 text-[10px] text-fg-faint tabular-nums">

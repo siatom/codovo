@@ -52,7 +52,7 @@
   - `Chat`：connector（`ConnectionTo<Agent>` + ACP session id）、pending 权限、
     busy 标记、stop 通道。
   - 命令：`acp_start` / `acp_prompt` / `acp_cancel` / `acp_respond_permission` /
-    `acp_stop` / `acp_status`。
+    `acp_set_mode` / `acp_stop` / `acp_status`。
 
 ### 协议映射
 
@@ -65,6 +65,7 @@
 | `session/prompt` | `acp_prompt` 用连接直接发请求，响应回 `promptDone` |
 | `session/update` 通知 | 原样 JSON 转发成 `update`，前端按 `sessionUpdate` 判别 |
 | `session/request_permission` | 存下 responder，发 `permission`；用户选择后回 `acp_respond_permission` |
+| `session/set_mode` | 顶栏模式下拉调 `acp_set_mode`；Agent 用 `current_mode_update` 回报生效结果 |
 | `session/cancel` 通知 | `acp_cancel`；挂着的权限请求按 `cancelled` 回掉 |
 | 子进程退出 / 连接关闭 | `closed`，同一 chatId 可由前端重新 `acp_start` |
 
@@ -92,6 +93,8 @@
   - 消息区复用 `useStickToBottom`；助手正文复用 `useHighlightedMarkdown` +
     `useMermaidBlocks`，和 `AgentMessageView` 同一套渲染规则。
   - 工具卡展示状态、类型、路径，以及 text / diff 内容。
+  - 顶栏有会话模式下拉（Agent 声明了 modes 时出现），切换走 `acp_set_mode`；
+    Claude Code 切到 `default` 后写文件会弹权限卡。
   - 权限卡固定在输入框上方，默认一次一确认，不做自动批准。
 - `src/components/TerminalPane.tsx`
   - 顶栏右侧新增「终端 / 对话」分段开关；对话视图下同一排 CLI 按钮改成切换 provider。
@@ -121,7 +124,7 @@
 | GitHub Copilot CLI | `copilot --acp` | 已接入，按版本验证开关名 |
 | Codex | `npx -y @agentclientprotocol/codex-acp` | 已接线；首次运行由 npx 下载适配器，沿用本机 Codex 登录 / API key |
 | Claude Code | `npx -y @agentclientprotocol/claude-agent-acp` | 已接线；依赖 Node 与 Claude Code 的登录 / API key |
-| Qoder CLI | `qodercli --acp` | 已接入；复用 Qoder CLI 登录状态（[官方说明](https://docs.qoder.com/cli/acp)）；CLI 支持 `--resume` / `--list-sessions`，ACP `session/list` 能力仍以运行时声明为准 |
+| Qoder CLI | `qodercli --acp` | 已接入；复用 Qoder CLI 登录状态（[官方说明](https://docs.qoder.com/cli/acp)）；本机 1.1.83 实测 `initialize` 通过并声明 `session/list` / `load` / `resume` / `delete` / `additionalDirectories` |
 | Qwen / Antigravity / iFlow | — | 暂无稳定 ACP 入口，继续只在终端里跑 |
 
 不在矩阵里的 CLI 在对话视图里显示为禁用，不会猜参数去启动。
@@ -135,18 +138,23 @@ pnpm build
 cd src-tauri && cargo test --lib acp::
 cd src-tauri && cargo test --lib acp_probe -- --ignored --nocapture
 cd src-tauri && cargo test --lib acp_probe_qoder_initialize -- --ignored --nocapture
+cd src-tauri && cargo test --lib acp_probe_claude_permission -- --ignored --nocapture
 ```
 
 `acp_probe_opencode` 是手动集成测试：本机装好并登录 opencode 后，它会真实走一遍
 `initialize → session/new × 2（同一 connection）→ prompt → 流式文本`，用来确认 SDK 与 CLI 入口没有漂移，并检查同一进程承载多个 session。
-`acp_probe_qoder_initialize` 使用已安装并登录的 Qoder CLI，验证官方 `--acp` 入口能完成 `initialize` 握手。
-CI 不跑（`#[ignore]`）。
+`acp_probe_qoder_initialize` 使用已安装并登录的 Qoder CLI，验证官方 `--acp` 入口能完成
+`initialize` 握手，并打印 Agent 能力位（`session/list` / `load` / `resume` 等）。
+`acp_probe_claude_permission` 用 Claude Code 适配器把会话切到 `default`，要求它写文件，
+确认真的收到 `session/request_permission`（选项 `allow-once` / `reject`）；测试固定回
+取消，不会留下文件。CI 不跑（`#[ignore]`）。
 
 界面验证按 `.codebuddy/skills/cdp-verify/` 用 `scripts/cdp-check.cjs`：
 
 1. 打开工作区，顶栏切到「对话」，选 opencode；
 2. 发一条普通消息，确认助手正文流式出现；
-3. 触发一次写文件操作，确认权限卡出现、取消后 Agent 收到拒绝；
+3. 触发一次写文件操作，确认权限卡出现、取消后 Agent 收到拒绝
+   （opencode / CodeBuddy 默认自动放行；换 Claude Code 并把模式切到 `default` 可稳定复现）；
 4. 切回「终端」，标签与 PTY 输出仍在；
 5. 点对话标签栏的加号再开一条，两条对话来回切，消息各自独立；
 6. 切走工作区再切回来、或重启应用，确认旧记录还在，下一条消息前显示「已恢复」；
@@ -170,14 +178,15 @@ CI 不跑（`#[ignore]`）。
 - 未 advertise `fs` / `terminal` 客户端能力，依赖客户端文件系统的 Agent 需要后续补。
 - Qoder 可通过 ACP 使用 IDE 提供的文件与终端能力；Codovo 当前未 advertise `fs` / `terminal`，因此本次接入不包含这两类客户端能力，Qoder 仍可使用其 ACP 内置工具。
 - 侧栏以 CLI 自己写在磁盘上的记录为主；配置了 ACP CLI 时会尝试补充其 `session/list`，
-  Agent 未声明 list 能力或查询失败时仅显示磁盘记录。Qoder CLI 官方提供 `--resume` 与
-  `--list-sessions`，但这不等于 ACP Agent 一定声明 `session/list`；ACP 历史条目沿用 CLI
-  的 resume 命令恢复。
-- Qoder 的 CLI 历史持久化与 ACP session 持久化是两条入口：本接入复用 Qoder 登录状态，
-  ACP 初始化入口为 `qodercli --acp`；当前尚未完成本机 ACP 初始化探测，不能据此确认
-  Qoder ACP 端是否公开 `session/list` / `session/load` / `session/resume`。
+  Agent 未声明 list 能力或查询失败时仅显示磁盘记录。Qoder CLI 的 `--resume` /
+  `--list-sessions` 与 ACP 侧能力是两套入口；ACP 历史条目沿用 CLI 的 resume 命令恢复。
+- Qoder 的本机探测（`qodercli --acp` 1.1.83）已通过：`initialize` 返回
+  `load_session: true`，并声明 `session/list`、`session/resume`、`session/delete`、
+  `additionalDirectories`、`close`，所以对话面板的恢复与历史列表都能走 ACP。
 - Windows 上所有 ACP 进程都经 `cmd /C` 启动（`.cmd` 垫片 + 设置 cwd）；SDK 在 Windows
   只 kill 直接子进程，异常退出时依赖 stdin EOF 让 CLI 自行结束。
-- 权限卡的后端链路已实现，但 opencode / CodeBuddy 在本机默认配置下会自动批准写文件，
-  UI 自动批准路径需要换一个会发 `session/request_permission` 的 Agent 再验。
+- 权限卡链路已完整实测：Claude Code 适配器在顶栏把模式切到 `default`（显示为 Manual）
+  后请求写文件，UI 弹出「Yes / No」权限卡；选 No 后工具卡变为 `failed`，Agent 明确回报
+  文件没有创建。`acp_probe_claude_permission` 用同一路径做后端探针。opencode / CodeBuddy
+  默认配置会直接放行，不会弹卡。
 - Codex / Claude Code 适配器经 `npx -y` 启动，第一次会下载；离线环境或没有 Node 时不可用。

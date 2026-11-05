@@ -20,7 +20,7 @@ use agent_client_protocol::v1::schema::{
     CancelNotification, ContentBlock, InitializeRequest, ListSessionsRequest, LoadSessionRequest,
     NewSessionRequest, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-    SessionNotification, TextContent,
+    SessionModeState, SessionNotification, SetSessionModeRequest, TextContent,
 };
 // SessionSetup 只在 acp_probe 探针里用得到，不参与正常启动路径
 #[cfg(test)]
@@ -580,6 +580,25 @@ async fn run_agent_runtime(
     }
 }
 
+/// 把 ACP 的模式状态摊平成前端好用的形状。
+fn mode_snapshot(modes: Option<SessionModeState>) -> (Vec<event::AcpMode>, Option<String>) {
+    match modes {
+        Some(state) => (
+            state
+                .available_modes
+                .into_iter()
+                .map(|mode| event::AcpMode {
+                    id: mode.id.to_string(),
+                    name: mode.name,
+                    description: mode.description,
+                })
+                .collect(),
+            Some(state.current_mode_id.to_string()),
+        ),
+        None => (Vec::new(), None),
+    }
+}
+
 // ---- 命令 ----
 
 /// 启动（或恢复）一个对话。幂等性由前端控制：同一个 chatId 正在跑时直接报错。
@@ -636,7 +655,12 @@ pub async fn acp_start(
             return Err(error);
         }
     };
-    let (mut session, session_id, resumed) = match tokio::time::timeout(
+    let SessionStart {
+        mut session,
+        session_id,
+        resumed,
+        modes,
+    } = match tokio::time::timeout(
         START_TIMEOUT,
         create_session(
             &connection,
@@ -658,6 +682,7 @@ pub async fn acp_start(
             return Err("ACP session 创建超时（60 秒）".to_string());
         }
     };
+    let (modes, current_mode_id) = mode_snapshot(modes);
     let info = AcpInfo {
         provider: provider.clone(),
         agent_name: meta.agent_name,
@@ -667,6 +692,8 @@ pub async fn acp_start(
         resumed,
         can_load: meta.can_load,
         can_resume: meta.can_resume,
+        modes,
+        current_mode_id,
     };
     chat.set_connector(connection, session_id);
     chat.set_info(info.clone());
@@ -792,6 +819,28 @@ pub fn acp_respond_permission(
         .map_err(|error| error.to_string())
 }
 
+/// 切换当前 session 的模式（Claude Code 的 default / acceptEdits / plan 这类）。
+/// 成功与否以 Agent 回的 `current_mode_update` 为准，这里只把请求发出去。
+#[tauri::command]
+pub async fn acp_set_mode(
+    state: tauri::State<'_, AcpState>,
+    root: String,
+    chat_id: String,
+    mode_id: String,
+) -> Result<(), String> {
+    let chat = state.get(&root, &chat_id)?;
+    let connector = chat.connector()?;
+    let request = SetSessionModeRequest::new(connector.session_id.clone(), mode_id);
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        connector.connection.send_request(request).block_task(),
+    )
+    .await
+    .map_err(|_| "切换会话模式超时（30 秒）".to_string())?
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// 主动结束一个对话（关标签 / 切换 CLI）。进程由 SDK 优雅收尾。
 #[tauri::command]
 pub fn acp_stop(
@@ -827,13 +876,21 @@ pub fn acp_status(state: tauri::State<'_, AcpState>, root: String, chat_id: Stri
 }
 
 /// 在共享连接上创建一条独立 ACP session。
+struct SessionStart {
+    session: ActiveSession<'static, Agent>,
+    session_id: SessionId,
+    resumed: bool,
+    /// Agent 提供的会话模式；不支持时为 None
+    modes: Option<SessionModeState>,
+}
+
 async fn create_session(
     connection: &agent_client_protocol::v1::ConnectionTo<Agent>,
     meta: &AgentMeta,
     cwd: PathBuf,
     additional: Vec<PathBuf>,
     resume_session_id: Option<String>,
-) -> Result<(ActiveSession<'static, Agent>, SessionId, bool), String> {
+) -> Result<SessionStart, String> {
     if let Some(id) = resume_session_id.map(SessionId::new) {
         if meta.can_load {
             let request =
@@ -844,7 +901,12 @@ async fn create_session(
                 .start_session()
                 .await
                 .map_err(|error| error.to_string())?;
-            return Ok((setup.session, id, true));
+            return Ok(SessionStart {
+                session: setup.session,
+                session_id: id,
+                resumed: true,
+                modes: setup.response.modes,
+            });
         }
         if meta.can_resume {
             let request =
@@ -855,7 +917,12 @@ async fn create_session(
                 .start_session()
                 .await
                 .map_err(|error| error.to_string())?;
-            return Ok((setup.session, id, true));
+            return Ok(SessionStart {
+                session: setup.session,
+                session_id: id,
+                resumed: true,
+                modes: setup.response.modes,
+            });
         }
     }
 
@@ -869,7 +936,12 @@ async fn create_session(
         .start_session()
         .await
         .map_err(|error| error.to_string())?;
-    Ok((setup.session, setup.response.session_id, false))
+    Ok(SessionStart {
+        session: setup.session,
+        session_id: setup.response.session_id,
+        resumed: false,
+        modes: setup.response.modes,
+    })
 }
 
 async fn run_chat_session(
@@ -1141,6 +1213,154 @@ mod tests {
                     .block_task()
                     .await?;
                 println!("Qoder ACP initialize: {:?}", init.agent_info);
+                // 记录能力位，方便判断 Qoder 能否走 session/load / resume / list
+                println!("Qoder ACP capabilities: {:?}", init.agent_capabilities);
+                Ok(())
+            })
+            .await;
+        result.unwrap();
+    }
+
+    /// 手动验证用：Claude Code 适配器声明哪些会话模式，以及切到 `default` 后
+    /// 工具调用会不会发 `session/request_permission`。收到请求就按取消回掉，
+    /// 不修改工作区文件；如果 Agent 仍然写了文件，测试结束会删掉。
+    #[tokio::test]
+    #[ignore = "手动验证 Claude Code ACP 权限链路：需要本机已登录 Claude Code"]
+    async fn acp_probe_claude_permission() {
+        let config = launch::agent_config(
+            "claude",
+            "claude",
+            &[],
+            &std::env::current_dir().unwrap(),
+        )
+        .unwrap();
+        let result = Client
+            .v1()
+            .name("CodovoClaudeProbe")
+            .connect_with(AcpAgent::new(config), async |cx| {
+                let init = cx
+                    .send_request(
+                        InitializeRequest::new(ProtocolVersion::V1).client_info(
+                            Implementation::new("CodovoClaudeProbe", env!("CARGO_PKG_VERSION")),
+                        ),
+                    )
+                    .block_task()
+                    .await?;
+                println!("Claude ACP initialize: {:?}", init.agent_info);
+
+                let cwd = std::env::current_dir().unwrap();
+                let SessionSetup {
+                    mut session,
+                    response,
+                    ..
+                } = cx.build_session(cwd).block_task().start_session().await?;
+                println!("session/new: {}", response.session_id);
+                if let Some(state) = &response.modes {
+                    println!("current mode: {}", state.current_mode_id);
+                    for mode in &state.available_modes {
+                        println!("mode: {} / {} / {:?}", mode.id, mode.name, mode.description);
+                    }
+                }
+
+                // default 模式会让工具调用走权限请求；适配器没有 default 时保留原模式
+                let has_default = response
+                    .modes
+                    .as_ref()
+                    .map(|state| {
+                        state
+                            .available_modes
+                            .iter()
+                            .any(|mode| mode.id.to_string() == "default")
+                    })
+                    .unwrap_or(false);
+                if has_default {
+                    cx.send_request(SetSessionModeRequest::new(
+                        response.session_id.clone(),
+                        "default",
+                    ))
+                    .block_task()
+                    .await?;
+                    println!("switched mode to default");
+                }
+
+                let connection = cx.clone();
+                let session_id = response.session_id.clone();
+                let prompt = tokio::spawn(async move {
+                    connection
+                        .send_request(PromptRequest::new(
+                            session_id,
+                            vec![ContentBlock::Text(TextContent::new(
+                                "在当前目录创建文件 acp-permission-probe.txt，内容写 hello。创建完只回复 DONE。",
+                            ))],
+                        ))
+                        .block_task()
+                        .await
+                });
+
+                let asked = Arc::new(AtomicBool::new(false));
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+                loop {
+                    if prompt.is_finished() || tokio::time::Instant::now() > deadline {
+                        break;
+                    }
+                    let asked_flag = Arc::clone(&asked);
+                    match tokio::time::timeout(Duration::from_millis(500), session.read_update())
+                        .await
+                    {
+                        Ok(Ok(SessionMessage::Message(dispatch))) => {
+                            let parsed = MatchDispatch::new(dispatch.into_raw())
+                                .if_notification(async |notification: SessionNotification| {
+                                    // 只打工具更新：整轮思考 + 正文太吵，手动看日志时反而找不到重点
+                                    if matches!(
+                                        &notification.update,
+                                        agent_client_protocol::v1::schema::SessionUpdate::ToolCall(_)
+                                            | agent_client_protocol::v1::schema::SessionUpdate::ToolCallUpdate(_)
+                                    ) {
+                                        println!("tool update: {:?}", notification.update);
+                                    }
+                                    Ok(())
+                                })
+                                .await
+                                .if_request(
+                                    async move |request: RequestPermissionRequest, responder| {
+                                        asked_flag.store(true, Ordering::SeqCst);
+                                        println!(
+                                            "PERMISSION: {:?} options={:?}",
+                                            request.tool_call, request.options
+                                        );
+                                        let _ = responder.respond(RequestPermissionResponse::new(
+                                            RequestPermissionOutcome::Cancelled,
+                                        ));
+                                        Ok(())
+                                    },
+                                )
+                                .await
+                                .otherwise_ignore();
+                            if let Err(error) = parsed {
+                                println!("update error: {error}");
+                            }
+                        }
+                        Ok(Ok(_)) => {}
+                        Ok(Err(error)) => {
+                            println!("update stream error: {error}");
+                            break;
+                        }
+                        // 一段时间没有新更新是正常的，继续等；不要再直接 break，
+                        // 否则 Agent 正在等权限请求时会被提前丢下。
+                        Err(_) => {}
+                    }
+                }
+                if prompt.is_finished() {
+                    match prompt.await {
+                        Ok(result) => println!("prompt result: {result:?}"),
+                        Err(error) => println!("prompt task error: {error}"),
+                    }
+                } else {
+                    println!("probe timed out waiting for the turn");
+                    prompt.abort();
+                }
+                println!("permission requested: {}", asked.load(Ordering::SeqCst));
+                let _ = std::fs::remove_file("acp-permission-probe.txt");
                 Ok(())
             })
             .await;
