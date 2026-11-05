@@ -352,7 +352,7 @@ body.codovo-dragging-row * {
   cursor: row-resize;
 }
 
-/* 拖动工作区行重排：同样禁选中，光标给抓握态（不是 row-resize，这不是在改尺寸） */
+/* 拖动工作区行分组：同样禁选中，光标给抓握态（不是 row-resize，这不是在改尺寸） */
 body.codovo-dragging-list,
 body.codovo-dragging-list * {
   user-select: none;

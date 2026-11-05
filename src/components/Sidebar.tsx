@@ -307,6 +307,87 @@ export function Sidebar({
   const [expanded, setExpanded] = useState<string[]>([]);
   /** 收起的分组名。只存内存，重启从全部展开开始 */
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  const workspaceDrag = useRef<{
+    id: string;
+    pointerId: number;
+    x: number;
+    y: number;
+    active: boolean;
+    source: HTMLElement;
+  } | null>(null);
+  const suppressDragClick = useRef(false);
+  const [draggingWorkspace, setDraggingWorkspace] = useState<string | null>(null);
+  const [dropGroup, setDropGroup] = useState<string | null>(null);
+
+  // 和文件树一样用指针事件：Windows 的 Tauri 拖放处理器会接管 HTML5 DnD。
+  useEffect(() => {
+    const reset = () => {
+      const drag = workspaceDrag.current;
+      workspaceDrag.current = null;
+      if (drag?.source.hasPointerCapture(drag.pointerId)) {
+        drag.source.releasePointerCapture(drag.pointerId);
+      }
+      setDraggingWorkspace(null);
+      setDropGroup(null);
+      document.body.classList.remove("codovo-dragging-list");
+    };
+    const targetAt = (x: number, y: number): string | null => {
+      const target = document.elementFromPoint(x, y)
+        ?.closest<HTMLElement>("[data-workspace-drop-group]");
+      return target && rootRef.current?.contains(target)
+        ? target.dataset.workspaceDropGroup ?? null
+        : null;
+    };
+    const move = (event: PointerEvent) => {
+      const drag = workspaceDrag.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (!(event.buttons & 1)) {
+        reset();
+        return;
+      }
+      if (!drag.active) {
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) return;
+        drag.active = true;
+        drag.source.setPointerCapture(drag.pointerId);
+        suppressDragClick.current = true;
+        setDraggingWorkspace(drag.id);
+        setMenu(null);
+        document.body.classList.add("codovo-dragging-list");
+      }
+      event.preventDefault();
+      setDropGroup(targetAt(event.clientX, event.clientY));
+    };
+    const up = (event: PointerEvent) => {
+      const drag = workspaceDrag.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const group = drag.active ? targetAt(event.clientX, event.clientY) : null;
+      const workspace = workspaces.find((item) => item.id === drag.id);
+      reset();
+      if (
+        workspace && group !== null
+        && (group === "" || workspaceGroupNames(workspaces).includes(group))
+        && (workspace.group ?? "") !== group
+      ) {
+        onSetGroup(workspace, group);
+      }
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") reset();
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", reset);
+    window.addEventListener("blur", reset);
+    window.addEventListener("keydown", key);
+    return () => {
+      reset();
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", reset);
+      window.removeEventListener("blur", reset);
+      window.removeEventListener("keydown", key);
+    };
+  }, [workspaces, onSetGroup, collapsed, wsQuery]);
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
 
@@ -467,7 +548,13 @@ export function Sidebar({
     for (const [name, items] of groups) {
       sections.push({ key: `group:${name}`, title: name, items });
     }
-    if (ungrouped.length > 0) {
+    // 拖动时也显示空目标：组里可能只有置顶项，或所有项都被过滤掉了。
+    if (draggingWorkspace) {
+      for (const name of groupNames) {
+        if (!groups.has(name)) sections.push({ key: `group:${name}`, title: name, items: [] });
+      }
+    }
+    if (ungrouped.length > 0 || draggingWorkspace) {
       sections.push({ key: "ungrouped", title: "未分组", items: ungrouped });
     }
   }
@@ -553,8 +640,18 @@ export function Sidebar({
           {sections.map((section) => {
             // 过滤时强制展开：命中项被折叠藏起来，用户会以为没搜到
             const groupCollapsed = !query && collapsedGroups.includes(section.key);
+            const targetGroup = section.key === "ungrouped"
+              ? ""
+              : section.key.startsWith("group:") ? section.title : null;
             return (
-              <li key={section.key}>
+              <li
+                key={section.key}
+                data-workspace-drop-group={targetGroup ?? undefined}
+                className={
+                  draggingWorkspace && targetGroup !== null && dropGroup === targetGroup
+                    ? "rounded-lg bg-selected ring-1 ring-inset ring-accent" : undefined
+                }
+              >
                 {section.title && (
                   /* 分组名就是这一段的标题：可点击折叠，数量跟在后面提示组里有多少个工作区 */
                   <div className="flex items-center px-1 pt-3 pb-0.5">
@@ -622,6 +719,25 @@ export function Sidebar({
                             </button>
                             <button
                               type="button"
+                              onPointerDown={(event) => {
+                                if (event.button !== 0 || event.pointerType === "touch") return;
+                                suppressDragClick.current = false;
+                                workspaceDrag.current = {
+                                  id: workspace.id,
+                                  pointerId: event.pointerId,
+                                  x: event.clientX,
+                                  y: event.clientY,
+                                  active: false,
+                                  source: event.currentTarget,
+                                };
+                              }}
+                              onDragStart={(event) => event.preventDefault()}
+                              onClickCapture={(event) => {
+                                if (event.detail > 0 && suppressDragClick.current) {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                }
+                              }}
                               onClick={() => onSelect(workspace)}
                               title={workspace.roots
                                 .map((root) => toDisplayPath(root))
