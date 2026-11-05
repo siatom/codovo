@@ -655,6 +655,27 @@ export function ExplorerPane({
   }, []);
 
   /**
+   * 复制这一行的名字 / 路径。点在选中集合里的行时复制整批，一项一行——
+   * 和复制、删除一样按 VS Code 的批量语义走，单选时就退化成原来的一项。
+   */
+  const copyEntryText = useCallback(
+    (entry: FileEntry, kind: "name" | "path" | "relative") => {
+      const items = selection.has(pathKey(entry.path))
+        ? [...selection.values()]
+        : [entry];
+      const lines = items.map((item) =>
+        kind === "name"
+          ? item.name
+          : kind === "path"
+            ? item.path
+            : relativePath(item.path),
+      );
+      void copyPath(lines.join("\n"));
+    },
+    [selection, copyPath, relativePath],
+  );
+
+  /**
    * 交给系统处理这一行：在文件管理器里定位它、或用默认关联程序打开它。
    * 两件事失败都只是「打不开」（路径可能已被删或改名），不保留菜单、就地提示。
    */
@@ -2210,10 +2231,18 @@ export function ExplorerPane({
               </button>
             )}
             <div className={MENU_DIVIDER} />
-            {/* 三、路径 */}
+            {/* 三、路径。选中多项时整批按行复制 */}
             <button
               type="button"
-              onClick={() => void copyPath(menu.entry.path)}
+              onClick={() => copyEntryText(menu.entry, "name")}
+              className={MENU_ITEM}
+            >
+              <IconFile className="h-3.5 w-3.5" />
+              复制文件名
+            </button>
+            <button
+              type="button"
+              onClick={() => copyEntryText(menu.entry, "path")}
               className={MENU_ITEM}
             >
               <IconFile className="h-3.5 w-3.5" />
@@ -2221,7 +2250,7 @@ export function ExplorerPane({
             </button>
             <button
               type="button"
-              onClick={() => void copyPath(relativePath(menu.entry.path))}
+              onClick={() => copyEntryText(menu.entry, "relative")}
               className={MENU_ITEM}
             >
               <IconTree className="h-3.5 w-3.5" />
