@@ -356,6 +356,8 @@ function isFindWidgetVisible(editor: monaco.editor.IStandaloneCodeEditor): boole
 }
 
 interface EditorPaneProps {
+  /** 文件标签由工作区超级 tab 显示时，隐藏编辑器内部的第二排标签 */
+  hideTabStrip?: boolean;
   /** 已打开的标签，按打开顺序 */
   tabs: Tab[];
   /** 当前显示的那个 */
@@ -458,6 +460,8 @@ export interface RevealTarget {
 }
 
 export interface EditorPaneHandle {
+  /** 由工作区超级 tab 行调用当前文件的预览切换 */
+  togglePreview: () => void;
   /** 把编辑器里所有未保存的改动落盘；返回 false 表示有文件没存成功 */
   saveAll: () => Promise<boolean>;
   /**
@@ -671,6 +675,7 @@ function diffUri(tab: Extract<Tab, { kind: "diff" }>, side: "original" | "modifi
 type CloseRequest = { kind: "one"; tab: Tab } | { kind: "all" } | { kind: "others" };
 
 export function EditorPane({
+  hideTabStrip = false,
   tabs,
   active,
   gitMarks,
@@ -694,6 +699,7 @@ export function EditorPane({
   ref,
 }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const previewToggleRef = useRef<() => void>(() => {});
   /** 整个编辑器区域（标题栏 + 编辑区 + 状态栏），用来判断焦点是不是还在这一块 */
   const paneRef = useRef<HTMLElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -2062,6 +2068,8 @@ export function EditorPane({
 
       revealAt: (target) => setReveal(target),
 
+      togglePreview: () => previewToggleRef.current(),
+
       formatPath,
 
       dropPaths: (paths) => {
@@ -2782,6 +2790,7 @@ export function EditorPane({
       enter();
     });
   }, []);
+  previewToggleRef.current = togglePreview;
 
   /**
    * 切换 markdown 的查看方式：预览 / 编辑 / 对照 / 翻译。
@@ -3483,7 +3492,7 @@ export function EditorPane({
             if ((event.target as HTMLElement).closest("[data-tab-item]")) return;
             onNewUntitled();
           }}
-          className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+          className={`no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto ${hideTabStrip ? "hidden" : ""}`}
         >
           {tabs.length === 0 && (
             <span className="px-1 text-[11px] text-fg-faint">未打开文件</span>
@@ -3589,7 +3598,7 @@ export function EditorPane({
           })}
         </div>
         {/* 批量关闭入口。紧贴 tab 栏右端，只在有标签时出现 */}
-        {tabs.length > 0 && (
+        {!hideTabStrip && tabs.length > 0 && (
           <button
             type="button"
             onClick={(event) => {
@@ -3603,7 +3612,7 @@ export function EditorPane({
           </button>
         )}
         {/* html / svg 仍是「编辑 ↔ 预览」两态，markdown 用下面那组三态按钮 */}
-        {canPreview && !isMarkdownFile && (
+        {!hideTabStrip && canPreview && !isMarkdownFile && (
           <button
             type="button"
             onClick={togglePreview}
