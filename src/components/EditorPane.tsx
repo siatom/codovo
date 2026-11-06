@@ -3482,7 +3482,7 @@ export function EditorPane({
   // 整块不铺底色：编辑器自己画（跟着界面透明度走），这里再铺一层就叠成两层 alpha。
   // 需要底色的只有标签栏和图片预览（其余视图各自带 bg-surface）
   return (
-    <section ref={paneRef} className="relative flex h-full min-h-0 flex-col" onKeyDownCapture={onPaneKeyDown}>
+    <section ref={paneRef} className="relative flex h-full min-h-0 w-full min-w-0 flex-col" onKeyDownCapture={onPaneKeyDown}>
       <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line bg-surface px-2">
         <div
           ref={tabsScrollRef}
