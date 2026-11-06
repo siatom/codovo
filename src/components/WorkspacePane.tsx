@@ -297,12 +297,17 @@ export function WorkspacePane({
 
   const pickTool = useCallback(
     (id: ToolId) => {
+      if (activeTool === id && rightOpen) {
+        setRightOpen(false);
+        onExitFullscreen();
+        return;
+      }
       setTool(id);
       saveTool(root, id);
       setRightOpen(true);
       if (id === "browser") openTask("browser");
     },
-    [openTask, root],
+    [activeTool, onExitFullscreen, openTask, rightOpen, root],
   );
 
   const toggleRight = useCallback(() => {
