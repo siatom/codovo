@@ -147,6 +147,7 @@ export function WorkspacePane({
   );
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(true);
+  const [taskSidebarTarget, setTaskSidebarTarget] = useState<HTMLDivElement | null>(null);
   /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
   const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
   /**
@@ -904,12 +905,12 @@ export function WorkspacePane({
             </div>
             <div className={activeTask === "remote" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
-                <RemotePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+                <RemotePane sidebarTarget={activeTask === "remote" ? taskSidebarTarget : null} fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
               </div>
             </div>
             <div className={activeTask === "database" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
-                <DatabasePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+                <DatabasePane sidebarTarget={activeTask === "database" ? taskSidebarTarget : null} fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
               </div>
             </div>
             <div className={activeTask === "preview" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
@@ -937,9 +938,13 @@ export function WorkspacePane({
         second={
           <div className="flex min-h-0 min-w-0 flex-1">
             <div className={rightOpen ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} inert={!rightOpen}>
-              <div className="h-full w-full min-w-0">
-                <ToolPane tool={tool} {...toolPaneProps} />
-              </div>
+              {activeTask === "remote" || activeTask === "database" ? (
+                <div ref={setTaskSidebarTarget} className="h-full w-full min-w-0" />
+              ) : activeTask === "terminal" || activeTask === "files" ? (
+                <div className="h-full w-full min-w-0">
+                  <ToolPane tool={tool} {...toolPaneProps} />
+                </div>
+              ) : null}
             </div>
             <ToolRail
               active={railTool}

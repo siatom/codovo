@@ -34,11 +34,11 @@ const BUTTON_ON = "bg-selected text-fg";
 export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[] = [
   { id: "files", label: "文件", Icon: IconFile },
   { id: "changes", label: "变更", Icon: IconBranch },
-  { id: "browser", label: "浏览器", Icon: IconGlobe },
   { id: "remote", label: "远程连接", Icon: IconServer },
   { id: "database", label: "数据库", Icon: IconDatabase },
   { id: "preview", label: "预览", Icon: IconPlay },
   { id: "deploy", label: "部署", Icon: IconRocket },
+  { id: "browser", label: "浏览器", Icon: IconGlobe },
 ];
 
 interface ToolRailProps {

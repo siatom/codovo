@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { FullscreenButton } from "./FullscreenButton";
 import { RemoteBrowser } from "./RemoteBrowser";
@@ -11,11 +12,7 @@ import { IconArrowsLeftRight, IconClose, IconMore, IconPlus, IconServer, IconTer
 const ACTIVE_KEY = "codovo.remoteActiveHost";
 const TAB_KEY = "codovo.remoteTab";
 /** 主机列表宽度（像素）与「本地/远程」左右顺序，都是窗口级偏好，存 sessionStorage */
-const RAIL_KEY = "codovo.remoteRailWidth";
 const SWAP_KEY = "codovo.remoteSwapped";
-const RAIL_MIN = 140;
-const RAIL_MAX = 420;
-const RAIL_DEFAULT = 176;
 
 type SubTab = "terminal" | "files";
 
@@ -35,10 +32,6 @@ function writeSession(key: string, value: string) {
   }
 }
 
-function readSessionNumber(key: string, fallback: number): number {
-  const value = Number(readSession(key));
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
 
 /** 从「按标签 id 索引」的表里删掉一批键（关标签 / 断开主机共用）。空列表直接原样返回，
  * 免得每次都造个新对象把下游的 memo 打穿 */
@@ -81,7 +74,9 @@ function dotClass(state: RemoteConnectionState | undefined): string {
 export function RemotePane({
   fullscreen,
   onToggleFullscreen,
+  sidebarTarget,
 }: {
+  sidebarTarget?: HTMLElement | null;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
@@ -115,10 +110,7 @@ export function RemotePane({
   const [menu, setMenu] = useState<{ host: RemoteHost; x: number; y: number } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RemoteHost | null>(null);
   /** 主机列表宽度（可拖动）与「本地/远程」左右顺序 */
-  const [railWidth, setRailWidth] = useState(() => readSessionNumber(RAIL_KEY, RAIL_DEFAULT));
-  const [resizing, setResizing] = useState(false);
   const [swapped, setSwapped] = useState(() => readSession(SWAP_KEY) === "1");
-  const containerRef = useRef<HTMLElement>(null);
 
   const activeHost = useMemo(
     () => hosts.find((host) => host.id === activeHostId) ?? null,
@@ -308,35 +300,8 @@ export function RemotePane({
     });
   }, []);
 
-  // 拖动主机列表的右边缘改宽度。照 SplitPane 那套：按下捕获指针，
-  // 拖动期间给 body 挂个类（全局禁用选中），松手才把宽度写进 sessionStorage
-  const onResizeDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    setResizing(true);
-    document.body.classList.add("codovo-dragging");
-  };
-
-  const onResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!resizing) return;
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    setRailWidth(Math.min(RAIL_MAX, Math.max(RAIL_MIN, event.clientX - rect.left)));
-  };
-
-  const onResizeUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    setResizing(false);
-    document.body.classList.remove("codovo-dragging");
-    writeSession(RAIL_KEY, String(railWidth));
-  };
-
-  return (
-    <section ref={containerRef} className="flex h-full min-h-0 min-w-0 flex-1 bg-content">
-      {/* 左窄栏：主机列表。宽度可拖动 */}
-      <div className="flex h-full shrink-0 flex-col" style={{ width: railWidth }}>
+  const hostList = (
+    <div className="flex h-full w-full min-w-0 flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             远程连接
@@ -391,22 +356,16 @@ export function RemotePane({
             })
           )}
         </div>
-      </div>
+    </div>
+  );
 
-      {/* 拖动条：改主机列表宽度。加宽命中区，视觉上仍是一条细线 */}
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        onPointerDown={onResizeDown}
-        onPointerMove={onResizeMove}
-        onPointerUp={onResizeUp}
-        onPointerCancel={onResizeUp}
-        className={`relative w-px shrink-0 cursor-col-resize bg-line-strong transition-colors ${
-          resizing ? "bg-accent-strong" : "hover:bg-line-hover"
-        }`}
-      >
-        <span className="absolute inset-y-0 -left-1 -right-1" />
-      </div>
+  return (
+    <section className="flex h-full min-h-0 min-w-0 flex-1 bg-content">
+      {sidebarTarget !== undefined
+        ? sidebarTarget
+          ? createPortal(hostList, sidebarTarget)
+          : null
+        : hostList}
 
       {/* 右侧：终端 / 文件 */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">

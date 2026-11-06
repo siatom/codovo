@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { createPortal } from "react-dom";
 import { save } from "@tauri-apps/plugin-dialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DatabaseAgent } from "./DatabaseAgent";
@@ -155,7 +156,9 @@ function NodeHint({ text, danger }: { text: string; danger?: boolean }) {
 export function DatabasePane({
   fullscreen,
   onToggleFullscreen,
+  sidebarTarget,
 }: {
+  sidebarTarget?: HTMLElement | null;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
@@ -566,10 +569,8 @@ export function DatabasePane({
     });
   };
 
-  return (
-    <section className="flex h-full min-h-0 min-w-0 flex-1 bg-content">
-      {/* 左栏：连接 → 数据库 →（PG 才有 schema）→ 表/视图分组 → 条目 */}
-      <div className="flex h-full w-52 shrink-0 flex-col border-r border-line">
+  const connectionTree = (
+      <div className="flex h-full w-full min-w-0 flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             数据库
@@ -707,6 +708,16 @@ export function DatabasePane({
           )}
         </div>
       </div>
+  );
+
+  return (
+    <section className="flex h-full min-h-0 min-w-0 flex-1 bg-content">
+      {/* 左栏：连接 → 数据库 →（PG 才有 schema）→ 表/视图分组 → 条目 */}
+      {sidebarTarget !== undefined
+        ? sidebarTarget
+          ? createPortal(connectionTree, sidebarTarget)
+          : null
+        : connectionTree}
 
       {/* 右侧：数据 / 查询 / Agent */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
