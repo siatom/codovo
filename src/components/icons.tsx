@@ -890,6 +890,12 @@ const MDI_CONSOLE_LINE: BrandIcon = {
   path: "M13 19v-3h8v3zm-4.5-6L2.47 7h4.24l4.96 4.95c.58.59.58 1.55 0 2.12L6.74 19H2.5z",
 };
 
+/** dash 的名字来自 Debian Almquist shell；用精简闪电提示符和 GNU Bash 标志区分。 */
+const MDI_DASH: BrandIcon = {
+  hex: "E3B341",
+  path: "M13 2 4 13h6l-1 9 11-13h-7l1-7z",
+};
+
 const MDI_LINUX: BrandIcon = {
   hex: "000000",
   path: "M14.62 8.35c-.42.28-1.75 1.04-1.95 1.19c-.39.31-.75.29-1.14-.01c-.2-.16-1.53-.92-1.95-1.19c-.48-.31-.45-.7.08-.92c1.64-.69 3.28-.64 4.91.03c.49.21.51.6.05.9m7.22 7.28c-.93-2.09-2.2-3.99-3.84-5.66a4.3 4.3 0 0 1-1.06-1.88c-.1-.33-.17-.67-.24-1.01c-.2-.88-.29-1.78-.7-2.61c-.73-1.58-2-2.4-3.84-2.47c-1.81.05-3.16.81-3.95 2.4c-.21.43-.36.88-.46 1.34c-.17.76-.32 1.55-.5 2.32c-.15.65-.45 1.21-.96 1.71c-1.61 1.57-2.9 3.37-3.88 5.35c-.14.29-.28.58-.37.88c-.19.66.29 1.12.99.96c.44-.09.88-.18 1.3-.31c.41-.15.57-.05.67.35c.65 2.15 2.07 3.66 4.24 4.5c4.12 1.56 8.93-.66 9.97-4.58c.07-.27.17-.37.47-.27c.46.14.93.24 1.4.35c.49.09.85-.16.92-.64c.03-.26-.06-.49-.16-.73",
@@ -906,10 +912,13 @@ const SHELL_LOGOS: Record<string, BrandIcon> = {
   // WSL 跑的就是 Linux，用企鹅比微软四方标更贴切
   wsl: MDI_LINUX,
   zsh: siZsh,
-  // bash / sh / dash / ksh / ash 这些 POSIX 系共用一个图标，后端都归到 kind "bash"
+  // GNU Bash 保留品牌标志；sh / dash 用轻量的 shell 专属符号。
   bash: siGnubash,
-  // C shell 家族（csh / tcsh）没有 logo，用带下划线的命令行图标和 cmd 的窗口区分开
+  sh: MDI_CONSOLE_LINE,
+  dash: MDI_DASH,
+  // C shell 家族没有统一 logo：csh 用命令提示符，tcsh 用完整终端窗格区分。
   csh: MDI_CONSOLE_LINE,
+  tcsh: MDI_CONSOLE,
   fish: siFishshell,
   nushell: siNushell,
 };

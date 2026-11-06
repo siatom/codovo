@@ -56,11 +56,13 @@ fn describe(program: &str) -> (String, String) {
         "zsh" => "zsh",
         "fish" => "fish",
         "nu" => "nushell",
-        // POSIX / bash 兼容（含 Debian 的 dash、BSD 的 ksh、busybox 的 ash）：
-        // 这些都没有各自的 logo，共用 GNU Bash 那一个
-        "bash" | "sh" | "dash" | "ksh" | "mksh" | "rbash" | "ash" => "bash",
-        // C shell 家族同样没有 logo，落到通用命令行窗口图标
-        "csh" | "tcsh" => "csh",
+        // 保留常见 shell 的独立图标键；其他 POSIX 兼容 shell 仍归到 bash 家族。
+        "bash" | "rbash" => "bash",
+        "sh" => "sh",
+        "dash" => "dash",
+        "csh" => "csh",
+        "tcsh" => "tcsh",
+        "ksh" | "mksh" | "ash" => "bash",
         _ => "shell",
     };
     (stem.to_string(), kind.to_string())
@@ -288,20 +290,19 @@ mod tests {
 
     #[test]
     fn describe_groups_shells_that_share_a_logo() {
-        // POSIX 系（含 Debian 的 dash、BSD 的 ksh）共用 bash 的图标，显示名仍是自己
+        // 常见 shell 保留独立图标键；兼容 shell 继续共用 bash 图标
         assert_eq!(
             describe("/bin/dash"),
-            ("dash".to_string(), "bash".to_string())
+            ("dash".to_string(), "dash".to_string())
         );
         assert_eq!(
             describe("/usr/bin/ksh"),
             ("ksh".to_string(), "bash".to_string())
         );
-        assert_eq!(describe("/bin/sh"), ("sh".to_string(), "bash".to_string()));
-        // C shell 家族单独一类
+        assert_eq!(describe("/bin/sh"), ("sh".to_string(), "sh".to_string()));
         assert_eq!(
             describe("/bin/tcsh"),
-            ("tcsh".to_string(), "csh".to_string())
+            ("tcsh".to_string(), "tcsh".to_string())
         );
         assert_eq!(describe("/bin/zsh"), ("zsh".to_string(), "zsh".to_string()));
         // 认不出的落到通用图标，别乱套 logo
