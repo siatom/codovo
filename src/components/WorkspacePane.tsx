@@ -142,9 +142,7 @@ export function WorkspacePane({
   const openTabsRef = useRef<Tab[]>([]);
   openTabsRef.current = openTabs;
   /** 右栏看的是哪个模块（按活动根各记一份） */
-  const [tool, setTool] = useState<"files" | "changes">(() =>
-    readTool(root) === "changes" ? "changes" : "files",
-  );
+  const [tool, setTool] = useState<ToolId>(() => readTool(root));
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(true);
   const [taskSidebarTarget, setTaskSidebarTarget] = useState<HTMLDivElement | null>(null);
@@ -162,7 +160,7 @@ export function WorkspacePane({
   // 工作区内换了活动根（比如把另一个工作目录设为主要），右栏模块跟着换成那个根上次看的。
   // 实例不重建，所以初始值那一次不会重跑，得显式同步
   useEffect(() => {
-    setTool(readTool(root) === "changes" ? "changes" : "files");
+    setTool(readTool(root));
   }, [root]);
 
   /**
@@ -265,11 +263,7 @@ export function WorkspacePane({
   // 那时文件树和内容搜索都不该在后台白跑（树会重列、内容搜索会整仓遍历）
   const filesVisible = rightOpen && activeTool === "files";
   const rightCollapsed = !rightOpen;
-  const taskHasSidebar =
-    activeTask === "terminal" ||
-    activeTask === "files" ||
-    activeTask === "remote" ||
-    activeTask === "database";
+  const taskHasSidebar = activeTool !== "browser";
   // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
   const rightFullscreen = fullscreen === "right";
   const leftFullscreen = fullscreen === "left";
@@ -303,17 +297,10 @@ export function WorkspacePane({
 
   const pickTool = useCallback(
     (id: ToolId) => {
-      if (id === "changes") {
-        setTool("changes");
-        saveTool(root, "changes");
-        setRightOpen(true);
-        return;
-      }
-      if (id === "files") {
-        openTask("files");
-        return;
-      }
-      openTask(id);
+      setTool(id);
+      saveTool(root, id);
+      setRightOpen(true);
+      if (id === "browser") openTask("browser");
     },
     [openTask, root],
   );
@@ -788,7 +775,7 @@ export function WorkspacePane({
   const activeFilePath = activeTab?.kind === "file" ? activeTab.path : null;
   const filePreviewAvailable =
     activeFilePath !== null && /\.(?:md|mdx|mdc|markdown|html|htm|svg)$/i.test(activeFilePath);
-  const railTool = activeTask === "terminal" ? activeTool : activeTask;
+  const railTool = activeTool;
 
   return (
     <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
@@ -910,29 +897,19 @@ export function WorkspacePane({
             </div>
             <div className={activeTask === "remote" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
-                <RemotePane sidebarTarget={activeTask === "remote" ? taskSidebarTarget : null} fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
-              </div>
-            </div>
-            <div className={activeTask === "database" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <div className="h-full min-w-0 flex-1">
-                <DatabasePane sidebarTarget={activeTask === "database" ? taskSidebarTarget : null} fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
-              </div>
-            </div>
-            <div className={activeTask === "preview" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <div className="h-full min-w-0 flex-1">
-                <PreviewPane
-                  root={root}
-                  visible={visible && activeTask === "preview"}
+                <RemotePane
+                  sidebarTarget={activeTool === "remote" ? taskSidebarTarget : null}
+                  onOpenContent={() => openTask("remote")}
                   fullscreen={rightFullscreen}
                   onToggleFullscreen={onToggleRightFullscreen}
                 />
               </div>
             </div>
-            <div className={activeTask === "deploy" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+            <div className={activeTask === "database" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
-                <DeployPane
-                  root={root}
-                  visible={visible && activeTask === "deploy"}
+                <DatabasePane
+                  sidebarTarget={activeTool === "database" ? taskSidebarTarget : null}
+                  onOpenContent={() => openTask("database")}
                   fullscreen={rightFullscreen}
                   onToggleFullscreen={onToggleRightFullscreen}
                 />
@@ -943,9 +920,23 @@ export function WorkspacePane({
         second={
           <div className="flex min-h-0 min-w-0 flex-1">
             <div className={rightOpen ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} inert={!rightOpen}>
-              {activeTask === "remote" || activeTask === "database" ? (
+              {activeTool === "remote" || activeTool === "database" ? (
                 <div ref={setTaskSidebarTarget} className="h-full w-full min-w-0" />
-              ) : activeTask === "terminal" || activeTask === "files" ? (
+              ) : activeTool === "preview" ? (
+                <PreviewPane
+                  root={root}
+                  visible={visible && rightOpen}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              ) : activeTool === "deploy" ? (
+                <DeployPane
+                  root={root}
+                  visible={visible && rightOpen}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              ) : activeTool !== "browser" ? (
                 <div className="h-full w-full min-w-0">
                   <ToolPane tool={tool} {...toolPaneProps} />
                 </div>

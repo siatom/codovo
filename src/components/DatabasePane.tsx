@@ -157,8 +157,10 @@ export function DatabasePane({
   fullscreen,
   onToggleFullscreen,
   sidebarTarget,
+  onOpenContent,
 }: {
   sidebarTarget?: HTMLElement | null;
+  onOpenContent: () => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
@@ -378,6 +380,7 @@ export function DatabasePane({
 
   const openTable = useCallback(
     (sessionKey: string, connectionId: string, table: TableInfo) => {
+      onOpenContent();
       setSelected({ sessionKey, connectionId, table });
       setExportNotice(null);
       pickTab("tables");
@@ -385,7 +388,7 @@ export function DatabasePane({
       setTableView("data");
       void loadRows(sessionKey, connectionId, table, 0);
     },
-    [loadRows, pickTab],
+    [loadRows, onOpenContent, pickTab],
   );
 
   /**
