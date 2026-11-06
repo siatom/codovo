@@ -81,7 +81,7 @@ export function DeleteConfirmDialog({
 
   return (
     <ConfirmDialog
-      message={`${head}${permanentOnly ? "此操作不可撤销。" : ""}`}
+      message={`${head}${permanent ? "此操作不可撤销。" : "会移到系统回收站，可从回收站恢复。"}`}
       confirmLabel={permanent ? "永久删除" : "移到回收站"}
       // 只有彻底删除才用危险色：进回收站还能找回，别让它看着像不可撤销
       danger={permanent}
