@@ -187,12 +187,12 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 
 已打包的版本在 [GitHub Releases](https://github.com/siatom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。
 
-| 方式 | 适合谁 |
-| --- | --- |
+| 方式                                             | 适合谁                   |
+| ------------------------------------------------ | ------------------------ |
 | **Windows 安装包** `Codovo_<版本>_x64-setup.exe` | 常规安装，开始菜单与托盘 |
-| **macOS 安装包** `Codovo_<版本>_aarch64.dmg` | Apple Silicon |
-| **Linux 安装包** AppImage / `.deb` / `.rpm` | 按发行版选择 |
-| **源码构建** | 想改它、或想自己打包的人 |
+| **macOS 安装包** `Codovo_<版本>_aarch64.dmg`     | Apple Silicon            |
+| **Linux 安装包** AppImage / `.deb` / `.rpm`      | 按发行版选择             |
+| **源码构建**                                     | 想改它、或想自己打包的人 |
 
 ```bash
 pnpm install
@@ -208,27 +208,27 @@ Windows 需要 WebView2 Runtime（Windows 11 自带）；Git 功能需要安装 
 
 ## 快捷键
 
-| 快捷键 | 作用 |
-| --- | --- |
-| `Ctrl+S` | 编辑器：保存当前文件 |
-| `Ctrl+Shift+S` | 编辑器：另存为 |
-| `Ctrl+N` | 编辑器：新建未命名缓冲区 |
-| `Ctrl+O` | 打开文件（工作区外的文件以所在目录建临时工作区） |
-| `Ctrl+F` | 编辑器：查找（`Ctrl+H` 替换仍是 Monaco 内置） |
-| `Shift+Alt+F` | 编辑器：格式化当前文件 |
-| `Ctrl+Shift+V` | 编辑器：切换 Markdown / 网页预览 |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` | 编辑器：下一个 / 上一个标签页 |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 编辑器：放大 / 缩小 / 重置字号 |
-| `Ctrl+,` | 打开设置 |
-| `Ctrl+B` | 切换侧边栏 |
-| 标签中键 / 标签栏空白双击 | 编辑器：关闭该标签 / 新建未命名缓冲区 |
-| `Ctrl+Enter` | 在提交信息框里提交 |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | 文件树：复制 / 剪切 / 粘贴（焦点在树内某一行时） |
-| `Ctrl+C` / `Ctrl+V` | 终端：有选区复制，无选区 `Ctrl+C` 仍是中断；粘贴走 `Ctrl+V` |
-| `Ctrl+W` | 终端 / 编辑器：关闭当前标签页 |
-| `Ctrl+Shift+T` | 终端（本地 / 远程）：新建一个终端标签页 |
-| 鼠标右键 | 终端：有选区复制，无选区粘贴 |
-| `Esc` | 退出全屏 / 关闭弹窗 |
+| 快捷键                         | 作用                                                        |
+| ------------------------------ | ----------------------------------------------------------- |
+| `Ctrl+S`                       | 编辑器：保存当前文件                                        |
+| `Ctrl+Shift+S`                 | 编辑器：另存为                                              |
+| `Ctrl+N`                       | 编辑器：新建未命名缓冲区                                    |
+| `Ctrl+O`                       | 打开文件（工作区外的文件以所在目录建临时工作区）            |
+| `Ctrl+F`                       | 编辑器：查找（`Ctrl+H` 替换仍是 Monaco 内置）               |
+| `Shift+Alt+F`                  | 编辑器：格式化当前文件                                      |
+| `Ctrl+Shift+V`                 | 编辑器：切换 Markdown / 网页预览                            |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab`  | 编辑器：下一个 / 上一个标签页                               |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 编辑器：放大 / 缩小 / 重置字号                              |
+| `Ctrl+,`                       | 打开设置                                                    |
+| `Ctrl+B`                       | 切换侧边栏                                                  |
+| 标签中键 / 标签栏空白双击      | 编辑器：关闭该标签 / 新建未命名缓冲区                       |
+| `Ctrl+Enter`                   | 在提交信息框里提交                                          |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | 文件树：复制 / 剪切 / 粘贴（焦点在树内某一行时）            |
+| `Ctrl+C` / `Ctrl+V`            | 终端：有选区复制，无选区 `Ctrl+C` 仍是中断；粘贴走 `Ctrl+V` |
+| `Ctrl+W`                       | 终端 / 编辑器：关闭当前标签页                               |
+| `Ctrl+Shift+T`                 | 终端（本地 / 远程）：新建一个终端标签页                     |
+| 鼠标右键                       | 终端：有选区复制，无选区粘贴                                |
+| `Esc`                          | 退出全屏 / 关闭弹窗                                         |
 
 编辑器自己的命令只在焦点落在编辑器区时生效；`Ctrl+,`、`Ctrl+B` 与字号这类窗口级命令也只在终端和输入框之外响应，终端里的 `Ctrl+C` / `Ctrl+V` / `Ctrl+W` 不会被抢。终端里正在跑**全屏程序**（CodeBuddy CLI、Claude Code、vim、less…）时，`Ctrl+W` / `Ctrl+Shift+T` 会原样让给它们——这些程序自己要用。回到 shell 提示符后又恢复成上面的行为。键位都能在设置里改。
 
