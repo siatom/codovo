@@ -7,16 +7,16 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { SplitPane } from "./SplitPane";
-import { TerminalPane, type TerminalPaneHandle } from "./TerminalPane";
+import { TerminalPane, type TerminalPaneHandle, type TerminalTaskTab } from "./TerminalPane";
 import { ToolPane, readTool, saveTool, type ToolId } from "./ToolPane";
-import { RIGHT_TOOLS, RAIL_WIDTH, ToolRail } from "./ToolRail";
+import { RIGHT_TOOLS, ToolRail } from "./ToolRail";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { BrowserPane } from "./BrowserPane";
 import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { IconBot, IconEye } from "./icons";
+import { IconBot, IconEye, IconPlus, IconTerminal } from "./icons";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
@@ -145,6 +145,7 @@ export function WorkspacePane({
   const [tool, setTool] = useState<ToolId>(() => readTool(root));
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
   const [rightOpen, setRightOpen] = useState(true);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(true);
   const [taskSidebarTarget, setTaskSidebarTarget] = useState<HTMLDivElement | null>(null);
   /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
   const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
@@ -263,7 +264,7 @@ export function WorkspacePane({
   // 那时文件树和内容搜索都不该在后台白跑（树会重列、内容搜索会整仓遍历）
   const filesVisible = rightOpen && activeTool === "files";
   const rightCollapsed = !rightOpen;
-  const taskHasSidebar = activeTool !== "browser";
+  const taskHasSidebar = agentPanelOpen || activeTool !== "browser";
   // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
   const rightFullscreen = fullscreen === "right";
   const leftFullscreen = fullscreen === "left";
@@ -297,7 +298,7 @@ export function WorkspacePane({
 
   const pickTool = useCallback(
     (id: ToolId) => {
-      if (activeTool === id && rightOpen) {
+      if (!agentPanelOpen && activeTool === id && rightOpen) {
         setRightOpen(false);
         onExitFullscreen();
         return;
@@ -305,15 +306,26 @@ export function WorkspacePane({
       setTool(id);
       saveTool(root, id);
       setRightOpen(true);
+      setAgentPanelOpen(false);
       if (id === "browser") openTask("browser");
     },
-    [activeTool, onExitFullscreen, openTask, rightOpen, root],
+    [activeTool, agentPanelOpen, onExitFullscreen, openTask, rightOpen, root],
   );
 
   const toggleRight = useCallback(() => {
     setRightOpen((open) => !open);
     onExitFullscreen();
   }, [onExitFullscreen]);
+
+  const pickAgent = useCallback(() => {
+    if (agentPanelOpen && rightOpen) {
+      setRightOpen(false);
+      onExitFullscreen();
+      return;
+    }
+    setAgentPanelOpen(true);
+    setRightOpen(true);
+  }, [agentPanelOpen, onExitFullscreen, rightOpen]);
 
   /**
    * 界面操作智能体（应用助手）用的布局入口。刻意和 `pickTool` 分开：那边「再点一次当前
@@ -345,6 +357,15 @@ export function WorkspacePane({
 
   /** AI CLI 的入口挂在侧边栏的工作区行上，命令要落到当前工作区终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
+  const [terminalTaskTabs, setTerminalTaskTabs] = useState<TerminalTaskTab[]>([
+    { id: 0, label: "终端", attention: null },
+  ]);
+  const [activeTerminalId, setActiveTerminalId] = useState(0);
+  const [terminalTabMenu, setTerminalTabMenu] = useState<{ id: number; x: number; y: number } | null>(null);
+  const reportTerminalTaskTabs = useCallback((tabs: TerminalTaskTab[], activeId: number) => {
+    setTerminalTaskTabs(tabs);
+    setActiveTerminalId(activeId);
+  }, []);
   /** 搜索替换要指挥编辑器保存 / 重载 / 定位，这几件事只有它自己知道怎么做 */
   const editorRef = useRef<EditorPaneHandle>(null);
 
@@ -400,6 +421,7 @@ export function WorkspacePane({
     (path: string) => {
       setTool("files");
       saveTool(root, "files");
+      setAgentPanelOpen(false);
       setRightOpen(true);
       setFilesReveal({ path, nonce: (filesRevealNonceRef.current += 1) });
     },
@@ -413,6 +435,7 @@ export function WorkspacePane({
     const nextSidebar = tab.kind === "diff" ? "changes" : "files";
     setTool(nextSidebar);
     saveTool(root, nextSidebar);
+    setAgentPanelOpen(false);
     setRightOpen(true);
     setOpenTabs((current) => current.length === 1 && sameTab(current[0], tab) ? current : [tab]);
     setActiveTab(tab);
@@ -781,9 +804,11 @@ export function WorkspacePane({
   const filePreviewAvailable =
     activeFilePath !== null && /\.(?:md|mdx|mdc|markdown|html|htm|svg)$/i.test(activeFilePath);
   const railTool = activeTool;
+  const showToolRail = !leftFullscreen && !rightFullscreen;
 
   return (
     <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+      <div className={showToolRail ? "flex min-h-0 min-w-0 flex-1 pr-11" : "flex min-h-0 min-w-0 flex-1"}>
       <SplitPane
         initial={76}
         min={48}
@@ -791,18 +816,59 @@ export function WorkspacePane({
         resetOnDoubleClick
         secondCollapsed={rightCollapsed || !taskHasSidebar || leftFullscreen || rightFullscreen}
         animateCollapse
-        collapsedSecondWidth={leftFullscreen || rightFullscreen ? 0 : RAIL_WIDTH}
+        collapsedSecondWidth={0}
         first={
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-line bg-panel">
         <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2">
-          {taskTabs.map((task) => {
+          {taskTabs.flatMap((task) => {
+            if (task === "terminal") {
+              return terminalTaskTabs.map((terminalTab) => {
+                const attentionTitle =
+                  terminalTab.attention === "done"
+                    ? "任务完成，等待你的下一步指令"
+                    : terminalTab.attention
+                      ? "正在等待你的输入"
+                      : null;
+                return (
+                  <div
+                    key={`terminal:${terminalTab.id}`}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setTerminalTabMenu({ id: terminalTab.id, x: event.clientX, y: event.clientY });
+                    }}
+                    className={`flex h-7 shrink-0 items-center rounded ${activeTask === "terminal" && activeTerminalId === terminalTab.id ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTask("terminal");
+                        setActiveTerminalId(terminalTab.id);
+                        terminalRef.current?.focusSession(terminalTab.id);
+                      }}
+                      title={attentionTitle ? `${terminalTab.label}（${attentionTitle}）` : terminalTab.label}
+                      className="flex max-w-[220px] items-center gap-1.5 py-1 pl-2.5 text-[11px]"
+                    >
+                      <IconTerminal className="h-3.5 w-3.5 shrink-0" />
+                      <span className={`truncate ${attentionTitle ? "text-warn" : ""}`}>{terminalTab.label}</span>
+                      {attentionTitle && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => terminalRef.current?.closeSession(terminalTab.id)}
+                      title="关闭这个终端"
+                      className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger"
+                    >
+                      <span aria-hidden="true">×</span>
+                    </button>
+                  </div>
+                );
+              });
+            }
             const toolInfo = RIGHT_TOOLS.find((item) => item.id === task);
             const label =
-              task === "terminal"
-                ? "终端"
-                : task === "chat"
-                  ? "Agent 对话"
+              task === "chat"
+                ? "Agent 对话"
                 : task === "files"
                   ? activeTab
                     ? `${tabName(activeTab)}${activeTab.kind === "diff" ? " · 差异" : ""}`
@@ -826,21 +892,30 @@ export function WorkspacePane({
                   )}
                   <span className="truncate">{label}</span>
                 </button>
-                {task !== "terminal" && (
-                  <button
-                    type="button"
-                    onClick={() => closeTask(task)}
-                    title={task === "files" ? "关闭文件视图" : `关闭${label}`}
-                    className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger"
-                  >
-                    <span aria-hidden="true">×</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => closeTask(task)}
+                  title={task === "files" ? "关闭文件视图" : `关闭${label}`}
+                  className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger"
+                >
+                  <span aria-hidden="true">×</span>
+                </button>
               </div>
             );
           })}
         </div>
         <div className="flex h-full shrink-0 items-center gap-1 px-2">
+          {activeTask === "terminal" && (
+            <button
+              type="button"
+              onClick={() => terminalRef.current?.newSession()}
+              title="新建终端"
+              aria-label="新建终端"
+              className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+            >
+              <IconPlus className="h-3.5 w-3.5" />
+            </button>
+          )}
           {activeTask === "files" && filePreviewAvailable && (
             <button
               type="button"
@@ -862,7 +937,7 @@ export function WorkspacePane({
                   roots={workspace.roots}
                   visible={visible && (activeTask === "terminal" || activeTask === "chat")}
                   view={activeTask === "chat" ? "chat" : "terminal"}
-                  onOpenChat={() => openTask("chat")}
+                  onTaskTabsChange={reportTerminalTaskTabs}
                   ref={setTerminalHandle}
                   fullscreen={leftFullscreen}
                   onToggleFullscreen={onToggleLeftFullscreen}
@@ -935,7 +1010,35 @@ export function WorkspacePane({
         second={
           <div className="flex min-h-0 min-w-0 flex-1">
             <div className={rightOpen ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} inert={!rightOpen}>
-              {activeTool === "remote" || activeTool === "database" ? (
+              {agentPanelOpen ? (
+                <div className="flex h-full w-full min-w-0 flex-col bg-content">
+                  <header className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
+                    <IconBot className="h-4 w-4 text-fg-dim" />
+                    <span className="text-[12px] font-medium text-fg">Agent</span>
+                  </header>
+                  <div className="flex flex-col gap-1 p-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTask("terminal");
+                        terminalRef.current?.focusSession(activeTerminalId);
+                      }}
+                      className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] ${activeTask === "terminal" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}
+                    >
+                      <IconTerminal className="h-4 w-4" />
+                      终端
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openTask("chat")}
+                      className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] ${activeTask === "chat" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}
+                    >
+                      <IconBot className="h-4 w-4" />
+                      ACP 对话
+                    </button>
+                  </div>
+                </div>
+              ) : activeTool === "remote" || activeTool === "database" ? (
                 <div ref={setTaskSidebarTarget} className="h-full w-full min-w-0" />
               ) : activeTool === "preview" ? (
                 <PreviewPane
@@ -957,18 +1060,48 @@ export function WorkspacePane({
                 </div>
               ) : null}
             </div>
-            <ToolRail
-              active={railTool}
-              changed={changedCount}
-              visible={toolVisible}
-              onPick={pickTool}
-              rightOpen={rightOpen}
-              onToggleRight={toggleRight}
-              onBlankClick={onBlankClick}
-            />
           </div>
         }
       />
+      {terminalTabMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setTerminalTabMenu(null)} />
+          <div
+            className="fixed z-40 w-40 rounded border border-line-strong bg-raised py-1 shadow-lg"
+            style={{
+              left: Math.min(terminalTabMenu.x, window.innerWidth - 164),
+              top: Math.min(terminalTabMenu.y, window.innerHeight - 38),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                terminalRef.current?.restartSession(terminalTabMenu.id);
+                setTerminalTabMenu(null);
+              }}
+              className="w-full truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
+            >
+              重启会话
+            </button>
+          </div>
+        </>
+      )}
+      </div>
+      {showToolRail && (
+        <div className="absolute inset-y-0 right-0 z-20">
+          <ToolRail
+            active={agentPanelOpen ? undefined : railTool}
+            agentActive={agentPanelOpen}
+            changed={changedCount}
+            visible={toolVisible}
+            onPick={pickTool}
+            onPickAgent={pickAgent}
+            rightOpen={rightOpen}
+            onToggleRight={toggleRight}
+            onBlankClick={onBlankClick}
+          />
+        </div>
+      )}
     </div>
   );
 }

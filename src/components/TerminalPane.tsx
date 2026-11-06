@@ -20,27 +20,19 @@ import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
-import { useTabReorder } from "../lib/use-tab-reorder";
 import type { EditorLocation, TerminalSessionInfo } from "../lib/types";
 import { AcpChatPane, type AcpCliOption } from "./AcpChatPane";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   AgentLogo,
-  IconBot,
   IconChevronDown,
-  IconClose,
   IconLayoutColumns,
   IconLayoutRows,
   IconLayoutSingle,
-  IconPlus,
-  ShellIcon,
 } from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
 const SHELL_MENU_W = 200;
-/** 标签右键菜单的宽度与高度，用来把菜单往可视区内收 */
-const TAB_MENU_W = 160;
-const TAB_MENU_H = 34;
 const SHELL_MENU_ITEM =
   "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
@@ -63,6 +55,10 @@ export interface TerminalPaneHandle {
    * `title` 直接作新标签的标题：AI CLI 传 CLI 名，resume 传被恢复会话的标题。
    */
   runInNewSession: (command: string, title: string) => void;
+  /** 新建、关闭或重启超级 Tab 中的终端会话 */
+  newSession: () => void;
+  closeSession: (id: number) => void;
+  restartSession: (id: number) => void;
   /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
   insertToTerminal: (location: EditorLocation) => void;
   /**
@@ -77,6 +73,12 @@ export interface TerminalPaneHandle {
   focusOrOpenAt: (cwd: string) => void;
 }
 
+export interface TerminalTaskTab {
+  id: number;
+  label: string;
+  attention: TerminalSessionInfo["attention"];
+}
+
 interface TerminalPaneProps {
   /** 这个终端区属于哪个工作区（活动根）。PTY 会话按它归属，关工作区时要能收干净 */
   root: string;
@@ -86,8 +88,8 @@ interface TerminalPaneProps {
   visible: boolean;
   /** 由工作区超级 Tab 控制：终端与 ACP 对话是两个并列任务 */
   view: "terminal" | "chat";
-  /** 从终端顶栏创建 / 切到 Agent 对话超级 Tab */
-  onOpenChat: () => void;
+  /** 将终端会话标签同步到工作区超级 Tab 栏 */
+  onTaskTabsChange: (tabs: TerminalTaskTab[], activeId: number) => void;
   /** 左侧终端列是否已全屏展示 */
   fullscreen: boolean;
   /** 切换左侧全屏。按钮画在标签栏右端 */
@@ -104,7 +106,7 @@ interface TerminalPaneProps {
 }
 
 /**
- * 终端区：管一组会话，标签栏负责新增/关闭/切换。
+ * 终端区：管一组会话，工作区超级 Tab 栏负责新增 / 关闭 / 切换会话。
  * 每个会话各自持有一个 PTY，切走只是隐藏，shell 不会被打断。
  *
  * 顶栏是 **AI CLI 快速切换条**：配了哪些 CLI 就摆哪几个按钮，点一下——自带多标签页的
@@ -117,7 +119,7 @@ export function TerminalPane({
   roots,
   visible,
   view,
-  onOpenChat,
+  onTaskTabsChange,
   fullscreen,
   onToggleFullscreen,
   onSessionsReport,
@@ -166,7 +168,7 @@ export function TerminalPane({
   const launchCommandByIdRef = useRef(new Map<number, string>());
   /** 某些 CLI 的附加目录要靠环境变量传（opencode），按会话记一份，PTY 启动时设进去 */
   const launchEnvByIdRef = useRef(new Map<number, Record<string, string>>());
-  const addButtonRef = useRef<HTMLDivElement>(null);
+  const addButtonRef = useRef<HTMLButtonElement>(null);
   /** 并列布局的容器：拖分隔条时按它的尺寸换算比例 */
   const splitRef = useRef<HTMLDivElement>(null);
   const {
@@ -180,11 +182,6 @@ export function TerminalPane({
   const [shellMenuPos, setShellMenuPos] = useState<{ left: number; top: number } | null>(
     null,
   );
-  /**
-   * 右键标签打开的会话菜单。坐标是视口坐标：标签栏是横向滚动容器，
-   * 绝对定位的菜单会被它裁掉，所以和上面的 shell 菜单一样用 fixed。
-   */
-  const [tabMenu, setTabMenu] = useState<{ id: number; x: number; y: number } | null>(null);
   const { settings } = useSettings();
 
   /** root 之外的工作目录：启动 AI CLI 时作为附加目录传给 CLI */
@@ -313,23 +310,6 @@ export function TerminalPane({
   };
 
   /**
-   * 拖动重排标签：只换 sessions 的顺序，会话 id 不动——TerminalSession 按 id 做 key，
-   * 重排不会重建实例，正在跑的 shell 和滚动历史都不受影响。
-   */
-  const reorderSessions = useCallback((from: number, to: number) => {
-    setSessions((current) => {
-      if (from < 0 || from >= current.length || from === to) return current;
-      const next = [...current];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  }, []);
-
-  const { scrollerRef: tabsScrollRef, dragFrom, dropIndex, onTabDown, onClickCapture } =
-    useTabReorder(reorderSessions);
-
-  /**
    * 新开标签跑一条命令。命令不在这儿写——新会话的 PTY 还在异步 spawn，
    * 现在写必然被丢掉。交给 initialCommand，由 TerminalSession 在 shell
    * 就绪后自己敲。
@@ -376,6 +356,7 @@ export function TerminalPane({
   const focusSession = useCallback(
     (id: number) => {
       if (!sessions.includes(id)) return;
+      setLayout("tabs");
       setActiveId(id);
       const handle = handlesRef.current.get(id);
       // 「切过去即已读」：要切的标签本来就是当前这个时 setActiveId 是空操作，
@@ -397,6 +378,7 @@ export function TerminalPane({
         (id) => pathKey(cwdByIdRef.current.get(id) ?? root) === key,
       );
       if (existing !== undefined) {
+        setLayout("tabs");
         setActiveId(existing);
         handlesRef.current.get(existing)?.focus();
         return;
@@ -408,8 +390,19 @@ export function TerminalPane({
 
   useImperativeHandle(
     ref,
-    () => ({ runInNewSession, insertToTerminal, focusSession, focusOrOpenAt }),
-    [runInNewSession, insertToTerminal, focusSession, focusOrOpenAt],
+    () => ({
+      runInNewSession,
+      insertToTerminal,
+      focusSession,
+      focusOrOpenAt,
+      newSession: () => addSession(),
+      closeSession,
+      restartSession: (id) => {
+        setActiveId(id);
+        handlesRef.current.get(id)?.restart();
+      },
+    }),
+    [runInNewSession, insertToTerminal, focusSession, focusOrOpenAt, closeSession],
   );
 
   // 把会话归属上报给上层：变更雷达要按 cwd 把「在跑 / 在等你」落到具体工作树上。
@@ -424,6 +417,23 @@ export function TerminalPane({
       })),
     );
   }, [sessions, attention, root, onSessionsReport]);
+
+  useEffect(() => {
+    onTaskTabsChange(
+      sessions.map((id, index) => {
+        const shell = shellForSession(id);
+        const custom = customTitleByIdRef.current.get(id);
+        const seq = shellSeqByIdRef.current.get(id) ?? 1;
+        const shellName = shell?.name ?? `终端 ${index + 1}`;
+        return {
+          id,
+          label: agentTitleById[id] ?? custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName),
+          attention: attention[terminalTarget(id)] ?? null,
+        };
+      }),
+      activeId,
+    );
+  }, [activeId, agentTitleById, attention, onTaskTabsChange, sessions, settings.terminalShell, shellOptions]);
 
   /** 配过的 AI CLI（空命令是加了还没填的，不进顶栏） */
   const aiCommands = useMemo(
@@ -551,129 +561,23 @@ export function TerminalPane({
               );
             })}
           </div>
-          {view === "terminal" && (
-            <button
-              type="button"
-              onClick={onOpenChat}
-              title="打开 Agent 对话"
-              aria-label="Agent 对话"
-              className="flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
-            >
-              <IconBot className="h-3 w-3" />
-              Agent 对话
-            </button>
-          )}
         </header>
       )}
 
-      {/* 终端本体：标签栏和终端都归这一套自己管。切到对话时整套藏起来，
-          PTY 会话和标签状态都留着，切回来还是原样 */}
+      {/* 终端会话始终挂载；切到 ACP 对话时只隐藏终端，PTY 和滚动历史都保留 */}
       <div className={view === "chat" ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-2">
-          <div
-            ref={tabsScrollRef}
-            onClickCapture={onClickCapture}
-            className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
-          >
-            {sessions.map((id, index) => {
-              const isActive = id === activeId;
-              // 会话自己在下拉里选过就用它，否则跟着设置走，都没有就是「自动」
-              const shell = shellForSession(id);
-              // AI CLI / resume 会话用创建时传来的标题；普通 shell 会话按 shell 名，
-              // 同名的从第二个起带固定序号（见 assignShellSeq）
-              const custom = customTitleByIdRef.current.get(id);
-              // AI CLI / resume 会话的原始启动命令：有值说明这个标签是 AI CLI，图标用它的 logo
-              const launchCommand = hintByIdRef.current.get(id);
-              // 实际执行的完整命令（可能带附加目录参数），只用于悬停提示
-              const launchedCommand = launchCommandByIdRef.current.get(id) ?? launchCommand;
-              const seq = shellSeqByIdRef.current.get(id) ?? 1;
-              const shellName = shell?.name ?? `终端 ${index + 1}`;
-              const title = agentTitleById[id] ?? custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName);
-              // 悬停提示：启动过的会话报实际命令，普通会话报 shell 全名
-              const hint = launchedCommand ?? shell?.label ?? shellName;
-              // 这个标签有没有「在等用户」的标记：等回应（prompt）或任务完成（done）
-              const kind = attention[terminalTarget(id)];
-              const attentionHint =
-                kind === "done" ? "任务完成，等待你的下一步指令" : kind ? "正在等待你的输入" : null;
-              const dropBefore = dropIndex === index;
-              const dropAfter = dropIndex === sessions.length && index === sessions.length - 1;
-              return (
-                <div
-                  key={id}
-                  data-tab-item
-                  onPointerDown={onTabDown(index)}
-                  onContextMenu={(event) => {
-                    // 右键标签开这个会话的菜单。onTabDown 只认左键，不会和拖动重排打架
-                    event.preventDefault();
-                    setTabMenu({ id, x: event.clientX, y: event.clientY });
-                  }}
-                  className={`relative flex shrink-0 items-center rounded ${
-                    isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-                  } ${dragFrom === index ? "opacity-40" : ""}`}
-                >
-                  {/* 落点线：插在某个标签之前画在它左缘，插在末尾画在最后一个标签右缘 */}
-                  {(dropBefore || dropAfter) && (
-                    <span
-                      className={`pointer-events-none absolute top-0 bottom-0 z-10 w-0.5 rounded bg-accent-strong ${
-                        dropBefore ? "-left-0.5" : "-right-0.5"
-                      }`}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setActiveId(id)}
-                    title={attentionHint ? `${hint}（${attentionHint}）` : hint}
-                    className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
-                  >
-                    {launchCommand ? (
-                      <AgentLogo
-                        name={custom ?? ""}
-                        command={launchCommand}
-                        className="h-3 w-3"
-                      />
-                    ) : (
-                      <ShellIcon kind={shell?.kind ?? "shell"} className="h-3 w-3" />
-                    )}
-                    {/* 在等用户时标题也一起变色（同脉冲点的 warn 色），标签多时更好认 */}
-                    <span className={`truncate ${kind ? "text-warn" : ""}`}>{title}</span>
-                    {/* 有标记就点一颗脉冲点，切到别的工作区也看得见；等回应 / 已完成靠 title 区分 */}
-                    {attentionHint && (
-                      <span
-                        title={attentionHint}
-                        className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
-                      />
-                    )}
-                  </button>
-                  <button
-                    type="button"
-                    data-tab-close
-                    onClick={() => closeSession(id)}
-                    title="关闭这个终端"
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"
-                  >
-                    <IconClose className="h-3 w-3" />
-                  </button>
-                </div>
-              );
-            })}
-            <div ref={addButtonRef} className="flex shrink-0 items-center">
-              <button
-                type="button"
-                onClick={() => addSession()}
-                title="新建终端"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-              >
-                <IconPlus className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={toggleShellMenu}
-                title="选择终端程序"
-                className="flex h-5 w-4 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-              >
-                <IconChevronDown className="h-3 w-3" />
-              </button>
-            </div>
+          <div className="flex min-w-0 flex-1 items-center">
+            <button
+              ref={addButtonRef}
+              type="button"
+              onClick={toggleShellMenu}
+              title="选择终端程序"
+              className="flex h-6 items-center gap-1 rounded px-2 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
+            >
+              终端程序
+              <IconChevronDown className="h-3 w-3" />
+            </button>
           </div>
           {/* 三个布局按钮 + 全屏按钮同一排，gap 一致——之前布局按钮裹了一圈边框，
               和外面全屏按钮间距对不上，去掉边框后四个按钮等距 */}
@@ -848,41 +752,7 @@ export function TerminalPane({
       )}
 
       {/* 标签右键菜单。标签栏横向滚动，绝对定位会被裁掉，所以和上面的 shell 菜单一样用 fixed */}
-      {tabMenu && (
-        <>
-          <div
-            className="fixed inset-0 z-30"
-            onClick={() => setTabMenu(null)}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setTabMenu(null);
-            }}
-          />
-          <div
-            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
-            style={{
-              width: TAB_MENU_W,
-              left: Math.min(tabMenu.x, window.innerWidth - TAB_MENU_W - 4),
-              top: Math.min(tabMenu.y, window.innerHeight - TAB_MENU_H - 4),
-            }}
-          >
-            <button
-              type="button"
-              title="重新拉起这个标签的 shell（环境变量按当前系统设置重新读取，滚动历史会清空）"
-              onClick={() => {
-                const id = tabMenu.id;
-                setTabMenu(null);
-                // 重启后台标签时切过去：新 shell 的输出得看得见才有意义
-                setActiveId(id);
-                handlesRef.current.get(id)?.restart();
-              }}
-              className={SHELL_MENU_ITEM}
-            >
-              重启会话
-            </button>
-          </div>
-        </>
-      )}
+
     </section>
   );
 }
