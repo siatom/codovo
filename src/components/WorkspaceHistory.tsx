@@ -15,12 +15,15 @@ interface WorkspaceHistoryProps {
   roots: string[];
   /** settings.aiCommands 过滤后的列表，用来定 resume 走哪条命令 */
   commands: AiCommand[];
+  /** 切换工作区时重置分页，重新回来仍从最近十条看起 */
+  active: boolean;
   /** 点一条对话：参数是拼好的 resume 命令和标题（作新终端标签的标题） */
   onResume: (command: string, title: string) => void;
 }
 
 /** 自动刷新间隔。记录由 CLI 自己写盘，界面不知道它什么时候变 */
 const POLL_MS = 20000;
+const HISTORY_PAGE = 10;
 
 const HINT = "px-2 py-1 text-[11px] text-fg-faint";
 
@@ -38,9 +41,10 @@ const MENU_W = 144;
  * 不放在侧栏底部单独占一块：历史天然属于某个工作区，挂在行下既能一次看几个
  * 工作区的状态，也不用为它单独管高度。
  */
-export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistoryProps) {
+export function WorkspaceHistory({ roots, commands, active, onResume }: WorkspaceHistoryProps) {
   /** null = 还没读到第一份结果，显示加载态 */
   const [items, setItems] = useState<CliHistoryEntry[] | null>(null);
+  const [limit, setLimit] = useState(HISTORY_PAGE);
   /** 手动 / 定时刷新用：加一就重跑下面的 effect */
   const [nonce, setNonce] = useState(0);
   /** 本次刷新是不是自动触发的；是的话不闪加载态 */
@@ -61,6 +65,13 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
   const signature = `${roots.join("\u0000")}\u0001${commands
     .map((item) => `${item.name}\u0000${item.command}`)
     .join("\u0001")}`;
+
+  useEffect(() => {
+    setLimit(HISTORY_PAGE);
+    // 分页重置后，原先打开菜单或改名的记录可能已不在可见范围内。
+    setMenu(null);
+    setEditing(null);
+  }, [signature, active]);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,7 +141,7 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
   return (
     <>
       <ul className="flex flex-col pb-1">
-        {items.map((item) => {
+        {items.slice(0, limit).map((item) => {
           const key = sessionTitleKey(item.provider, item.id);
           const title = titleOf(item);
           const name = title || "未命名对话";
@@ -217,6 +228,17 @@ export function WorkspaceHistory({ roots, commands, onResume }: WorkspaceHistory
             </li>
           );
         })}
+        {items.length > limit && (
+          <li>
+            <button
+              type="button"
+              onClick={() => setLimit((value) => value + HISTORY_PAGE)}
+              className={`${HINT} w-full rounded text-left hover:bg-hover hover:text-fg`}
+            >
+              加载更多（还有 {items.length - limit} 条）
+            </button>
+          </li>
+        )}
       </ul>
 
       {/* 「⋯」菜单：fixed 定位，免得被侧栏的滚动容器裁掉。以后加别的会话操作直接往这里添 */}

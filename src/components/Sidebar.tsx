@@ -1138,6 +1138,7 @@ export function Sidebar({
                               <WorkspaceHistory
                                 roots={workspace.roots}
                                 commands={aiCommands}
+                                active={currentId === workspace.id}
                                 onResume={(command, title) =>
                                   onResumeSession(workspace, command, title)
                                 }
