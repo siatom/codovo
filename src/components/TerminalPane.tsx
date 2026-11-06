@@ -7,6 +7,7 @@ import {
   useState,
   type Ref,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   TerminalSession,
   type TerminalSessionHandle,
@@ -22,17 +23,17 @@ import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import type { EditorLocation, TerminalSessionInfo } from "../lib/types";
 import { AcpChatPane, type AcpChatPaneHandle, type AcpChatTaskTab, type AcpCliOption } from "./AcpChatPane";
-import { FullscreenButton } from "./FullscreenButton";
 import {
   AgentLogo,
   IconLayoutColumns,
   IconLayoutRows,
   IconLayoutSingle,
+  ShellIcon,
 } from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
 const SHELL_MENU_ITEM =
-  "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
+  "flex items-center gap-2 truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
 /**
  * 「路径:起[-止]」——单行只写一个行号，跨行才带结束行号。
@@ -82,6 +83,7 @@ export interface TerminalTaskTab {
   label: string;
   attention: TerminalSessionInfo["attention"];
   agent: { name: string; command: string } | null;
+  shellKind: string;
 }
 
 interface TerminalPaneProps {
@@ -99,10 +101,8 @@ interface TerminalPaneProps {
   onSelectAcpChat: (command: string, chatId: string) => void;
   onAcpChatsChange: (chats: AcpChatTaskTab[]) => void;
   selectedAcpChat: { command: string; chatId: string } | null;
-  /** 左侧终端列是否已全屏展示 */
-  fullscreen: boolean;
-  /** 切换左侧全屏。按钮画在标签栏右端 */
-  onToggleFullscreen: () => void;
+  /** 将终端布局操作放入工作区超级 Tab 右侧 */
+  toolbarTarget?: HTMLElement | null;
   /**
    * 会话归属上报：id、shell 落点、是否在等用户。变更雷达靠它把「哪个工作树在跑、
    * 谁在等我」落到具体工作树上（attention store 是按工作区根记的，落不到树）。
@@ -128,8 +128,7 @@ export function TerminalPane({
   onSelectAcpChat,
   onAcpChatsChange,
   selectedAcpChat,
-  fullscreen,
-  onToggleFullscreen,
+  toolbarTarget,
   onSessionsReport,
   onOpenFile,
   ref,
@@ -438,6 +437,7 @@ export function TerminalPane({
           agent: hintByIdRef.current.get(id)
             ? { name: custom ?? hintByIdRef.current.get(id)!, command: hintByIdRef.current.get(id)! }
             : null,
+          shellKind: shell?.kind ?? "shell",
         };
       }),
       activeId,
@@ -532,51 +532,46 @@ export function TerminalPane({
   // 半透明时看着比侧栏实一大截。需要底色的只有顶栏和标签栏这两条
   return (
     <section className="flex h-full min-h-0 flex-col">
+      {toolbarTarget && createPortal(
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setLayout("tabs")}
+            title="单终端"
+            aria-label="单终端"
+            className={`flex h-6 w-6 items-center justify-center rounded ${
+              layout === "tabs" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+            }`}
+          >
+            <IconLayoutSingle className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSplitLayout("horizontal")}
+            title="左右并列"
+            aria-label="左右并列"
+            className={`flex h-6 w-6 items-center justify-center rounded ${
+              layout === "horizontal" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+            }`}
+          >
+            <IconLayoutColumns className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSplitLayout("vertical")}
+            title="上下并列"
+            aria-label="上下并列"
+            className={`flex h-6 w-6 items-center justify-center rounded ${
+              layout === "vertical" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+            }`}
+          >
+            <IconLayoutRows className="h-3.5 w-3.5" />
+          </button>
+        </div>,
+        toolbarTarget,
+      )}
       {/* 终端会话始终挂载；切到 ACP 对话时只隐藏终端，PTY 和滚动历史都保留 */}
       <div className={view === "chat" ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-2">
-          <div className="min-w-0 flex-1" />
-          {/* 三个布局按钮 + 全屏按钮同一排，gap 一致——之前布局按钮裹了一圈边框，
-              和外面全屏按钮间距对不上，去掉边框后四个按钮等距 */}
-          <div className="flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
-              onClick={() => setLayout("tabs")}
-              title="单终端"
-              aria-label="单终端"
-              className={`flex h-6 w-6 items-center justify-center rounded ${
-                layout === "tabs" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-              }`}
-            >
-              <IconLayoutSingle className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setSplitLayout("horizontal")}
-              title="左右并列"
-              aria-label="左右并列"
-              className={`flex h-6 w-6 items-center justify-center rounded ${
-                layout === "horizontal" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-              }`}
-            >
-              <IconLayoutColumns className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setSplitLayout("vertical")}
-              title="上下并列"
-              aria-label="上下并列"
-              className={`flex h-6 w-6 items-center justify-center rounded ${
-                layout === "vertical" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-              }`}
-            >
-              <IconLayoutRows className="h-3.5 w-3.5" />
-            </button>
-            {/* 全屏开关放最右，且在标签滚动区之外：标签横向滚动时它不跟着滑走 */}
-            <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
-          </div>
-        </div>
-
         {/* 容器元素始终是同一种标签，只换 className：切布局时各会话的包裹层按 key 复用，
             不重建 TerminalSession（重建会杀掉 shell） */}
         <div
@@ -711,7 +706,8 @@ export function TerminalPane({
                 }}
                 className={SHELL_MENU_ITEM}
               >
-                {item.label}
+                <ShellIcon kind={item.kind} className="h-4 w-4 shrink-0" />
+                <span className="truncate">{item.label}</span>
               </button>
             ))}
             {aiCommands.length > 0 && <div className="mx-2 my-1 border-t border-line" />}

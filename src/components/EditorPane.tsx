@@ -10,6 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type Ref,
 } from "react";
+import { createPortal } from "react-dom";
 import { monaco, monacoThemeFor, setMonacoTransparency } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
 import { reindentModelOnOpen } from "../lib/json5";
@@ -62,7 +63,6 @@ import {
 import type { EditorLocation, Eol, FileContent } from "../lib/types";
 import { useTheme } from "../lib/theme";
 import { GitMarkBadge } from "./GitMarkBadge";
-import { FullscreenButton } from "./FullscreenButton";
 import { HtmlPreview } from "./HtmlPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { TranslationView } from "./TranslationView";
@@ -358,6 +358,8 @@ function isFindWidgetVisible(editor: monaco.editor.IStandaloneCodeEditor): boole
 interface EditorPaneProps {
   /** 文件标签由工作区超级 tab 显示时，隐藏编辑器内部的第二排标签 */
   hideTabStrip?: boolean;
+  /** 超级 Tab 的操作区；嵌入工作区时把当前文件的操作按钮放到这里 */
+  toolbarTarget?: HTMLElement | null;
   /** 已打开的标签，按打开顺序 */
   tabs: Tab[];
   /** 当前显示的那个 */
@@ -381,9 +383,6 @@ interface EditorPaneProps {
   onRevealInFiles: (path: string) => void;
   /** 翻译视图里的「设置」入口：打开设置面板的 AI 页 */
   onOpenSettings: () => void;
-  /** 全屏展示状态。按钮挂在编辑器标题栏右端，也就是右边栏的右上角 */
-  fullscreen: boolean;
-  onToggleFullscreen: () => void;
   /** 选中浮窗的两个动作：把位置引用送到终端 / 应用助手输入框 */
   onSendToTerminal: (location: EditorLocation) => void;
   onSendToAssistant: (location: EditorLocation) => void;
@@ -676,6 +675,7 @@ type CloseRequest = { kind: "one"; tab: Tab } | { kind: "all" } | { kind: "other
 
 export function EditorPane({
   hideTabStrip = false,
+  toolbarTarget,
   tabs,
   active,
   gitMarks,
@@ -689,8 +689,6 @@ export function EditorPane({
   onOpenPath,
   onRevealInFiles,
   onOpenSettings,
-  fullscreen,
-  onToggleFullscreen,
   onSendToTerminal,
   onSendToAssistant,
   root,
@@ -3479,11 +3477,86 @@ export function EditorPane({
     },
   ];
 
+  const contextualToolbar = (
+    <div className="flex h-full shrink-0 items-center gap-0.5">
+      {canPreview && !isMarkdownFile && (
+        <button
+          type="button"
+          onClick={togglePreview}
+          title={isPreview ? "回到编辑" : "预览"}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+        >
+          {isPreview ? <IconCode className="h-3.5 w-3.5" /> : <IconEye className="h-3.5 w-3.5" />}
+        </button>
+      )}
+      {isMarkdownFile && status.kind === "ready" && markdownMode !== null && (
+        <div role="group" aria-label="markdown 查看方式" className="flex shrink-0 items-center gap-0.5">
+          {MARKDOWN_MODES.map(({ id, label, icon: Icon, hint }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setMarkdownMode(id)}
+              aria-label={label}
+              aria-pressed={markdownMode === id}
+              disabled={id === "translate" && !canTranslate}
+              title={hint}
+              className={`flex h-6 w-6 items-center justify-center rounded ${
+                markdownMode === id ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
+              } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+            </button>
+          ))}
+        </div>
+      )}
+      {isMarkdownFile && status.kind === "ready" && hasMarkdownHeadings &&
+        (markdownMode === "preview" || markdownMode === "split") && (
+          <button
+            type="button"
+            onClick={toggleMarkdownOutline}
+            aria-label="文档大纲"
+            aria-pressed={markdownOutline}
+            title={markdownOutline ? "隐藏文档大纲" : "显示文档大纲"}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
+              markdownOutline ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
+            }`}
+          >
+            <IconList className="h-3.5 w-3.5" />
+          </button>
+        )}
+      {activeFile && status.kind === "ready" && !isMarkdownFile && canTranslate && (
+        <button
+          type="button"
+          onClick={toggleTranslation}
+          aria-label="文档翻译"
+          aria-pressed={isTranslate}
+          title={isTranslate ? "回到编辑" : "文档翻译（左原文、右译文）"}
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
+            isTranslate ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
+          }`}
+        >
+          <IconTranslate className="h-3.5 w-3.5" />
+        </button>
+      )}
+      {activeFile && activeCached && (
+        <button
+          type="button"
+          onClick={formatActive}
+          disabled={!canFormatTab(activeCached)}
+          title={`格式化文档（${formatShortcut(settings.shortcuts["editor.format"])}）`}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
+        >
+          <IconWand className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
+  );
+
   // 整块不铺底色：编辑器自己画（跟着界面透明度走），这里再铺一层就叠成两层 alpha。
   // 需要底色的只有标签栏和图片预览（其余视图各自带 bg-surface）
   return (
     <section ref={paneRef} className="relative flex h-full min-h-0 w-full min-w-0 flex-col" onKeyDownCapture={onPaneKeyDown}>
-      <header className="flex h-8 shrink-0 items-center gap-1 border-b border-line bg-surface px-2">
+      <header className={hideTabStrip ? "hidden" : "flex h-8 shrink-0 items-center gap-1 border-b border-line bg-surface px-2"}>
         <div
           ref={tabsScrollRef}
           onClickCapture={onClickCapture}
@@ -3611,101 +3684,11 @@ export function EditorPane({
             <IconMore className="h-3.5 w-3.5" />
           </button>
         )}
-        {/* html / svg 仍是「编辑 ↔ 预览」两态，markdown 用下面那组三态按钮 */}
-        {!hideTabStrip && canPreview && !isMarkdownFile && (
-          <button
-            type="button"
-            onClick={togglePreview}
-            title={isPreview ? "回到编辑" : "预览"}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
-          >
-            {isPreview ? (
-              <IconCode className="h-3.5 w-3.5" />
-            ) : (
-              <IconEye className="h-3.5 w-3.5" />
-            )}
-          </button>
-        )}
-        {/* markdown：预览 / 编辑 / 对照 / 翻译。默认预览，四种方式同一时间只开一个 */}
-        {isMarkdownFile && status.kind === "ready" && markdownMode !== null && (
-          <div
-            role="group"
-            aria-label="markdown 查看方式"
-            className="flex shrink-0 items-center gap-0.5"
-          >
-            {MARKDOWN_MODES.map(({ id, label, icon: Icon, hint }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setMarkdownMode(id)}
-                aria-label={label}
-                aria-pressed={markdownMode === id}
-                disabled={id === "translate" && !canTranslate}
-                title={hint}
-                className={`flex h-6 w-6 items-center justify-center rounded ${
-                  markdownMode === id
-                    ? "bg-selected text-fg"
-                    : "text-fg-dim hover:bg-hover hover:text-fg"
-                } disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim`}
-              >
-                <Icon className="h-3.5 w-3.5" />
-              </button>
-            ))}
-          </div>
-        )}
-        {/* 文档大纲：只对能渲染出标题的预览 / 对照给出入口，编辑与翻译本来就没有大纲 */}
-        {isMarkdownFile &&
-          status.kind === "ready" &&
-          hasMarkdownHeadings &&
-          (markdownMode === "preview" || markdownMode === "split") && (
-            <button
-              type="button"
-              onClick={toggleMarkdownOutline}
-              aria-label="文档大纲"
-              aria-pressed={markdownOutline}
-              title={markdownOutline ? "隐藏文档大纲" : "显示文档大纲"}
-              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
-                markdownOutline
-                  ? "bg-selected text-fg"
-                  : "text-fg-dim hover:bg-hover hover:text-fg"
-              }`}
-            >
-              <IconList className="h-3.5 w-3.5" />
-            </button>
-          )}
-        {/* 纯文本 / 日志等文档：markdown 走上面的四态分组，这里给一个独立的翻译开关 */}
-        {activeFile && status.kind === "ready" && !isMarkdownFile && canTranslate && (
-          <button
-            type="button"
-            onClick={toggleTranslation}
-            aria-label="文档翻译"
-            aria-pressed={isTranslate}
-            title={isTranslate ? "回到编辑" : "文档翻译（左原文、右译文）"}
-            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
-              isTranslate
-                ? "bg-selected text-fg"
-                : "text-fg-dim hover:bg-hover hover:text-fg"
-            }`}
-          >
-            <IconTranslate className="h-3.5 w-3.5" />
-          </button>
-        )}
-        {/* 格式化：Prettier 覆盖的类型走 Prettier，其余退回缩进重排。
-            只读 / 截断 / 大文件不给按（重写整篇正文对它们没有意义） */}
-        {activeFile && activeCached && (
-          <button
-            type="button"
-            onClick={formatActive}
-            disabled={!canFormatTab(activeCached)}
-            title={`格式化文档（${formatShortcut(settings.shortcuts["editor.format"])}）`}
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
-          >
-            <IconWand className="h-3.5 w-3.5" />
-          </button>
-        )}
+        {hideTabStrip && toolbarTarget
+          ? createPortal(contextualToolbar, toolbarTarget)
+          : contextualToolbar}
         {/* 文件生命周期入口：另存为 / 放弃变更在标签右键菜单里 */}
         {/* 右边栏整体的全屏开关，三个模块共用这一个位置（浏览器模块时这一列是浏览器自己） */}
-        <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
 
       {/* 标签「⋯」菜单。fixed 定位：标题栏是横向滚动容器，绝对定位会被 overflow 裁掉 */}

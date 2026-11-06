@@ -8,7 +8,6 @@ import {
   siCursor,
   siDeepseek,
   siFishshell,
-  siGitforwindows,
   siGithubcopilot,
   siGnubash,
   siGooglegemini,
@@ -899,10 +898,9 @@ const MDI_LINUX: BrandIcon = {
 /**
  * 终端标签页上的 shell 图标。kind 由后端给（见 shells.rs 的 describe），
  * 认不出的按 shell 处理、落回单色终端图标。
- * PowerShell 5 和 7 是同一个 logo，所以两个 kind 指同一条。
+ * Windows PowerShell 保留 PowerShell 品牌图标，PowerShell Core（pwsh）用独立终端图标区分。
  */
 const SHELL_LOGOS: Record<string, BrandIcon> = {
-  pwsh: MDI_POWERSHELL,
   powershell: MDI_POWERSHELL,
   cmd: MDI_CONSOLE,
   // WSL 跑的就是 Linux，用企鹅比微软四方标更贴切
@@ -914,8 +912,46 @@ const SHELL_LOGOS: Record<string, BrandIcon> = {
   csh: MDI_CONSOLE_LINE,
   fish: siFishshell,
   nushell: siNushell,
-  "git-bash": siGitforwindows,
 };
+
+function PwshIcon({ className }: { className: string }) {
+  return (
+    <svg viewBox="0 0 128 128" className={`${className} shrink-0`} aria-hidden="true">
+      <defs>
+        <linearGradient id="pwsh-gradient-a" x1="96.306" x2="25.454" y1="35.144" y2="98.431" gradientTransform="matrix(1 0 0 -1 0 128)" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#a9c8ff" />
+          <stop offset="1" stopColor="#c7e6ff" />
+        </linearGradient>
+        <linearGradient id="pwsh-gradient-b" x1="25.336" x2="94.569" y1="98.33" y2="36.847" gradientTransform="matrix(1 0 0 -1 0 128)" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#2d4664" />
+          <stop offset=".169" stopColor="#29405b" />
+          <stop offset=".445" stopColor="#1e2f43" />
+          <stop offset=".79" stopColor="#0c131b" />
+          <stop offset="1" />
+        </linearGradient>
+      </defs>
+      <path fill="url(#pwsh-gradient-a)" fillRule="evenodd" d="M7.2 110.5c-1.7 0-3.1-.7-4.1-1.9-1-1.2-1.3-2.9-.9-4.6l18.6-80.5c.8-3.4 4-6 7.4-6h92.6c1.7 0 3.1.7 4.1 1.9 1 1.2 1.3 2.9.9 4.6l-18.6 80.5c-.8 3.4-4 6-7.4 6H7.2z" clipRule="evenodd" opacity=".8" />
+      <path fill="url(#pwsh-gradient-b)" fillRule="evenodd" d="M120.3 18.5H28.5c-2.9 0-5.7 2.3-6.4 5.2L3.7 104.3c-.7 2.9 1.1 5.2 4 5.2h91.8c2.9 0 5.7-2.3 6.4-5.2l18.4-80.5c.7-2.9-1.1-5.3-4-5.3z" clipRule="evenodd" />
+      <path fill="#2C5591" fillRule="evenodd" d="M64.2 88.3h22.3c2.6 0 4.7 2.2 4.7 4.9s-2.1 4.9-4.7 4.9H64.2c-2.6 0-4.7-2.2-4.7-4.9s2.1-4.9 4.7-4.9zM78.7 66.5c-.4.8-1.2 1.6-2.6 2.6L34.6 98.9c-2.3 1.6-5.5 1-7.3-1.4-1.7-2.4-1.3-5.7.9-7.3l37.4-27.1v-.6l-23.5-25c-1.9-2-1.7-5.3.4-7.4 2.2-2 5.5-2 7.4 0l28.2 30c1.7 1.9 1.8 4.5.6 6.4z" clipRule="evenodd" />
+      <path fill="#FFF" fillRule="evenodd" d="M77.6 65.5c-.4.8-1.2 1.6-2.6 2.6L33.6 97.9c-2.3 1.6-5.5 1-7.3-1.4-1.7-2.4-1.3-5.7.9-7.3l37.4-27.1v-.6l-23.5-25c-1.9-2-1.7-5.3.4-7.4 2.2-2 5.5-2 7.4 0l28.2 30c1.7 1.8 1.8 4.4.5 6.4zM63.5 87.8h22.3c2.6 0 4.7 2.1 4.7 4.6 0 2.6-2.1 4.6-4.7 4.6H63.5c-2.6 0-4.7-2.1-4.7-4.6 0-2.6 2.1-4.6 4.7-4.6z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function GitBashIcon({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="31.98258924 32.28452272 135.54499681 132.49547728"
+      className={`${className} shrink-0`}
+      aria-hidden="true"
+    >
+      <path d="m95.72 81.45v12.55l-30.11-30.1 10-10 15.19 15.2a9.75 9.75 0 0 0 -.61 3.43 9.91 9.91 0 0 0 5.53 8.92zm9.23 1.81 4.68 4.68-4.68 4.69zm28.64-19.26-18.09 18.07-6.09-6.07a9.83 9.83 0 0 0 .54-4.67 10 10 0 0 0 -9.39-8.68 9.64 9.64 0 0 0 -3.89.6l-15.2-15.25 12.88-12.84a7.36 7.36 0 0 1 10.42 0z" fill="#ff8080" />
+      <path d="m89.74 105.53-27.36 27.36-27.15-26.89a8.49 8.49 0 0 1 .09-11.86l28-28 26.42 26.51a9.12 9.12 0 0 1 0 12.88z" fill="#80b3ff" />
+      <path d="m105 108.79v11.49a9.46 9.46 0 0 1 4.46 9.88 9.32 9.32 0 0 1 -7.42 7.53 9.47 9.47 0 0 1 -6.32-17.69v-12.7a1 1 0 0 0 -1.63-.68l-28.67 28.66 29.5 29.5a7.33 7.33 0 0 0 10.36 0l27.83-27.78z" fill="#ffe680" />
+      <path d="m163.54 107.45-26.54 26.55-28.58-28.58a8.56 8.56 0 0 1 0-12.1l3.29-3.32 7.29 7.27a9.92 9.92 0 1 0 5.88-5.88l-7.25-7.24 18.54-18.53 27.37 27.38a10.19 10.19 0 0 1 0 14.45z" fill="#8dd35f" />
+    </svg>
+  );
+}
 
 export function ShellIcon({
   kind,
@@ -924,6 +960,8 @@ export function ShellIcon({
   kind: string;
   className?: string;
 }) {
+  if (kind === "pwsh") return <PwshIcon className={className} />;
+  if (kind === "git-bash") return <GitBashIcon className={className} />;
   const logo = SHELL_LOGOS[kind];
   if (!logo) return <IconTerminal className={className} />;
   return <BrandGlyph icon={logo} className={className} />;

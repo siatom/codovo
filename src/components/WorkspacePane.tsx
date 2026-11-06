@@ -17,8 +17,9 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { AgentLogo, IconBot, IconChevronDown, IconEye, IconFile, IconPlus, IconTerminal } from "./icons";
+import { AgentLogo, IconBot, IconChevronDown, IconFile, IconPlus, IconTerminal, ShellIcon } from "./icons";
 import { FileTypeIcon } from "./fileIcons";
+import { FullscreenButton } from "./FullscreenButton";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { acpProviderKey } from "../lib/acp";
@@ -164,6 +165,7 @@ export function WorkspacePane({
   const [rightOpen, setRightOpen] = useState(true);
   const [agentPanelOpen, setAgentPanelOpen] = useState(true);
   const [taskSidebarTarget, setTaskSidebarTarget] = useState<HTMLDivElement | null>(null);
+  const [editorToolbarTarget, setEditorToolbarTarget] = useState<HTMLDivElement | null>(null);
   /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
   const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
   /**
@@ -375,7 +377,7 @@ export function WorkspacePane({
   /** AI CLI 的入口挂在侧边栏的工作区行上，命令要落到当前工作区终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
   const [terminalTaskTabs, setTerminalTaskTabs] = useState<TerminalTaskTab[]>([
-    { id: 0, label: "终端", attention: null, agent: null },
+    { id: 0, label: "终端", attention: null, agent: null, shellKind: "shell" },
   ]);
   const [activeTerminalId, setActiveTerminalId] = useState(0);
   const [terminalTabMenu, setTerminalTabMenu] = useState<{ id: number; x: number; y: number } | null>(null);
@@ -851,9 +853,6 @@ export function WorkspacePane({
     onRequestCloseTab: () => editorRef.current?.closeActiveTab(),
     filesReveal,
   };
-  const activeFilePath = activeTab?.kind === "file" ? activeTab.path : null;
-  const filePreviewAvailable =
-    activeFilePath !== null && /\.(?:md|mdx|mdc|markdown|html|htm|svg)$/i.test(activeFilePath);
   const railTool = activeTool;
   const showToolRail = !leftFullscreen && !rightFullscreen;
 
@@ -903,7 +902,7 @@ export function WorkspacePane({
                       {terminalTab.agent ? (
                         <AgentLogo name={terminalTab.agent.name} command={terminalTab.agent.command} className="h-3.5 w-3.5" />
                       ) : (
-                        <IconTerminal className="h-3.5 w-3.5 shrink-0" />
+                        <ShellIcon kind={terminalTab.shellKind} className="h-3.5 w-3.5 shrink-0" />
                       )}
                       <span className={`truncate ${attentionTitle ? "text-warn" : ""}`}>{terminalTab.label}</span>
                       {attentionTitle && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />}
@@ -978,6 +977,11 @@ export function WorkspacePane({
           })}
         </div>
         <div className="flex h-full shrink-0 items-center gap-1 px-2">
+          <div
+            ref={setEditorToolbarTarget}
+            className="flex h-full shrink-0 items-center gap-0.5"
+          />
+          <FullscreenButton fullscreen={leftFullscreen} onToggle={onToggleLeftFullscreen} />
           {(activeTask === "terminal" || isAcpTask(activeTask) || activeTask === "files") && (
             <div className="flex items-center">
               <button
@@ -1003,17 +1007,6 @@ export function WorkspacePane({
               </button>
             </div>
           )}
-          {activeTask === "files" && filePreviewAvailable && (
-            <button
-              type="button"
-              onClick={() => editorRef.current?.togglePreview()}
-              title="切换预览"
-              aria-label="切换预览"
-              className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
-            >
-              <IconEye className="h-3.5 w-3.5" />
-            </button>
-          )}
         </div>
       </div>
             <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -1027,11 +1020,10 @@ export function WorkspacePane({
                   onTaskTabsChange={reportTerminalTaskTabs}
                   onAcpChatsChange={reportAcpChatTabs}
                   selectedAcpChat={selectedAcpChat}
+                  toolbarTarget={activeTask === "terminal" ? editorToolbarTarget : null}
                   onSelectAcpChat={selectAcpTab}
                   onSelectView={(view) => setActiveTask(view)}
                   ref={setTerminalHandle}
-                  fullscreen={leftFullscreen}
-                  onToggleFullscreen={onToggleLeftFullscreen}
                   onSessionsReport={setTerminalSessions}
                   onOpenFile={openTerminalFile}
                 />
@@ -1042,6 +1034,7 @@ export function WorkspacePane({
                 <EditorPane
                   ref={setEditorHandle}
                   hideTabStrip
+                  toolbarTarget={activeTask === "files" ? editorToolbarTarget : null}
                   root={root}
                   roots={pollRoots}
                   visible={visible && activeTask === "files"}
@@ -1057,8 +1050,6 @@ export function WorkspacePane({
                   onPatchTab={patchOpenTab}
                   onOpenPath={openFile}
                   onRevealInFiles={revealInFiles}
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
                   onSendToTerminal={insertToTerminal}
                   onSendToAssistant={insertToAssistant}
                   onOpenSettings={onOpenSettings}
