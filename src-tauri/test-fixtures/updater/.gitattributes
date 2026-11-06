@@ -1,0 +1,2 @@
+# 签名覆盖原始字节，Windows 检出时也不能把 LF 换成 CRLF。
+payload.txt -text
