@@ -265,6 +265,11 @@ export function WorkspacePane({
   // 那时文件树和内容搜索都不该在后台白跑（树会重列、内容搜索会整仓遍历）
   const filesVisible = rightOpen && activeTool === "files";
   const rightCollapsed = !rightOpen;
+  const taskHasSidebar =
+    activeTask === "terminal" ||
+    activeTask === "files" ||
+    activeTask === "remote" ||
+    activeTask === "database";
   // 两种全屏的派生值：右栏全屏时左侧让位，左侧全屏时右栏（连图标条）整体让位
   const rightFullscreen = fullscreen === "right";
   const leftFullscreen = fullscreen === "left";
@@ -846,7 +851,7 @@ export function WorkspacePane({
         min={48}
         max={90}
         resetOnDoubleClick
-        secondCollapsed={rightCollapsed || leftFullscreen || rightFullscreen}
+        secondCollapsed={rightCollapsed || !taskHasSidebar || leftFullscreen || rightFullscreen}
         animateCollapse
         collapsedSecondWidth={leftFullscreen || rightFullscreen ? 0 : RAIL_WIDTH}
         first={
