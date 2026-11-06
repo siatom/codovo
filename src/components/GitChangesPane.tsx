@@ -1851,7 +1851,7 @@ export function GitChangesPane({
   const [panelHeight, setPanelHeight] = useState(0);
   const [draggingLog, setDraggingLog] = useState(false);
   /** 拖动起点，null 表示没在拖。startHeight 是像素，位移要除以面板高度才换得成比例 */
-  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const dragRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
   const latestLogRatioRef = useRef(logRatio);
   latestLogRatioRef.current = logRatio;
   const stopLogDragRef = useRef<(() => void) | null>(null);
@@ -3069,11 +3069,12 @@ export function GitChangesPane({
   /** 拖动时间线的上边缘改高度。 */
   const onHandleDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
     stopLogDragRef.current?.();
-    dragRef.current = { startY: event.clientY, startHeight: logHeight };
+    dragRef.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: logHeight };
     const onMove = (moveEvent: PointerEvent) => {
       const drag = dragRef.current;
-      if (!drag) return;
+      if (!drag || moveEvent.pointerId !== drag.pointerId) return;
       const height = panelRef.current?.clientHeight ?? 0;
       const next = ratioForHeight(
         drag.startHeight - (moveEvent.clientY - drag.startY),
@@ -3082,8 +3083,9 @@ export function GitChangesPane({
       latestLogRatioRef.current = next;
       setLogRatio(next);
     };
-    const onUp = () => {
-      if (!dragRef.current) return;
+    const onUp = (upEvent?: PointerEvent) => {
+      const drag = dragRef.current;
+      if (!drag || (upEvent && upEvent.pointerId !== drag.pointerId)) return;
       dragRef.current = null;
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
