@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
 import {
   cancelAcpChat,
   chatFromStored,
@@ -35,10 +35,8 @@ import {
   IconCheck,
   IconChevronDown,
   IconChevronRight,
-  IconPlus,
   IconSend,
   IconStop,
-  IconTrash,
 } from "./icons";
 
 /** TerminalPane 顶栏认出来的一条可对话 CLI */
@@ -49,6 +47,21 @@ export interface AcpCliOption {
   env: AcpEnvVar[];
 }
 
+export interface AcpChatTaskTab {
+  chatId: string;
+  command: string;
+  title: string;
+  busy: boolean;
+  needsPermission: boolean;
+  active: boolean;
+}
+
+export interface AcpChatPaneHandle {
+  createChat: (command: string) => string | null;
+  selectChat: (command: string, chatId: string) => void;
+  closeChat: (command: string, chatId: string) => void;
+}
+
 interface AcpChatPaneProps {
   /** 活动工作区根，也是 ACP session 的 cwd */
   root: string;
@@ -56,8 +69,13 @@ interface AcpChatPaneProps {
   roots: string[];
   /** 当前选中的 CLI；为空时给个空状态 */
   cli: AcpCliOption | null;
-  /** Agent 更新活动会话标题时，同步通知终端标签 */
-  onActiveTitleChange?: (title: string | undefined) => void;
+  /** 同一工作区内的所有 ACP 会话，映射到工作区超级 Tab */
+  onChatsChange: (chats: AcpChatTaskTab[]) => void;
+  /** 超级 Tab 当前选中的 ACP 会话 */
+  selectedChat: { command: string; chatId: string } | null;
+  /** 当前工作区可用的 ACP CLI，用于恢复各 CLI 的存档会话 */
+  agents: AcpCliOption[];
+  ref?: Ref<AcpChatPaneHandle>;
 }
 
 /** 发送键和 AgentPane 同一套：实心圆钮是这一屏唯一的主操作 */
@@ -66,9 +84,6 @@ const SEND_BUTTON =
 
 const STOP_BUTTON =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40";
 
 function MarkdownText({
   text,
@@ -392,10 +407,10 @@ function PermissionCard({
 /**
  * 对话面板：把一家支持 ACP 的 CLI 当子进程接进来。
  *
- * 每个 CLI 各留一份会话状态（按 provider key 归档），所以在顶栏来回切 CLI 不会
- * 丢掉上一家的对话；后端会话一直活着，直到切工作区 / 关应用。
+ * 每个 CLI 各留一份会话状态（按 provider key 归档）；具体会话由工作区超级 Tab 选择。
+ * 后端会话一直活着，直到用户关闭对应的超级 Tab 或退出应用。
  */
-export function AcpChatPane({ root, roots, cli, onActiveTitleChange }: AcpChatPaneProps) {
+export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, agents, ref }: AcpChatPaneProps) {
   const [slots, setSlots] = useState<Record<string, ChatSlot>>({});
   const slotsRef = useRef(slots);
   const [draft, setDraft] = useState("");
@@ -411,9 +426,6 @@ export function AcpChatPane({ root, roots, cli, onActiveTitleChange }: AcpChatPa
   const command = cli?.command ?? "";
   const slot = slots[key];
   const chat = useMemo(() => activeChatOf(slot), [slot]);
-  useEffect(() => {
-    onActiveTitleChange?.(chat?.title);
-  }, [chat?.chatId, chat?.title, onActiveTitleChange]);
   const blocks = useMemo(() => chat?.blocks ?? [], [chat]);
   const { ref: scrollRef, atBottom, onScroll, jumpToBottom, reset } = useStickToBottom(blocks);
 
@@ -452,19 +464,45 @@ export function AcpChatPane({ root, roots, cli, onActiveTitleChange }: AcpChatPa
   // 面板重新挂载（切走工作区再切回来 / 重启应用）时把上次的对话摆回来。
   // 存档里有 session id，下一条消息可以直接恢复旧会话。
   useEffect(() => {
-    if (!command) return;
-    const fresh = emptyAcpChat(newChatId("acp"));
     setSlots((prev) => {
-      if (prev[key]?.chats.length) return prev;
-      const stored = loadStoredSlot(root, command);
-      const chats = stored ? stored.chats.map(chatFromStored) : [fresh];
-      const active =
-        stored && chats.some((item) => item.chatId === stored.activeId)
-          ? stored.activeId
-          : chats[0].chatId;
-      return { ...prev, [key]: { chats, active } };
+      let next = prev;
+      for (const agent of agents) {
+        const slotKey = `${root}\u0000${agent.command}`;
+        if (next[slotKey]) continue;
+        const stored = loadStoredSlot(root, agent.command);
+        if (!stored) continue;
+        if (next === prev) next = { ...prev };
+        const chats = stored.chats.map(chatFromStored);
+        next[slotKey] = { chats, active: stored.activeId };
+      }
+      return next;
     });
-  }, [command, key, root]);
+  }, [agents, root]);
+
+  useEffect(() => {
+    const rootPrefix = `${root}\u0000`;
+    const tabs = Object.entries(slots).flatMap(([slotKey, current]) => {
+      if (!slotKey.startsWith(rootPrefix)) return [];
+      const commandForSlot = slotKey.slice(slotKey.indexOf("\u0000") + 1);
+      return current.chats.map((item) => ({
+        chatId: item.chatId,
+        command: commandForSlot,
+        title: chatTitle(item),
+        busy: item.busy,
+        needsPermission: Boolean(item.permission && !item.busy),
+        active: item.chatId === current.active,
+      }));
+    });
+    onChatsChange(tabs);
+  }, [onChatsChange, root, slots]);
+
+  useEffect(() => {
+    if (!selectedChat) return;
+    const slotKey = `${root}\u0000${selectedChat.command}`;
+    const current = slots[slotKey];
+    if (!current || !current.chats.some((item) => item.chatId === selectedChat.chatId) || current.active === selectedChat.chatId) return;
+    setSlots((prev) => prev[slotKey] ? { ...prev, [slotKey]: { ...prev[slotKey], active: selectedChat.chatId } } : prev);
+  }, [root, selectedChat, slots]);
 
   // 激活的对话如果是「存档恢复出来但进程没起」，问一下后端还在不在。
   // 还在就接上去（会话不用重启），不在就等下一条消息再启动。
@@ -644,46 +682,65 @@ export function AcpChatPane({ root, roots, cli, onActiveTitleChange }: AcpChatPa
     [key, root],
   );
 
-  /** 结束当前对话并把它从这里去掉；最后一条去掉后补一条空白对话 */
-  const closeChat = useCallback(async () => {
-    const currentSlot = slotsRef.current[key];
-    const current = activeChatOf(currentSlot);
-    if (!currentSlot || !current) return;
-    if (current.sessionId) await stopAcpChat(root, current.chatId).catch(() => {});
-    const remaining = currentSlot.chats.filter((item) => item.chatId !== current.chatId);
-    const chats = remaining.length > 0 ? remaining : [emptyAcpChat(newChatId("acp"))];
-    const active = chats[0].chatId;
-    setSlots((prev) => ({ ...prev, [key]: { chats, active } }));
-    if (command) saveStoredSlot(root, command, chats, active);
-    setDraft("");
-  }, [command, key, root]);
-
-  /** 新开一条对话；当前这条还是空白就不重复加 */
-  const newChat = useCallback(() => {
-    const currentSlot = slotsRef.current[key];
-    if (!currentSlot || currentSlot.chats.length >= MAX_CHATS) return;
-    const current = activeChatOf(currentSlot);
-    if (current && !current.sessionId && current.blocks.length === 0) return;
-    const fresh = emptyAcpChat(newChatId("acp"));
+  const selectChat = useCallback((chatCommand: string, chatId: string) => {
+    const slotKey = `${root}\u0000${chatCommand}`;
     setSlots((prev) => {
-      const latest = prev[key];
-      if (!latest || latest.chats.length >= MAX_CHATS) return prev;
-      return { ...prev, [key]: { chats: [...latest.chats, fresh], active: fresh.chatId } };
+      const current = prev[slotKey];
+      if (!current || current.active === chatId || !current.chats.some((item) => item.chatId === chatId)) return prev;
+      return { ...prev, [slotKey]: { ...current, active: chatId } };
     });
     setDraft("");
-  }, [key]);
+  }, [root]);
 
-  const switchChat = useCallback(
-    (chatId: string) => {
-      setSlots((prev) => {
-        const currentSlot = prev[key];
-        if (!currentSlot || currentSlot.active === chatId) return prev;
-        return { ...prev, [key]: { ...currentSlot, active: chatId } };
-      });
-      setDraft("");
-    },
-    [key],
-  );
+  const createChat = useCallback((chatCommand: string): string | null => {
+    const slotKey = `${root}\u0000${chatCommand}`;
+    const current = slotsRef.current[slotKey];
+    let base = current;
+    if (!base) {
+      const stored = loadStoredSlot(root, chatCommand);
+      const chats = stored?.chats.map(chatFromStored) ?? [];
+      base = { chats, active: stored?.activeId ?? "" };
+    }
+    if (base.chats.length >= MAX_CHATS) return null;
+    const active = activeChatOf(base);
+    if (active && !active.sessionId && active.blocks.length === 0) return active.chatId;
+    const fresh = emptyAcpChat(newChatId("acp"));
+    const nextSlot: ChatSlot = { chats: [...base.chats, fresh], active: fresh.chatId };
+    const next = { ...slotsRef.current, [slotKey]: nextSlot };
+    slotsRef.current = next;
+    setSlots(next);
+    setDraft("");
+    return fresh.chatId;
+  }, [root]);
+
+  const closeChat = useCallback(async (chatCommand: string, chatId: string) => {
+    const slotKey = `${root}\u0000${chatCommand}`;
+    const currentSlot = slotsRef.current[slotKey];
+    const current = currentSlot?.chats.find((item) => item.chatId === chatId);
+    if (!currentSlot || !current) return;
+    if (current.sessionId) await stopAcpChat(root, current.chatId).catch(() => {});
+    const chats = currentSlot.chats.filter((item) => item.chatId !== chatId);
+    if (chats.length === 0) {
+      const next = { ...slotsRef.current };
+      delete next[slotKey];
+      slotsRef.current = next;
+      setSlots(next);
+      saveStoredSlot(root, chatCommand, [], "");
+    } else {
+      const active = currentSlot.active === chatId ? chats[0].chatId : currentSlot.active;
+      const next = { ...slotsRef.current, [slotKey]: { ...currentSlot, chats, active } };
+      slotsRef.current = next;
+      setSlots(next);
+      saveStoredSlot(root, chatCommand, chats, active);
+    }
+    if (key === slotKey && currentSlot.active === chatId) setDraft("");
+  }, [key, root]);
+
+  useImperativeHandle(ref, () => ({
+    createChat,
+    selectChat,
+    closeChat: (chatCommand, chatId) => { void closeChat(chatCommand, chatId); },
+  }), [closeChat, createChat, selectChat]);
 
   /** 切换模式：先乐观更新，Agent 的 current_mode_update 再对齐一次；失败回滚 */
   const changeMode = useCallback(
@@ -774,56 +831,7 @@ export function AcpChatPane({ root, roots, cli, onActiveTitleChange }: AcpChatPa
           </span>
         ) : null}
         {busy && <span className="shrink-0 animate-pulse text-[10px] text-warn">进行中</span>}
-        <button
-          type="button"
-          onClick={() => void closeChat()}
-          title="结束当前对话并移除，下一条消息会新开"
-          disabled={!chat || (slot?.chats.length === 1 && !chat.sessionId && chat.blocks.length === 0)}
-          className={HEAD_BUTTON}
-        >
-          <IconTrash className="h-3.5 w-3.5" />
-        </button>
       </header>
-
-      {/* 对话标签：同一家 CLI 可并行开几条，各自一个 ACP session。
-          不单独铺底色：外壳已经是 bg-surface，再叠一层半透明时会比外壳实一截 */}
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
-        <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-          {slot?.chats.map((item) => {
-            const active = item.chatId === slot.active;
-            return (
-              <button
-                key={item.chatId}
-                type="button"
-                onClick={() => switchChat(item.chatId)}
-                title={item.error ?? chatTitle(item)}
-                className={`flex h-6 max-w-[168px] shrink-0 items-center gap-1.5 rounded px-2 text-[11px] ${
-                  active ? "bg-selected text-fg shadow-sm" : "text-fg-dim hover:bg-hover hover:text-fg"
-                }`}
-              >
-                <span className="truncate">{chatTitle(item)}</span>
-                {item.busy && <span className="h-1 w-1 shrink-0 animate-pulse rounded-full bg-warn" />}
-                {item.permission && !item.busy && (
-                  <span className="h-1 w-1 shrink-0 rounded-full bg-warn" />
-                )}
-              </button>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          onClick={newChat}
-          disabled={(slot?.chats.length ?? 0) >= MAX_CHATS}
-          title={
-            (slot?.chats.length ?? 0) >= MAX_CHATS
-              ? `一个 CLI 最多同时开 ${MAX_CHATS} 条对话`
-              : "新开一条对话"
-          }
-          className={`${HEAD_BUTTON} disabled:opacity-30`}
-        >
-          <IconPlus className="h-3.5 w-3.5" />
-        </button>
-      </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div

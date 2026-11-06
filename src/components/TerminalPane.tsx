@@ -21,18 +21,16 @@ import { useTouchActivity } from "../lib/activity";
 import { listShells, type ShellInfo } from "../lib/pty";
 import { usePaneSizes } from "../lib/use-pane-sizes";
 import type { EditorLocation, TerminalSessionInfo } from "../lib/types";
-import { AcpChatPane, type AcpCliOption } from "./AcpChatPane";
+import { AcpChatPane, type AcpChatPaneHandle, type AcpChatTaskTab, type AcpCliOption } from "./AcpChatPane";
 import { FullscreenButton } from "./FullscreenButton";
 import {
   AgentLogo,
-  IconChevronDown,
   IconLayoutColumns,
   IconLayoutRows,
   IconLayoutSingle,
 } from "./icons";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
-const SHELL_MENU_W = 200;
 const SHELL_MENU_ITEM =
   "truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
@@ -48,15 +46,21 @@ function formatLocation({ path, start, end }: EditorLocation): string {
 
 export interface TerminalPaneHandle {
   /**
-   * 新开一个终端标签并在里面执行命令（顶栏 AI CLI 切换条与侧栏 CLI 会话 resume 都用它；
-   * 顶栏对自带多标签页的 CLI 会先复用已经开着的标签，见 launchCli）。
+   * 新开一个终端标签并在里面执行命令（Agent 面板与会话 resume 都用它；
+   * 对自带多标签页的 CLI 会先复用已经开着的标签，见 launchCli）。
    * 不能写进当前活动会话——那儿可能正跑着别的东西，命令会被当成它的输入。
    * 命令会按工作区的附加目录自动注入 CLI 参数（见 lib/cli-launch.ts）。
    * `title` 直接作新标签的标题：AI CLI 传 CLI 名，resume 传被恢复会话的标题。
    */
   runInNewSession: (command: string, title: string) => void;
+  /** 在终端或 ACP 对话中切换到指定 Agent */
+  selectAgent: (command: string, title: string, mode: "terminal" | "chat") => void;
+  selectAcpChat: (command: string, chatId: string) => void;
+  createAcpChat: (command: string) => string | null;
+  closeAcpChat: (command: string, chatId: string) => void;
   /** 新建、关闭或重启超级 Tab 中的终端会话 */
-  newSession: () => void;
+  newSession: (shell?: string) => void;
+  openCreateMenu: (anchor: HTMLElement) => void;
   closeSession: (id: number) => void;
   restartSession: (id: number) => void;
   /** 把位置引用写进当前活动的终端会话，不带回车（用户自己按回车执行） */
@@ -77,6 +81,7 @@ export interface TerminalTaskTab {
   id: number;
   label: string;
   attention: TerminalSessionInfo["attention"];
+  agent: { name: string; command: string } | null;
 }
 
 interface TerminalPaneProps {
@@ -90,6 +95,10 @@ interface TerminalPaneProps {
   view: "terminal" | "chat";
   /** 将终端会话标签同步到工作区超级 Tab 栏 */
   onTaskTabsChange: (tabs: TerminalTaskTab[], activeId: number) => void;
+  onSelectView: (view: "terminal") => void;
+  onSelectAcpChat: (command: string, chatId: string) => void;
+  onAcpChatsChange: (chats: AcpChatTaskTab[]) => void;
+  selectedAcpChat: { command: string; chatId: string } | null;
   /** 左侧终端列是否已全屏展示 */
   fullscreen: boolean;
   /** 切换左侧全屏。按钮画在标签栏右端 */
@@ -106,13 +115,8 @@ interface TerminalPaneProps {
 }
 
 /**
- * 终端区：管一组会话，工作区超级 Tab 栏负责新增 / 关闭 / 切换会话。
- * 每个会话各自持有一个 PTY，切走只是隐藏，shell 不会被打断。
- *
- * 顶栏是 **AI CLI 快速切换条**：配了哪些 CLI 就摆哪几个按钮，点一下——自带多标签页的
- * CLI（opencode）已经开着就切过去，没有才新开一个；其余 CLI 每次新开，允许同时跑多个实例。
- * 想聊代码走这条线（真正的 CLI，原样运行）；
- * 需要改 Codovo 自身的设置与界面时，用右栏的「应用助手」抽屉。
+ * 终端区：管一组会话，每个会话各自持有一个 PTY。
+ * 超级 Tab 和右侧 Agent 面板负责切换；切走只是隐藏，shell 不会被打断。
  */
 export function TerminalPane({
   root,
@@ -120,6 +124,10 @@ export function TerminalPane({
   visible,
   view,
   onTaskTabsChange,
+  onSelectView,
+  onSelectAcpChat,
+  onAcpChatsChange,
+  selectedAcpChat,
   fullscreen,
   onToggleFullscreen,
   onSessionsReport,
@@ -128,8 +136,6 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
   const [activeId, setActiveId] = useState(0);
-  /** ACP Agent 提供的会话名临时覆盖对应终端标签；没有标题时仍显示原标签名 */
-  const [agentTitleById, setAgentTitleById] = useState<Record<number, string>>({});
   const [layout, setLayout] = useState<"tabs" | "horizontal" | "vertical">("tabs");
   /** 对话面板选中的 CLI，存整条命令（设置里可能同名多条） */
   const [chatCommand, setChatCommand] = useState<string | null>(null);
@@ -149,6 +155,8 @@ export function TerminalPane({
   const touchActivity = useTouchActivity();
   const nextIdRef = useRef(1);
   const handlesRef = useRef(new Map<number, TerminalSessionHandle>());
+  const acpChatRef = useRef<AcpChatPaneHandle>(null);
+  const selectAgentRef = useRef<(command: string, title: string, mode: "terminal" | "chat") => void>(() => {});
   /** 每个会话被创建时在下拉里选的 shell id；没记的走设置里的默认 */
   const shellByIdRef = useRef(new Map<number, string>());
   /** shell 落点：只有工作树终端会记，没记的落在 root。创建时定死，不随切换变化 */
@@ -168,7 +176,6 @@ export function TerminalPane({
   const launchCommandByIdRef = useRef(new Map<number, string>());
   /** 某些 CLI 的附加目录要靠环境变量传（opencode），按会话记一份，PTY 启动时设进去 */
   const launchEnvByIdRef = useRef(new Map<number, Record<string, string>>());
-  const addButtonRef = useRef<HTMLButtonElement>(null);
   /** 并列布局的容器：拖分隔条时按它的尺寸换算比例 */
   const splitRef = useRef<HTMLDivElement>(null);
   const {
@@ -177,11 +184,9 @@ export function TerminalPane({
     onHandleMove,
     onHandleUp,
   } = usePaneSizes(sessions.length, layout === "horizontal" ? "row" : "column", splitRef);
-  const [shellMenuOpen, setShellMenuOpen] = useState(false);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [shellOptions, setShellOptions] = useState<ShellInfo[]>([]);
-  const [shellMenuPos, setShellMenuPos] = useState<{ left: number; top: number } | null>(
-    null,
-  );
+  const [createMenuPos, setCreateMenuPos] = useState<{ left: number; top: number } | null>(null);
   const { settings } = useSettings();
 
   /** root 之外的工作目录：启动 AI CLI 时作为附加目录传给 CLI */
@@ -196,16 +201,6 @@ export function TerminalPane({
   // 同上：runInNewSession 的句柄要稳定，但 Agent 的环境变量随时可能在设置里改
   const aiCommandsRef = useRef(settings.aiCommands);
   aiCommandsRef.current = settings.aiCommands;
-
-  const syncAgentTitle = useCallback((title: string | undefined) => {
-    setAgentTitleById((current) => {
-      const next = { ...current };
-      const clean = title?.trim();
-      if (clean) next[activeId] = clean;
-      else delete next[activeId];
-      return next;
-    });
-  }, [activeId]);
 
   // 标签页要显示每个会话的 shell 图标和名字，所以候选一挂载就拉，不用等到点开菜单
   useEffect(() => {
@@ -277,14 +272,13 @@ export function TerminalPane({
     setLayout(next);
   };
 
-  const toggleShellMenu = () => {
-    if (shellMenuOpen) {
-      setShellMenuOpen(false);
-      return;
-    }
-    const rect = addButtonRef.current?.getBoundingClientRect();
-    if (rect) setShellMenuPos({ left: rect.left, top: rect.bottom + 4 });
-    setShellMenuOpen(true);
+  const openCreateMenu = (anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    setCreateMenuPos({
+      left: Math.min(rect.right - 236, window.innerWidth - 240),
+      top: rect.bottom + 4,
+    });
+    setCreateMenuOpen(true);
   };
 
   const closeSession = (id: number) => {
@@ -392,10 +386,22 @@ export function TerminalPane({
     ref,
     () => ({
       runInNewSession,
+      selectAgent: (command, title, mode) => selectAgentRef.current(command, title, mode),
+      selectAcpChat: (command, chatId) => {
+        setChatCommand(command);
+        acpChatRef.current?.selectChat(command, chatId);
+      },
+      createAcpChat: (command) => {
+        const chatId = acpChatRef.current?.createChat(command) ?? null;
+        if (chatId) setChatCommand(command);
+        return chatId;
+      },
+      closeAcpChat: (command, chatId) => acpChatRef.current?.closeChat(command, chatId),
       insertToTerminal,
       focusSession,
       focusOrOpenAt,
-      newSession: () => addSession(),
+      newSession: (shell) => addSession(shell),
+      openCreateMenu,
       closeSession,
       restartSession: (id) => {
         setActiveId(id);
@@ -427,13 +433,16 @@ export function TerminalPane({
         const shellName = shell?.name ?? `终端 ${index + 1}`;
         return {
           id,
-          label: agentTitleById[id] ?? custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName),
+          label: custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName),
           attention: attention[terminalTarget(id)] ?? null,
+          agent: hintByIdRef.current.get(id)
+            ? { name: custom ?? hintByIdRef.current.get(id)!, command: hintByIdRef.current.get(id)! }
+            : null,
         };
       }),
       activeId,
     );
-  }, [activeId, agentTitleById, attention, onTaskTabsChange, sessions, settings.terminalShell, shellOptions]);
+  }, [activeId, attention, onTaskTabsChange, sessions, settings.terminalShell, shellOptions]);
 
   /** 配过的 AI CLI（空命令是加了还没填的，不进顶栏） */
   const aiCommands = useMemo(
@@ -468,13 +477,17 @@ export function TerminalPane({
 
   useEffect(() => {
     if (view !== "chat") return;
+    if (selectedAcpChat && acpCommands.some((option) => option.command === selectedAcpChat.command)) {
+      setChatCommand(selectedAcpChat.command);
+      return;
+    }
     const active = hintByIdRef.current.get(activeId);
     if (acpCommands.some((option) => option.command === active)) {
       setChatCommand(active ?? null);
     } else if (acpCommands[0]) {
       setChatCommand((current) => current ?? acpCommands[0].command);
     }
-  }, [activeId, acpCommands, view]);
+  }, [activeId, acpCommands, selectedAcpChat, view]);
 
   /**
    * 顶栏点某个 AI CLI。
@@ -507,78 +520,22 @@ export function TerminalPane({
     [runInNewSession, sessions],
   );
 
+  selectAgentRef.current = (command, title, mode) => {
+    if (mode === "chat") {
+      if (acpCommands.some((option) => option.command === command)) setChatCommand(command);
+      return;
+    }
+    launchCli(command, title);
+  };
+
   // 整块不铺底色：终端自己画（跟着界面透明度走），这里再铺一层就叠成两层 alpha，
   // 半透明时看着比侧栏实一大截。需要底色的只有顶栏和标签栏这两条
   return (
     <section className="flex h-full min-h-0 flex-col">
-      {/* 顶栏是 AI CLI 快速切换条：配了哪些 CLI 就摆哪几个按钮，点一下切过去或新开。
-          一个都没配时整条栏不渲染——否则会留一条 36px 高、带下边框的空白栏。 */}
-      {aiCommands.length > 0 && (
-        <header className="flex h-9 shrink-0 items-center justify-center gap-2 border-b border-line bg-surface px-2">
-          {/* 命令少时居中摆放；多到放不下时 `justify-center-safe` 会自动退回从左侧开始，
-              横向滚动才够得着第一项（纯 justify-center 会把开头挤到滚动区外面） */}
-          <div className="no-scrollbar flex min-w-0 flex-1 items-center justify-center-safe gap-1 overflow-x-auto">
-            {aiCommands.map((item, index) => {
-              const chatOption = acpCommands.find((option) => option.command === item.command);
-              // 终端视图看活动标签，对话视图看选中的 CLI
-              const isActive =
-                view === "chat"
-                  ? chatCli?.command === item.command
-                  : hintByIdRef.current.get(activeId) === item.command;
-              const chatUnsupported = view === "chat" && !chatOption;
-              return (
-                <button
-                  key={`${item.name}-${item.command}-${index}`}
-                  type="button"
-                  disabled={chatUnsupported}
-                  onClick={() => {
-                    if (view === "chat") {
-                      if (chatOption) setChatCommand(item.command);
-                      return;
-                    }
-                    launchCli(item.command, item.name);
-                  }}
-                  title={
-                    chatUnsupported
-                      ? `${item.name} 还没有接入 ACP 对话`
-                      : view === "chat"
-                        ? `${item.name}：切到这个 CLI 的对话`
-                        : hasInternalTabs(item.command)
-                          ? `${item.name}：切到已打开的标签，没有就新开一个`
-                          : `${item.name}：新开一个终端标签启动`
-                  }
-                  className={`flex h-6 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] ${
-                    isActive
-                      ? "bg-selected text-fg shadow-sm"
-                      : chatUnsupported
-                        ? "text-fg-faint opacity-40"
-                        : "text-fg-dim hover:bg-hover hover:text-fg"
-                  }`}
-                >
-                  <AgentLogo name={item.name} command={item.command} className="h-3.5 w-3.5" />
-                  <span className="max-w-[120px] truncate">{item.name}</span>
-                </button>
-              );
-            })}
-          </div>
-        </header>
-      )}
-
       {/* 终端会话始终挂载；切到 ACP 对话时只隐藏终端，PTY 和滚动历史都保留 */}
       <div className={view === "chat" ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-2">
-          <div className="flex min-w-0 flex-1 items-center">
-            <button
-              ref={addButtonRef}
-              type="button"
-              onClick={toggleShellMenu}
-              title="选择终端程序"
-              className="flex h-6 items-center gap-1 rounded px-2 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
-            >
-              终端程序
-              <IconChevronDown className="h-3 w-3" />
-            </button>
-          </div>
+          <div className="min-w-0 flex-1" />
           {/* 三个布局按钮 + 全屏按钮同一排，gap 一致——之前布局按钮裹了一圈边框，
               和外面全屏按钮间距对不上，去掉边框后四个按钮等距 */}
           <div className="flex shrink-0 items-center gap-0.5">
@@ -715,38 +672,84 @@ export function TerminalPane({
 
       {/* 对话面板始终挂载：切回终端只是 hidden，ACP 会话和消息都留着 */}
       <div className={view === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-        <AcpChatPane root={root} roots={roots} cli={chatCli} onActiveTitleChange={syncAgentTitle} />
+        <AcpChatPane
+          ref={acpChatRef}
+          root={root}
+          roots={roots}
+          cli={chatCli}
+          agents={acpCommands}
+          selectedChat={selectedAcpChat}
+          onChatsChange={onAcpChatsChange}
+        />
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，
           绝对定位的菜单会被 overflow 裁掉 */}
-      {shellMenuOpen && shellMenuPos && (
+      {createMenuOpen && createMenuPos && (
         <>
           {/* 铺一层透明遮罩接住外部点击 */}
-          <div className="fixed inset-0 z-30" onClick={() => setShellMenuOpen(false)} />
+          <div className="fixed inset-0 z-30" onClick={() => setCreateMenuOpen(false)} />
           <div
             className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
             style={{
-              width: SHELL_MENU_W,
+              width: 236,
               // 贴到窗口右边就往回收，别把菜单顶出可视区
-              left: Math.min(shellMenuPos.left, window.innerWidth - SHELL_MENU_W - 4),
-              top: shellMenuPos.top,
+              left: Math.min(createMenuPos.left, window.innerWidth - 240),
+              top: createMenuPos.top,
             }}
           >
+            <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">终端</div>
             {shellOptions.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 title={item.label}
                 onClick={() => {
-                  setShellMenuOpen(false);
+                  setCreateMenuOpen(false);
                   addSession(item.id);
+                  onSelectView("terminal");
                 }}
                 className={SHELL_MENU_ITEM}
               >
                 {item.label}
               </button>
             ))}
+            {aiCommands.length > 0 && <div className="mx-2 my-1 border-t border-line" />}
+            {aiCommands.length > 0 && <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">智能体</div>}
+            {aiCommands.map((item, index) => {
+              const chatOption = acpCommands.some((option) => option.command === item.command);
+              return (
+                <div key={`${item.name}-${item.command}-${index}`} className="flex items-center gap-1 px-2">
+                  <AgentLogo name={item.name} command={item.command} className="ml-1 h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate px-1 text-[12px] text-fg-muted">{item.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      launchCli(item.command, item.name);
+                      onSelectView("terminal");
+                    }}
+                    title={`${item.name}（终端）`}
+                    className="rounded px-2 py-1 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
+                  >终端</button>
+                  <button
+                    type="button"
+                    disabled={!chatOption}
+                    onClick={() => {
+                      setCreateMenuOpen(false);
+                      if (!chatOption) return;
+                      const chatId = acpChatRef.current?.createChat(item.command);
+                      if (chatId) {
+                        setChatCommand(item.command);
+                        onSelectAcpChat(item.command, chatId);
+                      }
+                    }}
+                    title={chatOption ? `${item.name}（ACP 对话）` : `${item.name} 尚未接入 ACP 对话`}
+                    className={`rounded px-2 py-1 text-[11px] ${chatOption ? "text-fg-dim hover:bg-hover hover:text-fg" : "cursor-not-allowed text-fg-faint opacity-40"}`}
+                  >ACP</button>
+                </div>
+              );
+            })}
           </div>
         </>
       )}

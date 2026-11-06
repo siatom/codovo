@@ -12,13 +12,16 @@ import { ToolPane, readTool, saveTool, type ToolId } from "./ToolPane";
 import { RIGHT_TOOLS, ToolRail } from "./ToolRail";
 import { EditorPane, type EditorPaneHandle } from "./EditorPane";
 import { BrowserPane } from "./BrowserPane";
+import type { AcpChatTaskTab } from "./AcpChatPane";
 import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { IconBot, IconEye, IconPlus, IconTerminal } from "./icons";
+import { AgentLogo, IconBot, IconChevronDown, IconEye, IconFile, IconPlus, IconTerminal } from "./icons";
+import { FileTypeIcon } from "./fileIcons";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
+import { acpProviderKey } from "../lib/acp";
 import { isBlankClick } from "../lib/dom";
 import { beginLayoutAnimation } from "../lib/layout-motion";
 import { isPathInside, ownerRoot, pathKey, pathsPresent, samePath, toDisplayPath, type MovePair } from "../lib/fs";
@@ -59,7 +62,19 @@ export interface WorkspaceLayoutHandle {
 
 export type Fullscreen = "none" | "right" | "left";
 
-type WorkspaceTask = "terminal" | "chat" | "files" | "browser" | "remote" | "database" | "preview" | "deploy";
+type WorkspaceTask = "terminal" | "files" | "browser" | "remote" | "database" | "preview" | "deploy" | `acp:${string}`;
+
+function acpTask(chatId: string): WorkspaceTask {
+  return `acp:${chatId}`;
+}
+
+function isAcpTask(task: WorkspaceTask): boolean {
+  return task.startsWith("acp:");
+}
+
+function acpChatId(task: WorkspaceTask): string {
+  return task.slice("acp:".length);
+}
 
 /**
  * 关闭标签时的匹配。另存为会把未命名缓冲区的 `path` 换成真实路径、但 `untitledId` 不变；
@@ -138,6 +153,8 @@ export function WorkspacePane({
   /** 工作区主视图的超级 tab；工具内容与终端共享同一组顶层入口 */
   const [activeTask, setActiveTask] = useState<WorkspaceTask>("terminal");
   const [taskTabs, setTaskTabs] = useState<WorkspaceTask[]>(["terminal"]);
+  const [acpChatTabs, setAcpChatTabs] = useState<AcpChatTaskTab[]>([]);
+  const [selectedAcpChat, setSelectedAcpChat] = useState<{ command: string; chatId: string } | null>(null);
   /** 最新标签列表的快照：会话恢复是异步的，要能在读盘途中判断用户是否已经手动开了文件 */
   const openTabsRef = useRef<Tab[]>([]);
   openTabsRef.current = openTabs;
@@ -358,7 +375,7 @@ export function WorkspacePane({
   /** AI CLI 的入口挂在侧边栏的工作区行上，命令要落到当前工作区终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
   const [terminalTaskTabs, setTerminalTaskTabs] = useState<TerminalTaskTab[]>([
-    { id: 0, label: "终端", attention: null },
+    { id: 0, label: "终端", attention: null, agent: null },
   ]);
   const [activeTerminalId, setActiveTerminalId] = useState(0);
   const [terminalTabMenu, setTerminalTabMenu] = useState<{ id: number; x: number; y: number } | null>(null);
@@ -366,6 +383,27 @@ export function WorkspacePane({
     setTerminalTaskTabs(tabs);
     setActiveTerminalId(activeId);
   }, []);
+  const reportAcpChatTabs = useCallback((tabs: AcpChatTaskTab[]) => {
+    setAcpChatTabs(tabs);
+    const ids = new Set(tabs.map((tab) => acpTask(tab.chatId)));
+    setTaskTabs((current) => {
+      const existing = current.filter((task) => !isAcpTask(task) || ids.has(task));
+      return [...existing, ...ids].filter((task, index, all) => all.indexOf(task) === index);
+    });
+  }, []);
+  const selectAcpTab = useCallback((command: string, chatId: string) => {
+    const task = acpTask(chatId);
+    setSelectedAcpChat({ command, chatId });
+    setActiveTask(task);
+    setTaskTabs((current) => current.includes(task) ? current : [...current, task]);
+    terminalRef.current?.selectAcpChat(command, chatId);
+  }, []);
+  const openAcpForCommand = useCallback((command: string) => {
+    const available = acpChatTabs.filter((tab) => tab.command === command);
+    const existing = [...available].reverse().find((tab) => tab.active) ?? available[available.length - 1];
+    const chatId = existing?.chatId ?? terminalRef.current?.createAcpChat(command);
+    if (chatId) selectAcpTab(command, chatId);
+  }, [acpChatTabs, selectAcpTab]);
   /** 搜索替换要指挥编辑器保存 / 重载 / 定位，这几件事只有它自己知道怎么做 */
   const editorRef = useRef<EditorPaneHandle>(null);
 
@@ -762,15 +800,28 @@ export function WorkspacePane({
         editorRef.current?.closeActiveTab();
         return;
       }
+      if (isAcpTask(task)) {
+        const chatId = acpChatId(task);
+        const chat = acpChatTabs.find((item) => item.chatId === chatId);
+        if (chat) terminalRef.current?.closeAcpChat(chat.command, chat.chatId);
+      }
       const index = taskTabs.indexOf(task);
       if (index < 0) return;
       const remaining = taskTabs.filter((item) => item !== task);
       setTaskTabs(remaining);
       if (activeTask === task) {
-        setActiveTask(remaining[Math.max(0, index - 1)] ?? "terminal");
+        const next = remaining[Math.max(0, index - 1)] ?? "terminal";
+        setActiveTask(next);
+        if (isAcpTask(next)) {
+          const nextChat = acpChatTabs.find((item) => item.chatId === acpChatId(next));
+          if (nextChat) {
+            setSelectedAcpChat({ command: nextChat.command, chatId: nextChat.chatId });
+            terminalRef.current?.selectAcpChat(nextChat.command, nextChat.chatId);
+          }
+        }
       }
     },
-    [activeTask, activeTab, taskTabs],
+    [activeTask, activeTab, acpChatTabs, taskTabs],
   );
 
   const toolPaneProps = {
@@ -849,7 +900,11 @@ export function WorkspacePane({
                       title={attentionTitle ? `${terminalTab.label}（${attentionTitle}）` : terminalTab.label}
                       className="flex max-w-[220px] items-center gap-1.5 py-1 pl-2.5 text-[11px]"
                     >
-                      <IconTerminal className="h-3.5 w-3.5 shrink-0" />
+                      {terminalTab.agent ? (
+                        <AgentLogo name={terminalTab.agent.name} command={terminalTab.agent.command} className="h-3.5 w-3.5" />
+                      ) : (
+                        <IconTerminal className="h-3.5 w-3.5 shrink-0" />
+                      )}
                       <span className={`truncate ${attentionTitle ? "text-warn" : ""}`}>{terminalTab.label}</span>
                       {attentionTitle && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />}
                     </button>
@@ -865,10 +920,16 @@ export function WorkspacePane({
                 );
               });
             }
+            const chatTab = isAcpTask(task)
+              ? acpChatTabs.find((item) => item.chatId === acpChatId(task))
+              : undefined;
+            const agentName = chatTab
+              ? settings.aiCommands.find((item) => item.command.trim() === chatTab.command)?.name.trim() || chatTab.command
+              : "";
             const toolInfo = RIGHT_TOOLS.find((item) => item.id === task);
             const label =
-              task === "chat"
-                ? "Agent 对话"
+              chatTab
+                ? `${agentName} · ${chatTab.title}`
                 : task === "files"
                   ? activeTab
                     ? `${tabName(activeTab)}${activeTab.kind === "diff" ? " · 差异" : ""}`
@@ -881,16 +942,28 @@ export function WorkspacePane({
               >
                 <button
                   type="button"
-                  onClick={() => setActiveTask(task)}
+                  onClick={() => {
+                    setActiveTask(task);
+                    if (chatTab) {
+                      setSelectedAcpChat({ command: chatTab.command, chatId: chatTab.chatId });
+                      terminalRef.current?.selectAcpChat(chatTab.command, chatTab.chatId);
+                    }
+                  }}
                   title={label}
                   className="flex max-w-[220px] items-center gap-1.5 py-1 pl-2.5 text-[11px]"
                 >
-                  {task === "chat" ? (
-                    <IconBot className="h-3.5 w-3.5 shrink-0" />
+                  {chatTab ? (
+                    <AgentLogo name={agentName} command={chatTab.command} className="h-3.5 w-3.5" />
+                  ) : task === "files" && activeTab ? (
+                    <FileTypeIcon name={activeTab.path ?? tabName(activeTab)} className="h-3.5 w-3.5" />
+                  ) : task === "files" ? (
+                    <IconFile className="h-3.5 w-3.5 shrink-0" />
                   ) : (
                     toolInfo && <toolInfo.Icon className="h-3.5 w-3.5 shrink-0" />
                   )}
                   <span className="truncate">{label}</span>
+                  {chatTab?.busy && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn" />}
+                  {chatTab?.needsPermission && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn" />}
                 </button>
                 <button
                   type="button"
@@ -905,16 +978,30 @@ export function WorkspacePane({
           })}
         </div>
         <div className="flex h-full shrink-0 items-center gap-1 px-2">
-          {activeTask === "terminal" && (
-            <button
-              type="button"
-              onClick={() => terminalRef.current?.newSession()}
-              title="新建终端"
-              aria-label="新建终端"
-              className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
-            >
-              <IconPlus className="h-3.5 w-3.5" />
-            </button>
+          {(activeTask === "terminal" || isAcpTask(activeTask) || activeTask === "files") && (
+            <div className="flex items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTask("terminal");
+                  terminalRef.current?.newSession();
+                }}
+                title="新建终端"
+                aria-label="新建终端"
+                className="flex h-6 w-6 items-center justify-center rounded-l text-fg-dim hover:bg-hover hover:text-fg"
+              >
+                <IconPlus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={(event) => terminalRef.current?.openCreateMenu(event.currentTarget)}
+                title="选择要新建的终端或 Agent"
+                aria-label="选择要新建的终端或 Agent"
+                className="flex h-6 w-5 items-center justify-center rounded-r text-fg-dim hover:bg-hover hover:text-fg"
+              >
+                <IconChevronDown className="h-3 w-3" />
+              </button>
+            </div>
           )}
           {activeTask === "files" && filePreviewAvailable && (
             <button
@@ -930,14 +1017,18 @@ export function WorkspacePane({
         </div>
       </div>
             <div className="relative flex min-h-0 min-w-0 flex-1">
-            <div className={activeTask === "terminal" || activeTask === "chat" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+            <div className={activeTask === "terminal" || isAcpTask(activeTask) ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
                 <TerminalPane
                   root={root}
                   roots={workspace.roots}
-                  visible={visible && (activeTask === "terminal" || activeTask === "chat")}
-                  view={activeTask === "chat" ? "chat" : "terminal"}
+                  visible={visible && (activeTask === "terminal" || isAcpTask(activeTask))}
+                  view={isAcpTask(activeTask) ? "chat" : "terminal"}
                   onTaskTabsChange={reportTerminalTaskTabs}
+                  onAcpChatsChange={reportAcpChatTabs}
+                  selectedAcpChat={selectedAcpChat}
+                  onSelectAcpChat={selectAcpTab}
+                  onSelectView={(view) => setActiveTask(view)}
                   ref={setTerminalHandle}
                   fullscreen={leftFullscreen}
                   onToggleFullscreen={onToggleLeftFullscreen}
@@ -1030,12 +1121,56 @@ export function WorkspacePane({
                     </button>
                     <button
                       type="button"
-                      onClick={() => openTask("chat")}
-                      className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] ${activeTask === "chat" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}
+                      onClick={() => {
+                        const command = selectedAcpChat?.command ?? settings.aiCommands.find((item) => acpProviderKey(item.command, item.name))?.command;
+                        if (command) openAcpForCommand(command.trim());
+                      }}
+                      className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] ${isAcpTask(activeTask) ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}
                     >
                       <IconBot className="h-4 w-4" />
                       ACP 对话
                     </button>
+                  </div>
+                  <div className="mx-2 border-t border-line" />
+                  <div className="min-h-0 flex-1 overflow-y-auto p-2">
+                    <div className="px-2 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">
+                      智能体
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      {settings.aiCommands
+                        .map((item) => ({
+                          ...item,
+                          name: item.name.trim() || "未命名 AI CLI",
+                          command: item.command.trim(),
+                        }))
+                        .filter((item) => item.command)
+                        .map((item, index) => {
+                          const chatUnsupported = isAcpTask(activeTask) && !acpProviderKey(item.command, item.name);
+                          return (
+                            <button
+                              key={`${item.name}-${item.command}-${index}`}
+                              type="button"
+                              disabled={chatUnsupported}
+                              onClick={() => {
+                                if (isAcpTask(activeTask)) openAcpForCommand(item.command);
+                                else {
+                                  setActiveTask("terminal");
+                                  terminalRef.current?.selectAgent(item.command, item.name, "terminal");
+                                }
+                              }}
+                              title={chatUnsupported ? `${item.name} 还没有接入 ACP 对话` : item.name}
+                              className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] ${
+                                chatUnsupported
+                                  ? "cursor-not-allowed text-fg-faint opacity-40"
+                                  : "text-fg-dim hover:bg-hover hover:text-fg"
+                              }`}
+                            >
+                              <AgentLogo name={item.name} command={item.command} className="h-4 w-4" />
+                              <span className="truncate">{item.name}</span>
+                            </button>
+                          );
+                        })}
+                    </div>
                   </div>
                 </div>
               ) : activeTool === "remote" || activeTool === "database" ? (
