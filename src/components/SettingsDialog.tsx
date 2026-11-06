@@ -72,6 +72,7 @@ import {
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
+import { AppUpdateSettings } from "./AppUpdateNotice";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   AgentLogo,
@@ -147,7 +148,7 @@ type TabId = (typeof TABS)[number]["id"];
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   appearance:
-    "主题、界面透明度、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
+    "主题、界面透明度、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复、关闭窗口行为和软件更新设置",
   terminal: "终端程序与配色",
   agents: "编程 Agent 列表，含名称、启动命令与环境变量",
   editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
@@ -2572,6 +2573,9 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
               </div>
               {tab === "appearance" && (
                 <>
+                  <Section title="软件更新" dense>
+                    <AppUpdateSettings />
+                  </Section>
                   <Section title="主题" dense>
                     <Row label="配色方案">
                       <ThemeSelect />

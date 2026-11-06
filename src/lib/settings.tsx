@@ -105,6 +105,10 @@ export interface AiProvider {
 }
 
 export interface Settings {
+  /** 自动检查软件更新；下载与安装始终由用户手动确认 */
+  updateAutoCheck: boolean;
+  updateIntervalHours: number;
+  updateSkippedVersion: string;
   /** 终端工具条上 AI CLI 按钮可选的配置；多于一个时点按钮给下拉选择 */
   aiCommands: AiCommand[];
   /** LLM 提供商列表，智能体与 AI 生成提交信息共用 */
@@ -222,6 +226,9 @@ export type SettingsSection =
  */
 const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   appearance: [
+    "updateAutoCheck",
+    "updateIntervalHours",
+    "updateSkippedVersion",
     "uiOpacity",
     "uiFontFamily",
     "terminalFontFamily",
@@ -314,6 +321,9 @@ export function emptyAgentLayer(): AgentLayer {
 }
 
 const DEFAULTS: Settings = {
+  updateAutoCheck: true,
+  updateIntervalHours: 24,
+  updateSkippedVersion: "",
   // name 用各家的规范写法（与 lib/cli-sessions.ts 的 CLI_PROVIDERS.label 对齐），
   // command 才是实际会跑的可执行文件名
   aiCommands: [
@@ -603,6 +613,11 @@ function readSaved(): Settings {
   const aiProviders = saved.length > 0 ? saved : migrateLegacyProvider(raw);
 
   return {
+    updateAutoCheck: asBoolean(raw.updateAutoCheck, DEFAULTS.updateAutoCheck),
+    updateIntervalHours: [1, 6, 12, 24].includes(Number(raw.updateIntervalHours))
+      ? Number(raw.updateIntervalHours)
+      : DEFAULTS.updateIntervalHours,
+    updateSkippedVersion: asString(raw.updateSkippedVersion, ""),
     aiCommands,
     aiProviders,
     aiDefaultProvider: asString(raw.aiDefaultProvider, DEFAULTS.aiDefaultProvider),

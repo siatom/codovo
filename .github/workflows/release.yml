@@ -19,6 +19,9 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ubuntu-24.04, windows-latest, macos-latest]
+        include:
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +46,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin' || '' }}
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -68,12 +73,38 @@ jobs:
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          args: ${{ matrix.args }}
           tagName: ${{ github.ref_name }}
           releaseName: Codovo ${{ github.ref_name }}
           releaseBody: See the assets below to download and install this version of Codovo.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
-          uploadUpdaterJson: false
-          uploadUpdaterSignatures: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+
+  publish:
+    name: Publish verified release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish after all platform artifacts are uploaded
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir .
+          node <<'NODE'
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync('latest.json', 'utf8'));
+          if (manifest.version.replace(/^v/, '') !== process.env.RELEASE_TAG.replace(/^v/, '')) throw new Error('Updater version mismatch');
+          for (const target of ['windows-x86_64', 'darwin-aarch64', 'linux-x86_64']) {
+            const asset = manifest.platforms[target + '-nsis'] || manifest.platforms[target];
+            if (!asset?.signature || !asset.url?.startsWith('https://github.com/' + process.env.GH_REPO + '/releases/download/')) throw new Error('Missing signed updater artifact: ' + target);
+          }
+          NODE
+          gh release edit "$RELEASE_TAG" --draft=false --latest

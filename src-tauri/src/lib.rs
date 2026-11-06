@@ -31,6 +31,7 @@ mod shells;
 mod test_support;
 mod titlebar;
 mod tray;
+mod updater;
 mod watcher;
 
 use tauri::{Emitter, Manager};
@@ -43,6 +44,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main(app);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::UpdateState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -71,6 +74,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            updater::app_update_check,
+            updater::app_update_install,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,
@@ -246,48 +251,53 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                if let Some(state) = app.try_state::<pty::PtyState>() {
-                    state.kill_all();
-                }
-                // 助手槽位是常驻的，退出时统一收摊（每个工作区一个）
-                if let Some(state) = app.try_state::<agent::AgentState>() {
-                    state.kill_all();
-                }
-                // 对话面板的 ACP 子进程同样常驻，退出时一起带走
-                if let Some(state) = app.try_state::<acp::AcpState>() {
-                    state.kill_all();
-                }
-                // 目录监听的防抖线程也跟着收摊，别留游离线程
-                if let Some(state) = app.try_state::<watcher::WatchState>() {
-                    state.stop();
-                }
-                // 本地面板的按需监听同样收掉
-                if let Some(state) = app.try_state::<local_fs::LocalWatchState>() {
-                    state.stop();
-                }
-                // 远程连接是常驻的 SSH 会话，退出时通知它们收摊
-                if let Some(state) = app.try_state::<remote::RemoteState>() {
-                    state.kill_all();
-                }
-                // 数据库连接池也跟着收掉
-                if let Some(state) = app.try_state::<database::DbState>() {
-                    state.kill_all();
-                }
-                // 预览 dev server 是常驻子进程，退出时带走（每个工作区一个）
-                if let Some(state) = app.try_state::<preview::PreviewState>() {
-                    state.kill_all();
-                }
-                // CICD 流水线可能正卡在某条命令上，退出时打断并 kill 当前子进程
-                if let Some(state) = app.try_state::<cicd::CicdState>() {
-                    state.kill_all();
-                }
-                if let Some(state) = app.try_state::<runtime::RuntimeState>() {
-                    state.kill_all();
-                }
+                cleanup(app);
             }
             // macOS 点 Dock 图标：窗口可能被收起来了，亮回来（关窗只隐藏，不走 Exit）
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => tray::show_main(app),
             _ => {}
         });
+}
+
+// 更新安装器在 Windows 上直接退出进程，和普通退出共用同一套资源清理。
+pub(crate) fn cleanup(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<pty::PtyState>() {
+        state.kill_all();
+    }
+    // 助手槽位是常驻的，退出时统一收摊（每个工作区一个）
+    if let Some(state) = app.try_state::<agent::AgentState>() {
+        state.kill_all();
+    }
+    // 对话面板的 ACP 子进程同样常驻，退出时一起带走
+    if let Some(state) = app.try_state::<acp::AcpState>() {
+        state.kill_all();
+    }
+    // 目录监听的防抖线程也跟着收摊，别留游离线程
+    if let Some(state) = app.try_state::<watcher::WatchState>() {
+        state.stop();
+    }
+    // 本地面板的按需监听同样收掉
+    if let Some(state) = app.try_state::<local_fs::LocalWatchState>() {
+        state.stop();
+    }
+    // 远程连接是常驻的 SSH 会话，退出时通知它们收摊
+    if let Some(state) = app.try_state::<remote::RemoteState>() {
+        state.kill_all();
+    }
+    // 数据库连接池也跟着收掉
+    if let Some(state) = app.try_state::<database::DbState>() {
+        state.kill_all();
+    }
+    // 预览 dev server 是常驻子进程，退出时带走（每个工作区一个）
+    if let Some(state) = app.try_state::<preview::PreviewState>() {
+        state.kill_all();
+    }
+    // CICD 流水线可能正卡在某条命令上，退出时打断并 kill 当前子进程
+    if let Some(state) = app.try_state::<cicd::CicdState>() {
+        state.kill_all();
+    }
+    if let Some(state) = app.try_state::<runtime::RuntimeState>() {
+        state.kill_all();
+    }
 }

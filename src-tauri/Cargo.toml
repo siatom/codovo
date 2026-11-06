@@ -117,6 +117,8 @@ futures = "0.3"
 # - `process` 提供 `AcpAgent`：起子进程、按行读写 JSON-RPC、退出时回收进程组。
 # - 5.x 与 protocol v1 稳定版对齐；升级前先跑 `cargo test --lib acp_probe -- --ignored`。
 agent-client-protocol = { version = "5", features = ["process"] }
+tauri-plugin-updater = "2"
+semver = "1"
 
 
 # 自绘标题栏的右键要弹系统菜单（GetSystemMenu / TrackPopupMenuEx）。只用得到几个
@@ -126,6 +128,9 @@ windows-sys = { version = "0.60", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

@@ -43,7 +43,8 @@
         "language": "zh-CN"
       },
       "nsis": {
-        "languages": ["SimpChinese"]
+        "languages": ["SimpChinese"],
+        "installMode": "currentUser"
       }
     },
     "icon": [
@@ -52,6 +53,19 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQzNzE4M0MxRkRGNkI1RQpSV1JlYTk4ZlBCZzNEVHdXTENteHZ2U2hFM216amp3dURVU1FjQmlMR2ZPNXhWMnlyTW5yWEVSQQo=",
+      "endpoints": [
+        "https://github.com/siatom/codovo/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      },
+      "requireSignedVersion": true
+    }
   }
 }

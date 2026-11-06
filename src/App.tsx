@@ -10,6 +10,7 @@ import {
   type WorkspaceHandles,
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
+import { AppUpdateNotice } from "./components/AppUpdateNotice";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
@@ -1022,6 +1023,7 @@ function Shell() {
 
       {/* 应用助手抽屉：窗口级，跟着当前工作区换 root；没工作区时不渲染。
           收起只是滑出视口，对话与滚动状态留着，再展开是原样 */}
+      <AppUpdateNotice />
       <AppAssistantDrawer
         ref={assistantRef}
         open={assistantOpen && activeRoot !== null}

@@ -185,7 +185,7 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 
 ## 安装与运行
 
-已打包的版本在 [GitHub Releases](https://github.com/siatom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。
+已打包的版本在 [GitHub Releases](https://github.com/siatom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。安装版会在后台检查更新，也可从「设置 → 外观 → 软件更新」手动检查，调整自动检查间隔或跳过某个版本。可用更新会显示版本、说明与大小；确认下载后先校验签名，再安装并重启。开发版、Windows MSI、Linux `.deb` / `.rpm` 或缺少更新产物的版本通过发布页升级。
 
 | 方式                                             | 适合谁                   |
 | ------------------------------------------------ | ------------------------ |
@@ -269,7 +269,7 @@ cargo clippy                        # Rust 静态检查
 
 版本号以 `package.json` 为来源，通过 `pnpm version patch|minor|major` 更新。界面显示 `<版本号>+<Git 短 hash>[.dirty]`，`.dirty` 表示构建包含未提交改动，安装包版本仍为纯数字。
 
-推送 `v<版本号>` tag 会触发 GitHub Actions，为 Windows、Apple Silicon macOS 与 Linux 构建安装包并发布到 GitHub Releases。tag 必须与 `package.json` 版本一致；PR 和 `main` 更新会运行前端构建、Rust 单测与 Clippy。
+推送 `v<版本号>` tag 会触发 GitHub Actions，为 Windows、Apple Silicon macOS 与 Linux 构建安装包并发布到 GitHub Releases。tag 必须与 `package.json` 版本一致；PR 和 `main` 更新会运行前端构建、Rust 单测与 Clippy。更新产物使用 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仓库 secrets 签名，公钥固定在 `tauri.conf.json`；私钥不可进入仓库，必须安全备份且不要随意更换。发布先保留为草稿，三平台构建和 `latest.json` 校验全部通过才公开，避免客户端看到未完成的更新。首次包含更新能力的版本仍需手动安装；后续正式版本才能验证端到端更新。
 
 </details>
 
