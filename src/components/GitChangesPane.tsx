@@ -1422,6 +1422,8 @@ function CommitRow({
   /** 右键这一行：开「打标签 / 删标签」菜单 */
   onMenu: (event: ReactMouseEvent) => void;
 }) {
+  const relativeTime = formatTime(commit.time);
+
   return (
     <div
       className="flex"
@@ -1476,8 +1478,8 @@ function CommitRow({
           <span className={`min-w-0 flex-1 truncate ${unpushed ? "text-accent" : "text-fg-muted"}`}>
             {commit.subject}
           </span>
-          <span className="shrink-0 max-w-[40%] truncate text-[10px] text-fg-faint">
-            {commit.author}
+          <span className="w-20 max-w-[40%] shrink-0 truncate text-right text-[10px] text-fg-faint">
+            {relativeTime}
           </span>
         </button>
 
@@ -1515,7 +1517,7 @@ function CommitRow({
       {anchor && (
         <CommitTooltip
           commit={commit}
-          relative={formatTime(commit.time)}
+          relative={relativeTime}
           stat={stat ?? null}
           anchor={anchor}
         />
