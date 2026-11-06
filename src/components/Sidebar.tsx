@@ -18,7 +18,12 @@ import {
   devicePixelStep,
   easeDock,
 } from "../lib/layout-motion";
-import { workspaceGroupNames, type Workspace } from "../lib/workspaces";
+import {
+  readWorkspaceGroupOrder,
+  saveWorkspaceGroupOrder,
+  workspaceGroupNames,
+  type Workspace,
+} from "../lib/workspaces";
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
 import { FeedbackDialog } from "./FeedbackDialog";
@@ -70,8 +75,12 @@ interface SidebarProps {
   onClose: (workspace: Workspace) => void;
   /** 切换置顶：置顶的工作区排在列表最前 */
   onTogglePin: (workspace: Workspace) => void;
-  /** 把工作区放进某个分组；传空串表示移出分组（回到「未分组」） */
+  /** 把工作区放进某个分区；传空串表示移出分区（回到「未分区」） */
   onSetGroup: (workspace: Workspace, group: string) => void;
+  /** 重命名分区：属于该分区的工作区一起改名 */
+  onRenameGroup: (from: string, to: string) => void;
+  /** 删除分区：其中的工作区移到「未分区」，不删工作区 */
+  onRemoveGroup: (group: string) => void;
   /**
    * 点一条对话历史：由 App 切到这条记录所属的工作区（不是当前的就先打开），
    * 再新开一个终端标签跑 resume。title 作新标签的标题
@@ -157,7 +166,7 @@ const ROW_ACTION =
 /** 工作区行「⋯」弹出来的菜单项 */
 const MENU_ITEM = "px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
-/** 分组子面板里的已有分组：小胶囊，当前所在组描边强调 */
+/** 分区子面板里的已有分区：小胶囊，当前所在分区描边强调 */
 const GROUP_CHIP =
   "flex max-w-[140px] items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg";
 const GROUP_CHIP_ACTIVE = "border-accent text-fg";
@@ -165,9 +174,41 @@ const GROUP_CHIP_ACTIVE = "border-accent text-fg";
 /** 工作区菜单比别处宽：里面要列出工作目录的完整路径 */
 const WORKSPACE_MENU_W = 320;
 
+/** 分区标题行的「⋯」菜单只有重命名 / 删除两项，窄一些 */
+const SECTION_MENU_W = 180;
+
 /** 路径末级名字（工作目录名），用于按目录名过滤工作区 */
 function baseName(path: string): string {
   return toDisplayPath(path).split("/").filter(Boolean).pop() ?? path;
+}
+
+/** 把分区名在顺序表里挪到目标分区之前 / 之后；位置没变时原样返回 */
+function moveSectionName(list: string[], name: string, target: string, after: boolean): string[] {
+  const from = list.indexOf(name);
+  if (from < 0) return list;
+  const without = list.filter((item) => item !== name);
+  const at = without.indexOf(target);
+  if (at < 0) return list;
+  const index = after ? at + 1 : at;
+  if (index === from) return list;
+  const next = [...without];
+  next.splice(index, 0, name);
+  return next;
+}
+
+/* FLIP 动画的两套选择器：整段分区移动时动 section；工作区换分区时动标题和各行，
+   避免父子元素同时位移导致位移翻倍。 */
+const FLIP_SECTIONS = '[data-flip^="section:"]';
+const FLIP_MOVE = '[data-flip^="head:"], [data-flip^="ws:"]';
+
+/** 记下这些元素当前的位置；带运行中的动画也照记（视口位置就是用户看到的起点） */
+function captureFlip(root: HTMLElement | null, selector: string): Map<string, DOMRect> {
+  const rects = new Map<string, DOMRect>();
+  root?.querySelectorAll<HTMLElement>(selector).forEach((element) => {
+    const key = element.dataset.flip;
+    if (key) rects.set(key, element.getBoundingClientRect());
+  });
+  return rects;
 }
 
 function readCollapsed(): boolean {
@@ -215,6 +256,8 @@ export function Sidebar({
   onClose,
   onTogglePin,
   onSetGroup,
+  onRenameGroup,
+  onRemoveGroup,
   onResumeSession,
   onFocusAttention,
   onOpenAppAgent,
@@ -300,13 +343,42 @@ export function Sidebar({
   const [wsSearchOpen, setWsSearchOpen] = useState(false);
   /** 「⋯」菜单开在哪个工作区上，以及贴着按钮的位置 */
   const [menu, setMenu] = useState<{ workspace: Workspace; x: number; y: number } | null>(null);
-  /** 「⋯」菜单里「分组」子面板是否展开，以及新分组名 */
+  /** 分区标题行的「⋯」菜单：开在哪个分区上、位置，以及是否在重命名态 */
+  const [sectionMenu, setSectionMenu] = useState<{ name: string; x: number; y: number } | null>(
+    null,
+  );
+  const [sectionRename, setSectionRename] = useState(false);
+  const [sectionDraft, setSectionDraft] = useState("");
+  /** 「⋯」菜单里「分区」子面板是否展开，以及新分区名 */
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   const [newGroup, setNewGroup] = useState("");
   /** 展开了对话历史的工作区 id。只存内存：切走工作区也留着，重启从收起开始 */
   const [expanded, setExpanded] = useState<string[]>([]);
-  /** 收起的分组名。只存内存，重启从全部展开开始 */
+  /** 收起的分区名。只存内存，重启从全部展开开始 */
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  /** 分区的手动排序（只存名字）。没排过的新分区按活动顺序追加 */
+  const [sectionOrder, setSectionOrder] = useState<string[]>(readWorkspaceGroupOrder);
+  /** 和 sectionOrder 同步的 ref：拖动时连续读写，避免闭包拿到旧 state */
+  const sectionOrderRef = useRef(sectionOrder);
+  const [draggingSection, setDraggingSection] = useState<string | null>(null);
+  const sectionDrag = useRef<{
+    name: string;
+    pointerId: number;
+    x: number;
+    y: number;
+    active: boolean;
+    origin: string[];
+    source: HTMLElement;
+  } | null>(null);
+  const suppressSectionClick = useRef(false);
+  /** 待播放的 FLIP 快照：移动前记下位置，React 提交后再按新布局补动画 */
+  const flipSnapshot = useRef<{
+    selector: string;
+    duration: number;
+    rects: Map<string, DOMRect>;
+  } | null>(null);
+  /** 正在跑的行内动画；同一元素再次移动时先取消，从当前视觉位置接着补 */
+  const flipAnimations = useRef(new WeakMap<HTMLElement, Animation>());
   const workspaceDrag = useRef<{
     id: string;
     pointerId: number;
@@ -368,6 +440,11 @@ export function Sidebar({
         && (group === "" || workspaceGroupNames(workspaces).includes(group))
         && (workspace.group ?? "") !== group
       ) {
+        flipSnapshot.current = {
+          selector: FLIP_MOVE,
+          duration: 230,
+          rects: captureFlip(rootRef.current, FLIP_MOVE),
+        };
         onSetGroup(workspace, group);
       }
     };
@@ -388,6 +465,140 @@ export function Sidebar({
       window.removeEventListener("keydown", key);
     };
   }, [workspaces, onSetGroup, collapsed, wsQuery]);
+
+  // 分区标题上下拖动排序：和拖工作区一样走指针事件；拖过另一段的中线就换位
+  useEffect(() => {
+    const reset = (restore: boolean) => {
+      const drag = sectionDrag.current;
+      sectionDrag.current = null;
+      if (drag?.source.hasPointerCapture(drag.pointerId)) {
+        drag.source.releasePointerCapture(drag.pointerId);
+      }
+      // 拖到一半按 Esc / 失焦：回到拖动前的顺序，同样补一段回位动画
+      if (restore && drag?.active) {
+        flipSnapshot.current = {
+          selector: FLIP_SECTIONS,
+          duration: 170,
+          rects: captureFlip(rootRef.current, FLIP_SECTIONS),
+        };
+        sectionOrderRef.current = drag.origin;
+        setSectionOrder(drag.origin);
+      }
+      setDraggingSection(null);
+      document.body.classList.remove("codovo-dragging-list");
+    };
+    const move = (event: PointerEvent) => {
+      const drag = sectionDrag.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      if (!(event.buttons & 1)) {
+        reset(true);
+        return;
+      }
+      if (!drag.active) {
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 4) return;
+        drag.active = true;
+        drag.source.setPointerCapture(event.pointerId);
+        suppressSectionClick.current = true;
+        setDraggingSection(drag.name);
+        setSectionMenu(null);
+        document.body.classList.add("codovo-dragging-list");
+      }
+      event.preventDefault();
+      const target = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest<HTMLElement>("[data-section-name]");
+      const targetName =
+        target && rootRef.current?.contains(target) ? target.dataset.sectionName : undefined;
+      if (!target || !targetName || targetName === drag.name) return;
+      const rect = target.getBoundingClientRect();
+      const after = event.clientY > rect.top + rect.height / 2;
+      const next = moveSectionName(sectionOrderRef.current, drag.name, targetName, after);
+      if (next !== sectionOrderRef.current) {
+        flipSnapshot.current = {
+          selector: FLIP_SECTIONS,
+          duration: 170,
+          rects: captureFlip(rootRef.current, FLIP_SECTIONS),
+        };
+        sectionOrderRef.current = next;
+        setSectionOrder(next);
+      }
+    };
+    const up = (event: PointerEvent) => {
+      const drag = sectionDrag.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const moved = drag.active;
+      reset(false);
+      // 只是点了一下分区名（没有拖动）就不写盘，展开 / 收起不该碰顺序
+      if (moved) saveWorkspaceGroupOrder(sectionOrderRef.current);
+    };
+    const cancel = () => reset(true);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") reset(true);
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+    window.addEventListener("keydown", key);
+    return () => {
+      reset(false);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("blur", cancel);
+      window.removeEventListener("keydown", key);
+    };
+  }, []);
+
+  /** 更新分区顺序；persist 时才落盘——拖动过程中只更新界面，松手才写 */
+  const commitSectionOrder = (next: string[], persist: boolean) => {
+    sectionOrderRef.current = next;
+    setSectionOrder(next);
+    if (persist) saveWorkspaceGroupOrder(next);
+  };
+
+  /*
+   * 列表位移统一走 FLIP：移动状态变更前记下位置，DOM 提交后再从旧位置滑到新位置。
+   * 只处理「分区整段移动」和「工作区换分区」两种快照，其余渲染（菜单、悬停）不碰。
+   */
+  useLayoutEffect(() => {
+    const pending = flipSnapshot.current;
+    if (!pending) return;
+    flipSnapshot.current = null;
+    const root = rootRef.current;
+    if (!root) return;
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    root.querySelectorAll<HTMLElement>(pending.selector).forEach((element) => {
+      const key = element.dataset.flip;
+      if (!key) return;
+      const previous = pending.rects.get(key);
+      if (!previous) return;
+      // 先取消同一元素上没跑完的旧动画：拿到干净的新布局位置，再按当前视觉位置补差
+      const running = flipAnimations.current.get(element);
+      if (running) {
+        running.cancel();
+        flipAnimations.current.delete(element);
+      }
+      if (reduceMotion) return;
+      const next = element.getBoundingClientRect();
+      const dx = previous.left - next.left;
+      const dy = previous.top - next.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) return;
+      const animation = element.animate(
+        [
+          { transform: `translate3d(${dx}px, ${dy}px, 0)` },
+          { transform: "translate3d(0, 0, 0)" },
+        ],
+        { duration: pending.duration, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+      );
+      flipAnimations.current.set(element, animation);
+      animation.onfinish = () => {
+        if (flipAnimations.current.get(element) === animation) {
+          flipAnimations.current.delete(element);
+        }
+      };
+    });
+  });
   const { theme, toggle } = useTheme();
   const { settings } = useSettings();
 
@@ -412,7 +623,10 @@ export function Sidebar({
 
   // 收起后展开态只是淡出、不卸载，别让「⋯」菜单重新展开时莫名冒出来
   useEffect(() => {
-    if (collapsed) setMenu(null);
+    if (collapsed) {
+      setMenu(null);
+      setSectionMenu(null);
+    }
   }, [collapsed]);
 
   /** 展开 / 收起某个工作区的对话历史。多个工作区可以同时展开 */
@@ -472,23 +686,86 @@ export function Sidebar({
   const openMenu = (workspace: Workspace, target: HTMLElement) => {
     const rect = target.getBoundingClientRect();
     setMenu({ workspace, x: rect.right, y: rect.bottom });
-    // 每次重新打开都从收起的分组子面板开始
+    // 两个「⋯」菜单互斥，开一个就关掉另一个
+    setSectionMenu(null);
+    // 每次重新打开都从收起的分区子面板开始
     setGroupMenuOpen(false);
     setNewGroup("");
   };
 
-  /** 把当前菜单里的工作区放进分组；空串 = 移出分组 */
+  /** 把当前菜单里的工作区放进分区；空串 = 移出分区 */
   const applyGroup = (group: string) => {
     if (!menu) return;
+    // 通过菜单换分区也走同一段 FLIP：位置不动的工作区同样平滑归位
+    flipSnapshot.current = {
+      selector: FLIP_MOVE,
+      duration: 230,
+      rects: captureFlip(rootRef.current, FLIP_MOVE),
+    };
     onSetGroup(menu.workspace, group);
     setMenu(null);
   };
 
-  /** 新建分组：名字就是输入框里那串，落到当前菜单的工作区上 */
+  /** 新建分区：名字就是输入框里那串，落到当前菜单的工作区上 */
   const createGroup = () => {
     const name = newGroup.trim();
     if (!name) return;
     applyGroup(name);
+  };
+
+  /** 打开分区标题行的「⋯」菜单 */
+  const openSectionMenu = (name: string, target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    setMenu(null);
+    setSectionMenu({ name, x: rect.right, y: rect.bottom });
+    setSectionRename(false);
+    setSectionDraft(name);
+  };
+
+  const closeSectionMenu = () => {
+    setSectionMenu(null);
+    setSectionRename(false);
+  };
+
+  /** 重命名分区：同名分区会合并，收起状态跟着搬到新名字上 */
+  const applySectionRename = () => {
+    if (!sectionMenu) return;
+    const name = sectionDraft.trim();
+    if (!name) return;
+    if (name !== sectionMenu.name) {
+      onRenameGroup(sectionMenu.name, name);
+      setCollapsedGroups((list) =>
+        list.map((key) => (key === `group:${sectionMenu.name}` ? `group:${name}` : key)),
+      );
+      // 顺序表里也换名；改成已有分区时去重（两段合并）
+      commitSectionOrder(
+        [
+          ...new Set(
+            sectionOrderRef.current.map((item) => (item === sectionMenu.name ? name : item)),
+          ),
+        ],
+        true,
+      );
+    }
+    closeSectionMenu();
+  };
+
+  /** 删除分区：只清掉分区名，工作区落到「未分区」，不删工作区 */
+  const removeSection = () => {
+    if (!sectionMenu) return;
+    flipSnapshot.current = {
+      selector: FLIP_SECTIONS,
+      duration: 200,
+      rects: captureFlip(rootRef.current, FLIP_SECTIONS),
+    };
+    onRemoveGroup(sectionMenu.name);
+    // 收起状态按旧分区名存，清掉免得下次同名分区一建出来就是收起的
+    setCollapsedGroups((list) => list.filter((key) => key !== `group:${sectionMenu.name}`));
+    commitSectionOrder(
+      sectionOrderRef.current.filter((item) => item !== sectionMenu.name),
+      true,
+    );
+    closeSectionMenu();
   };
 
   /*
@@ -508,7 +785,7 @@ export function Sidebar({
     return pin !== 0 ? pin : activityOf(b) - activityOf(a);
   });
 
-  // 过滤只是渲染层的子集：名字、分组名、或任一工作目录的末级目录名命中即可（统一小写比，
+  // 过滤只是渲染层的子集：名字、分区名、或任一工作目录的末级目录名命中即可（统一小写比，
   // 与平台的大小写敏感性无关——这里筛的是给人看的名字，不是路径）
   const query = wsQuery.trim().toLowerCase();
   const visible = query
@@ -521,11 +798,13 @@ export function Sidebar({
     : ordered;
 
   /*
-   * 分组后的段落。没有分组时保持原来的平铺列表（不额外加标题，视觉上和以前一样）；
-   * 一旦有工作区分了组，就按「置顶 / 各分组 / 未分组」分段，组名作为一级标题。
-   * 分组顺序跟着 visible 走，而 visible 已按活动倒序——所以最近动过的组排在最前。
+   * 分区后的段落。没有分区时保持原来的平铺列表（不额外加标题，视觉上和以前一样）；
+   * 一旦有工作区分了区，就按「置顶 / 各分区 / 未分区」分段，分区名作为一级标题。
+   * 各分区的顺序优先用手动排序（sectionOrder），没排过的新分区按活动顺序追加在后面。
    */
   const groupNames = workspaceGroupNames(workspaces);
+  /** 分区名的完整显示顺序（含当前没有可见项的段），拖动排序和落盘都以它为准 */
+  const orderedSectionNames: string[] = [];
   const sections: Array<{ key: string; title: string | null; items: Workspace[] }> = [];
   if (groupNames.length === 0) {
     if (visible.length > 0) sections.push({ key: "all", title: null, items: visible });
@@ -545,21 +824,26 @@ export function Sidebar({
       if (items) items.push(workspace);
       else groups.set(workspace.group, [workspace]);
     }
-    for (const [name, items] of groups) {
-      sections.push({ key: `group:${name}`, title: name, items });
-    }
-    // 拖动时也显示空目标：组里可能只有置顶项，或所有项都被过滤掉了。
-    if (draggingWorkspace) {
-      for (const name of groupNames) {
-        if (!groups.has(name)) sections.push({ key: `group:${name}`, title: name, items: [] });
+    const manual = sectionOrder.filter((name) => groupNames.includes(name));
+    const activity = [...groups.keys()];
+    orderedSectionNames.push(
+      ...manual,
+      ...activity.filter((name) => !manual.includes(name)),
+      ...groupNames.filter((name) => !manual.includes(name) && !activity.includes(name)),
+    );
+    for (const name of orderedSectionNames) {
+      const items = groups.get(name) ?? [];
+      // 正常渲染只画有内容的段；拖动工作区时也画空段作为投放目标
+      if (items.length > 0 || draggingWorkspace) {
+        sections.push({ key: `group:${name}`, title: name, items });
       }
     }
     if (ungrouped.length > 0 || draggingWorkspace) {
-      sections.push({ key: "ungrouped", title: "未分组", items: ungrouped });
+      sections.push({ key: "ungrouped", title: "未分区", items: ungrouped });
     }
   }
 
-  /** 收起 / 展开一个分组。过滤时强制展开，免得匹配项被折叠藏起来 */
+  /** 收起 / 展开一个分区。过滤时强制展开，免得匹配项被折叠藏起来 */
   const toggleGroup = (key: string) => {
     setCollapsedGroups((list) =>
       list.includes(key) ? list.filter((item) => item !== key) : [...list, key],
@@ -640,40 +924,85 @@ export function Sidebar({
           {sections.map((section) => {
             // 过滤时强制展开：命中项被折叠藏起来，用户会以为没搜到
             const groupCollapsed = !query && collapsedGroups.includes(section.key);
+            const sectionName = section.title;
+            const isNamedSection = section.key.startsWith("group:");
             const targetGroup = section.key === "ungrouped"
               ? ""
-              : section.key.startsWith("group:") ? section.title : null;
+              : isNamedSection ? sectionName : null;
             return (
               <li
                 key={section.key}
                 data-workspace-drop-group={targetGroup ?? undefined}
+                data-flip={`section:${section.key}`}
                 className={
                   draggingWorkspace && targetGroup !== null && dropGroup === targetGroup
                     ? "rounded-lg bg-selected ring-1 ring-inset ring-accent" : undefined
                 }
               >
-                {section.title && (
-                  /* 分组名就是这一段的标题：可点击折叠，数量跟在后面提示组里有多少个工作区 */
-                  <div className="flex items-center px-1 pt-3 pb-0.5">
-                    <button
-                      type="button"
-                      onClick={() => toggleGroup(section.key)}
-                      aria-expanded={!groupCollapsed}
-                      title={groupCollapsed ? `展开「${section.title}」` : `收起「${section.title}」`}
-                      className="flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-left text-fg-faint hover:bg-hover hover:text-fg"
+                {sectionName && (
+                  /* 分区名就是这一段的标题：点击名字收起 / 展开，数量跟在后面提示分区里有多少个工作区 */
+                  <div
+                    data-flip={`head:${section.key}`}
+                    className="flex items-center px-1 pt-3 pb-0.5"
+                  >
+                    {/* 名称和「⋯」共用一个悬停组：悬停整行（含操作按钮）时一起高亮，和项目行一致 */}
+                    <div
+                      data-section-name={isNamedSection ? sectionName : undefined}
+                      className={`group flex min-w-0 flex-1 items-center gap-1 rounded px-1 py-0.5 text-fg-faint hover:bg-hover hover:text-fg ${
+                        draggingSection === sectionName ? "bg-selected text-fg" : ""
+                      }`}
                     >
-                      {groupCollapsed ? (
-                        <IconChevronRight className="h-3 w-3 shrink-0" />
-                      ) : (
-                        <IconChevronDown className="h-3 w-3 shrink-0" />
+                      <button
+                        type="button"
+                        onClick={() => toggleGroup(section.key)}
+                        aria-expanded={!groupCollapsed}
+                        title={groupCollapsed ? `展开「${sectionName}」` : `收起「${sectionName}」`}
+                        onPointerDown={(event) => {
+                          // 只有真正的分区能拖动排序；置顶 / 未分区是系统分段，位置固定
+                          if (!isNamedSection || event.button !== 0 || event.pointerType === "touch") {
+                            return;
+                          }
+                          suppressSectionClick.current = false;
+                          const order = [...orderedSectionNames];
+                          sectionOrderRef.current = order;
+                          sectionDrag.current = {
+                            name: sectionName,
+                            pointerId: event.pointerId,
+                            x: event.clientX,
+                            y: event.clientY,
+                            active: false,
+                            origin: order,
+                            source: event.currentTarget,
+                          };
+                        }}
+                        onDragStart={(event) => event.preventDefault()}
+                        onClickCapture={(event) => {
+                          if (event.detail > 0 && suppressSectionClick.current) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                      >
+                        <span className="truncate text-[12px] font-semibold tracking-wide">
+                          {sectionName}
+                        </span>
+                        <span className="shrink-0 text-[10px] font-normal text-fg-faint">
+                          {section.items.length}
+                        </span>
+                      </button>
+                      {/* 只有真正的分区（有名字的段）才有操作；「置顶 / 未分区」是系统分段 */}
+                      {isNamedSection && (
+                        <button
+                          type="button"
+                          onClick={(event) => openSectionMenu(sectionName, event.currentTarget)}
+                          title="分区操作"
+                          className={ROW_ACTION}
+                        >
+                          <IconMore className="h-3.5 w-3.5" />
+                        </button>
                       )}
-                      <span className="truncate text-[12px] font-semibold tracking-wide">
-                        {section.title}
-                      </span>
-                      <span className="shrink-0 text-[10px] font-normal text-fg-faint">
-                        {section.items.length}
-                      </span>
-                    </button>
+                    </div>
                   </div>
                 )}
                 <ul className={groupCollapsed ? "hidden" : undefined}>
@@ -692,31 +1021,18 @@ export function Sidebar({
                         ? "有 AI 会话任务已完成，点击跳过去"
                         : "有 AI 会话在等你输入，点击跳过去";
                     return (
-                      <li key={workspace.id} data-ws-row className="relative">
+                      <li
+                        key={workspace.id}
+                        data-ws-row
+                        data-flip={`ws:${workspace.id}`}
+                        className="relative"
+                      >
                         {/* 选中底色只铺在工作区这一行上：连下面的对话历史一起染会变成一大块
                             蓝底，展开后反而看不清哪些是行、哪些是历史 */}
                         <div className="group rounded-lg">
                           <div className={`${ROW} ${isCurrent ? "bg-selected text-fg" : ""}`}>
-                            {/* 展开对话历史的箭头。平时藏起来，悬停这一行才出现——每个工作区都
-                                挂一个常显的箭头太吵；展开后一直亮着，也顺手当收起入口。
-                                pointer-events 跟着显隐走，免得点到看不见的按钮 */}
-                            <button
-                              type="button"
-                              onClick={() => toggleHistory(workspace.id)}
-                              title={historyOpen ? "收起对话历史" : "展开对话历史"}
-                              aria-expanded={historyOpen}
-                              className={`-ml-1.5 flex h-5 w-3.5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-fg ${
-                                historyOpen
-                                  ? "opacity-100"
-                                  : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100"
-                              }`}
-                            >
-                              {historyOpen ? (
-                                <IconChevronDown className="h-3 w-3" />
-                              ) : (
-                                <IconChevronRight className="h-3 w-3" />
-                              )}
-                            </button>
+                            {/* 不再单独给对话历史放展开箭头：点工作区名同时切换历史展开态，
+                                并保留原来的「切到 / 打开这个工作区」。 */}
                             <button
                               type="button"
                               onPointerDown={(event) => {
@@ -738,7 +1054,11 @@ export function Sidebar({
                                   event.stopPropagation();
                                 }
                               }}
-                              onClick={() => onSelect(workspace)}
+                              onClick={() => {
+                                onSelect(workspace);
+                                toggleHistory(workspace.id);
+                              }}
+                              aria-expanded={historyOpen}
                               title={workspace.roots
                                 .map((root) => toDisplayPath(root))
                                 .join("\n")}
@@ -968,7 +1288,7 @@ export function Sidebar({
               width: WORKSPACE_MENU_W,
               left: Math.max(4, menu.x - WORKSPACE_MENU_W),
               // 条目数随工作目录数量变，按实际行数折算高度，免得贴底时被顶出可视区；
-              // 分组子面板展开时再多让一截，并允许整体滚动
+              // 分区子面板展开时再多让一截，并允许整体滚动
               top: Math.min(
                 menu.y + 4,
                 Math.max(
@@ -1029,7 +1349,7 @@ export function Sidebar({
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconTree className="h-3.5 w-3.5 shrink-0" />
-              <span className="flex-1">分组</span>
+              <span className="flex-1">分区</span>
               {menu.workspace.group && (
                 <span className="max-w-[120px] truncate text-[11px] text-fg-faint">
                   {menu.workspace.group}
@@ -1042,7 +1362,7 @@ export function Sidebar({
               )}
             </button>
             {groupMenuOpen && (
-              /* 分组子面板：点已有分组直接归入；也可以在下面输入新名字 */
+              /* 分区子面板：点已有分区直接归入；也可以在下面输入新名字 */
               <div className="flex flex-col gap-1.5 px-3 pt-1 pb-2">
                 {groupNames.length > 0 && (
                   <div className="flex flex-wrap gap-1">
@@ -1071,7 +1391,7 @@ export function Sidebar({
                     className={`${MENU_ITEM} flex items-center gap-2 rounded px-1`}
                   >
                     <IconClose className="h-3.5 w-3.5 shrink-0" />
-                    移出分组
+                    移出分区
                   </button>
                 )}
                 <div className="flex items-center gap-1.5">
@@ -1082,7 +1402,7 @@ export function Sidebar({
                     onKeyDown={(event) => {
                       if (event.key === "Enter") createGroup();
                     }}
-                    placeholder={groupNames.length > 0 ? "新分组…" : "输入分组名…"}
+                    placeholder={groupNames.length > 0 ? "新分区…" : "输入分区名…"}
                     spellCheck={false}
                     className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
                   />
@@ -1136,6 +1456,82 @@ export function Sidebar({
               <IconTrash className="h-3.5 w-3.5 shrink-0" />
               移除
             </button>
+          </div>
+        </>
+      )}
+
+      {/* 分区标题行的「⋯」菜单：重命名 / 删除。和工作区菜单一样用 fixed 定位，
+          免得被列表的滚动容器裁掉 */}
+      {sectionMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={closeSectionMenu} />
+          <div
+            style={{
+              width: SECTION_MENU_W,
+              left: Math.max(
+                4,
+                Math.min(sectionMenu.x - SECTION_MENU_W, window.innerWidth - SECTION_MENU_W - 4),
+              ),
+              top: Math.min(
+                sectionMenu.y + 4,
+                Math.max(4, window.innerHeight - (sectionRename ? 96 : 140)),
+              ),
+            }}
+            className="fixed z-40 flex flex-col rounded border border-line-strong bg-raised py-1 shadow-lg"
+          >
+            {sectionRename ? (
+              <div className="flex items-center gap-1.5 px-2 py-1">
+                <input
+                  autoFocus
+                  value={sectionDraft}
+                  onChange={(event) => setSectionDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      applySectionRename();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      closeSectionMenu();
+                    }
+                  }}
+                  placeholder="分区名称"
+                  spellCheck={false}
+                  className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={applySectionRename}
+                  disabled={!sectionDraft.trim()}
+                  className="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-40"
+                >
+                  保存
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="truncate px-3 py-1 text-[11px] text-fg-faint">
+                  {sectionMenu.name}
+                </div>
+                <div className="my-1 border-t border-line" />
+                <button
+                  type="button"
+                  onClick={() => setSectionRename(true)}
+                  className={`${MENU_ITEM} flex items-center gap-2`}
+                >
+                  <IconPencil className="h-3.5 w-3.5 shrink-0" />
+                  重命名
+                </button>
+                <button
+                  type="button"
+                  onClick={removeSection}
+                  title="只删除分区，项目会移到「未分区」"
+                  className={`${MENU_ITEM} flex items-center gap-2`}
+                >
+                  <IconTrash className="h-3.5 w-3.5 shrink-0" />
+                  删除分区
+                </button>
+              </>
+            )}
           </div>
         </>
       )}

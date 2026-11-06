@@ -46,12 +46,14 @@ import {
 } from "./lib/fs";
 import {
   clearLastWorkspaceId,
+  clearWorkspaceGroup,
   dropWorkspace,
   folderName,
   migrateWorkspaces,
   newWorkspaceId,
   onWorkspacesChanged,
   readLastWorkspaceId,
+  renameWorkspaceGroup,
   saveLastWorkspaceId,
   saveWorkspace,
   workspaceGroupNames,
@@ -491,7 +493,7 @@ function Shell() {
         name: value.name,
         roots: value.roots,
         activeRoot: value.roots[index >= 0 ? index : 0] ?? workspace.activeRoot,
-        // 编辑时清空分组要真的去掉字段，不能靠展开旧值留着
+        // 编辑时清空分区要真的去掉字段，不能靠展开旧值留着
         group: value.group?.trim() || undefined,
       };
 
@@ -571,9 +573,19 @@ function Shell() {
     setWorkspaces(saveWorkspace({ ...workspace, pinned: !workspace.pinned }));
   }, []);
 
-  /** 把工作区归入某个分组；空串表示移出分组（回到「未分组」） */
+  /** 把工作区归入某个分区；空串表示移出分区（回到「未分区」） */
   const setWorkspaceGroup = useCallback((workspace: Workspace, group: string) => {
     setWorkspaces(saveWorkspace({ ...workspace, group: group.trim() || undefined }));
+  }, []);
+
+  /** 重命名分区：同名分区下的工作区一起改名 */
+  const renameGroup = useCallback((from: string, to: string) => {
+    setWorkspaces(renameWorkspaceGroup(from, to));
+  }, []);
+
+  /** 删除分区：工作区全部移回「未分区」，不删除任何工作区 */
+  const removeGroup = useCallback((name: string) => {
+    setWorkspaces(clearWorkspaceGroup(name));
   }, []);
 
   /** 右栏（编辑器 / 浏览器）全屏，按钮挂在这两个面板的标题栏上 */
@@ -959,6 +971,8 @@ function Shell() {
               onClose={closeWorkspace}
               onTogglePin={togglePin}
               onSetGroup={setWorkspaceGroup}
+              onRenameGroup={renameGroup}
+              onRemoveGroup={removeGroup}
               onResumeSession={resumeSession}
               onFocusAttention={(workspace, target) => void focusAttention(workspace, target)}
               onOpenAppAgent={openAppAgent}

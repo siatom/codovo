@@ -18,14 +18,16 @@ export interface Workspace {
   /** 置顶：排在工作区列表最前。老数据没有这个字段，缺省即不置顶 */
   pinned?: boolean;
   /**
-   * 分组名：侧栏按它把工作区分成若干段，组名作为一级标题展示。
-   * 空 / 未设置即「未分组」，与有分组的工作区一起排在最后一段。
+   * 分区名：侧栏按它把工作区分成若干段，分区名作为一级标题展示。
+   * 空 / 未设置即「未分区」，与有分区的工作区一起排在最后一段。
    */
   group?: string;
 }
 
 const WORKSPACES_KEY = "codovo.workspaceList";
 const LAST_WORKSPACE_KEY = "codovo.lastWorkspace";
+/** 分区的手动排序：只存名字数组，渲染时再和现有分区对齐（新分区追加在后面） */
+const GROUP_ORDER_KEY = "codovo.workspaceGroupOrder";
 
 // 上一版（项目模型）的两个键。只在首次迁移时读，**迁完不删**——
 // 万一迁移有疏漏，用户原来的工作区列表还在，不至于凭空消失。
@@ -85,12 +87,12 @@ function normalizeWorkspace(value: unknown): Workspace | null {
     activeRoot: active,
     // 只有明确的 true 才算置顶，坏值一律当没置顶
     pinned: raw.pinned === true,
-    // 分组名只保留非空字符串；空串等价于未分组，不写进记录
+    // 分区名只保留非空字符串；空串等价于未分区，不写进记录
     group: typeof raw.group === "string" && raw.group.trim() ? raw.group.trim() : undefined,
   };
 }
 
-/** 列表里出现过的分组名，去重后按显示顺序排好，供新建 / 编辑工作区时提示 */
+/** 列表里出现过的分区名，去重后按显示顺序排好，供新建 / 编辑工作区时提示 */
 export function workspaceGroupNames(list: Workspace[]): string[] {
   const names = new Set<string>();
   for (const workspace of list) {
@@ -230,6 +232,55 @@ export function dropWorkspace(id: string): Workspace[] {
   const next = readWorkspaces().filter((item) => item.id !== id);
   saveWorkspaceList(next);
   return next;
+}
+
+/**
+ * 重命名分区：属于该分区的工作区一起改到新名字（包括置顶、当前列表里看不到的）。
+ * 目标名已存在时两段自然合并。返回写完之后的新列表。
+ */
+export function renameWorkspaceGroup(from: string, to: string): Workspace[] {
+  const name = to.trim();
+  const current = readWorkspaces();
+  if (!name || name === from) return current;
+  const next = current.map((workspace) =>
+    workspace.group === from ? { ...workspace, group: name } : workspace,
+  );
+  saveWorkspaceList(next);
+  return next;
+}
+
+/** 删除分区：只把其中的工作区移回「未分区」，工作区本身保留。返回新列表 */
+export function clearWorkspaceGroup(name: string): Workspace[] {
+  const next = readWorkspaces().map((workspace) =>
+    workspace.group === name ? { ...workspace, group: undefined } : workspace,
+  );
+  saveWorkspaceList(next);
+  return next;
+}
+
+/** 手动排出来的分区顺序。读到的坏值一律丢掉，名字去重 */
+export function readWorkspaceGroupOrder(): string[] {
+  try {
+    const raw = window.localStorage.getItem(GROUP_ORDER_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return [
+      ...new Set(
+        parsed.filter((item): item is string => typeof item === "string" && item.length > 0),
+      ),
+    ];
+  } catch {
+    return [];
+  }
+}
+
+export function saveWorkspaceGroupOrder(names: string[]): void {
+  try {
+    window.localStorage.setItem(GROUP_ORDER_KEY, JSON.stringify([...new Set(names)]));
+  } catch {
+    // 记不住就按活动顺序排，不影响使用
+  }
 }
 
 export function readLastWorkspaceId(): string | null {

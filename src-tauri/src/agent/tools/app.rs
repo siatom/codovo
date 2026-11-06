@@ -125,7 +125,7 @@ pub fn tools(bridge: Arc<AppBridge>) -> Vec<DynamicTool> {
                 "properties": {
                     "path": { "type": "string", "description": "工作目录的绝对路径" },
                     "name": { "type": "string", "description": "显示名，省略则取目录名" },
-                    "group": { "type": "string", "description": "分组名，省略则未分组" }
+                    "group": { "type": "string", "description": "分区名，省略则未分区" }
                 },
                 "required": ["path"],
                 "additionalProperties": false
