@@ -2,6 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ToolId } from "./ToolPane";
 import {
   IconBranch,
+  IconBot,
   IconDatabase,
   IconFile,
   IconGlobe,
@@ -42,12 +43,14 @@ export const RIGHT_TOOLS: { id: ToolId; label: string; Icon: typeof IconFile }[]
 ];
 
 interface ToolRailProps {
-  active: ToolId;
+  active?: ToolId;
+  agentActive: boolean;
   /** 改动条目数；「变更」图标上的角标就取它 */
   changed: number;
   /** 设置里关掉的模块不上图标条 */
   visible: Record<ToolId, boolean>;
   onPick: (id: ToolId) => void;
+  onPickAgent: () => void;
   /** 内容面板是否展开，决定底部那个收放按钮的图标方向 */
   rightOpen: boolean;
   /** 收放按钮沉在图标条最下面，和左侧栏的收起按钮同一个位置 */
@@ -64,15 +67,26 @@ const BADGE_MAX = 99;
  */
 export function ToolRail({
   active,
+  agentActive,
   changed,
   visible,
   onPick,
+  onPickAgent,
   rightOpen,
   onToggleRight,
   onBlankClick,
 }: ToolRailProps) {
   return (
     <div className={RAIL} onClick={onBlankClick}>
+      <button
+        type="button"
+        onClick={onPickAgent}
+        title="Agent"
+        aria-label="Agent"
+        className={`${BUTTON} ${agentActive ? BUTTON_ON : ""}`}
+      >
+        <IconBot />
+      </button>
       {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
         // 有改动时才挂角标，0 就不显示——空白角标反而像加载失败
         const badge =
