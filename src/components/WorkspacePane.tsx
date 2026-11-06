@@ -16,6 +16,7 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
+import { IconEye } from "./icons";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
@@ -28,6 +29,7 @@ import {
   patchTab,
   sameTab,
   tabKey,
+  tabName,
   type DiffSource,
   type Tab,
   type TabPatch,
@@ -56,6 +58,8 @@ export interface WorkspaceLayoutHandle {
 }
 
 export type Fullscreen = "none" | "right" | "left";
+
+type WorkspaceTask = "terminal" | "files" | "browser" | "remote" | "database" | "preview" | "deploy";
 
 /**
  * 关闭标签时的匹配。另存为会把未命名缓冲区的 `path` 换成真实路径、但 `untitledId` 不变；
@@ -132,14 +136,17 @@ export function WorkspacePane({
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<Tab | null>(null);
   /** 工作区主视图的超级 tab；工具内容与终端共享同一组顶层入口 */
-  const [activeTask, setActiveTask] = useState<"terminal" | ToolId>("terminal");
+  const [activeTask, setActiveTask] = useState<WorkspaceTask>("terminal");
+  const [taskTabs, setTaskTabs] = useState<WorkspaceTask[]>(["terminal"]);
   /** 最新标签列表的快照：会话恢复是异步的，要能在读盘途中判断用户是否已经手动开了文件 */
   const openTabsRef = useRef<Tab[]>([]);
   openTabsRef.current = openTabs;
   /** 右栏看的是哪个模块（按活动根各记一份） */
-  const [tool, setTool] = useState<ToolId>(() => readTool(root));
+  const [tool, setTool] = useState<"files" | "changes">(() =>
+    readTool(root) === "changes" ? "changes" : "files",
+  );
   /** 右边栏的内容面板是否展开。图标条本身常驻，收起时右边只留一条图标条 */
-  const [rightOpen, setRightOpen] = useState(false);
+  const [rightOpen, setRightOpen] = useState(true);
   /** 文件树右键送来的「用内置浏览器打开这个文件」，交给浏览器模块 */
   const [browserFile, setBrowserFile] = useState<BrowserFileRequest | null>(null);
   /**
@@ -154,7 +161,7 @@ export function WorkspacePane({
   // 工作区内换了活动根（比如把另一个工作目录设为主要），右栏模块跟着换成那个根上次看的。
   // 实例不重建，所以初始值那一次不会重跑，得显式同步
   useEffect(() => {
-    setTool(readTool(root));
+    setTool(readTool(root) === "changes" ? "changes" : "files");
   }, [root]);
 
   /**
@@ -275,21 +282,40 @@ export function WorkspacePane({
     beginLayoutAnimation();
   }, [rightOpen, leftFullscreen]);
 
-  const pickTool = useCallback(
-    (id: ToolId) => {
+  const openTask = useCallback(
+    (id: WorkspaceTask) => {
       setActiveTask(id);
-      setTool(id);
-      saveTool(root, id);
-      setRightOpen(true);
+      setTaskTabs((current) => (current.includes(id) ? current : [...current, id]));
+      if (id === "files") {
+        setTool("files");
+        saveTool(root, "files");
+        setRightOpen(true);
+      }
     },
     [root],
   );
 
+  const pickTool = useCallback(
+    (id: ToolId) => {
+      if (id === "changes") {
+        setTool("changes");
+        saveTool(root, "changes");
+        setRightOpen(true);
+        return;
+      }
+      if (id === "files") {
+        openTask("files");
+        return;
+      }
+      openTask(id);
+    },
+    [openTask, root],
+  );
+
   const toggleRight = useCallback(() => {
-    if (activeTask !== "terminal") setActiveTask("terminal");
     setRightOpen((open) => !open);
     onExitFullscreen();
-  }, [activeTask, onExitFullscreen]);
+  }, [onExitFullscreen]);
 
   /**
    * 界面操作智能体（应用助手）用的布局入口。刻意和 `pickTool` 分开：那边「再点一次当前
@@ -298,15 +324,10 @@ export function WorkspacePane({
    */
   const layoutHandle = useMemo<WorkspaceLayoutHandle>(
     () => ({
-      openTool: (id) => {
-        setActiveTask(id);
-        setTool(id);
-        saveTool(root, id);
-        setRightOpen(true);
-      },
+      openTool: (id) => pickTool(id),
       setRightOpen: (open) => setRightOpen(open),
     }),
-    [root],
+    [pickTool],
   );
 
   /**
@@ -380,7 +401,6 @@ export function WorkspacePane({
   const revealInFiles = useCallback(
     (path: string) => {
       setTool("files");
-      setActiveTask("files");
       saveTool(root, "files");
       setRightOpen(true);
       setFilesReveal({ path, nonce: (filesRevealNonceRef.current += 1) });
@@ -390,13 +410,15 @@ export function WorkspacePane({
 
   /** 已经开着的标签只切过去，不重复开——连点同一个改动项就是这个路径 */
   const openTab = useCallback((tab: Tab) => {
-    const nextTask = tab.kind === "diff" ? "changes" : "files";
-    setActiveTask(nextTask);
-    setTool(nextTask);
+    setActiveTask("files");
+    setTaskTabs((current) => (current.includes("files") ? current : [...current, "files"]));
+    const nextSidebar = tab.kind === "diff" ? "changes" : "files";
+    setTool(nextSidebar);
+    saveTool(root, nextSidebar);
     setRightOpen(true);
     setOpenTabs((current) => current.length === 1 && sameTab(current[0], tab) ? current : [tab]);
     setActiveTab(tab);
-  }, []);
+  }, [root]);
 
   const openFile = useCallback(
     (path: string) => {
@@ -406,9 +428,6 @@ export function WorkspacePane({
         onOpenFileAnywhere(path);
         return;
       }
-      setActiveTask("files");
-      setTool("files");
-      setRightOpen(true);
       openTab(openFileTab(path));
     },
     [onOpenFileAnywhere, openTab, workspace.roots],
@@ -563,12 +582,9 @@ export function WorkspacePane({
       const label = base && full.startsWith(`${base}/`) ? full.slice(base.length + 1) : full;
       setBrowserFile({ path, label, nonce: (browserNonceRef.current += 1) });
       // 切到浏览器模块并展开。不能走 pickTool——它在本模块已经选中时是「收起面板」
-      setTool("browser");
-      setActiveTask("browser");
-      saveTool(root, "browser");
-      setRightOpen(true);
+      openTask("browser");
     },
-    [root, workspace.roots],
+    [openTask, workspace.roots],
   );
 
   /**
@@ -587,7 +603,6 @@ export function WorkspacePane({
   const openMatch = useCallback(
     (path: string, line: number, column: number, length: number) => {
       openTab(openFileTab(path));
-      setActiveTask("files");
       editorRef.current?.revealAt({
         path,
         line,
@@ -604,7 +619,7 @@ export function WorkspacePane({
     (path: string, line: number) => {
       if (ownerRoot(workspace.roots, path) === null) return;
       setTool("files");
-      setActiveTask("files");
+      openTask("files");
       saveTool(root, "files");
       setRightOpen(true);
       onExitFullscreen();
@@ -617,7 +632,7 @@ export function WorkspacePane({
         nonce: (revealNonceRef.current += 1),
       });
     },
-    [openFile, onExitFullscreen, root, workspace.roots],
+    [openFile, onExitFullscreen, openTask, root, workspace.roots],
   );
 
   /** 替换前先把编辑器里没保存的改动落盘；存不成功就不替换 */
@@ -667,6 +682,10 @@ export function WorkspacePane({
       if (activeTab && removed(activeTab)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
       }
+      if (rest.length === 0) {
+        setTaskTabs((current) => current.filter((item) => item !== "files"));
+        setActiveTask((current) => (current === "files" ? "terminal" : current));
+      }
     },
     [openTabs, activeTab],
   );
@@ -681,6 +700,10 @@ export function WorkspacePane({
       // 关掉的是当前标签时，焦点落到它右边那个（没有就往左退一格）
       if (activeTab && match(activeTab)) {
         setActiveTab(rest[Math.min(index, rest.length - 1)] ?? null);
+      }
+      if (rest.length === 0) {
+        setTaskTabs((current) => current.filter((item) => item !== "files"));
+        setActiveTask((current) => (current === "files" ? "terminal" : current));
       }
     },
     [openTabs, activeTab],
@@ -701,6 +724,8 @@ export function WorkspacePane({
   const closeAllTabs = useCallback(() => {
     setOpenTabs([]);
     setActiveTab(null);
+    setTaskTabs((current) => current.filter((item) => item !== "files"));
+    setActiveTask((current) => (current === "files" ? "terminal" : current));
   }, []);
 
   /** 标题栏「⋯」菜单：只留当前标签 */
@@ -709,210 +734,206 @@ export function WorkspacePane({
     setOpenTabs([activeTab]);
   }, [activeTab]);
 
+  const closeTask = useCallback(
+    (task: WorkspaceTask) => {
+      if (task === "terminal") return;
+      if (task === "files" && activeTab) {
+        editorRef.current?.closeActiveTab();
+        return;
+      }
+      const index = taskTabs.indexOf(task);
+      if (index < 0) return;
+      const remaining = taskTabs.filter((item) => item !== task);
+      setTaskTabs(remaining);
+      if (activeTask === task) {
+        setActiveTask(remaining[Math.max(0, index - 1)] ?? "terminal");
+      }
+    },
+    [activeTask, activeTab, taskTabs],
+  );
+
+  const toolPaneProps = {
+    roots: workspace.roots,
+    activeRoot: root,
+    visible,
+    filesVisible,
+    changesVisible,
+    selected: activeTab?.kind === "file" ? activeTab.path : null,
+    gitByRoot,
+    gitTargets: wtMap,
+    gitMarks: git.marks,
+    gitReady,
+    onSelectFile: openFile,
+    onOpenInBrowser: openInBrowser,
+    onFormatFile: formatFile,
+    onOpenDiff: openDiff,
+    onOpenMatch: openMatch,
+    onPickWorktree: pickWorktree,
+    sessions: terminalSessions,
+    onOpenTerminal: openTerminalAt,
+    onBeforeReplace: saveAllEdits,
+    onAfterReplace: reloadAfterReplace,
+    onBeforeRename: saveAllEdits,
+    onEntryRenamed: renameOpenTabs,
+    onEntryDeleted: dropOpenTabs,
+    onRequestCloseTab: () => editorRef.current?.closeActiveTab(),
+    filesReveal,
+  };
+  const activeFilePath = activeTab?.kind === "file" ? activeTab.path : null;
+  const filePreviewAvailable =
+    activeFilePath !== null && /\.(?:md|mdx|mdc|markdown|html|htm|svg)$/i.test(activeFilePath);
+  const railTool = activeTask === "terminal" ? activeTool : activeTask;
+
   return (
     <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-      <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-panel px-2">
-        <button type="button" onClick={() => setActiveTask("terminal")} className={`rounded px-2.5 py-1 text-[11px] ${activeTask === "terminal" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}>终端 / 对话</button>
-        {RIGHT_TOOLS.filter(({ id }) => toolVisible[id]).map(({ id, label, Icon }) => (
-          <button key={id} type="button" onClick={() => pickTool(id)} className={`flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-[11px] ${activeTask === id ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}>
-            <Icon className="h-3.5 w-3.5" />{label}
-          </button>
-        ))}
+      <div className="flex h-9 shrink-0 items-center border-b border-line bg-panel">
+        <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2">
+          {taskTabs.map((task) => {
+            const toolInfo = RIGHT_TOOLS.find((item) => item.id === task);
+            const label =
+              task === "terminal"
+                ? "终端 / 对话"
+                : task === "files"
+                  ? activeTab
+                    ? `${tabName(activeTab)}${activeTab.kind === "diff" ? " · 差异" : ""}`
+                    : "文件"
+                  : toolInfo?.label ?? task;
+            return (
+              <div
+                key={task}
+                className={`flex h-7 shrink-0 items-center rounded ${activeTask === task ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setActiveTask(task)}
+                  title={label}
+                  className="flex max-w-[220px] items-center gap-1.5 py-1 pl-2.5 text-[11px]"
+                >
+                  {toolInfo && <toolInfo.Icon className="h-3.5 w-3.5 shrink-0" />}
+                  <span className="truncate">{label}</span>
+                </button>
+                {task !== "terminal" && (
+                  <button
+                    type="button"
+                    onClick={() => closeTask(task)}
+                    title={task === "files" ? "关闭文件视图" : `关闭${label}`}
+                    className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger"
+                  >
+                    <span aria-hidden="true">×</span>
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex h-full shrink-0 items-center gap-1 px-2">
+          {activeTask === "files" && filePreviewAvailable && (
+            <button
+              type="button"
+              onClick={() => editorRef.current?.togglePreview()}
+              title="切换预览"
+              aria-label="切换预览"
+              className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
+            >
+              <IconEye className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
       <SplitPane
-        initial={52}
-        min={20}
-        max={78}
-        // 双击这条主分栏线（终端 / 右边栏）复位成均分
+        initial={76}
+        min={48}
+        max={90}
         resetOnDoubleClick
-        // 左栏全屏时右栏整列让位（连图标条一起）；平时收起右栏仍是原来的窄条状态
-        secondCollapsed={rightCollapsed || leftFullscreen}
-        // 右栏收放走宽度动画；收起后落到一条图标条的宽度（左栏全屏时整列归零）
+        secondCollapsed={rightCollapsed || leftFullscreen || rightFullscreen}
         animateCollapse
-        collapsedSecondWidth={leftFullscreen ? 0 : RAIL_WIDTH}
-        firstCollapsed={rightFullscreen || activeTask !== "terminal"}
+        collapsedSecondWidth={leftFullscreen || rightFullscreen ? 0 : RAIL_WIDTH}
         first={
-          <TerminalPane
-            root={root}
-            roots={workspace.roots}
-            visible={visible}
-            ref={setTerminalHandle}
-            fullscreen={leftFullscreen}
-            onToggleFullscreen={onToggleLeftFullscreen}
-            onSessionsReport={setTerminalSessions}
-            onOpenFile={openTerminalFile}
-          />
-        }
-        second={
-          // 左栏全屏时整块右栏藏起来（连图标条一起）。contents 让这层壳不参与布局，
-          // 内容只是藏起来、不卸载，Monaco 的撤销历史和 iframe 都留得住
-          <div className={leftFullscreen ? "hidden" : "contents"}>
-            <div className="flex min-h-0 min-w-0 flex-1">
-              {/* 内容面板整体淡出 / 淡入：收起时宽度动画在跑，内容半透明地退场，
-                  不留半截内容，也不再吃键盘焦点。只做 opacity：这一层里有 fixed
-                  定位的右键菜单，带上 translate 会让它们改以这里为包含块 */}
-              <div
-                inert={!rightOpen}
-                className={`flex min-h-0 min-w-0 flex-1 overflow-hidden transition-opacity ease-dock motion-reduce:transition-none ${
-                  rightOpen ? "opacity-100 duration-200 delay-75" : "opacity-0 duration-150"
-                }`}
-              >
-                {/* 浏览器 / 远程连接 / 数据库选中时独占编辑器那一列。编辑区只是隐藏、不卸载，
-                    Monaco 的撤销历史和文件树的展开态都留得住。
-                    收起面板时整块内容一起藏起来，图标条单独留着。
-                    全屏时整块右边栏一起铺满窗口，编辑器那一列照常留着 */}
-                <div
-                  className={
-                    activeTool !== "browser" &&
-                    activeTool !== "remote" &&
-                    activeTool !== "database" &&
-                    activeTool !== "preview" &&
-                    activeTool !== "deploy"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <SplitPane
-                    initial={32}
-                    min={12}
-                    max={45}
-                    // 侧栏（文件 / 变更）保持像素宽度：右栏全屏、拖窗口边缘、拖外层分隔条时
-                    // 只有编辑器那一列变宽，侧栏不会跟着按比例放大
-                    keepFirstWidth
-                    first={
-                      <ToolPane
-                        tool={activeTool}
-                        roots={workspace.roots}
-                        activeRoot={root}
-                        visible={visible}
-                        filesVisible={filesVisible}
-                        changesVisible={changesVisible}
-                        selected={activeTab?.kind === "file" ? activeTab.path : null}
-                        gitByRoot={gitByRoot}
-                        gitTargets={wtMap}
-                        gitMarks={git.marks}
-                        gitReady={gitReady}
-                        onSelectFile={openFile}
-                        onOpenInBrowser={openInBrowser}
-                        onFormatFile={formatFile}
-                        onOpenDiff={openDiff}
-                        onOpenMatch={openMatch}
-                        onPickWorktree={pickWorktree}
-                        sessions={terminalSessions}
-                        onOpenTerminal={openTerminalAt}
-                        onBeforeReplace={saveAllEdits}
-                        onAfterReplace={reloadAfterReplace}
-                        onBeforeRename={saveAllEdits}
-                        onEntryRenamed={renameOpenTabs}
-                        onEntryDeleted={dropOpenTabs}
-                        onRequestCloseTab={() => editorRef.current?.closeActiveTab()}
-                        filesReveal={filesReveal}
-                      />
-                    }
-                    second={
-                      <EditorPane
-                        ref={setEditorHandle}
-                        root={root}
-                        roots={pollRoots}
-                        visible={visible}
-                        tabs={openTabs}
-                        active={activeTab}
-                        gitMarks={git.marks}
-                        onActivate={setActiveTab}
-                        onClose={closeTab}
-                        onReorder={reorderTabs}
-                        onCloseAll={closeAllTabs}
-                        onCloseOthers={closeOtherTabs}
-                        onNewUntitled={newUntitled}
-                        onPatchTab={patchOpenTab}
-                        onOpenPath={openFile}
-                        onRevealInFiles={revealInFiles}
-                        fullscreen={rightFullscreen}
-                        onToggleFullscreen={onToggleRightFullscreen}
-                        onSendToTerminal={insertToTerminal}
-                        onSendToAssistant={insertToAssistant}
-                        onOpenSettings={onOpenSettings}
-                      />
-                    }
-                  />
-                </div>
-                <div
-                  className={
-                    activeTool === "browser"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <BrowserPane
-                    root={root}
-                    request={browserFile}
-                    fullscreen={rightFullscreen}
-                    onToggleFullscreen={onToggleRightFullscreen}
-                  />
-                </div>
-                <div
-                  className={
-                    activeTool === "remote"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <RemotePane
-                    fullscreen={rightFullscreen}
-                    onToggleFullscreen={onToggleRightFullscreen}
-                  />
-                </div>
-                <div
-                  className={
-                    activeTool === "database"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <DatabasePane
-                    fullscreen={rightFullscreen}
-                    onToggleFullscreen={onToggleRightFullscreen}
-                  />
-                </div>
-                <div
-                  className={
-                    activeTool === "preview"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <PreviewPane
-                    root={root}
-                    visible={rightOpen && activeTool === "preview"}
-                    fullscreen={rightFullscreen}
-                    onToggleFullscreen={onToggleRightFullscreen}
-                  />
-                </div>
-                <div
-                  className={
-                    activeTool === "deploy"
-                      ? "flex min-h-0 min-w-0 flex-1"
-                      : "hidden"
-                  }
-                >
-                  <DeployPane
-                    root={root}
-                    visible={rightOpen && activeTool === "deploy"}
-                    fullscreen={rightFullscreen}
-                    onToggleFullscreen={onToggleRightFullscreen}
-                  />
-                </div>
-              </div>
-              <ToolRail
-                active={activeTool}
-                changed={changedCount}
-                visible={toolVisible}
-                onPick={pickTool}
-                rightOpen={rightOpen}
-                onToggleRight={toggleRight}
-                onBlankClick={onBlankClick}
+          <div className="relative flex min-h-0 min-w-0 flex-1">
+            <div className={activeTask === "terminal" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <TerminalPane
+                root={root}
+                roots={workspace.roots}
+                visible={visible && activeTask === "terminal"}
+                ref={setTerminalHandle}
+                fullscreen={leftFullscreen}
+                onToggleFullscreen={onToggleLeftFullscreen}
+                onSessionsReport={setTerminalSessions}
+                onOpenFile={openTerminalFile}
               />
             </div>
+            <div className={activeTask === "files" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <EditorPane
+                ref={setEditorHandle}
+                hideTabStrip
+                root={root}
+                roots={pollRoots}
+                visible={visible && activeTask === "files"}
+                tabs={openTabs}
+                active={activeTab}
+                gitMarks={git.marks}
+                onActivate={setActiveTab}
+                onClose={closeTab}
+                onReorder={reorderTabs}
+                onCloseAll={closeAllTabs}
+                onCloseOthers={closeOtherTabs}
+                onNewUntitled={newUntitled}
+                onPatchTab={patchOpenTab}
+                onOpenPath={openFile}
+                onRevealInFiles={revealInFiles}
+                fullscreen={rightFullscreen}
+                onToggleFullscreen={onToggleRightFullscreen}
+                onSendToTerminal={insertToTerminal}
+                onSendToAssistant={insertToAssistant}
+                onOpenSettings={onOpenSettings}
+              />
+            </div>
+            <div className={activeTask === "browser" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <BrowserPane
+                root={root}
+                request={browserFile}
+                fullscreen={rightFullscreen}
+                onToggleFullscreen={onToggleRightFullscreen}
+              />
+            </div>
+            <div className={activeTask === "remote" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <RemotePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+            </div>
+            <div className={activeTask === "database" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <DatabasePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+            </div>
+            <div className={activeTask === "preview" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <PreviewPane
+                root={root}
+                visible={visible && activeTask === "preview"}
+                fullscreen={rightFullscreen}
+                onToggleFullscreen={onToggleRightFullscreen}
+              />
+            </div>
+            <div className={activeTask === "deploy" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+              <DeployPane
+                root={root}
+                visible={visible && activeTask === "deploy"}
+                fullscreen={rightFullscreen}
+                onToggleFullscreen={onToggleRightFullscreen}
+              />
+            </div>
+          </div>
+        }
+        second={
+          <div className="flex min-h-0 min-w-0 flex-1">
+            <div className={rightOpen ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} inert={!rightOpen}>
+              <ToolPane tool={tool} {...toolPaneProps} />
+            </div>
+            <ToolRail
+              active={railTool}
+              changed={changedCount}
+              visible={toolVisible}
+              onPick={pickTool}
+              rightOpen={rightOpen}
+              onToggleRight={toggleRight}
+              onBlankClick={onBlankClick}
+            />
           </div>
         }
       />
