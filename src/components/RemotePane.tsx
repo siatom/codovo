@@ -75,8 +75,10 @@ export function RemotePane({
   fullscreen,
   onToggleFullscreen,
   sidebarTarget,
+  onOpenContent,
 }: {
   sidebarTarget?: HTMLElement | null;
+  onOpenContent: () => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
@@ -175,12 +177,13 @@ export function RemotePane({
 
   const openHost = useCallback(
     (host: RemoteHost) => {
+      onOpenContent();
       setActiveHostId(host.id);
       writeSession(ACTIVE_KEY, host.id);
       // 点了才连、不在挂载时自动连：选中一台还没连的主机就顺手开第一个终端
       if ((tabsByHostRef.current[host.id]?.length ?? 0) === 0) addTab(host.id);
     },
-    [addTab],
+    [addTab, onOpenContent],
   );
 
   /** 关一个终端标签。关掉该主机最后一个就等于断开连接 */
