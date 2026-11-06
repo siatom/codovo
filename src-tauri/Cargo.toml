@@ -117,7 +117,9 @@ futures = "0.3"
 # - `process` 提供 `AcpAgent`：起子进程、按行读写 JSON-RPC、退出时回收进程组。
 # - 5.x 与 protocol v1 稳定版对齐；升级前先跑 `cargo test --lib acp_probe -- --ignored`。
 agent-client-protocol = { version = "5", features = ["process"] }
-tauri-plugin-updater = "2"
+# 复用上面 reqwest/rustls 的 AWS-LC；插件默认的 rustls-tls 会额外启用 ring，
+# 并在首次检查时安装全局 provider，影响应用已有的数据库和 AI 连接。
+tauri-plugin-updater = { version = "2", default-features = false, features = ["zip", "system-proxy"] }
 semver = "1"
 
 
