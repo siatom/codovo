@@ -112,6 +112,8 @@ export function closeIconHtml(className = "h-3 w-3"): string {
 interface BrandIcon {
   hex: string;
   path: string;
+  /** 多色品牌图标：每个独立图层保留自己的品牌色 */
+  layers?: Array<{ hex: string; path: string }>;
   /** 非 24×24 坐标系（比如官网 206×206 的图形）时指定 viewBox */
   viewBox?: string;
   /** 带镂空的路径（Qoder 的描边 logo）需要 evenodd */
@@ -130,10 +132,11 @@ function BrandGlyph({ icon, className }: { icon: BrandIcon; className: string })
     <svg
       viewBox={icon.viewBox ?? "0 0 24 24"}
       className={`${className} shrink-0`}
-      fill={icon.fixed ? `#${icon.hex}` : brandFill(icon.hex)}
       aria-hidden="true"
     >
-      <path d={icon.path} fillRule={icon.fillRule} />
+      {icon.layers
+        ? icon.layers.map((layer) => <path key={layer.hex + layer.path} d={layer.path} fill={`#${layer.hex}`} />)
+        : <path d={icon.path} fill={icon.fixed ? `#${icon.hex}` : brandFill(icon.hex)} fillRule={icon.fillRule} />}
     </svg>
   );
 }
@@ -786,6 +789,18 @@ const ANTIGRAVITY_LOGOS: Record<"light" | "dark", BrandIcon> = {
   dark: { hex: "FFFFFF", fixed: true, viewBox: "0 0 180 180", path: ANTIGRAVITY_PATH },
 };
 
+/** Pi 的官方几何图形，保留 SVG 原始色值与 800×800 坐标。 */
+const PI_LOGO: BrandIcon = {
+  hex: "000000",
+  path: "",
+  viewBox: "0 0 800 800",
+  layers: [
+    { hex: "F09082", path: "M165.29 165.29H517.36V400H400V282.65H165.29Z" },
+    { hex: "4D9ABF", path: "M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z" },
+    { hex: "F1BE58", path: "M517.36 400H634.72V634.72H517.36Z" },
+  ],
+};
+
 /** 认得出是哪家就上哪家的 logo；认不出回落成上面那个通用的机器人图标 */
 const AGENT_LOGOS: Record<string, BrandIcon> = {
   claude: siClaude,
@@ -812,6 +827,7 @@ const AGENT_LOGOS: Record<string, BrandIcon> = {
   windsurf: siWindsurf,
   trae: siTrae,
   cline: siCline,
+  pi: PI_LOGO,
 };
 
 /** 浅色 / 深色下用不同官方版本的图标，按当前主题取 */
