@@ -851,79 +851,95 @@ export function WorkspacePane({
         first={
           <div className="relative flex min-h-0 min-w-0 flex-1">
             <div className={activeTask === "terminal" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <TerminalPane
-                root={root}
-                roots={workspace.roots}
-                visible={visible && activeTask === "terminal"}
-                ref={setTerminalHandle}
-                fullscreen={leftFullscreen}
-                onToggleFullscreen={onToggleLeftFullscreen}
-                onSessionsReport={setTerminalSessions}
-                onOpenFile={openTerminalFile}
-              />
+              <div className="h-full min-w-0 flex-1">
+                <TerminalPane
+                  root={root}
+                  roots={workspace.roots}
+                  visible={visible && activeTask === "terminal"}
+                  ref={setTerminalHandle}
+                  fullscreen={leftFullscreen}
+                  onToggleFullscreen={onToggleLeftFullscreen}
+                  onSessionsReport={setTerminalSessions}
+                  onOpenFile={openTerminalFile}
+                />
+              </div>
             </div>
             <div className={activeTask === "files" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <EditorPane
-                ref={setEditorHandle}
-                hideTabStrip
-                root={root}
-                roots={pollRoots}
-                visible={visible && activeTask === "files"}
-                tabs={openTabs}
-                active={activeTab}
-                gitMarks={git.marks}
-                onActivate={setActiveTab}
-                onClose={closeTab}
-                onReorder={reorderTabs}
-                onCloseAll={closeAllTabs}
-                onCloseOthers={closeOtherTabs}
-                onNewUntitled={newUntitled}
-                onPatchTab={patchOpenTab}
-                onOpenPath={openFile}
-                onRevealInFiles={revealInFiles}
-                fullscreen={rightFullscreen}
-                onToggleFullscreen={onToggleRightFullscreen}
-                onSendToTerminal={insertToTerminal}
-                onSendToAssistant={insertToAssistant}
-                onOpenSettings={onOpenSettings}
-              />
+              <div className="h-full min-w-0 flex-1">
+                <EditorPane
+                  ref={setEditorHandle}
+                  hideTabStrip
+                  root={root}
+                  roots={pollRoots}
+                  visible={visible && activeTask === "files"}
+                  tabs={openTabs}
+                  active={activeTab}
+                  gitMarks={git.marks}
+                  onActivate={setActiveTab}
+                  onClose={closeTab}
+                  onReorder={reorderTabs}
+                  onCloseAll={closeAllTabs}
+                  onCloseOthers={closeOtherTabs}
+                  onNewUntitled={newUntitled}
+                  onPatchTab={patchOpenTab}
+                  onOpenPath={openFile}
+                  onRevealInFiles={revealInFiles}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                  onSendToTerminal={insertToTerminal}
+                  onSendToAssistant={insertToAssistant}
+                  onOpenSettings={onOpenSettings}
+                />
+              </div>
             </div>
             <div className={activeTask === "browser" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <BrowserPane
-                root={root}
-                request={browserFile}
-                fullscreen={rightFullscreen}
-                onToggleFullscreen={onToggleRightFullscreen}
-              />
+              <div className="h-full min-w-0 flex-1">
+                <BrowserPane
+                  root={root}
+                  request={browserFile}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              </div>
             </div>
             <div className={activeTask === "remote" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <RemotePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+              <div className="h-full min-w-0 flex-1">
+                <RemotePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+              </div>
             </div>
             <div className={activeTask === "database" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <DatabasePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+              <div className="h-full min-w-0 flex-1">
+                <DatabasePane fullscreen={rightFullscreen} onToggleFullscreen={onToggleRightFullscreen} />
+              </div>
             </div>
             <div className={activeTask === "preview" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <PreviewPane
-                root={root}
-                visible={visible && activeTask === "preview"}
-                fullscreen={rightFullscreen}
-                onToggleFullscreen={onToggleRightFullscreen}
-              />
+              <div className="h-full min-w-0 flex-1">
+                <PreviewPane
+                  root={root}
+                  visible={visible && activeTask === "preview"}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              </div>
             </div>
             <div className={activeTask === "deploy" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
-              <DeployPane
-                root={root}
-                visible={visible && activeTask === "deploy"}
-                fullscreen={rightFullscreen}
-                onToggleFullscreen={onToggleRightFullscreen}
-              />
+              <div className="h-full min-w-0 flex-1">
+                <DeployPane
+                  root={root}
+                  visible={visible && activeTask === "deploy"}
+                  fullscreen={rightFullscreen}
+                  onToggleFullscreen={onToggleRightFullscreen}
+                />
+              </div>
             </div>
           </div>
         }
         second={
           <div className="flex min-h-0 min-w-0 flex-1">
             <div className={rightOpen ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} inert={!rightOpen}>
-              <ToolPane tool={tool} {...toolPaneProps} />
+              <div className="h-full w-full min-w-0">
+                <ToolPane tool={tool} {...toolPaneProps} />
+              </div>
             </div>
             <ToolRail
               active={railTool}
