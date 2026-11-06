@@ -16,7 +16,7 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { IconEye } from "./icons";
+import { IconBot, IconEye } from "./icons";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { isBlankClick } from "../lib/dom";
@@ -59,7 +59,7 @@ export interface WorkspaceLayoutHandle {
 
 export type Fullscreen = "none" | "right" | "left";
 
-type WorkspaceTask = "terminal" | "files" | "browser" | "remote" | "database" | "preview" | "deploy";
+type WorkspaceTask = "terminal" | "chat" | "files" | "browser" | "remote" | "database" | "preview" | "deploy";
 
 /**
  * 关闭标签时的匹配。另存为会把未命名缓冲区的 `path` 换成真实路径、但 `untitledId` 不变；
@@ -784,13 +784,25 @@ export function WorkspacePane({
 
   return (
     <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+      <SplitPane
+        initial={76}
+        min={48}
+        max={90}
+        resetOnDoubleClick
+        secondCollapsed={rightCollapsed || !taskHasSidebar || leftFullscreen || rightFullscreen}
+        animateCollapse
+        collapsedSecondWidth={leftFullscreen || rightFullscreen ? 0 : RAIL_WIDTH}
+        first={
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-line bg-panel">
         <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2">
           {taskTabs.map((task) => {
             const toolInfo = RIGHT_TOOLS.find((item) => item.id === task);
             const label =
               task === "terminal"
-                ? "终端 / 对话"
+                ? "终端"
+                : task === "chat"
+                  ? "Agent 对话"
                 : task === "files"
                   ? activeTab
                     ? `${tabName(activeTab)}${activeTab.kind === "diff" ? " · 差异" : ""}`
@@ -807,7 +819,11 @@ export function WorkspacePane({
                   title={label}
                   className="flex max-w-[220px] items-center gap-1.5 py-1 pl-2.5 text-[11px]"
                 >
-                  {toolInfo && <toolInfo.Icon className="h-3.5 w-3.5 shrink-0" />}
+                  {task === "chat" ? (
+                    <IconBot className="h-3.5 w-3.5 shrink-0" />
+                  ) : (
+                    toolInfo && <toolInfo.Icon className="h-3.5 w-3.5 shrink-0" />
+                  )}
                   <span className="truncate">{label}</span>
                 </button>
                 {task !== "terminal" && (
@@ -838,22 +854,15 @@ export function WorkspacePane({
           )}
         </div>
       </div>
-      <SplitPane
-        initial={76}
-        min={48}
-        max={90}
-        resetOnDoubleClick
-        secondCollapsed={rightCollapsed || !taskHasSidebar || leftFullscreen || rightFullscreen}
-        animateCollapse
-        collapsedSecondWidth={leftFullscreen || rightFullscreen ? 0 : RAIL_WIDTH}
-        first={
-          <div className="relative flex min-h-0 min-w-0 flex-1">
-            <div className={activeTask === "terminal" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+            <div className="relative flex min-h-0 min-w-0 flex-1">
+            <div className={activeTask === "terminal" || activeTask === "chat" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
                 <TerminalPane
                   root={root}
                   roots={workspace.roots}
-                  visible={visible && activeTask === "terminal"}
+                  visible={visible && (activeTask === "terminal" || activeTask === "chat")}
+                  view={activeTask === "chat" ? "chat" : "terminal"}
+                  onOpenChat={() => openTask("chat")}
                   ref={setTerminalHandle}
                   fullscreen={leftFullscreen}
                   onToggleFullscreen={onToggleLeftFullscreen}
@@ -921,6 +930,7 @@ export function WorkspacePane({
               </div>
             </div>
           </div>
+            </div>
         }
         second={
           <div className="flex min-h-0 min-w-0 flex-1">

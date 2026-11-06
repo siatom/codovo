@@ -33,7 +33,6 @@ import {
   IconLayoutRows,
   IconLayoutSingle,
   IconPlus,
-  IconTerminal,
   ShellIcon,
 } from "./icons";
 
@@ -85,6 +84,10 @@ interface TerminalPaneProps {
   roots: string[];
   /** 是不是当前显示的工作区。隐藏时只是不显示，shell 照跑 */
   visible: boolean;
+  /** 由工作区超级 Tab 控制：终端与 ACP 对话是两个并列任务 */
+  view: "terminal" | "chat";
+  /** 从终端顶栏创建 / 切到 Agent 对话超级 Tab */
+  onOpenChat: () => void;
   /** 左侧终端列是否已全屏展示 */
   fullscreen: boolean;
   /** 切换左侧全屏。按钮画在标签栏右端 */
@@ -113,6 +116,8 @@ export function TerminalPane({
   root,
   roots,
   visible,
+  view,
+  onOpenChat,
   fullscreen,
   onToggleFullscreen,
   onSessionsReport,
@@ -124,8 +129,6 @@ export function TerminalPane({
   /** ACP Agent 提供的会话名临时覆盖对应终端标签；没有标题时仍显示原标签名 */
   const [agentTitleById, setAgentTitleById] = useState<Record<number, string>>({});
   const [layout, setLayout] = useState<"tabs" | "horizontal" | "vertical">("tabs");
-  /** 中间区在「终端 / 对话」之间切换；对话面板只是藏起来，ACP 会话不因此断开 */
-  const [view, setView] = useState<"terminal" | "chat">("terminal");
   /** 对话面板选中的 CLI，存整条命令（设置里可能同名多条） */
   const [chatCommand, setChatCommand] = useState<string | null>(null);
   /**
@@ -453,6 +456,16 @@ export function TerminalPane({
     [acpCommands, chatCommand],
   );
 
+  useEffect(() => {
+    if (view !== "chat") return;
+    const active = hintByIdRef.current.get(activeId);
+    if (acpCommands.some((option) => option.command === active)) {
+      setChatCommand(active ?? null);
+    } else if (acpCommands[0]) {
+      setChatCommand((current) => current ?? acpCommands[0].command);
+    }
+  }, [activeId, acpCommands, view]);
+
   /**
    * 顶栏点某个 AI CLI。
    *
@@ -538,41 +551,18 @@ export function TerminalPane({
               );
             })}
           </div>
-          {/* 终端 / 对话分段开关。做成两个小段而不是新标签，终端标签模型不用动 */}
-          <div className="flex shrink-0 items-center rounded-md bg-raised p-0.5">
+          {view === "terminal" && (
             <button
               type="button"
-              onClick={() => setView("terminal")}
-              title="终端：原样跑 CLI 的 TUI"
-              aria-label="终端"
-              className={`flex h-6 items-center gap-1 rounded px-1.5 text-[11px] ${
-                view === "terminal" ? "bg-selected text-fg shadow-sm" : "text-fg-dim hover:text-fg"
-              }`}
-            >
-              <IconTerminal className="h-3 w-3" />
-              终端
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const active = hintByIdRef.current.get(activeId);
-                if (acpCommands.some((option) => option.command === active)) {
-                  setChatCommand(active ?? null);
-                } else if (!chatCli && acpCommands[0]) {
-                  setChatCommand(acpCommands[0].command);
-                }
-                setView("chat");
-              }}
-              title="对话：用 ACP 接同一个 CLI，消息和工具卡在界面里呈现"
-              aria-label="对话"
-              className={`flex h-6 items-center gap-1 rounded px-1.5 text-[11px] ${
-                view === "chat" ? "bg-selected text-fg shadow-sm" : "text-fg-dim hover:text-fg"
-              }`}
+              onClick={onOpenChat}
+              title="打开 Agent 对话"
+              aria-label="Agent 对话"
+              className="flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
             >
               <IconBot className="h-3 w-3" />
-              对话
+              Agent 对话
             </button>
-          </div>
+          )}
         </header>
       )}
 
