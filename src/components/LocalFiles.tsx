@@ -157,7 +157,6 @@ export function LocalFiles({
       onRename={rename}
       onDelete={remove}
       canTrash
-      deleteNote="删除后会移到系统回收站。"
       onTransfer={onTransfer}
       onDropEntry={onDropEntry}
       dropDir={path}

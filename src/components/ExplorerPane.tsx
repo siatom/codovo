@@ -44,6 +44,7 @@ import {
   type TreeController,
 } from "./FileTreeNode";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import { FileTypeIcon, FolderTypeIcon } from "./fileIcons";
 import {
@@ -183,18 +184,6 @@ function isWebFile(path: string): boolean {
 /** 去掉被同一批里另一个路径包含的项：移动 / 删除父项已经连带处理了子项 */
 function pruneNested(paths: string[]): string[] {
   return paths.filter((path) => !paths.some((other) => other !== path && isPathInside(path, other)));
-}
-
-/** 批量删除确认框的文案。永久删除没有回收站兜底，措辞得把话说死 */
-function deleteMessage(items: FileEntry[], permanent: boolean): string {
-  const tail = permanent ? "此操作不可撤销。" : "会移到系统回收站。";
-  if (items.length === 1) {
-    const entry = items[0];
-    return entry.isDir
-      ? `删除文件夹「${entry.name}」及其中全部内容？${tail}`
-      : `删除文件「${entry.name}」？${tail}`;
-  }
-  return `删除选中的 ${items.length} 项？${tail}`;
 }
 
 /** roots 数组每次渲染都是新引用，effect 的依赖得靠这个字符串来判断「换没换」 */
@@ -361,10 +350,11 @@ export function ExplorerPane({
   const [menu, setMenu] = useState<{ entry: FileEntry; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<RenamingState | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
-  /** 等着确认删除的那一批；非空时弹确认框。`permanent` 区分回收站与永久删除 */
+  /** 等着确认删除的那一批；非空时弹确认框。`initialPermanent` 只是弹窗的初始选择
+   *  （Shift+Delete 落在这里），最终删法由弹窗里的二选一决定 */
   const [pendingDelete, setPendingDelete] = useState<{
     items: FileEntry[];
-    permanent: boolean;
+    initialPermanent: boolean;
   } | null>(null);
 
   /**
@@ -836,23 +826,24 @@ export function ExplorerPane({
 
   /**
    * 请求删除：这一行在选中集合里就删整批（VS Code 语义），否则只删它自己。
-   * `permanent` 来自右键菜单的「永久删除」或 Shift+Delete——那样就不进回收站。
+   * `initialPermanent` 只来自 Shift+Delete——把弹窗里的选择预先拨到永久删除，
+   * 不再用它直接决定删法。
    */
   const requestDelete = useCallback(
-    (entry: FileEntry, permanent = false) => {
+    (entry: FileEntry, initialPermanent = false) => {
       setMenu(null);
       const items = selection.has(pathKey(entry.path))
         ? [...selection.values()]
         : [entry];
-      if (items.length > 0) setPendingDelete({ items, permanent });
+      if (items.length > 0) setPendingDelete({ items, initialPermanent });
     },
     [selection],
   );
 
-  const confirmDelete = useCallback(async () => {
+  const confirmDelete = useCallback(async (permanent: boolean) => {
     const pending = pendingDelete;
     if (!pending || pending.items.length === 0 || busy) return;
-    const { items, permanent } = pending;
+    const { items } = pending;
     setPendingDelete(null);
     setBusy(true);
     setActionError(null);
@@ -1579,7 +1570,7 @@ export function ExplorerPane({
         }
         case "Delete": {
           event.preventDefault();
-          // Shift+Delete 是各平台通行的「彻底删除」，和右键菜单里那一项同一个动作
+          // Shift+Delete 是各平台通行的「彻底删除」：弹窗照开，只是先把模式拨到永久删除
           requestDelete(entry, event.shiftKey);
           break;
         }
@@ -2141,12 +2132,13 @@ export function ExplorerPane({
         </div>
       )}
 
-      {/* 删除默认进回收站、也能选永久删除，都走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
+      {/* 「删除」菜单只有一项：进不进回收站在弹窗里选，弹窗走自研的确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
-        <ConfirmDialog
-          message={deleteMessage(pendingDelete.items, pendingDelete.permanent)}
-          confirmLabel={pendingDelete.permanent ? "永久删除" : "删除"}
-          onConfirm={() => void confirmDelete()}
+        <DeleteConfirmDialog
+          items={pendingDelete.items}
+          canTrash
+          initialPermanent={pendingDelete.initialPermanent}
+          onConfirm={(permanent) => void confirmDelete(permanent)}
           onCancel={() => setPendingDelete(null)}
         />
       )}
@@ -2328,19 +2320,10 @@ export function ExplorerPane({
             <button
               type="button"
               onClick={() => requestDelete(menu.entry)}
-              className={MENU_ITEM}
-            >
-              <IconTrash className="h-3.5 w-3.5" />
-              删除
-            </button>
-            {/* 回收站兜不住的时候用：不进回收站、直接删，确认框里会写明不可恢复 */}
-            <button
-              type="button"
-              onClick={() => requestDelete(menu.entry, true)}
               className={`${MENU_ITEM} text-danger hover:text-danger`}
             >
               <IconTrash className="h-3.5 w-3.5" />
-              永久删除
+              删除
             </button>
           </div>
         </>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 interface ConfirmDialogProps {
   /** 要确认的事，一句话把后果说清楚 */
@@ -21,6 +21,8 @@ interface ConfirmDialogProps {
    * 「保存」这类非破坏性动作传 false，免得看着像要删东西。
    */
   danger?: boolean;
+  /** 正文下方的自定义内容（如删除弹窗里「回收站 / 永久删除」的二选一） */
+  children?: ReactNode;
   /** 有值时在正文下方多一个勾选框，勾没勾跟着确认 / 取消一起回传 */
   checkboxLabel?: string;
   /** `checked` 只在给了 `checkboxLabel` 时才有意义，否则恒为 false */
@@ -64,6 +66,7 @@ export function ConfirmDialog({
   secondaryLabel,
   onSecondary,
   danger = true,
+  children,
   checkboxLabel,
   onConfirm,
   onCancel,
@@ -98,6 +101,7 @@ export function ConfirmDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <p className="text-[12px] leading-relaxed text-fg">{message}</p>
+        {children}
         {checkboxLabel && (
           <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-fg-muted">
             <input
