@@ -102,7 +102,7 @@ interface WorkspacePaneProps {
 }
 
 /**
- * 一个工作区实例的右侧：终端 / 智能体 + 右边栏。
+ * 一个工作区实例的主工作区：超级 tab 在终端与工具任务间切换，最右侧保留工具图标栏。
  *
  * 实例是**按工作区**挂的（`key` 用工作区 id）——一个工作区可以有多个工作目录，
  * 文件树把它们并列显示；其余单根概念（终端、变更、搜索、浏览器）跟活动根走。
@@ -131,6 +131,8 @@ export function WorkspacePane({
   // 标签身份是结构化的（文件 / 差异视图），不能只拿路径当键，见 lib/tabs.ts
   const [openTabs, setOpenTabs] = useState<Tab[]>([]);
   const [activeTab, setActiveTab] = useState<Tab | null>(null);
+  /** 工作区主视图的超级 tab；工具内容与终端共享同一组顶层入口 */
+  const [activeTask, setActiveTask] = useState<"terminal" | ToolId>("terminal");
   /** 最新标签列表的快照：会话恢复是异步的，要能在读盘途中判断用户是否已经手动开了文件 */
   const openTabsRef = useRef<Tab[]>([]);
   openTabsRef.current = openTabs;
@@ -275,24 +277,19 @@ export function WorkspacePane({
 
   const pickTool = useCallback(
     (id: ToolId) => {
-      // 图标条常驻，所以再点一次当前模块就是收起内容面板（照 VS Code 那套）
-      if (rightOpen && id === activeTool) {
-        setRightOpen(false);
-        // 收起右栏就得退出全屏，否则两列同时收起，会剩一条点不动的图标条和 0 宽的终端
-        onExitFullscreen();
-        return;
-      }
+      setActiveTask(id);
       setTool(id);
       saveTool(root, id);
       setRightOpen(true);
     },
-    [rightOpen, activeTool, root, onExitFullscreen],
+    [root],
   );
 
   const toggleRight = useCallback(() => {
+    if (activeTask !== "terminal") setActiveTask("terminal");
     setRightOpen((open) => !open);
     onExitFullscreen();
-  }, [onExitFullscreen]);
+  }, [activeTask, onExitFullscreen]);
 
   /**
    * 界面操作智能体（应用助手）用的布局入口。刻意和 `pickTool` 分开：那边「再点一次当前
@@ -302,6 +299,7 @@ export function WorkspacePane({
   const layoutHandle = useMemo<WorkspaceLayoutHandle>(
     () => ({
       openTool: (id) => {
+        setActiveTask(id);
         setTool(id);
         saveTool(root, id);
         setRightOpen(true);
@@ -382,6 +380,7 @@ export function WorkspacePane({
   const revealInFiles = useCallback(
     (path: string) => {
       setTool("files");
+      setActiveTask("files");
       saveTool(root, "files");
       setRightOpen(true);
       setFilesReveal({ path, nonce: (filesRevealNonceRef.current += 1) });
@@ -391,9 +390,11 @@ export function WorkspacePane({
 
   /** 已经开着的标签只切过去，不重复开——连点同一个改动项就是这个路径 */
   const openTab = useCallback((tab: Tab) => {
-    setOpenTabs((current) =>
-      current.some((item) => sameTab(item, tab)) ? current : [...current, tab],
-    );
+    const nextTask = tab.kind === "diff" ? "changes" : "files";
+    setActiveTask(nextTask);
+    setTool(nextTask);
+    setRightOpen(true);
+    setOpenTabs((current) => current.length === 1 && sameTab(current[0], tab) ? current : [tab]);
     setActiveTab(tab);
   }, []);
 
@@ -405,6 +406,9 @@ export function WorkspacePane({
         onOpenFileAnywhere(path);
         return;
       }
+      setActiveTask("files");
+      setTool("files");
+      setRightOpen(true);
       openTab(openFileTab(path));
     },
     [onOpenFileAnywhere, openTab, workspace.roots],
@@ -448,7 +452,11 @@ export function WorkspacePane({
         const valid = candidates.filter((_, index) => flags[index]);
         // 读盘途中用户可能已经手动开了文件：不能拿旧会话把当前标签盖掉
         if (valid.length > 0 && openTabsRef.current.length === 0) {
-          const tabs = valid.map((path) => openFileTab(path));
+          const restoredPath =
+            session.active && valid.some((path) => samePath(path, session.active!))
+              ? session.active
+              : valid[0];
+          const tabs = [openFileTab(restoredPath)];
           setOpenTabs(tabs);
           const wanted = session.active;
           const active =
@@ -556,6 +564,7 @@ export function WorkspacePane({
       setBrowserFile({ path, label, nonce: (browserNonceRef.current += 1) });
       // 切到浏览器模块并展开。不能走 pickTool——它在本模块已经选中时是「收起面板」
       setTool("browser");
+      setActiveTask("browser");
       saveTool(root, "browser");
       setRightOpen(true);
     },
@@ -578,6 +587,7 @@ export function WorkspacePane({
   const openMatch = useCallback(
     (path: string, line: number, column: number, length: number) => {
       openTab(openFileTab(path));
+      setActiveTask("files");
       editorRef.current?.revealAt({
         path,
         line,
@@ -594,6 +604,7 @@ export function WorkspacePane({
     (path: string, line: number) => {
       if (ownerRoot(workspace.roots, path) === null) return;
       setTool("files");
+      setActiveTask("files");
       saveTool(root, "files");
       setRightOpen(true);
       onExitFullscreen();
@@ -699,7 +710,15 @@ export function WorkspacePane({
   }, [activeTab]);
 
   return (
-    <div className={visible ? "relative flex min-h-0 min-w-0 flex-1" : "hidden"}>
+    <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
+      <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-panel px-2">
+        <button type="button" onClick={() => setActiveTask("terminal")} className={`rounded px-2.5 py-1 text-[11px] ${activeTask === "terminal" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}>终端 / 对话</button>
+        {RIGHT_TOOLS.filter(({ id }) => toolVisible[id]).map(({ id, label, Icon }) => (
+          <button key={id} type="button" onClick={() => pickTool(id)} className={`flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-[11px] ${activeTask === id ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}>
+            <Icon className="h-3.5 w-3.5" />{label}
+          </button>
+        ))}
+      </div>
       <SplitPane
         initial={52}
         min={20}
@@ -711,7 +730,7 @@ export function WorkspacePane({
         // 右栏收放走宽度动画；收起后落到一条图标条的宽度（左栏全屏时整列归零）
         animateCollapse
         collapsedSecondWidth={leftFullscreen ? 0 : RAIL_WIDTH}
-        firstCollapsed={rightFullscreen}
+        firstCollapsed={rightFullscreen || activeTask !== "terminal"}
         first={
           <TerminalPane
             root={root}
@@ -729,15 +748,6 @@ export function WorkspacePane({
           // 内容只是藏起来、不卸载，Monaco 的撤销历史和 iframe 都留得住
           <div className={leftFullscreen ? "hidden" : "contents"}>
             <div className="flex min-h-0 min-w-0 flex-1">
-              <ToolRail
-                active={activeTool}
-                changed={changedCount}
-                visible={toolVisible}
-                onPick={pickTool}
-                rightOpen={rightOpen}
-                onToggleRight={toggleRight}
-                onBlankClick={onBlankClick}
-              />
               {/* 内容面板整体淡出 / 淡入：收起时宽度动画在跑，内容半透明地退场，
                   不留半截内容，也不再吃键盘焦点。只做 opacity：这一层里有 fixed
                   定位的右键菜单，带上 translate 会让它们改以这里为包含块 */}
@@ -893,6 +903,15 @@ export function WorkspacePane({
                   />
                 </div>
               </div>
+              <ToolRail
+                active={activeTool}
+                changed={changedCount}
+                visible={toolVisible}
+                onPick={pickTool}
+                rightOpen={rightOpen}
+                onToggleRight={toggleRight}
+                onBlankClick={onBlankClick}
+              />
             </div>
           </div>
         }
