@@ -3509,6 +3509,24 @@ export function EditorPane({
           ))}
         </div>
       )}
+      {showDiffBar && (
+        <button
+          type="button"
+          onClick={toggleDiffSideBySide}
+          aria-label={diffSideBySide ? "并排视图（左右对比）" : "内联视图（上下对照）"}
+          aria-pressed={diffSideBySide}
+          title={diffSideBySide ? "并排视图（左右对比）" : "内联视图（上下对照）"}
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
+            diffSideBySide ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
+          }`}
+        >
+          {diffSideBySide ? (
+            <IconLayoutColumns className="h-3.5 w-3.5" />
+          ) : (
+            <IconLayoutSingle className="h-3.5 w-3.5" />
+          )}
+        </button>
+      )}
       {isMarkdownFile && status.kind === "ready" && hasMarkdownHeadings &&
         (markdownMode === "preview" || markdownMode === "split") && (
           <button
@@ -4049,18 +4067,6 @@ export function EditorPane({
           <div className="flex min-w-0 items-center gap-0.5 overflow-hidden">
             {showDiffBar && (
               <>
-                <button
-                  type="button"
-                  onClick={toggleDiffSideBySide}
-                  title={diffSideBySide ? "切换到内联视图" : "切换到并排视图"}
-                  className={STATUS_ICON_BUTTON}
-                >
-                  {diffSideBySide ? (
-                    <IconLayoutSingle className="h-3.5 w-3.5" />
-                  ) : (
-                    <IconLayoutColumns className="h-3.5 w-3.5" />
-                  )}
-                </button>
                 <button
                   type="button"
                   onClick={() => gotoDiff(diffChangeIndex - 1)}
