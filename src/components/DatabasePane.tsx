@@ -5,7 +5,6 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { DatabaseAgent } from "./DatabaseAgent";
 import { DatabaseConnectionDialog } from "./DatabaseConnectionDialog";
 import { DatabaseQuery } from "./DatabaseQuery";
-import { FullscreenButton } from "./FullscreenButton";
 import { ResultGrid } from "./ResultGrid";
 import { TableStructure } from "./TableStructure";
 import { useDbConnections } from "../lib/db-connections";
@@ -41,7 +40,7 @@ const TAB_KEY = "codovo.dbTab";
 
 const PAGE_SIZE = 50;
 
-type SubTab = "tables" | "query" | "agent";
+type SubTab = "tables" | "structure" | "query" | "agent";
 
 function readSession(key: string): string {
   try {
@@ -150,15 +149,11 @@ function NodeHint({ text, danger }: { text: string; danger?: boolean }) {
  * 连上后留在后端池里，切走不杀。
  */
 export function DatabasePane({
-  fullscreen,
-  onToggleFullscreen,
   sidebarTarget,
   onOpenContent,
 }: {
   sidebarTarget?: HTMLElement | null;
   onOpenContent: () => void;
-  fullscreen: boolean;
-  onToggleFullscreen: () => void;
 }) {
   const { connections, addConnection, updateConnection, removeConnection } = useDbConnections();
   // 回调里要读最新的列表 / 会话（连接成功回报时），用 ref 免得闭包读到旧值
@@ -170,7 +165,7 @@ export function DatabasePane({
   );
   const [subTab, setSubTab] = useState<SubTab>(() => {
     const saved = readSession(TAB_KEY);
-    return saved === "query" || saved === "agent" ? saved : "tables";
+    return saved === "structure" || saved === "query" || saved === "agent" ? saved : "tables";
   });
 
   const [sessions, setSessions] = useState<Record<string, SessionState>>({});
@@ -206,8 +201,6 @@ export function DatabasePane({
   const [result, setResult] = useState<QueryResult | null>(null);
   const [loadingRows, setLoadingRows] = useState(false);
   const [queryError, setQueryError] = useState("");
-  /** 「表格」子视图内的数据 / 结构切换。默认落在数据，不改变原来的点表看数据行为 */
-  const [tableView, setTableView] = useState<"data" | "structure">("data");
 
   const [dialog, setDialog] = useState<{ connection: DbConnection | null } | null>(null);
   const [menu, setMenu] = useState<{ connection: DbConnection; x: number; y: number } | null>(
@@ -379,9 +372,8 @@ export function DatabasePane({
       onOpenContent();
       setSelected({ sessionKey, connectionId, table });
       setExportNotice(null);
-      pickTab("tables");
       // 点表仍旧先看数据（和改动前一致）；要看结构再切
-      setTableView("data");
+      pickTab("tables");
       void loadRows(sessionKey, connectionId, table, 0);
     },
     [loadRows, onOpenContent, pickTab],
@@ -730,11 +722,11 @@ export function DatabasePane({
             label="数据库视图"
             options={[
               { value: "tables", label: "表格" },
+              { value: "structure", label: "结构" },
               { value: "query", label: "查询" },
-              { value: "agent", label: "Agent" },
+              { value: "agent", label: "对话" },
             ]}
           />
-          <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
         </header>
 
         {activeConnection && activeState?.phase === "error" && (
@@ -756,23 +748,15 @@ export function DatabasePane({
         )}
 
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className={subTab === "tables" ? "flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
-            {/* 「数据 / 结构」切换只在选中表后出现；没选中就维持原来的提示 */}
-            {selected && (
-              <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2">
-                <Segmented
-                  value={tableView}
-                  onChange={setTableView}
-                  label="表视图"
-                  options={[
-                    { value: "data", label: "数据" },
-                    { value: "structure", label: "结构" },
-                  ]}
-                />
-              </div>
-            )}
+          <div
+            className={
+              subTab === "tables" || subTab === "structure"
+                ? "flex min-h-0 min-w-0 flex-1 flex-col"
+                : "hidden"
+            }
+          >
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-              {tableView === "structure" ? (
+              {subTab === "structure" ? (
                 <TableStructure
                   sessionId={selected ? (sessions[selected.sessionKey]?.id ?? null) : null}
                   table={selected?.table ?? null}

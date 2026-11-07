@@ -1177,8 +1177,6 @@ export function WorkspacePane({
                 <DatabasePane
                   sidebarTarget={activeTool === "database" ? taskSidebarTarget : null}
                   onOpenContent={() => openTask("database")}
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
                 />
               </div>
             </div>
