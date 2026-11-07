@@ -682,8 +682,9 @@ export function TerminalPane({
       </div>
 
       {/* 新建终端旁的下拉。用 fixed 定位：标签栏是横向滚动容器，
-          绝对定位的菜单会被 overflow 裁掉 */}
-      {createMenuOpen && createMenuPos && (
+          绝对定位的菜单会被 overflow 裁掉。终端面板隐藏时也需要能从超级 Tab 打开，
+          因此菜单 portal 到 body，不受面板的 hidden 状态影响 */}
+      {createMenuOpen && createMenuPos && createPortal(
         <>
           {/* 铺一层透明遮罩接住外部点击 */}
           <div className="fixed inset-0 z-30" onClick={() => setCreateMenuOpen(false)} />
@@ -750,7 +751,8 @@ export function TerminalPane({
               );
             })}
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
       {/* 标签右键菜单。标签栏横向滚动，绝对定位会被裁掉，所以和上面的 shell 菜单一样用 fixed */}
