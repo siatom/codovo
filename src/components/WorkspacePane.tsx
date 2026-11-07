@@ -1114,7 +1114,7 @@ export function WorkspacePane({
             </div>
         }
         second={
-          <div className="flex min-h-0 min-w-0 flex-1">
+          <div className="flex min-h-0 min-w-0 flex-1 bg-content">
             <div className={rightOpen ? "flex min-h-0 min-w-0 flex-1 overflow-hidden" : "hidden"} inert={!rightOpen}>
               {agentPanelOpen ? (
                 <div className="flex h-full w-full min-w-0 flex-col bg-content">
