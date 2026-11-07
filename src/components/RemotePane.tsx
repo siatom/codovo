@@ -8,6 +8,7 @@ import { RemoteTerminal } from "./RemoteTerminal";
 import { useRemoteHosts } from "../lib/remote-hosts";
 import { clearHostSecrets, type RemoteConnectionState, type RemoteHost } from "../lib/remote";
 import { IconArrowsLeftRight, IconClose, IconMore, IconPlus, IconServer, IconTerminal } from "./icons";
+import { ICON_SM, ICON_XS, IconButton, Segmented, StatusDot, type StatusTone } from "./ui";
 
 const ACTIVE_KEY = "codovo.remoteActiveHost";
 const TAB_KEY = "codovo.remoteTab";
@@ -42,25 +43,20 @@ function without<T>(table: Record<number, T>, keys: number[]): Record<number, T>
   return next;
 }
 
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
-
-const SEGMENT = "rounded px-2 py-0.5 text-[11px]";
-
 const MENU_ITEM =
   "flex w-full items-center rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
 
-/** 状态点配色 */
-function dotClass(state: RemoteConnectionState | undefined): string {
+/** 连接状态点：颜色语义统一在 ui.tsx 的 StatusDot 里 */
+function dotTone(state: RemoteConnectionState | undefined): StatusTone {
   switch (state?.phase) {
     case "connecting":
-      return "bg-warn animate-pulse";
+      return "busy";
     case "ready":
-      return "bg-accent";
+      return "ok";
     case "error":
-      return "bg-danger";
+      return "error";
     default:
-      return "bg-fg-faint";
+      return "idle";
   }
 }
 
@@ -309,14 +305,9 @@ export function RemotePane({
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             远程连接
           </span>
-          <button
-            type="button"
-            onClick={() => setDialog({ host: null })}
-            title="新增主机"
-            className={HEAD_BUTTON}
-          >
-            <IconPlus className="h-3.5 w-3.5" />
-          </button>
+          <IconButton label="新增主机" onClick={() => setDialog({ host: null })}>
+            <IconPlus className={ICON_SM} />
+          </IconButton>
         </div>
         <div className="min-h-0 flex-1 overflow-auto py-1">
           {hosts.length === 0 ? (
@@ -335,10 +326,7 @@ export function RemotePane({
                     isActive ? "bg-selected" : "hover:bg-hover"
                   }`}
                 >
-                  <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass(state)}`}
-                    title={state?.error ?? undefined}
-                  />
+                  <StatusDot tone={dotTone(state)} title={state?.error ?? undefined} />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12px] text-fg">{host.name}</span>
                     <span className="block truncate text-[10px] text-fg-faint">
@@ -346,14 +334,14 @@ export function RemotePane({
                       {host.host}:{host.port}
                     </span>
                   </span>
-                  <button
-                    type="button"
+                  <IconButton
+                    label="更多"
+                    size="xs"
                     onClick={(event) => openMenu(event, host)}
-                    title="更多"
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100"
+                    className="opacity-0 group-hover:opacity-100"
                   >
-                    <IconMore className="h-3.5 w-3.5" />
-                  </button>
+                    <IconMore className={ICON_SM} />
+                  </IconButton>
                 </div>
               );
             })
@@ -383,32 +371,20 @@ export function RemotePane({
               </span>
             )}
           </span>
-          <div className="flex items-center gap-0.5 rounded-md border border-line-strong p-0.5">
-            <button
-              type="button"
-              onClick={() => pickTab("terminal")}
-              className={`${SEGMENT} ${subTab === "terminal" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-            >
-              终端
-            </button>
-            <button
-              type="button"
-              onClick={() => pickTab("files")}
-              className={`${SEGMENT} ${subTab === "files" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-            >
-              文件
-            </button>
-          </div>
+          <Segmented
+            value={subTab}
+            onChange={pickTab}
+            label="远程视图"
+            options={[
+              { value: "terminal", label: "终端" },
+              { value: "files", label: "文件" },
+            ]}
+          />
           {/* 文件视图下才需要：交换「本地 / 远程」两个面板的左右位置 */}
           {subTab === "files" && (
-            <button
-              type="button"
-              onClick={toggleSwap}
-              title="左右交换位置"
-              className={HEAD_BUTTON}
-            >
-              <IconArrowsLeftRight className="h-3.5 w-3.5" />
-            </button>
+            <IconButton label="左右交换位置" onClick={toggleSwap}>
+              <IconArrowsLeftRight className={ICON_SM} />
+            </IconButton>
           )}
           <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
         </header>
@@ -424,7 +400,7 @@ export function RemotePane({
                   <div
                     key={tabId}
                     className={`flex shrink-0 items-center rounded ${
-                      isActiveTab ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+                      isActiveTab ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"
                     }`}
                   >
                     <button
@@ -436,25 +412,20 @@ export function RemotePane({
                       <IconTerminal className="h-3 w-3" />
                       <span className="truncate">终端 {index + 1}</span>
                     </button>
-                    <button
-                      type="button"
+                    <IconButton
+                      label="关闭这个终端"
+                      size="xs"
+                      tone="danger"
                       onClick={() => closeTab(activeHost.id, tabId)}
-                      title="关闭这个终端"
-                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"
                     >
-                      <IconClose className="h-3 w-3" />
-                    </button>
+                      <IconClose className={ICON_XS} />
+                    </IconButton>
                   </div>
                 );
               })}
-              <button
-                type="button"
-                onClick={() => addTab(activeHost.id)}
-                title="新建终端"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-              >
-                <IconPlus className="h-3.5 w-3.5" />
-              </button>
+              <IconButton label="新建终端" size="xs" onClick={() => addTab(activeHost.id)}>
+                <IconPlus className={ICON_SM} />
+              </IconButton>
             </div>
           </div>
         )}

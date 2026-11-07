@@ -10,6 +10,7 @@ import {
   IconRefresh,
   IconStop,
 } from "./icons";
+import { ICON_SM, IconButton, StatusDot } from "./ui";
 import { diagnosePreview, useEffectiveAiConfig } from "../lib/ai";
 import { PREVIEW_AGENT_LABEL } from "../lib/agent-profiles";
 import { previewAgentRoot } from "../lib/preview-agent";
@@ -35,9 +36,6 @@ import {
   type PreviewDetection,
   type PreviewStatus,
 } from "../lib/preview";
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
 
 const INPUT =
   "mt-1 h-7 w-full rounded border border-line-strong bg-surface px-2 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent";
@@ -376,8 +374,9 @@ export function PreviewPane({
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-content">
       <header className="flex h-8 shrink-0 items-center gap-1.5 border-b border-line px-2">
-        <span
-          className={`h-2 w-2 shrink-0 rounded-full ${running ? "bg-accent" : "bg-line-strong"}`}
+        <StatusDot
+          size="md"
+          tone={running ? "ok" : "off"}
           title={running ? "预览运行中" : "未运行"}
         />
         <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
@@ -406,24 +405,20 @@ export function PreviewPane({
           )}
           {running ? "停止" : agentBusy ? "启动中…" : "启动"}
         </button>
-        <button
-          type="button"
+        <IconButton
+          label="重新加载"
           onClick={() => setNonce((count) => count + 1)}
           disabled={!url}
-          title="重新加载"
-          className={HEAD_BUTTON}
         >
-          <IconRefresh className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
+          <IconRefresh className={ICON_SM} />
+        </IconButton>
+        <IconButton
+          label="用系统浏览器打开"
           onClick={() => url && void openUrl(url).catch(() => {})}
           disabled={!url}
-          title="用系统浏览器打开"
-          className={HEAD_BUTTON}
         >
-          <IconExternalLink className="h-3.5 w-3.5" />
-        </button>
+          <IconExternalLink className={ICON_SM} />
+        </IconButton>
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
 

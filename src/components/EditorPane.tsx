@@ -3626,7 +3626,7 @@ export function EditorPane({
                   setTabMenu({ x: event.clientX, y: event.clientY, tab });
                 }}
                 className={`relative flex shrink-0 items-center rounded ${
-                  isActive ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
+                  isActive ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"
                 } ${dragFrom === index ? "opacity-40" : ""}`}
               >
                 {/* 落点线：插在某个标签之前画在它左缘，插在末尾画在最后一个标签右缘 */}

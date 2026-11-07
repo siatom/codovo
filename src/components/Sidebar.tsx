@@ -52,6 +52,7 @@ import {
   IconTrash,
   IconTree,
 } from "./icons";
+import { StatusDot } from "./ui";
 import { WorkspaceHistory } from "./WorkspaceHistory";
 
 interface SidebarProps {
@@ -1083,7 +1084,7 @@ export function Sidebar({
                                   }}
                                   className="flex shrink-0 cursor-pointer items-center gap-1"
                                 >
-                                  <span className="h-1.5 w-1.5 rounded-full bg-warn animate-pulse" />
+                                  <StatusDot tone="busy" />
                                   {!isCurrent && (
                                     <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
                                       {waiting.kind === "done" ? "已完成" : "等待输入"}
@@ -1117,10 +1118,7 @@ export function Sidebar({
                               )}
                               {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
                               {isOpen && (
-                                <span
-                                  title="工作区已打开"
-                                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-ok"
-                                />
+                                <StatusDot tone="ok" title="工作区已打开" />
                               )}
                             </button>
                             {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}

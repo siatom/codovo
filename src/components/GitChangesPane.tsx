@@ -120,6 +120,7 @@ import {
   IconUndo,
   IconWorktree,
 } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 interface GitChangesPaneProps {
   /** 这个面板属于哪个工作区：所有 git / ai 命令都带着它，后端按它定位工作区 */
@@ -637,10 +638,6 @@ function canHunkStaged(change: GitChange): boolean {
   const { index, worktree } = change;
   return index !== "A" && index !== "D" && index !== "U" && worktree !== "U";
 }
-
-/** 标题栏那几个图标按钮的样式，和刷新按钮同一套 */
-const HEADER_ACTION =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim";
 
 /** 网络操作可能要跑几分钟，光靠按钮变灰看不出在干什么，下面补一行字 */
 const SYNC_NOTICE = {
@@ -3886,88 +3883,73 @@ export function GitChangesPane({
             合并期间远程操作语义未定（push 会推合并前的 HEAD），一律禁掉，
             只留下面主按钮区的「完成合并 / 中止合并」 */}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
+          <IconButton
+            label="获取远程更新"
             onClick={fetch}
             disabled={busy !== null || snapshot.merging}
-            title="获取远程更新"
-            className={HEADER_ACTION}
           >
             <IconCloudDownload
-              className={`h-3.5 w-3.5 ${busy === "fetch" ? "animate-pulse" : ""}`}
+              className={`${ICON_SM}${busy === "fetch" ? " animate-pulse" : ""}`}
             />
-          </button>
-          <button
-            type="button"
+          </IconButton>
+          <IconButton
+            label="拉取（只允许快进）"
             onClick={pull}
             disabled={busy !== null || snapshot.merging}
-            title="拉取（只允许快进）"
-            className={HEADER_ACTION}
           >
-            <IconArrowDownToLine
-              className={`h-3.5 w-3.5 ${busy === "pull" ? "animate-pulse" : ""}`}
-            />
-          </button>
-          <button
-            type="button"
+            <IconArrowDownToLine className={`${ICON_SM}${busy === "pull" ? " animate-pulse" : ""}`} />
+          </IconButton>
+          <IconButton
+            label="合并远程分支"
+            title="合并远程分支（先获取再合并，分叉时产生合并提交）"
             onClick={merge}
             disabled={!canMerge}
-            title="合并远程分支（先获取再合并，分叉时产生合并提交）"
-            className={HEADER_ACTION}
           >
-            <IconMerge className={`h-3.5 w-3.5 ${busy === "merge" ? "animate-pulse" : ""}`} />
-          </button>
-          <button
-            type="button"
+            <IconMerge className={`${ICON_SM}${busy === "merge" ? " animate-pulse" : ""}`} />
+          </IconButton>
+          <IconButton
+            label="推送"
             onClick={push}
             disabled={busy !== null || snapshot.merging}
-            title="推送"
-            className={HEADER_ACTION}
           >
-            <IconArrowUpFromLine
-              className={`h-3.5 w-3.5 ${busy === "push" ? "animate-pulse" : ""}`}
-            />
-          </button>
+            <IconArrowUpFromLine className={`${ICON_SM}${busy === "push" ? " animate-pulse" : ""}`} />
+          </IconButton>
 
           {/* 改动列表的排法切换：图标画的是**当前**模式，点一下换成另一种 */}
-          <button
-            type="button"
+          <IconButton
+            label={view === "list" ? "切换为树形显示" : "切换为列表显示"}
             onClick={() => setViewPersisted(view === "list" ? "tree" : "list")}
-            title={view === "list" ? "切换为树形显示" : "切换为列表显示"}
-            className={HEADER_ACTION}
           >
             {view === "list" ? (
-              <IconList className="h-3.5 w-3.5" />
+              <IconList className={ICON_SM} />
             ) : (
-              <IconTree className="h-3.5 w-3.5" />
+              <IconTree className={ICON_SM} />
             )}
-          </button>
+          </IconButton>
 
           {/* 路径筛选收成这个漏斗按钮：默认不占地方，点开才在改动列表上方出现输入框 */}
           {showPathFilter && (
-            <button
-              type="button"
+            <IconButton
+              label={filterOpen ? "关闭路径筛选" : "按路径筛选"}
+              active={filterOpen}
               onClick={() => setFilterOpen((open) => !open)}
               // 按下别让输入框失焦：否则「失焦收起」和这次 toggle 会打架
               onMouseDown={(event) => event.preventDefault()}
-              title={filterOpen ? "关闭路径筛选" : "按路径筛选"}
-              className={`${HEADER_ACTION} ${filterOpen ? "bg-active text-fg" : ""}`}
             >
-              <IconFilter className="h-3.5 w-3.5" />
-            </button>
+              <IconFilter className={ICON_SM} />
+            </IconButton>
           )}
 
           {/* 不常用的写历史 / 储藏操作收进这个「更多」按钮：默认只占一个图标，
               点开才展开菜单。定位照分支下拉：absolute 锚在这组按钮上 + 透明遮罩接外部点击 */}
-          <button
-            type="button"
+          <IconButton
+            label="更多 Git 操作"
+            active={moreMenu}
             onClick={() => setMoreMenu((open) => !open)}
             disabled={busy !== null}
-            title="更多 Git 操作"
-            className={`${HEADER_ACTION} ${moreMenu ? "bg-active text-fg" : ""}`}
           >
-            <IconMore className="h-3.5 w-3.5" />
-          </button>
+            <IconMore className={ICON_SM} />
+          </IconButton>
 
           {moreMenu && (
             <>
@@ -4757,27 +4739,21 @@ export function GitChangesPane({
             )}
           </button>
           {!logCollapsed && snapshot.head && (
-            <button
-              type="button"
-              onClick={jumpToHead}
-              title="回到当前提交（HEAD）"
-              className={HEADER_ACTION}
-            >
-              <IconTarget className="h-3.5 w-3.5" />
-            </button>
+            <IconButton label="回到当前提交（HEAD）" onClick={jumpToHead}>
+              <IconTarget className={ICON_SM} />
+            </IconButton>
           )}
           {!logCollapsed && showLogFilter && (
-            <button
-              type="button"
+            <IconButton
+              label={logFilterOpen ? "关闭过滤" : "过滤提交"}
+              active={logFilterOpen}
               onClick={() => setLogFilterOpen((open) => !open)}
               // 按下别让输入框失焦：否则「失焦收起」和这次 toggle 会打架，
               // 空词时点一下收起又被 toggle 打开
               onMouseDown={(event) => event.preventDefault()}
-              title={logFilterOpen ? "关闭过滤" : "过滤提交"}
-              className={`${HEADER_ACTION} ${logFilterOpen ? "bg-active text-fg" : ""}`}
             >
-              <IconFilter className="h-3.5 w-3.5" />
-            </button>
+              <IconFilter className={ICON_SM} />
+            </IconButton>
           )}
         </div>
 

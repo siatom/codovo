@@ -12,6 +12,7 @@ import {
   IconRocket,
   IconServer,
 } from "./icons";
+import { ICON_MD, IconButton } from "./ui";
 
 /** 和左侧栏收起时同宽，两条竖栏看起来才是一套。
     不画右边框：整块界面靠背景深浅区分，没有常驻竖线。
@@ -21,12 +22,6 @@ const RAIL = "flex h-full w-11 shrink-0 flex-col items-center gap-1 bg-panel py-
 
 /** 图标条宽度（对应 w-11）。右栏内容面板收起时的落点，SplitPane 的收放动画要按它算 */
 export const RAIL_WIDTH = 44;
-
-// relative 是给「变更」角标定位用的，放在这行省得每个按钮各写一遍
-const BUTTON =
-  "relative flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-fg-dim hover:bg-hover hover:text-fg";
-
-const BUTTON_ON = "bg-selected text-fg";
 
 /**
  * 右边栏的模块注册表：顺序就是图标条上从上到下的顺序。
@@ -78,15 +73,9 @@ export function ToolRail({
 }: ToolRailProps) {
   return (
     <div className={RAIL} onClick={onBlankClick}>
-      <button
-        type="button"
-        onClick={onPickAgent}
-        title="Agent"
-        aria-label="Agent"
-        className={`${BUTTON} ${agentActive ? BUTTON_ON : ""}`}
-      >
-        <IconBot />
-      </button>
+      <IconButton label="Agent" size="md" radius="md" active={agentActive} onClick={onPickAgent}>
+        <IconBot className={ICON_MD} />
+      </IconButton>
       {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
         // 有改动时才挂角标，0 就不显示——空白角标反而像加载失败
         const badge =
@@ -96,32 +85,35 @@ export function ToolRail({
               : String(changed)
             : null;
         return (
-          <button
+          <IconButton
             key={id}
-            type="button"
+            label={label}
+            size="md"
+            radius="md"
+            active={active === id}
             onClick={() => onPick(id)}
-            title={label}
-            className={`${BUTTON} ${active === id ? BUTTON_ON : ""}`}
+            className="relative"
           >
-            <Icon />
+            <Icon className={ICON_MD} />
             {badge && (
               <span className="pointer-events-none absolute -top-0.5 -right-0.5 min-w-[13px] rounded-full bg-accent px-1 text-center text-[9px] leading-[13px] font-medium text-app tabular-nums">
                 {badge}
               </span>
             )}
-          </button>
+          </IconButton>
         );
       })}
 
       {/* mt-auto 把它顶到底部，和左侧栏的收起按钮一条水平线 */}
-      <button
-        type="button"
+      <IconButton
+        label={rightOpen ? "收起右侧面板" : "展开右侧面板"}
+        size="md"
+        radius="md"
         onClick={onToggleRight}
-        title={rightOpen ? "收起右侧面板" : "展开右侧面板"}
-        className={`${BUTTON} mt-auto`}
+        className="mt-auto"
       >
-        {rightOpen ? <IconPanelRightOpen /> : <IconPanelRight />}
-      </button>
+        {rightOpen ? <IconPanelRightOpen className={ICON_MD} /> : <IconPanelRight className={ICON_MD} />}
+      </IconButton>
     </div>
   );
 }

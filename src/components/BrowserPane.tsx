@@ -3,6 +3,7 @@ import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { assetUrl } from "../lib/asset-url";
 import { FullscreenButton } from "./FullscreenButton";
 import { IconExternalLink, IconRefresh } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 const URL_KEY = "codovo.browserUrl.";
 
@@ -109,9 +110,6 @@ export function BrowserPane({
     });
   }, [filePath, url]);
 
-  const HEAD_BUTTON =
-    "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
-
   // 预览文件时给地址挂一个随 nonce 变的查询串：改完文件点「重新加载」要拿到新内容，
   // 不能让 WebView 的缓存把旧的一版顶回来（asset 协议自己不发 Cache-Control）。
   // 查询串不影响相对路径的解析，asset 协议也只认路径、不看查询。
@@ -130,24 +128,16 @@ export function BrowserPane({
           spellCheck={false}
           className="h-6 min-w-0 flex-1 rounded border border-line-strong bg-surface px-2 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent"
         />
-        <button
-          type="button"
+        <IconButton
+          label="重新加载"
           onClick={() => setNonce((count) => count + 1)}
           disabled={!url}
-          title="重新加载"
-          className={HEAD_BUTTON}
         >
-          <IconRefresh className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          onClick={openExternal}
-          disabled={!url}
-          title="用系统浏览器打开"
-          className={HEAD_BUTTON}
-        >
-          <IconExternalLink className="h-3.5 w-3.5" />
-        </button>
+          <IconRefresh className={ICON_SM} />
+        </IconButton>
+        <IconButton label="用系统浏览器打开" onClick={openExternal} disabled={!url}>
+          <IconExternalLink className={ICON_SM} />
+        </IconButton>
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
 

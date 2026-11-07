@@ -50,6 +50,7 @@ import {
   closeIconHtml,
   fileIconHtml,
 } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 export interface AgentPaneHandle {
   /** 把一段位置引用插成一个可整体删除的 chip；服务还没就绪就先挂着，就绪后补上 */
@@ -82,10 +83,6 @@ const SEND_BUTTON =
 /** 停止键和发送键同尺寸同位置，但保持中性色，免得被当成"再发一次" */
 const STOP_BUTTON =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
-
-/** 标题栏上的小图标按钮（历史 / 新建），和数据库智能体那边同一套 */
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
 /* ---------- 输入框里的位置引用 chip ---------- */
 
@@ -724,12 +721,12 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
           onDelete={setPendingDelete}
           waitingKinds={waitingKinds}
         />
-        <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
-          <IconPlus className="h-3.5 w-3.5" />
-        </button>
-        <button type="button" onClick={onClose} title="关闭助手" className={HEAD_BUTTON}>
-          <IconClose className="h-3.5 w-3.5" />
-        </button>
+        <IconButton label="新建对话" onClick={newSession}>
+          <IconPlus className={ICON_SM} />
+        </IconButton>
+        <IconButton label="关闭助手" onClick={onClose}>
+          <IconClose className={ICON_SM} />
+        </IconButton>
       </div>
 
       {/* 外层 relative 只用来给「回到底部」按钮定位；滚动仍在内层容器上 */}

@@ -34,7 +34,7 @@ function DeleteOption({
   return (
     <label
       className={`flex cursor-pointer items-start gap-2 rounded-md border px-2 py-1.5 transition-colors ${
-        checked ? "border-accent-line bg-active" : "border-line hover:bg-hover"
+        checked ? "border-accent-line bg-selected" : "border-line hover:bg-hover"
       }`}
     >
       <input

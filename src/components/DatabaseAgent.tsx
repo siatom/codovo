@@ -30,6 +30,7 @@ import { AgentMessageView } from "./AgentMessageView";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ScrollToBottomButton, useStickToBottom } from "./ScrollToBottom";
 import { IconBot, IconPlus, IconSend, IconStop } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 type Phase = "idle" | "starting" | "ready" | "error";
 
@@ -39,9 +40,6 @@ const SEND_BUTTON =
 
 const STOP_BUTTON =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-active text-fg hover:bg-hover";
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
 /**
  * 数据库模块的「Agent」子视图：自然语言 → 只读 SQL。
@@ -395,9 +393,9 @@ export function DatabaseAgent({
           onRename={(id, title) => void renameSession(id, title)}
           onDelete={setPendingDelete}
         />
-        <button type="button" onClick={newSession} title="新建对话" className={HEAD_BUTTON}>
-          <IconPlus className="h-3.5 w-3.5" />
-        </button>
+        <IconButton label="新建对话" onClick={newSession}>
+          <IconPlus className={ICON_SM} />
+        </IconButton>
       </div>
 
       {/* 外层 relative 只用来给「回到底部」按钮定位；滚动仍在内层容器上 */}

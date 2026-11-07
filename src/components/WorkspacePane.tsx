@@ -17,9 +17,10 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { AgentLogo, IconBot, IconChevronDown, IconFile, IconPlus, IconSettings, IconTerminal, ShellIcon } from "./icons";
+import { AgentLogo, IconBot, IconChevronDown, IconClose, IconFile, IconPlus, IconSettings, IconTerminal, ShellIcon } from "./icons";
 import { FileTypeIcon } from "./fileIcons";
 import { FullscreenButton } from "./FullscreenButton";
+import { ICON_SM, ICON_XS, IconButton, Segmented, StatusDot } from "./ui";
 import type { SettingsTab } from "./SettingsDialog";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
@@ -902,7 +903,7 @@ export function WorkspacePane({
                       event.preventDefault();
                       setTerminalTabMenu({ id: terminalTab.id, x: event.clientX, y: event.clientY });
                     }}
-                    className={`flex h-7 shrink-0 items-center rounded ${activeTask === "terminal" && activeTerminalId === terminalTab.id ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"}`}
+                    className={`flex h-7 shrink-0 items-center rounded ${activeTask === "terminal" && activeTerminalId === terminalTab.id ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
                   >
                     <button
                       type="button"
@@ -921,16 +922,17 @@ export function WorkspacePane({
                         <ShellIcon kind={terminalTab.shellKind} className="h-3.5 w-3.5 shrink-0" />
                       )}
                       <span className={`truncate ${attentionTitle ? "text-warn" : ""}`}>{terminalTab.label}</span>
-                      {attentionTitle && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse" />}
+                      {attentionTitle && <StatusDot tone="busy" />}
                     </button>
-                    <button
-                      type="button"
+                    <IconButton
+                      label="关闭这个终端"
+                      size="xs"
+                      tone="danger"
                       onClick={() => terminalRef.current?.closeSession(terminalTab.id)}
-                      title="关闭这个终端"
-                      className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger"
+                      className="mr-1"
                     >
-                      <span aria-hidden="true">×</span>
-                    </button>
+                      <IconClose className={ICON_XS} />
+                    </IconButton>
                   </div>
                 );
               });
@@ -953,7 +955,7 @@ export function WorkspacePane({
             return (
               <div
                 key={task}
-                className={`flex h-7 shrink-0 items-center rounded ${activeTask === task ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"}`}
+                className={`flex h-7 shrink-0 items-center rounded ${activeTask === task ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
               >
                 <button
                   type="button"
@@ -978,17 +980,18 @@ export function WorkspacePane({
                     toolInfo && <toolInfo.Icon className="h-3.5 w-3.5 shrink-0" />
                   )}
                   <span className="truncate">{label}</span>
-                  {chatTab?.busy && <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn" />}
-                  {chatTab?.needsPermission && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn" />}
+                  {chatTab?.busy && <StatusDot tone="busy" />}
+                  {chatTab?.needsPermission && <StatusDot tone="busy" />}
                 </button>
-                <button
-                  type="button"
+                <IconButton
+                  label={task === "files" ? "关闭文件视图" : `关闭${label}`}
+                  size="xs"
+                  tone="danger"
                   onClick={() => closeTask(task)}
-                  title={task === "files" ? "关闭文件视图" : `关闭${label}`}
-                  className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-danger"
+                  className="mr-1"
                 >
-                  <span aria-hidden="true">×</span>
-                </button>
+                  <IconClose className={ICON_XS} />
+                </IconButton>
               </div>
             );
           })}
@@ -1010,7 +1013,7 @@ export function WorkspacePane({
                 }}
                 title="新建终端"
                 aria-label="新建终端"
-                className="flex h-6 w-6 items-center justify-center rounded-l text-fg-dim hover:bg-hover hover:text-fg"
+                className="flex h-6 w-6 items-center justify-center rounded-l text-fg-dim hover:bg-active hover:text-fg"
               >
                 <IconPlus className="h-3.5 w-3.5" />
               </button>
@@ -1019,7 +1022,7 @@ export function WorkspacePane({
                 onClick={(event) => terminalRef.current?.openCreateMenu(event.currentTarget)}
                 title="选择要新建的终端或 Agent"
                 aria-label="选择要新建的终端或 Agent"
-                className="flex h-6 w-5 items-center justify-center rounded-r text-fg-dim hover:bg-hover hover:text-fg"
+                className="flex h-6 w-5 items-center justify-center rounded-r text-fg-dim hover:bg-active hover:text-fg"
               >
                 <IconChevronDown className="h-3 w-3" />
               </button>
@@ -1119,56 +1122,45 @@ export function WorkspacePane({
                     <IconBot className="h-4 w-4 text-fg-dim" />
                     <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">Agent</span>
                     {/* 快捷入口：直接落到设置的「智能体」页，省得再从外观页翻过去 */}
-                    <button
-                      type="button"
-                      onClick={() => onOpenSettings("agents")}
-                      title="设置 · 智能体"
-                      aria-label="设置 · 智能体"
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
-                    >
-                      <IconSettings className="h-3.5 w-3.5" />
-                    </button>
+                    <IconButton label="设置 · 智能体" onClick={() => onOpenSettings("agents")}>
+                      <IconSettings className={ICON_SM} />
+                    </IconButton>
                   </header>
                   {/* 终端和 ACP 对话是同一块工作区的两种打开方式，排成一行左右切换，
                       不再上下各占一行——下面还要留位置给智能体列表 */}
                   <div className="shrink-0 px-2 py-1.5">
-                    <div className="flex items-center gap-0.5 rounded-md border border-line bg-surface p-0.5">
-                      <button
-                        type="button"
-                        aria-pressed={agentMode === "terminal"}
-                        onClick={() => {
+                    <Segmented
+                      value={agentMode}
+                      label="Agent 视图"
+                      onChange={(mode) => {
+                        if (mode === "terminal") {
                           setAgentMode("terminal");
                           setActiveTask("terminal");
                           terminalRef.current?.focusSession(activeTerminalId);
-                        }}
-                        className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] ${
-                          agentMode === "terminal" ? "bg-active text-fg" : "text-fg-dim hover:text-fg"
-                        }`}
-                      >
-                        <IconTerminal className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">终端</span>
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={agentMode === "chat"}
-                        onClick={() => {
-                          setAgentMode("chat");
-                          // 已经开着的对话就切过去；一条都没有时只停在这个模式上，
-                          // 等用户从下面的智能体里选一个再新建 Tab
-                          const target =
-                            selectedAcpChat && taskTabs.includes(acpTask(selectedAcpChat.chatId))
-                              ? selectedAcpChat
-                              : acpChatTabs[acpChatTabs.length - 1];
-                          if (target) selectAcpTab(target.command, target.chatId);
-                        }}
-                        className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[11px] ${
-                          agentMode === "chat" ? "bg-active text-fg" : "text-fg-dim hover:text-fg"
-                        }`}
-                      >
-                        <IconBot className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">ACP 对话</span>
-                      </button>
-                    </div>
+                          return;
+                        }
+                        setAgentMode("chat");
+                        // 已经开着的对话就切过去；一条都没有时只停在这个模式上，
+                        // 等用户从下面的智能体里选一个再新建 Tab
+                        const target =
+                          selectedAcpChat && taskTabs.includes(acpTask(selectedAcpChat.chatId))
+                            ? selectedAcpChat
+                            : acpChatTabs[acpChatTabs.length - 1];
+                        if (target) selectAcpTab(target.command, target.chatId);
+                      }}
+                      options={[
+                        {
+                          value: "terminal",
+                          label: "终端",
+                          icon: <IconTerminal className={`${ICON_SM} shrink-0`} />,
+                        },
+                        {
+                          value: "chat",
+                          label: "ACP 对话",
+                          icon: <IconBot className={`${ICON_SM} shrink-0`} />,
+                        },
+                      ]}
+                    />
                   </div>
                   <div className="mx-2 border-t border-line" />
                   <div className="min-h-0 flex-1 overflow-y-auto p-2">

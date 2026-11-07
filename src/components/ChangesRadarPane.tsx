@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { pathKey } from "../lib/fs";
@@ -9,6 +9,7 @@ import { workstreamList, workstreamMerge, workstreamRemove } from "../lib/workst
 import { workstreamState, type WorkstreamState } from "../lib/workstream-state";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { IconBranch, IconMore, IconTerminal, IconWorktree } from "./icons";
+import { ICON_XS, Segmented } from "./ui";
 
 interface ChangesRadarPaneProps {
   /** 工作区活动根（主检出）；所有 git 命令都以它为仓库边界 */
@@ -401,24 +402,27 @@ export function ChangesRadarPane({
           {/* 两个列表回答两个不同的问题：这里有哪些检出 / 这里有哪些分支。
               默认停在「工作树」，分支列表是一级入口，不再藏在折叠行里 */}
           <div className="flex shrink-0 items-center border-b border-line px-2 py-1.5">
-            <div className="flex min-w-0 flex-1 items-center gap-0.5 rounded-md border border-line bg-surface p-0.5">
-              <TabButton
-                active={tab === "worktree"}
-                icon={<IconWorktree className="h-3 w-3 shrink-0" />}
-                label="工作树"
-                count={ranked.length}
-                alert={waitingCount}
-                onClick={() => setTab("worktree")}
-              />
-              <TabButton
-                active={tab === "branch"}
-                icon={<IconBranch className="h-3 w-3 shrink-0" />}
-                label="分支"
-                count={branchRows.length}
-                alert={0}
-                onClick={() => setTab("branch")}
-              />
-            </div>
+            <Segmented
+              value={tab}
+              onChange={setTab}
+              label="变更列表"
+              className="min-w-0 flex-1"
+              options={[
+                {
+                  value: "worktree",
+                  icon: <IconWorktree className={ICON_XS} />,
+                  label: "工作树",
+                  count: ranked.length,
+                  alert: waitingCount,
+                },
+                {
+                  value: "branch",
+                  icon: <IconBranch className={ICON_XS} />,
+                  label: "分支",
+                  count: branchRows.length,
+                },
+              ]}
+            />
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col overflow-auto">
@@ -521,47 +525,6 @@ export function ChangesRadarPane({
         />
       )}
     </>
-  );
-}
-
-/** 顶部分段按钮：图标 + 名字 + 条数，有需要你处理的行时再挂一个实心角标 */
-function TabButton({
-  active,
-  icon,
-  label,
-  count,
-  alert,
-  onClick,
-}: {
-  active: boolean;
-  icon: ReactNode;
-  label: string;
-  count: number;
-  alert: number;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded px-2 py-[3px] text-[11px] ${
-        active ? "bg-active text-fg" : "text-fg-dim hover:text-fg"
-      }`}
-    >
-      {icon}
-      <span className="truncate">{label}</span>
-      <span
-        className={`shrink-0 text-[10px] tabular-nums ${active ? "text-fg-muted" : "text-fg-faint"}`}
-      >
-        {count}
-      </span>
-      {alert > 0 && (
-        <span className="shrink-0 rounded-full bg-warn px-1 text-[9px] leading-[14px] font-medium text-app tabular-nums">
-          {alert}
-        </span>
-      )}
-    </button>
   );
 }
 

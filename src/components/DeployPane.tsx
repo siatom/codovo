@@ -8,6 +8,7 @@ import {
   IconRefresh,
   IconRocket,
 } from "./icons";
+import { ICON_SM, IconButton, StatusDot } from "./ui";
 import { diagnoseCicd, suggestCicdConfig, useEffectiveAiConfig } from "../lib/ai";
 import {
   cicdStatus,
@@ -20,9 +21,6 @@ import {
   type CicdEvent,
   type CicdStatus,
 } from "../lib/cicd";
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
 
 /** 日志区高度按工作目录记；上下限在拖动时再受面板高度约束 */
 const LOG_HEIGHT_KEY = "codovo.deployLogHeight.";
@@ -297,8 +295,9 @@ export function DeployPane({
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-content">
       <header className="flex h-8 shrink-0 items-center gap-1.5 border-b border-line px-2">
-        <span
-          className={`h-2 w-2 shrink-0 rounded-full ${running ? "bg-accent" : "bg-line-strong"}`}
+        <StatusDot
+          size="md"
+          tone={running ? "ok" : "off"}
           title={running ? "流水线运行中" : "空闲"}
         />
         <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
@@ -325,15 +324,9 @@ export function DeployPane({
           <IconRocket className="h-3.5 w-3.5" />
           {running ? "停止" : "部署"}
         </button>
-        <button
-          type="button"
-          onClick={() => void load()}
-          disabled={running}
-          title="重新读取配置与状态"
-          className={HEAD_BUTTON}
-        >
-          <IconRefresh className="h-3.5 w-3.5" />
-        </button>
+        <IconButton label="重新读取配置与状态" onClick={() => void load()} disabled={running}>
+          <IconRefresh className={ICON_SM} />
+        </IconButton>
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
       </header>
 

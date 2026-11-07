@@ -9,6 +9,7 @@ import { ChangesRadarPane } from "./ChangesRadarPane";
 import { FilesPane } from "./FilesPane";
 import { GitChangesPane } from "./GitChangesPane";
 import { IconChevronDown, IconChevronRight, IconRefresh } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 import type { TerminalSessionInfo } from "../lib/types";
 
 /** 右栏的工具模块。浏览器 / 远程连接 / 数据库不在这里渲染内容（它们独占编辑器那一列），但入口在同一个图标条上 */
@@ -17,10 +18,6 @@ export type ToolId = "files" | "changes" | "browser" | "remote" | "database" | "
 const TOOL_KEY = "codovo.rightTool.";
 
 const TOOLS: ToolId[] = ["files", "changes", "browser", "remote", "database", "preview", "deploy"];
-
-/** 标题栏图标按钮的样式，和「文件」模块标题栏那几个按钮一致 */
-const ICON_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
 
 /**
  * 记住上次看的是哪个模块。面板本身每次启动都是收起的（跟左侧栏一个道理，
@@ -243,8 +240,9 @@ export function ToolPane({
             变更
           </span>
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            <button
-              type="button"
+            <IconButton
+              label={radarBusy ? "正在刷新…" : "刷新"}
+              disabled={radarBusy}
               onClick={() => {
                 // 雷达里「主检出」那行读的是 git 快照（2 秒轮询），只重拉 worktree 列表
                 // 的话点完刷新数字还得等下一拍才动，看起来就像按钮没反应。这里把各根的
@@ -253,13 +251,9 @@ export function ToolPane({
                 for (const controller of Object.values(gitByRoot)) controller.refresh();
                 setReloadKey((key) => key + 1);
               }}
-              // 拉取期间不再接受点击：重活是后端的 git status，连点只会排队
-              disabled={radarBusy}
-              title={radarBusy ? "正在刷新…" : "刷新"}
-              className={`${ICON_BUTTON} disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent`}
             >
-              <IconRefresh className={`h-3.5 w-3.5${radarBusy ? " animate-spin" : ""}`} />
-            </button>
+              <IconRefresh className={`${ICON_SM}${radarBusy ? " animate-spin" : ""}`} />
+            </IconButton>
           </div>
         </div>
         {!advancedOpen ? (

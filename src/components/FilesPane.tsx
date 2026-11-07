@@ -18,6 +18,7 @@ import {
   IconSearch,
   IconWholeWord,
 } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 /** 文件模块里的两种搜索：按文件名过滤文件树 / 按内容搜结果 */
 type SearchMode = "name" | "content";
@@ -51,10 +52,6 @@ const FIELD_BUTTON =
  * 在深色主题下几乎一个色，压不住。
  */
 const SWITCH_ON = "bg-accent-line text-accent-soft";
-
-/** 标题栏那几个图标按钮，和其他模块的头是同一套写法 */
-const HEADER_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
 
 interface FilesPaneProps {
   /** 工作区的全部工作目录：树并列显示，搜索挨个根搜 */
@@ -204,44 +201,38 @@ export function FilesPane({
         </span>
         {(!searchOpen || mode === "name") && (
           <>
-            <button
-              type="button"
-              onClick={() => explorerRef.current?.create("file")}
+            <IconButton
+              label="新建文件"
               title={activeQuery ? "先清空搜索再新建" : "新建文件"}
               disabled={activeQuery.length > 0}
-              className={HEADER_BUTTON}
+              onClick={() => explorerRef.current?.create("file")}
             >
-              <IconPlus className="h-3.5 w-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => explorerRef.current?.create("directory")}
+              <IconPlus className={ICON_SM} />
+            </IconButton>
+            <IconButton
+              label="新建文件夹"
               title={activeQuery ? "先清空搜索再新建" : "新建文件夹"}
               disabled={activeQuery.length > 0}
-              className={HEADER_BUTTON}
+              onClick={() => explorerRef.current?.create("directory")}
             >
-              <IconFolderPlus className="h-3.5 w-3.5" />
-            </button>
+              <IconFolderPlus className={ICON_SM} />
+            </IconButton>
           </>
         )}
-        <button
-          type="button"
-          onClick={refresh}
+        <IconButton
+          label={searchOpen && mode === "content" ? "重新搜索" : "刷新文件树"}
           disabled={searchOpen && mode === "content" && !activeQuery}
-          title={searchOpen && mode === "content" ? "重新搜索" : "刷新文件树"}
-          className={`${HEADER_BUTTON} disabled:opacity-40`}
+          onClick={refresh}
         >
-          <IconRefresh className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
+          <IconRefresh className={ICON_SM} />
+        </IconButton>
+        <IconButton
+          label={searchOpen ? "收起搜索" : "搜索文件"}
+          active={searchOpen}
           onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-          title={searchOpen ? "收起搜索" : "搜索文件"}
-          aria-pressed={searchOpen}
-          className={`${HEADER_BUTTON} ${searchOpen ? "bg-active text-fg" : ""}`}
         >
-          <IconSearch className="h-3.5 w-3.5" />
-        </button>
+          <IconSearch className={ICON_SM} />
+        </IconButton>
       </header>
 
       {/* 统一搜索栏：点放大镜才展开；关键词 + 模式，内容模式再多一排选项 */}

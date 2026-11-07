@@ -3,9 +3,7 @@ import { formatTime } from "../lib/agent";
 import type { AttentionKind } from "../lib/attention";
 import type { AgentSessionSummary } from "../lib/types";
 import { IconHistory, IconMore, IconPlus } from "./icons";
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg";
+import { ICON_SM, IconButton, StatusDot } from "./ui";
 
 const MENU_ITEM =
   "flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -64,14 +62,13 @@ export function AgentHistoryMenu({
     // 相对定位挂在按钮自己身上：两个面板里这个按钮离右端距离不一样，
     // 挂在工具条上的话下拉会跟着工具条对齐、跑到别的按钮底下
     <div className="relative shrink-0">
-      <button
-        type="button"
+      <IconButton
+        label="历史对话"
+        active={open}
         onClick={() => setOpen((isOpen) => !isOpen)}
-        title="历史对话"
-        className={HEAD_BUTTON}
       >
-        <IconHistory className="h-3.5 w-3.5" />
-      </button>
+        <IconHistory className={ICON_SM} />
+      </IconButton>
 
       {open && (
         <>
@@ -107,7 +104,7 @@ export function AgentHistoryMenu({
                     <li
                       key={item.id}
                       className={`group/hist flex items-center rounded-md ${
-                        isActive ? "bg-active" : "hover:bg-hover"
+                        isActive ? "bg-selected" : "hover:bg-hover"
                       }`}
                     >
                       {renaming?.id === item.id ? (
@@ -143,12 +140,7 @@ export function AgentHistoryMenu({
                               isActive ? "text-fg" : "text-fg-muted group-hover/hist:text-fg"
                             }`}
                           >
-                            {attentionHint && (
-                              <span
-                                title={attentionHint}
-                                className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn animate-pulse"
-                              />
-                            )}
+                            {attentionHint && <StatusDot tone="busy" title={attentionHint} />}
                             <span className="min-w-0 flex-1 truncate">{item.title}</span>
                             {/* 时间只在没悬停时露脸：悬停后右侧让给「⋯」 */}
                             <span className="shrink-0 text-[11px] text-fg-faint group-hover/hist:hidden">

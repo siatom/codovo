@@ -34,6 +34,7 @@ import {
   IconMore,
   IconPlus,
 } from "./icons";
+import { ICON_SM, IconButton, Segmented, StatusDot, type StatusTone } from "./ui";
 
 const ACTIVE_KEY = "codovo.dbActiveConnection";
 const TAB_KEY = "codovo.dbTab";
@@ -57,11 +58,6 @@ function writeSession(key: string, value: string) {
     // 记不住只影响下次打开时的还原，不影响使用
   }
 }
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
-
-const SEGMENT = "rounded px-2 py-0.5 text-[11px]";
 
 const MENU_ITEM =
   "flex w-full items-center rounded px-2 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg";
@@ -114,17 +110,17 @@ interface SessionState {
   error?: string;
 }
 
-/** 状态点配色 */
-function sessionDot(state: SessionState | undefined): string {
+/** 会话状态点：颜色语义统一在 ui.tsx 的 StatusDot 里 */
+function dotTone(state: SessionState | undefined): StatusTone {
   switch (state?.phase) {
     case "connecting":
-      return "bg-warn animate-pulse";
+      return "busy";
     case "ready":
-      return "bg-accent";
+      return "ok";
     case "error":
-      return "bg-danger";
+      return "error";
     default:
-      return "bg-fg-faint";
+      return "idle";
   }
 }
 
@@ -578,14 +574,9 @@ export function DatabasePane({
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             数据库
           </span>
-          <button
-            type="button"
-            onClick={() => setDialog({ connection: null })}
-            title="新增连接"
-            className={HEAD_BUTTON}
-          >
-            <IconPlus className="h-3.5 w-3.5" />
-          </button>
+          <IconButton label="新增连接" onClick={() => setDialog({ connection: null })}>
+            <IconPlus className={ICON_SM} />
+          </IconButton>
         </div>
         <div className="min-h-0 flex-1 overflow-auto py-1">
           {connections.length === 0 ? (
@@ -606,10 +597,7 @@ export function DatabasePane({
                     style={{ paddingLeft: INDENT[0] }}
                   >
                     <Chevron open={open} />
-                    <span
-                      className={`h-1.5 w-1.5 shrink-0 rounded-full ${sessionDot(session)}`}
-                      title={session?.error}
-                    />
+                    <StatusDot tone={dotTone(session)} title={session?.error} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12px] text-fg">{connection.name}</span>
                       <span className="block truncate text-[10px] text-fg-faint">
@@ -733,29 +721,16 @@ export function DatabasePane({
                 ? activeConnection.name
                 : "未选择连接"}
           </span>
-          <div className="flex items-center gap-0.5 rounded-md border border-line-strong p-0.5">
-            <button
-              type="button"
-              onClick={() => pickTab("tables")}
-              className={`${SEGMENT} ${subTab === "tables" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-            >
-              表格
-            </button>
-            <button
-              type="button"
-              onClick={() => pickTab("query")}
-              className={`${SEGMENT} ${subTab === "query" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-            >
-              查询
-            </button>
-            <button
-              type="button"
-              onClick={() => pickTab("agent")}
-              className={`${SEGMENT} ${subTab === "agent" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-            >
-              Agent
-            </button>
-          </div>
+          <Segmented
+            value={subTab}
+            onChange={pickTab}
+            label="数据库视图"
+            options={[
+              { value: "tables", label: "表格" },
+              { value: "query", label: "查询" },
+              { value: "agent", label: "Agent" },
+            ]}
+          />
           <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
         </header>
 
@@ -782,20 +757,15 @@ export function DatabasePane({
             {/* 「数据 / 结构」切换只在选中表后出现；没选中就维持原来的提示 */}
             {selected && (
               <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2">
-                <button
-                  type="button"
-                  onClick={() => setTableView("data")}
-                  className={`${SEGMENT} ${tableView === "data" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-                >
-                  数据
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTableView("structure")}
-                  className={`${SEGMENT} ${tableView === "structure" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
-                >
-                  结构
-                </button>
+                <Segmented
+                  value={tableView}
+                  onChange={setTableView}
+                  label="表视图"
+                  options={[
+                    { value: "data", label: "数据" },
+                    { value: "structure", label: "结构" },
+                  ]}
+                />
               </div>
             )}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">

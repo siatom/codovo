@@ -1,4 +1,5 @@
 import { IconFullscreen, IconFullscreenExit } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 interface FullscreenButtonProps {
   /** 当前是否全屏：决定图标和标题 */
@@ -12,17 +13,11 @@ interface FullscreenButtonProps {
  */
 export function FullscreenButton({ fullscreen, onToggle }: FullscreenButtonProps) {
   return (
-    <button
-      type="button"
+    <IconButton
+      label={fullscreen ? "退出全屏（Esc）" : "全屏展示"}
       onClick={onToggle}
-      title={fullscreen ? "退出全屏（Esc）" : "全屏展示"}
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
     >
-      {fullscreen ? (
-        <IconFullscreenExit className="h-3.5 w-3.5" />
-      ) : (
-        <IconFullscreen className="h-3.5 w-3.5" />
-      )}
-    </button>
+      {fullscreen ? <IconFullscreenExit className={ICON_SM} /> : <IconFullscreen className={ICON_SM} />}
+    </IconButton>
   );
 }

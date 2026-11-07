@@ -30,6 +30,7 @@ import {
   IconLayoutSingle,
   ShellIcon,
 } from "./icons";
+import { ICON_SM, IconButton } from "./ui";
 
 /** + 号右侧下拉的宽度；菜单贴到窗口右边时要靠它往回收 */
 const SHELL_MENU_ITEM =
@@ -534,39 +535,23 @@ export function TerminalPane({
     <section className="flex h-full min-h-0 flex-col">
       {toolbarTarget && createPortal(
         <div className="flex shrink-0 items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => setLayout("tabs")}
-            title="单终端"
-            aria-label="单终端"
-            className={`flex h-6 w-6 items-center justify-center rounded ${
-              layout === "tabs" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-            }`}
-          >
-            <IconLayoutSingle className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
+          <IconButton label="单终端" active={layout === "tabs"} onClick={() => setLayout("tabs")}>
+            <IconLayoutSingle className={ICON_SM} />
+          </IconButton>
+          <IconButton
+            label="左右并列"
+            active={layout === "horizontal"}
             onClick={() => setSplitLayout("horizontal")}
-            title="左右并列"
-            aria-label="左右并列"
-            className={`flex h-6 w-6 items-center justify-center rounded ${
-              layout === "horizontal" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-            }`}
           >
-            <IconLayoutColumns className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
+            <IconLayoutColumns className={ICON_SM} />
+          </IconButton>
+          <IconButton
+            label="上下并列"
+            active={layout === "vertical"}
             onClick={() => setSplitLayout("vertical")}
-            title="上下并列"
-            aria-label="上下并列"
-            className={`flex h-6 w-6 items-center justify-center rounded ${
-              layout === "vertical" ? "bg-active text-fg" : "text-fg-dim hover:bg-hover"
-            }`}
           >
-            <IconLayoutRows className="h-3.5 w-3.5" />
-          </button>
+            <IconLayoutRows className={ICON_SM} />
+          </IconButton>
         </div>,
         toolbarTarget,
       )}

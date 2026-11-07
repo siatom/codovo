@@ -21,9 +21,7 @@ import {
   IconRefresh,
   IconTrash,
 } from "./icons";
-
-const HEAD_BUTTON =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg disabled:text-fg-faint disabled:hover:bg-transparent";
+import { ICON_SM, IconButton } from "./ui";
 
 const ROW_INPUT =
   "h-6 w-full rounded border border-accent bg-surface px-1 text-[12px] text-fg outline-none";
@@ -258,38 +256,26 @@ export function FilePanel({
           <span className="shrink-0">{icon}</span>
           <span className="truncate text-[11px] font-medium tracking-wide">{label}</span>
         </span>
-        <button type="button" onClick={onRefresh} title="重新列目录" className={HEAD_BUTTON}>
-          <IconRefresh className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
+        <IconButton label="重新列目录" onClick={onRefresh}>
+          <IconRefresh className={ICON_SM} />
+        </IconButton>
+        <IconButton
+          label={side === "left" ? "把选中的文件传到右侧远程目录" : "把选中的文件下载到左侧本地目录"}
           onClick={() => selected && canTransfer && onTransfer(selected)}
           disabled={!canTransfer}
-          title={
-            side === "left"
-              ? "把选中的文件传到右侧远程目录"
-              : "把选中的文件下载到左侧本地目录"
-          }
-          className={HEAD_BUTTON}
         >
-          <TransferIcon className="h-3.5 w-3.5" />
-        </button>
-        <button type="button" onClick={openMenu} title="更多" className={HEAD_BUTTON}>
-          <IconMore className="h-3.5 w-3.5" />
-        </button>
+          <TransferIcon className={ICON_SM} />
+        </IconButton>
+        <IconButton label="更多" onClick={openMenu}>
+          <IconMore className={ICON_SM} />
+        </IconButton>
       </div>
 
       {/* 下行：上一级 + 面包屑 */}
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2">
-        <button
-          type="button"
-          disabled={!canUp}
-          onClick={onUp}
-          title="上一级"
-          className={HEAD_BUTTON}
-        >
-          <IconArrowUp className="h-3.5 w-3.5" />
-        </button>
+        <IconButton label="上一级" disabled={!canUp} onClick={onUp}>
+          <IconArrowUp className={ICON_SM} />
+        </IconButton>
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto whitespace-nowrap">
           {crumbs.map((crumb, index) => (
             <span key={crumb.path} className="flex shrink-0 items-center gap-0.5">
