@@ -1000,8 +1000,7 @@ export function WorkspacePane({
               </div>
             );
           })}
-          {(activeTask === "terminal" || isAcpTask(activeTask) || activeTask === "files") && (
-            <div className="flex shrink-0 items-center">
+          <div className="flex shrink-0 items-center">
               <button
                 type="button"
                 onClick={() => {
@@ -1024,8 +1023,7 @@ export function WorkspacePane({
               >
                 <IconChevronDown className="h-3 w-3" />
               </button>
-            </div>
-          )}
+          </div>
         </div>
         <div className="flex h-full shrink-0 items-center gap-1 px-2">
           <div
