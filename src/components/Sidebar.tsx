@@ -360,6 +360,8 @@ export function Sidebar({
   const [expanded, setExpanded] = useState<string[]>([]);
   /** 收起的分区名。只存内存，重启从全部展开开始 */
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  /** 大分区每次额外显示的工作区数量 */
+  const [groupVisibleCounts, setGroupVisibleCounts] = useState<Record<string, number>>({});
   /** 分区的手动排序（只存名字）。没排过的新分区按活动顺序追加 */
   const [sectionOrder, setSectionOrder] = useState<string[]>(readWorkspaceGroupOrder);
   /** 和 sectionOrder 同步的 ref：拖动时连续读写，避免闭包拿到旧 state */
@@ -1010,7 +1012,11 @@ export function Sidebar({
                   </div>
                 )}
                 <ul className={groupCollapsed ? "hidden" : undefined}>
-                  {section.items.map((workspace) => {
+                  {section.items
+                    .slice(0, !query && isNamedSection
+                      ? 10 + (groupVisibleCounts[section.key] ?? 0)
+                      : undefined)
+                    .map((workspace) => {
                     const isCurrent = workspace.id === currentId;
                     // 已打开 = 后台挂着实例的工作区，和「只在列表里」区分开
                     const isOpen = opened.includes(workspace.id);
@@ -1149,7 +1155,22 @@ export function Sidebar({
                         </div>
                       </li>
                     );
-                  })}
+                    })}
+                  {!query && isNamedSection &&
+                    section.items.length > 10 + (groupVisibleCounts[section.key] ?? 0) && (
+                      <li className="px-2 py-1">
+                        <button
+                          type="button"
+                          onClick={() => setGroupVisibleCounts((counts) => ({
+                            ...counts,
+                            [section.key]: (counts[section.key] ?? 0) + 10,
+                          }))}
+                          className="text-[12px] text-fg-faint hover:text-fg"
+                        >
+                          更多（再显示 10 个，剩余 {section.items.length - 10 - (groupVisibleCounts[section.key] ?? 0)} 个）
+                        </button>
+                      </li>
+                    )}
                 </ul>
               </li>
             );
