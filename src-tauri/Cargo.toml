@@ -1,6 +1,6 @@
 [package]
 name = "codovo"
-version = "0.2.0"
+version = "0.4.0"
 description = "Codovo - AI 编程驾驶舱"
 authors = ["硅原子"]
 edition = "2021"
