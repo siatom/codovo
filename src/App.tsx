@@ -630,6 +630,8 @@ function Shell() {
    */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // 确认框由原生模态层接管键盘，窗口捕获阶段也不能触发背景命令。
+      if (document.querySelector("dialog.codovo-modal-scrim:modal")) return;
       const shortcuts = shortcutsRef.current;
       const zoom = (delta: number) => {
         const current = editorFontSizeRef.current;

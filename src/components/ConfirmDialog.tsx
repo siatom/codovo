@@ -1,4 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { tabbable } from "tabbable";
 
 interface ConfirmDialogProps {
   /** 要确认的事，一句话把后果说清楚 */
@@ -77,30 +84,126 @@ export function ConfirmDialog({
   // 点遮罩 / 按 Esc 走这条；没单独给就回退到取消（大多数场景两者等价）
   const dismiss = onDismiss ?? onCancel;
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismiss(checked);
+  const titleId = useId();
+  const messageId = useId();
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const trigger = document.activeElement;
+    const ancestors: HTMLElement[] = [];
+    for (
+      let node = trigger?.parentElement;
+      node && node !== document.body;
+      node = node.parentElement
+    ) {
+      ancestors.push(node);
+    }
+
+    // 原生模态层让背景不可交互，也负责多个确认框的叠放顺序。
+    dialog.showModal();
+    cancelRef.current?.focus({ preventScroll: true });
+
+    return () => {
+      dialog.close();
+      // 浏览器通常会把焦点还给触发控件；等 React 移除旧标签等节点后再兜底。
+      queueMicrotask(() => {
+        if (document.activeElement && document.activeElement !== document.body)
+          return;
+        if (trigger instanceof HTMLElement && trigger.isConnected) {
+          trigger.focus({ preventScroll: true });
+          if (document.activeElement === trigger) return;
+        }
+        for (const modal of document.querySelectorAll<HTMLDialogElement>(
+          "dialog:modal",
+        )) {
+          tabbable(modal)[0]?.focus({ preventScroll: true });
+          if (modal.contains(document.activeElement)) return;
+        }
+        const root = document.getElementById("root");
+        if (root) ancestors.push(root);
+        for (const node of ancestors) {
+          if (!node.isConnected || !node.getClientRects().length) continue;
+          const temporary = !node.hasAttribute("tabindex");
+          if (temporary) node.tabIndex = -1;
+          node.focus({ preventScroll: true });
+          if (document.activeElement === node) {
+            // 移除 tabindex 会让部分 WebView 立即丢掉焦点，等用户离开再还原。
+            if (temporary)
+              node.addEventListener(
+                "blur",
+                () => {
+                  if (node.getAttribute("tabindex") === "-1")
+                    node.removeAttribute("tabindex");
+                },
+                { once: true },
+              );
+            return;
+          }
+          if (temporary) node.removeAttribute("tabindex");
+        }
+      });
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss, checked]);
+  }, []);
 
   return (
-    <div
-      className="codovo-modal-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+    <dialog
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={messageId}
+      className="codovo-modal-scrim fixed inset-0 m-0 h-auto w-auto max-h-none max-w-none items-center justify-center bg-black/40 p-6 open:flex backdrop:bg-transparent"
+      onCancel={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        dismiss(checked);
+      }}
+      onKeyDown={(event) => {
+        // 不让 Esc 等按键冒泡到背景的设置面板、全屏区和助手抽屉。
+        event.stopPropagation();
+        if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          dismiss(checked);
+        } else if (event.key === "Tab") {
+          event.preventDefault();
+          const stops = tabbable(event.currentTarget);
+          if (!stops.length) return;
+          const index = stops.findIndex(
+            (node) => node === document.activeElement,
+          );
+          const next =
+            index < 0
+              ? event.shiftKey
+                ? stops.length - 1
+                : 0
+              : (index + (event.shiftKey ? -1 : 1) + stops.length) %
+                stops.length;
+          stops[next].focus();
+        }
+      }}
       // 认「按下点就在遮罩上」而不是 click：click 会派发到 mousedown/mouseup 的共同
       // 祖先，从弹窗内按下、拖到遮罩上松开也会误判成点外部
       onMouseDown={(event) => {
-        if (event.button === 0 && event.target === event.currentTarget) dismiss(checked);
+        if (event.button === 0 && event.target === event.currentTarget) {
+          event.preventDefault();
+          dismiss(checked);
+        }
       }}
     >
       <div
-        role="dialog"
-        aria-modal="true"
         className="w-[380px] max-w-full rounded-xl border border-line-strong bg-raised p-4 shadow-lg"
         onClick={(event) => event.stopPropagation()}
       >
-        <p className="text-[12px] leading-relaxed text-fg">{message}</p>
+        <h2 id={titleId} className="sr-only">
+          确认操作：{confirmLabel}
+        </h2>
+        <p id={messageId} className="text-[12px] leading-relaxed text-fg">
+          {message}
+        </p>
         {children}
         {checkboxLabel && (
           <label className="mt-3 flex cursor-pointer items-center gap-2 text-[12px] text-fg-muted">
@@ -117,7 +220,7 @@ export function ConfirmDialog({
           {/* 焦点默认落在取消上：破坏性操作不该让回车顺手确认掉 */}
           <button
             type="button"
-            autoFocus
+            ref={cancelRef}
             onClick={() => onCancel(checked)}
             className={CANCEL_BUTTON}
           >
@@ -141,6 +244,6 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 }

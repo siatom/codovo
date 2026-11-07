@@ -2981,6 +2981,7 @@ export function EditorPane({
    *   才被吃掉（`editor.find` 打开的就是 Monaco 同一个 find widget）。
    */
   const onPaneKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.target instanceof Element && event.target.closest("dialog:modal")) return;
     const current = activeRef.current;
     // 差异视图的改动跳转：F7 下一处、Shift+F7 上一处。裸功能键进不了 shortcuts 表
     // （那张表要求带 Mod/Ctrl 前缀），所以在差异标签上就地处理。挂在捕获阶段还能抢在
