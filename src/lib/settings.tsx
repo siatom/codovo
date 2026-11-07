@@ -348,8 +348,8 @@ const DEFAULTS: Settings = {
   terminalFontSize: 13,
   terminalFontBold: true,
   terminalTheme: "",
-  // 默认开着：GPU 加速下重输出更省 CPU；遇到花屏再关掉退回 DOM 渲染器
-  terminalGpuAcceleration: true,
+  // 默认使用 DOM 渲染器，避免 WebGL 在部分 Windows 显卡 / DPI 缩放组合下字体发虚或花屏
+  terminalGpuAcceleration: false,
   terminalWaitHint: true,
   editorFontFamily: "",
   uiMonoFontFamily: "",
@@ -634,7 +634,7 @@ function readSaved(): Settings {
     terminalFontSize: clampSize(raw.terminalFontSize, DEFAULTS.terminalFontSize),
     terminalFontBold: asBoolean(raw.terminalFontBold, DEFAULTS.terminalFontBold),
     terminalTheme: asString(raw.terminalTheme, DEFAULTS.terminalTheme),
-    // 老版本的设置里没有这个字段，回落 true：默认行为不变（仍走 WebGL）
+    // 老版本的设置里没有这个字段，回落 false：优先保证终端文字清晰；需要时可手动开启 GPU 加速
     terminalGpuAcceleration: asBoolean(
       raw.terminalGpuAcceleration,
       DEFAULTS.terminalGpuAcceleration,

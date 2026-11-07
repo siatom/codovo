@@ -2787,7 +2787,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     </Field>
                     <Field
                       label="GPU 加速"
-                      hint="用 WebGL 渲染终端，重输出时更省 CPU；个别显卡 / 驱动上会出现花屏（输出过程中画面花掉、得调一下布局才恢复），关掉即退回内置渲染器。只对新建的终端生效"
+                      hint="用 WebGL 渲染终端，重输出时更省 CPU；部分显卡或 DPI 缩放组合可能让字体发虚、花屏。默认关闭以保证文字清晰，开启或关闭后只对新建的终端生效"
                     >
                       <BoolToggle
                         value={settings.terminalGpuAcceleration}
