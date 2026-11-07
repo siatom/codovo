@@ -11,7 +11,7 @@ import {
 } from "./components/WorkspacePane";
 import { WorkspaceEmpty } from "./components/WorkspaceEmpty";
 import { AppUpdateNotice } from "./components/AppUpdateNotice";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
 import { TitleBar } from "./components/TitleBar";
 import { Toast } from "./components/Toast";
 import { AppAssistantDrawer, type AppAssistantDrawerHandle } from "./components/AppAssistantDrawer";
@@ -132,6 +132,12 @@ function Shell() {
    * 面板本体仍渲染在 Sidebar 里（它的入口按钮在那里）。
    */
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /** 打开设置时停在哪一页：右栏 Agent 面板的齿轮直接进「智能体」 */
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
+  const openSettings = useCallback((tab: SettingsTab = "appearance") => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
   /** 系统拖放文件 / 文件夹进窗口时显示遮罩 */
   const [dropActive, setDropActive] = useState(false);
   /**
@@ -631,7 +637,7 @@ function Shell() {
         if (next !== current) update({ editorFontSize: next });
       };
       const commands: [string, () => void][] = [
-        ["app.settings", () => setSettingsOpen(true)],
+        ["app.settings", () => openSettings()],
         ["app.toggleSidebar", () => applySidebarCollapsed(!sidebarCollapsedRef.current)],
         // Ctrl+O 是窗口级入口：没有打开任何工作区时也要能选文件（选完建临时工作区）。
         // 捕获阶段先吃掉，避免编辑器区域内再弹一次同一个对话框
@@ -652,7 +658,7 @@ function Shell() {
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [applySidebarCollapsed, update]);
+  }, [applySidebarCollapsed, openSettings, update]);
 
   // ---- 应用助手（界面操作智能体）的桥 ----
 
@@ -980,7 +986,8 @@ function Shell() {
               collapsed={sidebarCollapsed}
               onSetCollapsed={applySidebarCollapsed}
               settingsOpen={settingsOpen}
-              onOpenSettings={() => setSettingsOpen(true)}
+              settingsTab={settingsTab}
+              onOpenSettings={() => openSettings()}
               onCloseSettings={() => setSettingsOpen(false)}
             />
           </div>
@@ -1000,7 +1007,7 @@ function Shell() {
               onExitFullscreen={exitFullscreen}
               onHandles={onHandles}
               onSendToAssistant={openAssistantAt}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSettings={openSettings}
               onOpenFileAnywhere={(path) => void openFileAnywhere(path)}
               openRequests={openRequests}
               onOpenRequestHandled={handleOpenRequestHandled}
@@ -1016,7 +1023,7 @@ function Shell() {
             onOpen={(workspace) => void openWorkspace(workspace)}
             onOpenFolder={() => void openFolderFromWelcome()}
             onOpenFile={() => void chooseFile()}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={() => openSettings()}
           />
         )}
       </div>
@@ -1034,7 +1041,7 @@ function Shell() {
       {/* 没有打开工作区时侧栏不挂载，设置面板改由窗口层渲染：欢迎页底部的入口
           和 Ctrl+, 都要能打开它。有侧栏时仍由 Sidebar 自己渲染，避免出现两个 */}
       {opened.length === 0 && settingsOpen && (
-        <SettingsDialog onClose={() => setSettingsOpen(false)} />
+        <SettingsDialog onClose={() => setSettingsOpen(false)} initialTab={settingsTab} />
       )}
 
       {dialog && (

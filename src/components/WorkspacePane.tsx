@@ -17,9 +17,10 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { AgentLogo, IconBot, IconChevronDown, IconFile, IconPlus, IconTerminal, ShellIcon } from "./icons";
+import { AgentLogo, IconBot, IconChevronDown, IconFile, IconPlus, IconSettings, IconTerminal, ShellIcon } from "./icons";
 import { FileTypeIcon } from "./fileIcons";
 import { FullscreenButton } from "./FullscreenButton";
+import type { SettingsTab } from "./SettingsDialog";
 import { controllerOf, useGitStatus, type GitController } from "../lib/git";
 import { useSettings } from "../lib/settings";
 import { acpProviderKey } from "../lib/acp";
@@ -106,8 +107,8 @@ interface WorkspacePaneProps {
   onHandles: (workspaceId: string, handles: WorkspaceHandles) => void;
   /** 编辑器浮窗「送给助手」：由 App 展开助手抽屉并插入位置引用 */
   onSendToAssistant: (location: EditorLocation) => void;
-  /** 打开设置面板（编辑器翻译视图里的「设置」入口） */
-  onOpenSettings: () => void;
+  /** 打开设置面板（编辑器翻译视图 / Agent 面板齿轮的入口）；传页面 id 可直接落到那一页 */
+  onOpenSettings: (tab?: SettingsTab) => void;
   /**
    * 打开一个不落在本工作区任何根下的文件。Ctrl+O、系统拖放都可能指向
    * 工作区外的文件，由 App 建 / 复用临时工作区后把请求转回来。
@@ -1116,7 +1117,17 @@ export function WorkspacePane({
                 <div className="flex h-full w-full min-w-0 flex-col bg-content">
                   <header className="flex h-9 shrink-0 items-center gap-2 border-b border-line px-3">
                     <IconBot className="h-4 w-4 text-fg-dim" />
-                    <span className="text-[12px] font-medium text-fg">Agent</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">Agent</span>
+                    {/* 快捷入口：直接落到设置的「智能体」页，省得再从外观页翻过去 */}
+                    <button
+                      type="button"
+                      onClick={() => onOpenSettings("agents")}
+                      title="设置 · 智能体"
+                      aria-label="设置 · 智能体"
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
+                    >
+                      <IconSettings className="h-3.5 w-3.5" />
+                    </button>
                   </header>
                   {/* 终端和 ACP 对话是同一块工作区的两种打开方式，排成一行左右切换，
                       不再上下各占一行——下面还要留位置给智能体列表 */}
@@ -1203,7 +1214,9 @@ export function WorkspacePane({
                   </div>
                 </div>
               ) : activeTool === "remote" || activeTool === "database" ? (
-                <div ref={setTaskSidebarTarget} className="h-full w-full min-w-0" />
+                // 连接树通过 portal 落进右栏，这里补 bg-content——其他模块的面板自己铺
+                // 底色，这块不铺就会露出窗口底色，看起来比别的模块矮一档
+                <div ref={setTaskSidebarTarget} className="h-full w-full min-w-0 bg-content" />
               ) : activeTool === "preview" ? (
                 <PreviewPane
                   root={root}

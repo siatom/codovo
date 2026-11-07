@@ -95,6 +95,8 @@ import {
 
 interface SettingsDialogProps {
   onClose: () => void;
+  /** 打开时停在哪一页；不传就是「外观」 */
+  initialTab?: TabId;
 }
 
 /** 分类靠左边的竖排 tab，内容区一次只显示一组。desc 作为内容区页头的一句话说明 */
@@ -144,6 +146,9 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+/** 外部入口（比如右栏 Agent 面板的齿轮）可以直接指定打开哪一页 */
+export type SettingsTab = TabId;
 
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
@@ -2067,7 +2072,7 @@ function SupportedAgentList({
   );
 }
 
-export function SettingsDialog({ onClose }: SettingsDialogProps) {
+export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
   const { settings, update, reset, resetSection, secretNotice } = useSettings();
   // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
   const devAi = useDevAiOverrides();
@@ -2077,7 +2082,7 @@ export function SettingsDialog({ onClose }: SettingsDialogProps) {
     devAi.apiKeySet ? "API 密钥" : "",
   ].filter((label) => label !== "");
   const { theme, palette, setPreference } = useTheme();
-  const [tab, setTab] = useState<TabId>("appearance");
+  const [tab, setTab] = useState<TabId>(initialTab ?? "appearance");
   /** 等确认的恢复默认：某个分类 id、`all` 表示整块回厂、null 表示没有 */
   const [confirmReset, setConfirmReset] = useState<TabId | "all" | null>(null);
   /** 提供商列表的手风琴：一次只展开一条 */

@@ -27,7 +27,7 @@ import {
 import { useSettings } from "../lib/settings";
 import { useTheme } from "../lib/theme";
 import { FeedbackDialog } from "./FeedbackDialog";
-import { SettingsDialog } from "./SettingsDialog";
+import { SettingsDialog, type SettingsTab } from "./SettingsDialog";
 import {
   IconAlert,
   IconChevronDown,
@@ -99,6 +99,8 @@ interface SidebarProps {
   onSetCollapsed: (collapsed: boolean) => void;
   /** 设置面板是否打开。同样挂在 App 上，好让 `app.settings`（Ctrl+,）能打开它 */
   settingsOpen: boolean;
+  /** 打开时停在哪一页 */
+  settingsTab: SettingsTab;
   onOpenSettings: () => void;
   onCloseSettings: () => void;
 }
@@ -264,6 +266,7 @@ export function Sidebar({
   collapsed,
   onSetCollapsed,
   settingsOpen,
+  settingsTab,
   onOpenSettings,
   onCloseSettings,
 }: SidebarProps) {
@@ -1271,7 +1274,7 @@ export function Sidebar({
       </div>
 
       {/* 设置 / 反馈的弹窗放在两个状态之外：收起动画期间它们不该跟着一起被裁掉 */}
-      {settingsOpen && <SettingsDialog onClose={onCloseSettings} />}
+      {settingsOpen && <SettingsDialog onClose={onCloseSettings} initialTab={settingsTab} />}
 
       {feedbackOpen && (
         <FeedbackDialog onClose={() => setFeedbackOpen(false)} root={activeRoot} />
