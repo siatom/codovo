@@ -574,7 +574,10 @@ export function DatabasePane({
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             数据库
           </span>
-          <IconButton label="新增连接" onClick={() => setDialog({ connection: null })}>
+          <IconButton label="新增连接" onClick={() => {
+            onOpenContent();
+            setDialog({ connection: null });
+          }}>
             <IconPlus className={ICON_SM} />
           </IconButton>
         </div>
@@ -864,6 +867,7 @@ export function DatabasePane({
               type="button"
               className={MENU_ITEM}
               onClick={() => {
+                onOpenContent();
                 setDialog({ connection: menu.connection });
                 setMenu(null);
               }}
@@ -886,6 +890,7 @@ export function DatabasePane({
               type="button"
               className={`${MENU_ITEM} text-danger hover:text-danger`}
               onClick={() => {
+                onOpenContent();
                 setPendingDelete(menu.connection);
                 setMenu(null);
               }}
