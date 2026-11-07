@@ -72,7 +72,7 @@ import {
 import { RIGHT_TOOLS } from "./ToolRail";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
-import { AppUpdateSettings } from "./AppUpdateNotice";
+import { checkAppUpdate, useAppUpdate } from "../lib/updater";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   AgentLogo,
@@ -83,6 +83,7 @@ import {
   IconCopy,
   IconDownload,
   IconGripVertical,
+  IconInfo,
   IconKeyboard,
   IconPalette,
   IconPencil,
@@ -143,6 +144,12 @@ const TABS = [
     desc: "检查并安装运行所需的命令行工具",
     icon: IconDownload,
   },
+  {
+    id: "about",
+    label: "关于",
+    desc: "当前版本与更新检查",
+    icon: IconInfo,
+  },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -153,12 +160,13 @@ export type SettingsTab = TabId;
 /** 「恢复本页默认」确认框里，逐页说清会重置哪些东西 */
 const SECTION_RESET_HINT: Record<SettingsSection, string> = {
   appearance:
-    "主题、界面透明度、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复、关闭窗口行为和软件更新设置",
+    "主题、界面透明度、界面 / 终端 / 编辑器字体，以及右栏模块显隐、启动恢复和关闭窗口行为",
   terminal: "终端程序与配色",
   agents: "编程 Agent 列表，含名称、启动命令与环境变量",
   editor: "缩进宽度、缩略图、自动换行、自动保存，以及保存时的格式化与语法校验",
   shortcuts: "全部快捷键键位",
   agent: "模型提供商、密钥与文档翻译目标语言",
+  about: "自动检查更新的开关、检查间隔与已跳过的版本",
 };
 
 /** 依赖页只有环境检测与安装，没有可恢复的设置项 */
@@ -202,6 +210,12 @@ const ON_OFF_OPTIONS: { value: boolean; label: string }[] = [
   { value: true, label: "开启" },
   { value: false, label: "关闭" },
 ];
+
+/** 更新检查间隔（小时）：只给几档，和 settings 里的校验保持一致 */
+const UPDATE_INTERVAL_OPTIONS = [1, 6, 12, 24].map((hours) => ({
+  value: String(hours),
+  label: `${hours} 小时`,
+}));
 
 /** 开着工作区时关窗口：直接收进托盘，还是每次都问一句 */
 const CLOSE_OPTIONS: { value: boolean; label: string }[] = [
@@ -601,6 +615,51 @@ function Select<T extends string>({
         </>
       )}
     </div>
+  );
+}
+
+/** 关于页的更新设置：和右下角的更新卡片共用同一份状态，点检查后有结果会直接弹卡片 */
+function UpdateSettings() {
+  const { settings, update } = useSettings();
+  const state = useAppUpdate();
+  return (
+    <>
+      <Row label="自动检查">
+        <BoolToggle
+          value={settings.updateAutoCheck}
+          options={ON_OFF_OPTIONS}
+          onChange={(updateAutoCheck) => update({ updateAutoCheck })}
+        />
+      </Row>
+      <Row label="检查间隔" hint="自动检查按这个间隔判断；手动检查不受限制">
+        <Select
+          value={String(settings.updateIntervalHours)}
+          options={UPDATE_INTERVAL_OPTIONS}
+          onChange={(next) => update({ updateIntervalHours: Number(next) })}
+        />
+      </Row>
+      <Row label="立即检查">
+        <button
+          type="button"
+          className={BUTTON}
+          disabled={state.checking || state.busy}
+          onClick={() => void checkAppUpdate(true)}
+        >
+          <IconRefresh className={`h-3.5 w-3.5 ${state.checking ? "animate-spin" : ""}`} />
+          {state.checking ? "正在检查…" : "检查更新"}
+        </button>
+      </Row>
+      {settings.updateSkippedVersion && (
+        <p className="text-[11px] leading-relaxed text-fg-faint">
+          已跳过 v{settings.updateSkippedVersion}，手动检查仍会显示此版本。
+        </p>
+      )}
+      {state.message && (
+        <p role="status" className="text-[11px] leading-relaxed text-fg-muted">
+          {state.message}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -2578,9 +2637,6 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
               </div>
               {tab === "appearance" && (
                 <>
-                  <Section title="软件更新" dense>
-                    <AppUpdateSettings />
-                  </Section>
                   <Section title="主题" dense>
                     <Row label="配色方案">
                       <ThemeSelect />
@@ -3234,6 +3290,30 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     </Field>
                   </Section>
 
+                </>
+              )}
+
+              {tab === "about" && (
+                <>
+                  <Section title="版本" dense>
+                    <Row label="当前版本">
+                      <span className="rounded-md bg-hover px-2 py-0.5 font-mono text-[11px] text-fg-dim tabular-nums">
+                        v{__APP_VERSION__}
+                      </span>
+                      {import.meta.env.DEV && (
+                        <span className="rounded-full border border-line px-1.5 py-0.5 text-[10px] text-fg-faint">
+                          开发版
+                        </span>
+                      )}
+                    </Row>
+                  </Section>
+                  <Section
+                    title="更新"
+                    dense
+                    hint="从 GitHub Releases 获取最新版本；发现新版本时右下角会出现更新卡片，也可以从发布页手动下载"
+                  >
+                    <UpdateSettings />
+                  </Section>
                 </>
               )}
             </div>

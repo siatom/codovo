@@ -15,55 +15,6 @@ const ACTION =
   "rounded border border-line-strong px-2 py-1 text-[12px] text-fg-muted hover:bg-hover disabled:opacity-50";
 const LAST_CHECK = "codovo.updateLastCheck";
 
-export function AppUpdateSettings() {
-  const { settings, update } = useSettings();
-  const state = useAppUpdate();
-  return (
-    <div className="space-y-3 text-[12px] text-fg-muted">
-      <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={settings.updateAutoCheck}
-          onChange={(event) =>
-            update({ updateAutoCheck: event.target.checked })
-          }
-        />
-        自动检查更新
-      </label>
-      <label className="flex items-center gap-2">
-        检查间隔
-        <select
-          className="rounded border border-line-strong bg-surface px-2 py-1"
-          value={settings.updateIntervalHours}
-          onChange={(event) =>
-            update({ updateIntervalHours: Number(event.target.value) })
-          }
-        >
-          {[1, 6, 12, 24].map((hours) => (
-            <option key={hours} value={hours}>
-              {hours} 小时
-            </option>
-          ))}
-        </select>
-      </label>
-      <button
-        type="button"
-        className={ACTION}
-        disabled={state.checking || state.busy}
-        onClick={() => void checkAppUpdate(true)}
-      >
-        {state.checking ? "正在检查…" : "检查更新"}
-      </button>
-      {settings.updateSkippedVersion && (
-        <p className="text-fg-faint">
-          已跳过 v{settings.updateSkippedVersion}，手动检查仍会显示此版本。
-        </p>
-      )}
-      {state.message && <p role="status">{state.message}</p>}
-    </div>
-  );
-}
-
 export function AppUpdateNotice() {
   const { settings, update } = useSettings();
   const state = useAppUpdate();

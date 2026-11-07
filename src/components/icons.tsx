@@ -305,6 +305,14 @@ export const IconSettings = icon(
   </>,
 );
 
+/** 设置里的「关于」：圆圈里一个 i */
+export const IconInfo = icon(
+  <>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 16v-4M12 8h.01" />
+  </>,
+);
+
 /** 右栏的「浏览器」模块 */
 export const IconGlobe = icon(
   <>

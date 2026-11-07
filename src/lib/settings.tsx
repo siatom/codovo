@@ -216,7 +216,8 @@ export type SettingsSection =
   | "editor"
   | "shortcuts"
   | "agents"
-  | "agent";
+  | "agent"
+  | "about";
 
 /**
  * 每个分类各管哪些字段。恢复某一页默认时只把这些键写回出厂值，别的分类原样留着。
@@ -226,9 +227,6 @@ export type SettingsSection =
  */
 const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
   appearance: [
-    "updateAutoCheck",
-    "updateIntervalHours",
-    "updateSkippedVersion",
     "uiOpacity",
     "uiFontFamily",
     "terminalFontFamily",
@@ -277,6 +275,7 @@ const SECTION_KEYS: Record<SettingsSection, (keyof Settings)[]> = {
     "translateTarget",
     "agentWorkspaces",
   ],
+  about: ["updateAutoCheck", "updateIntervalHours", "updateSkippedVersion"],
 };
 
 export const FONT_SIZE_MIN = 11;

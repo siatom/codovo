@@ -280,6 +280,7 @@ const SECTION_LABELS: Record<SettingsSection, string> = {
   shortcuts: "快捷键",
   agents: "智能体",
   agent: "模型",
+  about: "关于",
 };
 
 const SECTIONS = Object.keys(SECTION_LABELS) as SettingsSection[];
