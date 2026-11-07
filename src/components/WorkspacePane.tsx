@@ -156,6 +156,7 @@ export function WorkspacePane({
   /** 工作区主视图的超级 tab；工具内容与终端共享同一组顶层入口 */
   const [activeTask, setActiveTask] = useState<WorkspaceTask>("terminal");
   const [taskTabs, setTaskTabs] = useState<WorkspaceTask[]>(["terminal"]);
+  const taskTabsStripRef = useRef<HTMLDivElement>(null);
   /**
    * 右栏 Agent 面板停在哪个模式：决定点下面的智能体时开终端还是 ACP 对话。
    * 点「ACP 对话」本身只切模式、不新建超级 Tab——没有对话可看时先停在这儿，
@@ -395,6 +396,10 @@ export function WorkspacePane({
     setTerminalTaskTabs(tabs);
     setActiveTerminalId(activeId);
   }, []);
+  useEffect(() => {
+    const strip = taskTabsStripRef.current;
+    if (strip) strip.scrollLeft = strip.scrollWidth;
+  }, [taskTabs, terminalTaskTabs, acpChatTabs]);
   const reportAcpChatTabs = useCallback((tabs: AcpChatTaskTab[]) => {
     setAcpChatTabs(tabs);
     const ids = new Set(tabs.map((tab) => acpTask(tab.chatId)));
@@ -886,7 +891,7 @@ export function WorkspacePane({
         first={
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-line bg-panel">
-        <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2">
+        <div ref={taskTabsStripRef} className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2">
           {taskTabs.flatMap((task) => {
             if (task === "terminal") {
               return terminalTaskTabs.map((terminalTab) => {
@@ -995,15 +1000,8 @@ export function WorkspacePane({
               </div>
             );
           })}
-        </div>
-        <div className="flex h-full shrink-0 items-center gap-1 px-2">
-          <div
-            ref={setEditorToolbarTarget}
-            className="flex h-full shrink-0 items-center gap-0.5"
-          />
-          <FullscreenButton fullscreen={leftFullscreen} onToggle={onToggleLeftFullscreen} />
           {(activeTask === "terminal" || isAcpTask(activeTask) || activeTask === "files") && (
-            <div className="flex items-center">
+            <div className="flex shrink-0 items-center">
               <button
                 type="button"
                 onClick={() => {
@@ -1028,6 +1026,13 @@ export function WorkspacePane({
               </button>
             </div>
           )}
+        </div>
+        <div className="flex h-full shrink-0 items-center gap-1 px-2">
+          <div
+            ref={setEditorToolbarTarget}
+            className="flex h-full shrink-0 items-center gap-0.5"
+          />
+          <FullscreenButton fullscreen={leftFullscreen} onToggle={onToggleLeftFullscreen} />
         </div>
       </div>
             <div className="relative flex min-h-0 min-w-0 flex-1">
