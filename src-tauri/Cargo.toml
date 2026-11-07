@@ -67,7 +67,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # 智能体后端读 opencode 的 SSE 时要做退避重连，只需要 time；SSH 还要 net（TcpStream）、
 # io-util（AsyncReadExt）、sync（mpsc）、rt / macros（tokio::select!）。
 # tauri 本来就依赖 tokio，这里只是显式声明版本、打开要用的特性。
-tokio = { version = "1", features = ["time", "net", "io-util", "sync", "rt", "macros", "fs"] }
+tokio = { version = "1", features = ["time", "net", "io-util", "io-std", "sync", "rt", "macros", "fs"] }
 # 远程连接：SSH 客户端。纯 Rust、无原生依赖，default 特性带 aws-lc-rs
 # （reqwest/rustls 已经在用同一后端，不会多引一套 TLS）。
 russh = "0.64"

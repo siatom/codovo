@@ -1,6 +1,8 @@
 #![allow(linker_messages)]
 
 mod acp;
+#[cfg(windows)]
+mod acp_host;
 mod agent;
 mod agent_config;
 mod backdrop;
@@ -33,6 +35,11 @@ mod titlebar;
 mod tray;
 mod updater;
 mod watcher;
+
+#[cfg(windows)]
+pub fn run_acp_host(args: Vec<std::ffi::OsString>) -> i32 {
+    acp_host::run(args)
+}
 
 use tauri::{Emitter, Manager};
 

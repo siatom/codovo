@@ -84,17 +84,16 @@ pub(crate) fn agent_config(
 
     #[cfg(windows)]
     let config = {
-        // 一律借 cmd 起：既为了 .cmd 垫片（CreateProcess 不认），也为了先 cd 到会话目录。
-        // 不加 /S：路径带空格时 Command 会给参数加引号，cmd 在「引号里是可执行文件」
-        // 时会保留引号；/S 会把引号剥掉，反而拆坏路径。
-        AcpAgentConfig::new("cmd")
-            .arg("/C")
-            .arg("cd")
-            .arg("/D")
-            .arg(cwd.display().to_string())
-            .arg("&&")
-            .arg(executable.display().to_string())
-            .args(args)
+        // ACP SDK 只清理直接子进程。用应用自身做 stdio 宿主，再由它把 CLI
+        // 放进 Windows Job Object，确保 SDK 结束宿主时也能回收 .cmd 派生的后代。
+        let host = std::env::current_exe().map_err(|error| error.to_string())?;
+        let mut host_args = vec![
+            "--codovo-acp-host".to_string(),
+            cwd.display().to_string(),
+            executable.display().to_string(),
+        ];
+        host_args.extend(args);
+        AcpAgentConfig::new(host).args(host_args)
     };
     #[cfg(not(windows))]
     let config = {
