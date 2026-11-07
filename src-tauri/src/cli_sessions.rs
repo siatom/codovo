@@ -1,15 +1,16 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::Command;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::launch::{hide_console, resolve_launch, wrap_with_cmd, Launch};
+use crate::launch::{resolve_launch, wrap_with_cmd, Launch};
 use crate::fs_api::simplify;
 use crate::pty::home_dir;
+
+mod opencode_process;
 
 /// 只读文件头就够：cwd 和标题在本机实测最远 32KB（claude 的首条提问），
 /// 留到 128KB 兜住"第一轮就粘贴超大内容"的极端情况。
@@ -97,16 +98,15 @@ pub struct CliSession {
 /// 后面带 `--auto` 这类运行期参数也行），只有 opencode 这一支用得上——它的记录
 /// 得靠 opencode 自己来读。
 ///
-/// 标了 `async`：opencode 那一支要起子进程、可能还要等它的后台服务，同步跑会把
-/// UI 卡住。Tauri 会把这里的同步 body 丢到线程池，写法不用变。
-#[tauri::command(async)]
-pub fn cli_list_sessions(
+/// opencode 那一支异步等待子进程及输出，不能挡住 UI。
+#[tauri::command]
+pub async fn cli_list_sessions(
     provider: String,
     cwd: String,
     command: String,
 ) -> Result<Vec<CliSession>, String> {
     if provider == "opencode" {
-        return list_opencode(&command, &cwd);
+        return list_opencode(&command, &cwd).await;
     }
     let relative =
         provider_projects_dir(&provider).ok_or_else(|| format!("不支持的 AI CLI: {provider}"))?;
@@ -167,7 +167,7 @@ fn is_opencode(token: &str) -> bool {
 ///
 /// 它的输出（`--format json`）正好是我们要的字段，而且已经按项目过滤、最新在前，
 /// 所以这里不重新过滤也不重排，只做数量和字段的兜底。
-fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
+async fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
     let (program, leading) =
         session_list_command(command).ok_or_else(|| "没有配置 opencode 命令".to_string())?;
 
@@ -186,7 +186,7 @@ fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
     args.push(MAX_SESSIONS.to_string());
 
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut child = match launch {
+    let mut command = match launch {
         Launch::Direct(found) => {
             let mut cmd = Command::new(found);
             cmd.args(&arg_refs);
@@ -195,30 +195,10 @@ fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, String> {
         // Windows 上 npm 装出来的只有 .cmd 垫片，CreateProcess 不认
         Launch::ViaCmd(found) => wrap_with_cmd(&found, &arg_refs),
     };
-    child
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    hide_console(&mut child);
-
-    // 起线程 + recv_timeout：Command 自己没有超时，卡住的服务会把调用它的线程
-    // 一起带走（同 git.rs 的写法）
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(child.output());
-    });
-
-    let output = match receiver.recv_timeout(OPENCODE_TIMEOUT) {
-        Ok(Ok(output)) => output,
-        Ok(Err(reason)) => return Err(format!("无法执行 {program}: {reason}")),
-        Err(_) => {
-            return Err(format!(
-                "opencode 超过 {} 秒没有响应",
-                OPENCODE_TIMEOUT.as_secs()
-            ))
-        }
-    };
+    command.current_dir(cwd);
+    let output = opencode_process::capture(command, OPENCODE_TIMEOUT)
+        .await
+        .map_err(|reason| format!("无法执行 {program}: {reason}"))?;
 
     if !output.status.success() {
         // 整段回传：opencode 的报错常常是多行，截成一行反而看不出问题在哪
