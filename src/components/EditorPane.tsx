@@ -2137,14 +2137,14 @@ export function EditorPane({
     diffRef.current?.getModifiedEditor().revealLineInCenter(line);
   }, []);
 
-  /** 内联 / 并排切换：改实例选项、写回 sessionStorage，下次打开沿用 */
-  const toggleDiffSideBySide = useCallback(() => {
-    const next = !diffSideBySideRef.current;
-    diffSideBySideRef.current = next;
-    setDiffSideBySide(next);
-    diffRef.current?.updateOptions({ renderSideBySide: next });
+  /** 内联 / 并排：顶栏两个并排按钮各点各的，直接指定排布并写回 sessionStorage */
+  const setDiffLayout = useCallback((sideBySide: boolean) => {
+    if (diffSideBySideRef.current === sideBySide) return;
+    diffSideBySideRef.current = sideBySide;
+    setDiffSideBySide(sideBySide);
+    diffRef.current?.updateOptions({ renderSideBySide: sideBySide });
     try {
-      window.sessionStorage.setItem(DIFF_SIDE_BY_SIDE_KEY, next ? "1" : "0");
+      window.sessionStorage.setItem(DIFF_SIDE_BY_SIDE_KEY, sideBySide ? "1" : "0");
     } catch {
       // 存不进去也无所谓，只是下次不记得选择
     }
@@ -3510,22 +3510,32 @@ export function EditorPane({
         </div>
       )}
       {showDiffBar && (
-        <button
-          type="button"
-          onClick={toggleDiffSideBySide}
-          aria-label={diffSideBySide ? "并排视图（左右对比）" : "内联视图（上下对照）"}
-          aria-pressed={diffSideBySide}
-          title={diffSideBySide ? "并排视图（左右对比）" : "内联视图（上下对照）"}
-          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
-            diffSideBySide ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
-          }`}
-        >
-          {diffSideBySide ? (
-            <IconLayoutColumns className="h-3.5 w-3.5" />
-          ) : (
+        <div role="group" aria-label="差异视图排布" className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setDiffLayout(false)}
+            aria-label="内联视图（上下对照）"
+            aria-pressed={!diffSideBySide}
+            title="内联视图（上下对照）"
+            className={`flex h-6 w-6 items-center justify-center rounded ${
+              !diffSideBySide ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
+            }`}
+          >
             <IconLayoutSingle className="h-3.5 w-3.5" />
-          )}
-        </button>
+          </button>
+          <button
+            type="button"
+            onClick={() => setDiffLayout(true)}
+            aria-label="并排视图（左右对比）"
+            aria-pressed={diffSideBySide}
+            title="并排视图（左右对比）"
+            className={`flex h-6 w-6 items-center justify-center rounded ${
+              diffSideBySide ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
+            }`}
+          >
+            <IconLayoutColumns className="h-3.5 w-3.5" />
+          </button>
+        </div>
       )}
       {isMarkdownFile && status.kind === "ready" && hasMarkdownHeadings &&
         (markdownMode === "preview" || markdownMode === "split") && (
