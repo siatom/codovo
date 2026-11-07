@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -21,6 +21,8 @@ pub const FILE_CHANGED_EVENT: &str = "fs-file-changed";
 /// 攒多久才发一次。解包/切换分支会连着打出几百个事件，逐个发会把 IPC 打爆，
 /// 而文件树要的只是"最终长什么样"，中间态没有意义。
 const DEBOUNCE: Duration = Duration::from_millis(300);
+/// 持续写入没有静默窗口，也要定期通知前端，不能一直等到任务结束。
+const MAX_BATCH_DELAY: Duration = Duration::from_secs(1);
 
 /// 防抖通道里跑的东西：要么是「这个目录要重列」，要么是「这个文件内容变了」。
 enum Signal {
@@ -139,44 +141,60 @@ fn start_watch(app: &AppHandle, root: &Path) -> Result<Watch, String> {
 
     let emitter = app.clone();
     std::thread::spawn(move || {
-        // 攒批：收到第一个事件后，一直吃到静默满 DEBOUNCE 为止再发
-        while let Ok(first) = rx.recv() {
-            if matches!(first, Signal::Stop) {
-                return;
-            }
-            let mut dirs: HashSet<PathBuf> = HashSet::new();
-            let mut files: HashSet<PathBuf> = HashSet::new();
-            // 第一个事件也要算进去，所以先存下来、进循环再归位
-            let mut pending = first;
-            loop {
-                match pending {
-                    Signal::Stop => return,
-                    Signal::Dir(dir) => {
-                        dirs.insert(dir);
-                    }
-                    Signal::File(file) => {
-                        files.insert(file);
-                    }
-                }
-                match rx.recv_timeout(DEBOUNCE) {
-                    Ok(next) => pending = next,
-                    Err(RecvTimeoutError::Timeout) => break,
-                    Err(RecvTimeoutError::Disconnected) => return,
-                }
-            }
+        collect_batches(rx, |dirs, files| {
             if !dirs.is_empty() {
                 let _ = emitter.emit(CHANGED_EVENT, sorted_paths(dirs));
             }
             if !files.is_empty() {
                 let _ = emitter.emit(FILE_CHANGED_EVENT, sorted_paths(files));
             }
-        }
+        });
     });
 
     Ok(Watch {
         _watcher: watcher,
         stop: tx,
     })
+}
+
+/// 静默防抖和最大等待共同约束一批；单独抽出，便于直接验证持续事件流和退出。
+fn collect_batches(rx: Receiver<Signal>, mut emit: impl FnMut(HashSet<PathBuf>, HashSet<PathBuf>)) {
+    while let Ok(first) = rx.recv() {
+        let deadline = Instant::now() + MAX_BATCH_DELAY;
+        let mut dirs = HashSet::new();
+        let mut files = HashSet::new();
+        let mut pending = first;
+        let mut disconnected = false;
+        loop {
+            match pending {
+                // 换根或退出后不再向旧界面发事件，仍保留原来的取消语义。
+                Signal::Stop => return,
+                Signal::Dir(dir) => {
+                    dirs.insert(dir);
+                }
+                Signal::File(file) => {
+                    files.insert(file);
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(DEBOUNCE.min(remaining)) {
+                Ok(next) => pending = next,
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    // 所有生产者退出时仍发完尾批；显式 Stop 则直接取消。
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        emit(dirs, files);
+        if disconnected {
+            return;
+        }
+    }
 }
 
 /// 排序只为让同样的变更给出同样的载荷，方便日志和测试比对
@@ -272,6 +290,85 @@ fn is_relevant(root: &Path, path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sustained_events_flush_before_the_stream_stops_and_keep_the_tail() {
+        let (tx, rx) = mpsc::channel();
+        let (batch_tx, batches) = mpsc::channel();
+        let started = Instant::now();
+        let worker = std::thread::spawn(move || {
+            collect_batches(rx, |_, files| {
+                batch_tx.send((started.elapsed(), files)).unwrap();
+            });
+        });
+        // 超过十秒的真实持续流：每个间隔都短于静默防抖，旧实现直到结束才发。
+        let producer = std::thread::spawn(move || {
+            for i in 0..105 {
+                tx.send(Signal::File(PathBuf::from(format!("file-{i}"))))
+                    .unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let allowance = MAX_BATCH_DELAY + Duration::from_millis(750);
+        let (first_at, first) = batches
+            .recv_timeout(allowance)
+            .expect("持续流必须定期发出首批");
+        assert!(first_at <= allowance);
+        let mut all = first;
+        let mut previous = first_at;
+        let mut count = 1;
+        for (at, files) in batches {
+            assert!(at - previous <= allowance, "批次间隔超出最大延迟及调度余量");
+            previous = at;
+            all.extend(files);
+            count += 1;
+        }
+        producer.join().unwrap();
+        worker.join().unwrap();
+        assert!(count >= 8, "持续事件流不应合成单一大批次");
+        assert_eq!(all.len(), 105, "包括最后的尾批在内，所有路径都必须送达");
+    }
+
+    #[test]
+    fn short_bursts_are_deduplicated_and_flushed_after_silence() {
+        let (tx, rx) = mpsc::channel();
+        let (batch_tx, batches) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            collect_batches(rx, |dirs, files| {
+                batch_tx.send((dirs, files)).unwrap();
+            });
+        });
+        for _ in 0..3 {
+            tx.send(Signal::Dir(PathBuf::from("src"))).unwrap();
+            tx.send(Signal::File(PathBuf::from("src/main.rs"))).unwrap();
+        }
+        let (dirs, files) = batches.recv_timeout(MAX_BATCH_DELAY).unwrap();
+        assert_eq!(sorted_paths(dirs), ["src"]);
+        assert_eq!(sorted_paths(files), ["src/main.rs"]);
+        tx.send(Signal::Stop).unwrap();
+        worker.join().unwrap();
+        assert!(batches.try_recv().is_err(), "短突发只能产生一批");
+    }
+
+    #[test]
+    fn stop_cancels_a_pending_batch_without_waiting_for_the_deadline() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Signal::File(PathBuf::from("pending"))).unwrap();
+        tx.send(Signal::Stop).unwrap();
+        let started = Instant::now();
+        collect_batches(rx, |_, _| panic!("Stop 之后不能发送旧批次"));
+        assert!(started.elapsed() < DEBOUNCE);
+    }
+
+    #[test]
+    fn disconnect_flushes_the_last_batch() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Signal::File(PathBuf::from("last"))).unwrap();
+        drop(tx);
+        let mut batches = Vec::new();
+        collect_batches(rx, |_, files| batches.push(sorted_paths(files)));
+        assert_eq!(batches, [vec!["last".to_string()]]);
+    }
 
     /// 路径一律从 root 拼出来，不手写分隔符：`\` 在 Unix 上只是普通字符，
     /// 写死 `D:\ws` 会让 strip_prefix 直接落空——测试看着绿，其实什么都没验。
