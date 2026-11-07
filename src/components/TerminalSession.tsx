@@ -266,6 +266,8 @@ interface TerminalSessionProps {
   visible?: boolean;
   /** shell 起来后自动敲进去的一条命令（resume 会话用）。只在建实例那一次生效 */
   initialCommand?: string;
+  /** CLI 通过 OSC 更新终端标题时通知所属标签 */
+  onTitleChange?: (title: string) => void;
   /**
    * 启动 shell 时额外设进进程环境的环境变量（opencode 的权限配置走这个）。
    * 和 initialCommand 一样只在建实例那一次生效，重启会话时沿用原值。
@@ -317,6 +319,7 @@ export const TerminalSession = forwardRef<
     visible = active,
     initialCommand,
     initialEnv,
+    onTitleChange,
     shell,
     onRequestClose,
     onRequestNew,
@@ -376,6 +379,8 @@ export const TerminalSession = forwardRef<
   // 上报「有真实使用」的回调同理，也走 ref
   const onActivityRef = useRef(onActivity);
   onActivityRef.current = onActivity;
+  const onTitleChangeRef = useRef(onTitleChange);
+  onTitleChangeRef.current = onTitleChange;
   // 等待提示的开关随时能关，而判定逻辑挂在建实例的 effect 里、只跑一次，所以也走 ref
   const waitHintRef = useRef(settings.terminalWaitHint);
   waitHintRef.current = settings.terminalWaitHint;
@@ -434,6 +439,9 @@ export const TerminalSession = forwardRef<
       // 带 alpha 的底色只有开了这个选项才认。xterm 要求它在 open() 之前定好、之后改不了，
       // 而透明度是随时可调的，所以一律打开；代价是少了不透明底色的一条快速路径
       allowTransparency: true,
+    });
+    const titleDisposable = term.onTitleChange((title) => {
+      onTitleChangeRef.current?.(title);
     });
 
     const fit = new FitAddon();
@@ -812,6 +820,7 @@ export const TerminalSession = forwardRef<
       stopSettled();
       observer.disconnect();
       dataDisposable.dispose();
+      titleDisposable.dispose();
       scrollDisposable.dispose();
       writeParsedDisposable.dispose();
       fileLinks?.dispose();

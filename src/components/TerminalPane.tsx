@@ -16,6 +16,7 @@ import { useSettings } from "../lib/settings";
 import { agentEnvFor } from "../lib/agents";
 import { hasInternalTabs, prepareLaunch } from "../lib/cli-launch";
 import { acpProviderKey } from "../lib/acp";
+import { cliKey } from "../lib/cli-sessions";
 import { pathKey, samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
@@ -135,6 +136,7 @@ export function TerminalPane({
   ref,
 }: TerminalPaneProps) {
   const [sessions, setSessions] = useState<number[]>([0]);
+  const [titleRevision, setTitleRevision] = useState(0);
   const [activeId, setActiveId] = useState(0);
   const [layout, setLayout] = useState<"tabs" | "horizontal" | "vertical">("tabs");
   /** 对话面板选中的 CLI，存整条命令（设置里可能同名多条） */
@@ -443,7 +445,7 @@ export function TerminalPane({
       }),
       activeId,
     );
-  }, [activeId, attention, onTaskTabsChange, sessions, settings.terminalShell, shellOptions]);
+  }, [activeId, attention, onTaskTabsChange, sessions, settings.terminalShell, shellOptions, titleRevision]);
 
   /** 配过的 AI CLI（空命令是加了还没填的，不进顶栏） */
   const aiCommands = useMemo(
@@ -601,6 +603,22 @@ export function TerminalPane({
                   onRequestNew={() => addSession()}
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
+                  onTitleChange={
+                    cliKey(hintByIdRef.current.get(id) ?? "") === "codex"
+                      ? (terminalTitle) => {
+                          // Codex 默认 OSC 标题按“活动 | thread name | project”组合，
+                          // 只取首段并剥掉活动 spinner，避免标签跟着动画每秒闪动。
+                          const firstPart = terminalTitle.split(" | ", 1)[0]?.trim() ?? "";
+                          const name = firstPart
+                            .replace(/^[\u2800-\u28ff]\s*/u, "")
+                            .replace(/\s+/g, " ")
+                            .trim();
+                          if (!name || name === customTitleByIdRef.current.get(id)) return;
+                          customTitleByIdRef.current.set(id, Array.from(name).slice(0, 60).join(""));
+                          setTitleRevision((revision) => revision + 1);
+                        }
+                      : undefined
+                  }
                   // opencode 这类把附加目录放在环境变量里的 CLI，启动 shell 时一起设进去
                   initialEnv={launchEnvByIdRef.current.get(id)}
                   // 启发式判出「在等用户」（等回应 / 任务完成）时上抛，写进全局 store
