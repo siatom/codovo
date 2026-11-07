@@ -17,7 +17,7 @@ import { DatabasePane } from "./DatabasePane";
 import { DeployPane } from "./DeployPane";
 import { PreviewPane } from "./PreviewPane";
 import { RemotePane } from "./RemotePane";
-import { AgentLogo, IconBot, IconChevronDown, IconClose, IconFile, IconPlus, IconSettings, IconTerminal, ShellIcon } from "./icons";
+import { AgentLogo, IconBot, IconChevronDown, IconClose, IconFile, IconPlus, IconServer, IconSettings, IconTerminal, ShellIcon } from "./icons";
 import { FileTypeIcon } from "./fileIcons";
 import { FullscreenButton } from "./FullscreenButton";
 import { ICON_SM, ICON_XS, IconButton, Segmented, StatusDot } from "./ui";
@@ -65,7 +65,7 @@ export interface WorkspaceLayoutHandle {
 
 export type Fullscreen = "none" | "right" | "left";
 
-type WorkspaceTask = "terminal" | "files" | "browser" | "remote" | "database" | "preview" | "deploy" | `acp:${string}`;
+type WorkspaceTask = "terminal" | "files" | "browser" | "remote" | "database" | "preview" | "deploy" | `acp:${string}` | `remote:${string}`;
 
 function acpTask(chatId: string): WorkspaceTask {
   return `acp:${chatId}`;
@@ -77,6 +77,18 @@ function isAcpTask(task: WorkspaceTask): boolean {
 
 function acpChatId(task: WorkspaceTask): string {
   return task.slice("acp:".length);
+}
+
+function remoteTask(hostId: string): WorkspaceTask {
+  return `remote:${hostId}`;
+}
+
+function isRemoteTask(task: WorkspaceTask): boolean {
+  return task.startsWith("remote:");
+}
+
+function remoteHostId(task: WorkspaceTask): string {
+  return task.slice("remote:".length);
 }
 
 /**
@@ -156,6 +168,7 @@ export function WorkspacePane({
   /** 工作区主视图的超级 tab；工具内容与终端共享同一组顶层入口 */
   const [activeTask, setActiveTask] = useState<WorkspaceTask>("terminal");
   const [taskTabs, setTaskTabs] = useState<WorkspaceTask[]>(["terminal"]);
+  const [remoteConnectionTabs, setRemoteConnectionTabs] = useState<{ id: string; name: string }[]>([]);
   const taskTabsStripRef = useRef<HTMLDivElement>(null);
   /**
    * 右栏 Agent 面板停在哪个模式：决定点下面的智能体时开终端还是 ACP 对话。
@@ -387,6 +400,10 @@ export function WorkspacePane({
 
   /** AI CLI 的入口挂在侧边栏的工作区行上，命令要落到当前工作区终端那边的活动会话里 */
   const terminalRef = useRef<TerminalPaneHandle>(null);
+  const remoteDisconnectRef = useRef<((hostId: string) => void) | null>(null);
+  const registerRemoteDisconnect = useCallback((handler: (hostId: string) => void) => {
+    remoteDisconnectRef.current = handler;
+  }, []);
   const [terminalTaskTabs, setTerminalTaskTabs] = useState<TerminalTaskTab[]>([
     { id: 0, label: "终端", attention: null, agent: null, shellKind: "shell" },
   ]);
@@ -422,6 +439,28 @@ export function WorkspacePane({
     const chatId = existing?.chatId ?? terminalRef.current?.createAcpChat(command);
     if (chatId) selectAcpTab(command, chatId);
   }, [acpChatTabs, selectAcpTab]);
+  const openRemoteContent = useCallback((hostId?: string, hostName?: string) => {
+    if (!hostId) {
+      setActiveTask((current) =>
+        current === "remote" || isRemoteTask(current)
+          ? current
+          : remoteConnectionTabs.length > 0
+            ? remoteTask(remoteConnectionTabs[remoteConnectionTabs.length - 1].id)
+            : "remote",
+      );
+      if (remoteConnectionTabs.length === 0) {
+        setTaskTabs((current) => current.includes("remote") ? current : [...current, "remote"]);
+      }
+      return;
+    }
+    const task = remoteTask(hostId);
+    setRemoteConnectionTabs((current) => [
+      ...current.filter((item) => item.id !== hostId),
+      { id: hostId, name: hostName?.trim() || hostId },
+    ]);
+    setActiveTask(task);
+    setTaskTabs((current) => current.includes(task) ? current : [...current, task]);
+  }, [remoteConnectionTabs]);
   /** 搜索替换要指挥编辑器保存 / 重载 / 定位，这几件事只有它自己知道怎么做 */
   const editorRef = useRef<EditorPaneHandle>(null);
 
@@ -823,6 +862,11 @@ export function WorkspacePane({
         const chat = acpChatTabs.find((item) => item.chatId === chatId);
         if (chat) terminalRef.current?.closeAcpChat(chat.command, chat.chatId);
       }
+      if (isRemoteTask(task)) {
+        const hostId = remoteHostId(task);
+        remoteDisconnectRef.current?.(hostId);
+        setRemoteConnectionTabs((current) => current.filter((item) => item.id !== hostId));
+      }
       const index = taskTabs.indexOf(task);
       if (index < 0) return;
       const remaining = taskTabs.filter((item) => item !== task);
@@ -892,7 +936,7 @@ export function WorkspacePane({
           <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-line bg-panel">
         <div ref={taskTabsStripRef} className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto px-2">
-          {taskTabs.flatMap((task) => {
+      {taskTabs.flatMap((task) => {
             if (task === "terminal") {
               return terminalTaskTabs.map((terminalTab) => {
                 const attentionTitle =
@@ -942,6 +986,30 @@ export function WorkspacePane({
                 );
               });
             }
+        if (isRemoteTask(task)) {
+          const host = remoteConnectionTabs.find((item) => item.id === remoteHostId(task));
+          if (!host) return [];
+          const label = host.name;
+          return [
+            <div
+              key={task}
+              className={`flex h-7 shrink-0 items-center rounded ${activeTask === task ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
+            >
+              <button
+                type="button"
+                onClick={() => setActiveTask(task)}
+                title={label}
+                className="flex max-w-[220px] items-center gap-1.5 py-1 pl-2.5 text-[11px]"
+              >
+                <IconServer className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{label}</span>
+              </button>
+              <IconButton label={`关闭${label}`} size="xs" tone="danger" onClick={() => closeTask(task)} className="mr-1">
+                <IconClose className={ICON_XS} />
+              </IconButton>
+            </div>,
+          ];
+        }
             const chatTab = isAcpTask(task)
               ? acpChatTabs.find((item) => item.chatId === acpChatId(task))
               : undefined;
@@ -1093,13 +1161,14 @@ export function WorkspacePane({
                 />
               </div>
             </div>
-            <div className={activeTask === "remote" ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
+            <div className={activeTask === "remote" || isRemoteTask(activeTask) ? "flex min-h-0 min-w-0 flex-1" : "hidden"}>
               <div className="h-full min-w-0 flex-1">
                 <RemotePane
                   sidebarTarget={activeTool === "remote" ? taskSidebarTarget : null}
-                  onOpenContent={() => openTask("remote")}
-                  fullscreen={rightFullscreen}
-                  onToggleFullscreen={onToggleRightFullscreen}
+                  selectedHostId={isRemoteTask(activeTask) ? remoteHostId(activeTask) : undefined}
+                  toolbarTarget={isRemoteTask(activeTask) || activeTask === "remote" ? editorToolbarTarget : null}
+                  onOpenContent={openRemoteContent}
+                  onRegisterDisconnect={registerRemoteDisconnect}
                 />
               </div>
             </div>

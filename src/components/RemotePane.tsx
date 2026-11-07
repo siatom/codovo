@@ -1,14 +1,13 @@
-import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { FullscreenButton } from "./FullscreenButton";
 import { RemoteBrowser } from "./RemoteBrowser";
 import { RemoteHostDialog } from "./RemoteHostDialog";
 import { RemoteTerminal } from "./RemoteTerminal";
 import { useRemoteHosts } from "../lib/remote-hosts";
 import { clearHostSecrets, type RemoteConnectionState, type RemoteHost } from "../lib/remote";
-import { IconArrowsLeftRight, IconClose, IconMore, IconPlus, IconServer, IconTerminal } from "./icons";
-import { ICON_SM, ICON_XS, IconButton, Segmented, StatusDot, type StatusTone } from "./ui";
+import { IconArrowsLeftRight, IconFile, IconMore, IconPlus, IconTerminal } from "./icons";
+import { ICON_SM, IconButton, StatusDot, type StatusTone } from "./ui";
 
 const ACTIVE_KEY = "codovo.remoteActiveHost";
 const TAB_KEY = "codovo.remoteTab";
@@ -68,15 +67,17 @@ function dotTone(state: RemoteConnectionState | undefined): StatusTone {
  * 智能体一个路子。
  */
 export function RemotePane({
-  fullscreen,
-  onToggleFullscreen,
   sidebarTarget,
   onOpenContent,
+  selectedHostId,
+  toolbarTarget,
+  onRegisterDisconnect,
 }: {
   sidebarTarget?: HTMLElement | null;
-  onOpenContent: () => void;
-  fullscreen: boolean;
-  onToggleFullscreen: () => void;
+  onOpenContent: (hostId?: string, hostName?: string) => void;
+  selectedHostId?: string;
+  toolbarTarget?: HTMLElement | null;
+  onRegisterDisconnect: (handler: (hostId: string) => void) => void;
 }) {
   const { hosts, addHost, updateHost, removeHost } = useRemoteHosts();
   // 回调里要读最新的主机列表（连接成功回报指纹时），用 ref 免得闭包读到旧值
@@ -87,11 +88,7 @@ export function RemotePane({
   const [subTab, setSubTab] = useState<SubTab>(() =>
     readSession(TAB_KEY) === "files" ? "files" : "terminal",
   );
-  /**
-   * 每台已连接主机各自一组终端标签（hostId -> 标签 id 列表）。一台主机开几个终端就是
-   * 几条独立的 SSH 会话；切走的主机那组留着不动（标签 display:none 藏着不卸载，
-   * SSH 会话不会断）——和终端、智能体一个路子。
-   */
+  /** 每台已连接主机对应一条 SSH 终端会话；切走时隐藏但不卸载，保留会话状态。 */
   const [tabsByHost, setTabsByHost] = useState<Record<string, number[]>>({});
   // 回调里要读最新的标签表（关标签时算该切到哪个），用 ref 免得闭包读到旧值
   const tabsByHostRef = useRef(tabsByHost);
@@ -119,11 +116,15 @@ export function RemotePane({
     () => hosts.filter((host) => (tabsByHost[host.id]?.length ?? 0) > 0),
     [hosts, tabsByHost],
   );
+  useEffect(() => {
+    if (selectedHostId === undefined) return;
+    setActiveHostId(selectedHostId);
+    writeSession(ACTIVE_KEY, selectedHostId);
+  }, [selectedHostId]);
   const isConnected = useCallback(
     (hostId: string) => (tabsByHost[hostId]?.length ?? 0) > 0,
     [tabsByHost],
   );
-  const activeTabs = activeHost ? (tabsByHost[activeHost.id] ?? []) : [];
   const activeTabId = activeHost ? activeTabByHost[activeHost.id] : undefined;
   // SFTP 与错误横幅都跟着「当前标签」走
   const activeSessionId = activeTabId === undefined ? undefined : sessionByTab[activeTabId];
@@ -142,15 +143,13 @@ export function RemotePane({
 
   /** 新建一个终端标签（也是「连接这台主机」的动作）。返回它的 id */
   const addTab = useCallback((hostId: string): number => {
+    const existing = tabsByHostRef.current[hostId]?.[0];
+    if (existing !== undefined) return existing;
     const id = nextTabIdRef.current;
     nextTabIdRef.current += 1;
     setTabsByHost((current) => ({ ...current, [hostId]: [...(current[hostId] ?? []), id] }));
     setActiveTabByHost((current) => ({ ...current, [hostId]: id }));
     return id;
-  }, []);
-
-  const selectTab = useCallback((hostId: string, tabId: number) => {
-    setActiveTabByHost((current) => ({ ...current, [hostId]: tabId }));
   }, []);
 
   /** 清掉一批标签的会话 / 状态 / 重连计数 */
@@ -173,7 +172,7 @@ export function RemotePane({
 
   const openHost = useCallback(
     (host: RemoteHost) => {
-      onOpenContent();
+      onOpenContent(host.id, host.name);
       setActiveHostId(host.id);
       writeSession(ACTIVE_KEY, host.id);
       // 点了才连、不在挂载时自动连：选中一台还没连的主机就顺手开第一个终端
@@ -223,6 +222,9 @@ export function RemotePane({
     },
     [dropTabs],
   );
+  useEffect(() => {
+    onRegisterDisconnect(disconnectHost);
+  }, [disconnectHost, onRegisterDisconnect]);
 
   const saveHost = useCallback(
     (host: RemoteHost) => {
@@ -232,10 +234,11 @@ export function RemotePane({
       setDialog(null);
       setActiveHostId(host.id);
       writeSession(ACTIVE_KEY, host.id);
+      onOpenContent(host.id, host.name);
       // 改过连接参数就重连一次，别让旧会话继续用旧配置
       reconnectHost(host.id);
     },
-    [addHost, updateHost, reconnectHost],
+    [addHost, updateHost, reconnectHost, onOpenContent],
   );
 
   const deleteHost = useCallback(
@@ -305,7 +308,10 @@ export function RemotePane({
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
             远程连接
           </span>
-          <IconButton label="新增主机" onClick={() => setDialog({ host: null })}>
+          <IconButton label="新增主机" onClick={() => {
+            onOpenContent();
+            setDialog({ host: null });
+          }}>
             <IconPlus className={ICON_SM} />
           </IconButton>
         </div>
@@ -360,74 +366,21 @@ export function RemotePane({
 
       {/* 右侧：终端 / 文件 */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
-          <IconServer className="h-3.5 w-3.5 shrink-0 text-fg-dim" />
-          <span className="min-w-0 flex-1 truncate text-[12px] text-fg">
-            {activeHost ? activeHost.name : "未选择主机"}
-            {activeHost && (
-              <span className="ml-2 text-[11px] text-fg-faint">
-                {activeHost.user ? `${activeHost.user}@` : ""}
-                {activeHost.host}:{activeHost.port}
-              </span>
-            )}
-          </span>
-          <Segmented
-            value={subTab}
-            onChange={pickTab}
-            label="远程视图"
-            options={[
-              { value: "terminal", label: "终端" },
-              { value: "files", label: "文件" },
-            ]}
-          />
-          {/* 文件视图下才需要：交换「本地 / 远程」两个面板的左右位置 */}
-          {subTab === "files" && (
-            <IconButton label="左右交换位置" onClick={toggleSwap}>
-              <IconArrowsLeftRight className={ICON_SM} />
+        {toolbarTarget && createPortal(
+          <div className="flex shrink-0 items-center gap-0.5">
+            <IconButton label="终端" active={subTab === "terminal"} onClick={() => pickTab("terminal")}>
+              <IconTerminal className={ICON_SM} />
             </IconButton>
-          )}
-          <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
-        </header>
-
-        {/* 标签栏：这台主机开了几个终端。只终端视图下才有意义，切到文件视图整条不画。
-            Ctrl/Cmd+T 新建、Ctrl/Cmd+W 关闭（键位可配置），和中间那个本地终端同一套 */}
-        {activeHost && isConnected(activeHost.id) && subTab === "terminal" && (
-          <div className="flex h-8 shrink-0 items-center gap-0.5 border-b border-line px-2">
-            <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-              {activeTabs.map((tabId, index) => {
-                const isActiveTab = tabId === activeTabId;
-                return (
-                  <div
-                    key={tabId}
-                    className={`flex shrink-0 items-center rounded ${
-                      isActiveTab ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => selectTab(activeHost.id, tabId)}
-                      title={`${activeHost.user ? `${activeHost.user}@` : ""}${activeHost.host}`}
-                      className="flex max-w-[140px] items-center gap-1 py-0.5 pl-2 text-[11px]"
-                    >
-                      <IconTerminal className="h-3 w-3" />
-                      <span className="truncate">终端 {index + 1}</span>
-                    </button>
-                    <IconButton
-                      label="关闭这个终端"
-                      size="xs"
-                      tone="danger"
-                      onClick={() => closeTab(activeHost.id, tabId)}
-                    >
-                      <IconClose className={ICON_XS} />
-                    </IconButton>
-                  </div>
-                );
-              })}
-              <IconButton label="新建终端" size="xs" onClick={() => addTab(activeHost.id)}>
-                <IconPlus className={ICON_SM} />
+            <IconButton label="文件" active={subTab === "files"} onClick={() => pickTab("files")}>
+              <IconFile className={ICON_SM} />
+            </IconButton>
+            {subTab === "files" && (
+              <IconButton label="左右交换位置" onClick={toggleSwap}>
+                <IconArrowsLeftRight className={ICON_SM} />
               </IconButton>
-            </div>
-          </div>
+            )}
+          </div>,
+          toolbarTarget,
         )}
 
         {activeHost && activeState?.phase === "error" && (
@@ -545,6 +498,7 @@ export function RemotePane({
               type="button"
               className={MENU_ITEM}
               onClick={() => {
+                onOpenContent();
                 setDialog({ host: menu.host });
                 setMenu(null);
               }}
@@ -567,6 +521,7 @@ export function RemotePane({
               type="button"
               className={`${MENU_ITEM} text-danger hover:text-danger`}
               onClick={() => {
+                onOpenContent();
                 setPendingDelete(menu.host);
                 setMenu(null);
               }}
