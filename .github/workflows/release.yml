@@ -18,9 +18,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-24.04, windows-latest, macos-latest]
         include:
+          - platform: ubuntu-24.04
+            os: linux
+          - platform: windows-latest
+            os: windows
           - platform: macos-latest
+            os: macos
             args: --target aarch64-apple-darwin
     runs-on: ${{ matrix.platform }}
     steps:
@@ -83,8 +87,10 @@ jobs:
           releaseDraft: true
           prerelease: false
           generateReleaseNotes: true
-          uploadUpdaterJson: true
-          uploadUpdaterSignatures: true
+          # 产物名带上操作系统，方便用户在 Release 页按平台挑选安装包
+          assetNamePattern: "[name]_[version]_${{ matrix.os }}_[arch][setup][ext]"
+          # 打包 AppImage 需要从 GitHub 下载 AppRun，偶发 5xx 时自动重试
+          retryAttempts: 2
 
   publish:
     name: Publish verified release
