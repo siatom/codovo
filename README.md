@@ -199,6 +199,7 @@ MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、�
 pnpm install
 pnpm tauri dev                       # 开发
 pnpm tauri build                     # 打包安装包
+pnpm package:install                 # 打包并安装到本机（Windows / macOS）
 ```
 
 从源码构建需要 Rust、Node.js、pnpm，以及对应平台的 Tauri 2 原生构建依赖（Windows 的 C++ 构建工具与 WebView2、macOS 的 Xcode Command Line Tools、Linux 的 WebKitGTK 等）。

@@ -7,6 +7,7 @@
     "dev": "node scripts/gen-file-icons.mjs && vite",
     "build": "node scripts/gen-file-icons.mjs && tsc && vite build",
     "preview": "vite preview",
+    "package:install": "bash scripts/build-install.sh",
     "tauri": "tauri",
     "gen:file-icons": "node scripts/gen-file-icons.mjs",
     "test:translate": "node scripts/test-translate-split.mjs",

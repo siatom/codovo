@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 构建当前平台的 release 安装包，并安装到本机。
 #
-# 用法：bash scripts/build-install.sh [--no-build] [--no-install]
+# 用法：pnpm package:install [--no-build] [--no-install]
+#       bash scripts/build-install.sh [--no-build] [--no-install]
 #   --no-build   跳过构建，直接安装已存在的安装包（复用上一次产物）
 #   --no-install 只构建，不安装
 #
@@ -33,6 +34,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-build)   do_build=0 ;;
     --no-install) do_install=0 ;;
+    --)           ;;   # pnpm run 会把分隔符 -- 原样透传，忽略它
     -h|--help)    usage; exit 0 ;;
     *) echo "[build-install] unknown option: $arg" >&2; usage; exit 2 ;;
   esac
