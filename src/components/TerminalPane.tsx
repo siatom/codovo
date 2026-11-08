@@ -604,15 +604,19 @@ export function TerminalPane({
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
                   onTitleChange={
-                    cliKey(hintByIdRef.current.get(id) ?? "") === "codex"
+                    ["codex", "opencode"].includes(cliKey(hintByIdRef.current.get(id) ?? ""))
                       ? (terminalTitle) => {
+                          const provider = cliKey(hintByIdRef.current.get(id) ?? "");
                           // Codex 默认 OSC 标题按“活动 | thread name | project”组合，
                           // 只取首段并剥掉活动 spinner，避免标签跟着动画每秒闪动。
                           const firstPart = terminalTitle.split(" | ", 1)[0]?.trim() ?? "";
-                          const name = firstPart
-                            .replace(/^[\u2800-\u28ff]\s*/u, "")
-                            .replace(/\s+/g, " ")
-                            .trim();
+                          const name =
+                            provider === "opencode"
+                              ? terminalTitle.match(/^OC\s\|\s*(.+)$/u)?.[1]?.trim() ?? ""
+                              : firstPart
+                                  .replace(/^[\u2800-\u28ff]\s*/u, "")
+                                  .replace(/\s+/g, " ")
+                                  .trim();
                           if (!name || name === customTitleByIdRef.current.get(id)) return;
                           customTitleByIdRef.current.set(id, Array.from(name).slice(0, 60).join(""));
                           setTitleRevision((revision) => revision + 1);
