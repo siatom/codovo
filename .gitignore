@@ -1,5 +1,7 @@
 # 依赖
 node_modules/
+# pnpm 偶尔会在项目里落一份本地 store（正常应复用全局 store），几百 MB，不进仓库
+.pnpm-store/
 
 # 构建产物（Rust/Tauri 的 target、gen/schemas 在 src-tauri/.gitignore 里）
 dist/

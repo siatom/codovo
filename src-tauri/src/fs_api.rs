@@ -403,6 +403,8 @@ pub fn fs_list_dir(
 const SKIP_DIRS: &[&str] = &[
     "node_modules",
     ".git",
+    // pnpm 误落在项目里的本地 store，和 node_modules 一样是整片缓存
+    ".pnpm-store",
     "target",
     "dist",
     "build",
