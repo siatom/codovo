@@ -890,6 +890,8 @@ export const TerminalSession = forwardRef<
         return;
       }
       ptyRef.current?.resize(term.cols, term.rows);
+      // 隐藏标签期间终端仍会收输出；重新显示后显式重绘，避免留下未刷新的旧字形。
+      term.refresh(0, Math.max(0, term.rows - 1));
       term.focus();
     });
     return () => cancelAnimationFrame(frame);
