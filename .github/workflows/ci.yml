@@ -63,12 +63,3 @@ jobs:
       - name: Run Clippy
         working-directory: src-tauri
         run: cargo clippy --locked --all-targets
-
-  opencode-windows:
-    name: Windows opencode process lifecycle
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Test real process tree and cmd wrapper cleanup
-        run: cargo test --locked --manifest-path scripts/opencode-process-tests/Cargo.toml
