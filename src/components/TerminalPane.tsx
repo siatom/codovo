@@ -604,7 +604,7 @@ export function TerminalPane({
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
                   onTitleChange={
-                    ["codex", "opencode", "codebuddy"].includes(cliKey(hintByIdRef.current.get(id) ?? ""))
+                    ["codex", "opencode", "codebuddy", "copilot"].includes(cliKey(hintByIdRef.current.get(id) ?? ""))
                       ? (terminalTitle) => {
                           const provider = cliKey(hintByIdRef.current.get(id) ?? "");
                           // Codex 默认 OSC 标题按“活动 | thread name | project”组合，
@@ -615,13 +615,16 @@ export function TerminalPane({
                               ? terminalTitle.match(/^OC\s\|\s*(.+)$/u)?.[1]?.trim() ?? ""
                               : provider === "codebuddy"
                                 ? terminalTitle.replace(/\s+/g, " ").trim()
-                                : firstPart
-                                    .replace(/^[\u2800-\u28ff]\s*/u, "")
-                                    .replace(/\s+/g, " ")
-                                    .trim();
+                                : provider === "copilot"
+                                  ? terminalTitle.split(";").map((part) => part.trim()).filter(Boolean).pop() ?? ""
+                                  : firstPart
+                                      .replace(/^[\u2800-\u28ff]\s*/u, "")
+                                      .replace(/\s+/g, " ")
+                                      .trim();
                           if (
                             !name ||
                             (provider === "codebuddy" && /^codebuddy(?: code)?$/iu.test(name)) ||
+                            (provider === "copilot" && /^github copilot$/iu.test(name)) ||
                             name === customTitleByIdRef.current.get(id)
                           ) return;
                           customTitleByIdRef.current.set(id, Array.from(name).slice(0, 60).join(""));
