@@ -4367,9 +4367,20 @@ export function GitChangesPane({
         )}
 
         {error && (
-          <p className="shrink-0 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] whitespace-pre-wrap text-danger">
-            {error}
-          </p>
+          <div className="flex shrink-0 items-start gap-1 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
+            <p className="max-h-28 min-w-0 flex-1 overflow-auto whitespace-pre-wrap break-words">
+              {error}
+            </p>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              aria-label="关闭错误信息"
+              title="关闭错误信息"
+              className="shrink-0 rounded px-1 text-danger/80 hover:bg-danger/10 hover:text-danger"
+            >
+              ×
+            </button>
+          </div>
         )}
 
         {/* 路径筛选行：由工具行右边的漏斗按钮唤出，改动太少时连入口都不给。
