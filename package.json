@@ -35,6 +35,7 @@
     "react-dom": "^19.1.0",
     "simple-icons": "^16.32.0",
     "sql-formatter": "^15.9.0",
+    "tabbable": "^6.5.1",
     "xterm-theme": "^1.1.0"
   },
   "devDependencies": {
