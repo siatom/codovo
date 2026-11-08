@@ -68,7 +68,7 @@ if [ "$do_build" = 1 ]; then
     macos)   bundles=app,dmg; label="macOS app and DMG" ;;
   esac
   echo "[build-install] building release $label (runs pnpm build + cargo build) ..."
-  if ! run_pnpm tauri build --bundles "$bundles"; then
+  if ! run_pnpm tauri build --bundles "$bundles" --config '{"bundle":{"createUpdaterArtifacts":false}}'; then
     echo "[build-install] build failed" >&2
     exit 1
   fi
