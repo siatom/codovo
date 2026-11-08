@@ -4918,7 +4918,8 @@ mod tests {
         fs::write(repo.join("dir").join("file.txt"), "directory file\n").unwrap();
         fs::write(repo.join("dir\\file.txt"), "backslash file\n").unwrap();
         stage_paths(&repo, &None).unwrap();
-        let first = commit_staged(&repo, "add paths").unwrap();
+        commit_staged(&repo, "add paths").unwrap();
+        let first = log_filtered(&repo, 1, None, None).unwrap()[0].hash.clone();
 
         let files = files_of(&repo, &first).unwrap();
         let mut relatives: Vec<&str> = files.iter().map(|file| file.relative.as_str()).collect();
@@ -4938,7 +4939,8 @@ mod tests {
 
         fs::write(repo.join("dir\\file.txt"), "updated backslash file\n").unwrap();
         stage_paths(&repo, &None).unwrap();
-        let second = commit_staged(&repo, "update backslash path").unwrap();
+        commit_staged(&repo, "update backslash path").unwrap();
+        let second = log_filtered(&repo, 1, None, None).unwrap()[0].hash.clone();
         let compared = compare_files(&repo, &first, &second).unwrap();
         assert_eq!(compared.len(), 1);
         assert_eq!(compared[0].relative, "dir\\file.txt");
