@@ -47,6 +47,16 @@ function formatLocation({ path, start, end }: EditorLocation): string {
   return /\s/.test(path) ? `"${text}"` : text;
 }
 
+/** 过滤 shell 启动时发出的可执行文件路径，避免覆盖 AI CLI 的初始标签名。 */
+function isShellTitle(title: string): boolean {
+  const value = title.trim();
+  return (
+    /^(?:[a-z]:[\\/]|\\\\|\/)/iu.test(value) ||
+    /(?:^|[\\/])(?:bash|sh|zsh|pwsh|powershell|cmd)(?:\.exe|\.cmd)?$/iu.test(value) ||
+    /^(?:mingw\d*|msys|cygwin)(?:64)?(?:[: ]|$)/iu.test(value)
+  );
+}
+
 export interface TerminalPaneHandle {
   /**
    * 新开一个终端标签并在里面执行命令（Agent 面板与会话 resume 都用它；
@@ -623,7 +633,7 @@ export function TerminalPane({
                                       .trim();
                           if (
                             !name ||
-                            (provider === "codebuddy" && /^codebuddy(?: code)?$/iu.test(name)) ||
+                            (provider === "codebuddy" && (/^codebuddy(?: code)?(?:\s+v?\d[\w.-]*)?$/iu.test(name) || isShellTitle(name))) ||
                             (provider === "copilot" && /^github copilot$/iu.test(name)) ||
                             name === customTitleByIdRef.current.get(id)
                           ) return;
