@@ -19,8 +19,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: ubuntu-24.04
-            os: linux
           - platform: windows-latest
             os: windows
           - platform: macos-latest
@@ -53,23 +51,6 @@ jobs:
         with:
           targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin' || '' }}
 
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            xdg-utils
-
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
@@ -89,8 +70,6 @@ jobs:
           generateReleaseNotes: true
           # 产物名带上操作系统，方便用户在 Release 页按平台挑选安装包
           assetNamePattern: "[name]_[version]_${{ matrix.os }}_[arch][setup][ext]"
-          # 打包 AppImage 需要从 GitHub 下载 AppRun，偶发 5xx 时自动重试
-          retryAttempts: 2
 
   publish:
     name: Publish verified release
@@ -108,7 +87,7 @@ jobs:
           const fs = require('node:fs');
           const manifest = JSON.parse(fs.readFileSync('latest.json', 'utf8'));
           if (manifest.version.replace(/^v/, '') !== process.env.RELEASE_TAG.replace(/^v/, '')) throw new Error('Updater version mismatch');
-          for (const target of ['windows-x86_64', 'darwin-aarch64', 'linux-x86_64']) {
+          for (const target of ['windows-x86_64', 'darwin-aarch64']) {
             const asset = manifest.platforms[target + '-nsis'] || manifest.platforms[target];
             if (!asset?.signature || !asset.url?.startsWith('https://github.com/' + process.env.GH_REPO + '/releases/download/')) throw new Error('Missing signed updater artifact: ' + target);
           }
