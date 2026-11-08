@@ -686,8 +686,12 @@ fn workspace_relative(root: &Path, raw: &str) -> Result<(PathBuf, String), Strin
     let relative = target
         .strip_prefix(root)
         .map_err(|_| format!("路径越界（不在工作区内）: {raw}"))?;
-    // git 内部一律用正斜杠
-    let spec = relative.to_string_lossy().replace('\\', "/");
+    // Git 的 pathspec 用 `/` 分隔组件；Unix 文件名里的 `\` 是普通字符，不能替换。
+    let spec = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
     if spec.is_empty() {
         return Err(format!("路径指向工作区根，不能当成改动项: {raw}"));
     }
@@ -1963,7 +1967,8 @@ fn parse_name_status(raw: &[u8], prefix: &str, root: &Path) -> Vec<CommitFile> {
         let path = if renamed { tokens.next() } else { first };
         let Some(path) = path else { break };
 
-        let repo_path = String::from_utf8_lossy(path).replace('\\', "/");
+        // `-z` 输出的路径组件原样保留；Git 自己用 `/` 表示目录分隔符。
+        let repo_path = String::from_utf8_lossy(path);
         let Some(relative) = repo_path.strip_prefix(prefix) else {
             continue;
         };
@@ -1972,7 +1977,7 @@ fn parse_name_status(raw: &[u8], prefix: &str, root: &Path) -> Vec<CommitFile> {
         }
         files.push(CommitFile {
             path: root
-                .join(relative.replace('/', std::path::MAIN_SEPARATOR_STR))
+                .join(relative.split('/').collect::<PathBuf>())
                 .to_string_lossy()
                 .to_string(),
             relative: relative.to_string(),
@@ -4897,6 +4902,57 @@ mod tests {
         assert!(files
             .iter()
             .all(|f| f.path.starts_with(&sub.to_string_lossy().to_string())));
+
+        cleanup(&top);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn commit_files_preserve_literal_backslashes_in_unix_names() {
+        if !git_available() {
+            return;
+        }
+        let (_state, repo, top) = temp_repo();
+        init_repo(&repo);
+        fs::create_dir_all(repo.join("dir")).unwrap();
+        fs::write(repo.join("dir").join("file.txt"), "directory file\n").unwrap();
+        fs::write(repo.join("dir\\file.txt"), "backslash file\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let first = commit_staged(&repo, "add paths").unwrap();
+
+        let files = files_of(&repo, &first).unwrap();
+        let mut relatives: Vec<&str> = files.iter().map(|file| file.relative.as_str()).collect();
+        relatives.sort_unstable();
+        assert_eq!(relatives, vec!["dir/file.txt", "dir\\file.txt"]);
+        assert_ne!(files[0].path, files[1].path);
+        for file in &files {
+            let diff = file_diff(&repo, &file.path, &DiffSource::Commit { rev: first.clone() })
+                .unwrap();
+            let expected = if file.relative == "dir/file.txt" {
+                "directory file\n"
+            } else {
+                "backslash file\n"
+            };
+            assert_eq!(diff.modified, expected);
+        }
+
+        fs::write(repo.join("dir\\file.txt"), "updated backslash file\n").unwrap();
+        stage_paths(&repo, &None).unwrap();
+        let second = commit_staged(&repo, "update backslash path").unwrap();
+        let compared = compare_files(&repo, &first, &second).unwrap();
+        assert_eq!(compared.len(), 1);
+        assert_eq!(compared[0].relative, "dir\\file.txt");
+        let diff = file_diff(
+            &repo,
+            &compared[0].path,
+            &DiffSource::Range {
+                from: first,
+                to: second,
+            },
+        )
+        .unwrap();
+        assert_eq!(diff.original, "backslash file\n");
+        assert_eq!(diff.modified, "updated backslash file\n");
 
         cleanup(&top);
     }
