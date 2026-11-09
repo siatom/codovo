@@ -6,7 +6,7 @@ export interface AppUpdate {
   notes: string;
   releaseUrl: string;
   size: number | null;
-  canInstall: boolean;
+  installStatus: "available" | "unsupported" | "checkFailed";
 }
 
 interface UpdateProgress {
@@ -70,7 +70,7 @@ export function hideAppUpdate() {
 
 export async function installAppUpdate(): Promise<void> {
   const update = snapshot.update;
-  if (!update?.canInstall || snapshot.busy || snapshot.checking) return;
+  if (update?.installStatus !== "available" || snapshot.busy || snapshot.checking) return;
   publish({
     busy: true,
     message: "",

@@ -63,9 +63,14 @@ export function AppUpdateNotice() {
             {release.notes}
           </p>
         )}
-        {!release.canInstall && (
+        {release.installStatus === "unsupported" && (
           <p className="text-fg-faint">
             当前安装方式或此版本暂不支持应用内安装，请从发布页升级。
+          </p>
+        )}
+        {release.installStatus === "checkFailed" && (
+          <p className="text-fg-faint">
+            暂时无法检查应用内更新，请检查网络后重试；也可从发布页手动升级。
           </p>
         )}
         {progress && (
@@ -88,7 +93,7 @@ export function AppUpdateNotice() {
           </p>
         )}
         <div className="flex flex-wrap gap-2">
-          {release.canInstall && (
+          {release.installStatus === "available" && (
             <button
               type="button"
               className={ACTION}
@@ -106,6 +111,16 @@ export function AppUpdateNotice() {
           >
             打开发布页
           </button>
+          {release.installStatus === "checkFailed" && (
+            <button
+              type="button"
+              className={ACTION}
+              disabled={state.busy || state.checking}
+              onClick={() => void checkAppUpdate(true)}
+            >
+              {state.checking ? "正在检查…" : "重新检查"}
+            </button>
+          )}
           <button
             type="button"
             className={ACTION}

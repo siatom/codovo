@@ -34,7 +34,15 @@ pub struct UpdateInfo {
     notes: String,
     release_url: &'static str,
     size: Option<u64>,
-    can_install: bool,
+    install_status: InstallStatus,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum InstallStatus {
+    Available,
+    Unsupported,
+    CheckFailed,
 }
 
 #[derive(Clone, Serialize)]
@@ -93,9 +101,10 @@ pub async fn app_update_check(
         return Ok(None);
     }
     // 旧发布可能没有 latest.json，或缺少本平台产物，仍可通过发布页手动升级。
-    let update = if supported_install() {
+    let (update, install_status) = if supported_install() {
         let handle = app.clone();
-        app.updater_builder()
+        let result = app
+            .updater_builder()
             .on_before_exit(move || {
                 crate::cleanup(&handle);
                 handle.cleanup_before_exit();
@@ -104,16 +113,25 @@ pub async fn app_update_check(
             .build()
             .map_err(|e| e.to_string())?
             .check()
-            .await
-            .ok()
-            .flatten()
-            .filter(|u| {
-                release_version(&u.version).as_ref() == Some(&version)
-                    && u.download_url.as_str().starts_with(ASSET_PREFIX)
-                    && !u.signature.trim().is_empty()
-            })
+            .await;
+        match result {
+            Err(_) => (None, InstallStatus::CheckFailed),
+            Ok(update) => {
+                let update = update.filter(|u| {
+                    release_version(&u.version).as_ref() == Some(&version)
+                        && u.download_url.as_str().starts_with(ASSET_PREFIX)
+                        && !u.signature.trim().is_empty()
+                });
+                let status = if update.is_some() {
+                    InstallStatus::Available
+                } else {
+                    InstallStatus::Unsupported
+                };
+                (update, status)
+            }
+        }
     } else {
-        None
+        (None, InstallStatus::Unsupported)
     };
     let size = update.as_ref().and_then(|u| {
         release
@@ -127,7 +145,7 @@ pub async fn app_update_check(
         notes: release.body.unwrap_or_default(),
         release_url: RELEASE_PAGE,
         size,
-        can_install: update.is_some(),
+        install_status,
     };
     *pending = update;
     Ok(Some(info))
