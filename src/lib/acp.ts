@@ -541,12 +541,29 @@ function readStore(): StoredMap {
   }
 }
 
-function writeStore(map: StoredMap) {
-  try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(map));
-  } catch {
-    // 配额满了 / 隐私模式下不可写，静默放弃；对话本身还在内存里
+function writeStore(map: StoredMap): boolean {
+  const candidate = JSON.parse(JSON.stringify(map)) as StoredMap;
+  const tryWrite = () => {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(candidate));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (tryWrite()) return true;
+
+  // 配额紧张时按更新时间从旧到新压缩正文，始终先保留 chat/session ID、标题和活动项。
+  const chats = Object.values(candidate).flatMap((slot) => slot.chats);
+  chats.sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
+  for (const chat of chats) {
+    while (chat.blocks.length > 0) {
+      const keep = Math.floor(chat.blocks.length / 2);
+      chat.blocks = keep === 0 ? [] : chat.blocks.slice(-keep);
+      if (tryWrite()) return true;
+    }
   }
+  return false;
 }
 
 /** 工具正文和 diff 可能很大，存档只留摘要 */
@@ -594,28 +611,35 @@ export function loadStoredSlot(root: string, command: string): StoredSlot | null
 }
 
 /** 一轮结束 / 关面板时落盘。没有 session id 的对话恢复不了，不存。 */
-export function saveStoredSlot(root: string, command: string, chats: AcpChat[], activeId: string) {
+export function saveStoredSlot(root: string, command: string, chats: AcpChat[], activeId: string): boolean {
+  const map = readStore();
+  const key = storedKey(root, command);
+  const previous = map[key]?.chats ?? [];
   const entries = chats
     .filter((chat) => chat.chatId && chat.sessionId && chat.blocks.length > 0)
     .slice(-MAX_CHATS)
-    .map<StoredChat>((chat) => ({
-      chatId: chat.chatId,
-      sessionId: chat.sessionId as string,
-      title: chat.title,
-      provider: chat.info?.provider ?? "",
-      blocks: pruneBlocks(chat.blocks),
-      updatedAt: Date.now(),
-    }));
-  const map = readStore();
+    .map<StoredChat>((chat) => {
+      const blocks = pruneBlocks(chat.blocks);
+      const old = previous.find((entry) => entry.chatId === chat.chatId);
+      const unchanged = old && old.title === chat.title && JSON.stringify(old.blocks) === JSON.stringify(blocks);
+      return {
+        chatId: chat.chatId,
+        sessionId: chat.sessionId as string,
+        title: chat.title,
+        provider: chat.info?.provider ?? "",
+        blocks,
+        updatedAt: unchanged ? old.updatedAt : Date.now(),
+      };
+    });
   if (entries.length === 0) {
-    delete map[storedKey(root, command)];
+    delete map[key];
   } else {
-    map[storedKey(root, command)] = {
+    map[key] = {
       chats: entries,
       activeId: entries.some((chat) => chat.chatId === activeId) ? activeId : entries[0].chatId,
     };
   }
-  writeStore(map);
+  return writeStore(map);
 }
 
 export function clearStoredSlot(root: string, command: string) {
