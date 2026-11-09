@@ -9,6 +9,58 @@ interface OfficePreviewProps {
 type Phase = { kind: "loading" } | { kind: "ready" } | { kind: "error"; message: string };
 
 /**
+ * Word 在同一个 run 里可以同时指定西文和东亚字体。浏览器的 font-family
+ * fallback 只按“哪个字体有这个 glyph”选择；如果西文字体也带 CJK glyph，
+ * 就会把本该用东亚字体的汉字提前吃掉。把文本按 script 拆成小 span，才能
+ * 强制对应字符走 DOCX 的 ascii / eastAsia 字体变量。
+ */
+const EAST_ASIAN_CHAR = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/u;
+
+function splitDocxTextByScript(value: string): Array<{ text: string; eastAsian: boolean }> {
+  const parts: Array<{ text: string; eastAsian: boolean }> = [];
+  let current = "";
+  let currentEastAsian: boolean | null = null;
+
+  for (const char of value) {
+    const eastAsian = EAST_ASIAN_CHAR.test(char);
+    if (currentEastAsian !== null && eastAsian !== currentEastAsian) {
+      parts.push({ text: current, eastAsian: currentEastAsian });
+      current = "";
+    }
+    current += char;
+    currentEastAsian = eastAsian;
+  }
+  if (current) parts.push({ text: current, eastAsian: currentEastAsian ?? false });
+  return parts;
+}
+
+/** 将 docx-preview 生成的混排文本固定到 DOCX 对应的两套字体级联。 */
+function applyDocxScriptFonts(host: HTMLElement) {
+  const spans = Array.from(host.querySelectorAll<HTMLElement>(".codovo-docx span"));
+  for (const span of spans) {
+    // 符号 run 自己带有 font-family，不能被普通文字的 script 字体覆盖。
+    if (span.style.fontFamily) continue;
+    const styles = getComputedStyle(span);
+    const asciiFont = styles.getPropertyValue("--docx-font-ascii").trim();
+    const eastAsianFont = styles.getPropertyValue("--docx-font-ea").trim();
+    if (!asciiFont || !eastAsianFont || asciiFont === eastAsianFont) continue;
+
+    for (const node of Array.from(span.childNodes)) {
+      if (node.nodeType !== Node.TEXT_NODE || !node.nodeValue) continue;
+      const parts = splitDocxTextByScript(node.nodeValue);
+      const fragment = document.createDocumentFragment();
+      for (const part of parts) {
+        const child = document.createElement("span");
+        child.style.fontFamily = part.eastAsian ? "var(--docx-font-ea)" : "var(--docx-font-ascii)";
+        child.textContent = part.text;
+        fragment.appendChild(child);
+      }
+      span.replaceChild(fragment, node);
+    }
+  }
+}
+
+/**
  * Word / Excel / PowerPoint 的只读预览。三种文档各自用一套纯前端渲染库，
  * 都按需动态加载——不打开 Office 文档就不会为它们付出体积。
  *
@@ -47,6 +99,11 @@ export function OfficePreview({ path, kind }: OfficePreviewProps) {
           // 因 CSP / 生命周期限制失效，导致中文回退到浏览器默认字体。
           useBase64URL: true,
         });
+        if (cancelled) return;
+        applyDocxScriptFonts(host);
+        // 内嵌字体是异步解码的，必须等字体 ready 后再测量页面宽度和应用 zoom，
+        // 否则先按 fallback 字体测量会造成混排文本换行与 WPS 不一致。
+        await document.fonts.ready;
         if (cancelled) return;
 
         // A4 页面固定 816px 左右，窄面板里会横着被截断。按容器宽度等比缩放
