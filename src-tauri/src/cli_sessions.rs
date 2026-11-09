@@ -179,7 +179,7 @@ async fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, Stri
 
     let mut args = leading;
     args.extend(
-        ["session", "list", "--format", "json", "--max-count"]
+        ["--standalone", "session", "list", "--format", "json", "--max-count"]
             .iter()
             .map(|s| s.to_string()),
     );
