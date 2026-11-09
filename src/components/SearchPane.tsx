@@ -21,6 +21,8 @@ interface SearchGroups {
   groups: { root: string; files: SearchFile[] }[];
   truncated: boolean;
   skippedLarge: number;
+  /** 搜索结果对应的完整条件，防止旧结果参与替换 */
+  signature: string;
 }
 
 interface SearchPaneProps {
@@ -92,7 +94,22 @@ export function SearchPane({
   const [confirmReplaceAll, setConfirmReplaceAll] = useState<{
     files: number;
     matches: number;
+    signature: string;
+    revision: number;
   } | null>(null);
+  const signature = JSON.stringify({ roots, query, options, replacement, visible, showReplace });
+  const currentSignatureRef = useRef(signature);
+  const signatureRevisionRef = useRef(0);
+  if (currentSignatureRef.current !== signature) {
+    currentSignatureRef.current = signature;
+    signatureRevisionRef.current += 1;
+  }
+  const resultIsCurrent = Boolean(result && result.signature === signature);
+  const canReplace = visible && showReplace && !loading && !busy && resultIsCurrent;
+
+  useEffect(() => {
+    setConfirmReplaceAll(null);
+  }, [signature]);
 
   useEffect(() => {
     if (!visible) return;
@@ -119,6 +136,7 @@ export function SearchPane({
               .filter((group) => group.files.length > 0),
             truncated: found.some((one) => one.truncated),
             skippedLarge: found.reduce((sum, one) => sum + one.skippedLarge, 0),
+            signature,
           });
           setMessage(null);
         })
@@ -134,7 +152,7 @@ export function SearchPane({
     }, SEARCH_DEBOUNCE_MS);
 
     return () => window.clearTimeout(timer);
-  }, [roots, visible, query, options, reloadSignal, reloadKey]);
+  }, [roots, visible, query, options, replacement, showReplace, signature, reloadSignal, reloadKey]);
 
   const totalMatches = result
     ? result.groups.reduce(
@@ -176,19 +194,28 @@ export function SearchPane({
   /** 「全部替换」按钮：先弹自研确认框——WKWebView（macOS）不支持 `window.confirm`，
    *  调了会静默返回、直接跳过确认。确认后再交给 performReplaceAll 真正动手 */
   const runReplaceAll = () => {
-    if (busy || !result || result.groups.length === 0) return;
-    setConfirmReplaceAll({ files: totalFiles, matches: totalMatches });
+    if (!canReplace || !result || result.groups.length === 0) return;
+    setConfirmReplaceAll({
+      files: totalFiles,
+      matches: totalMatches,
+      signature,
+      revision: signatureRevisionRef.current,
+    });
   };
 
   /** 真的开始替换。走到这里说明用户已经在确认框里点过替换了 */
-  const performReplaceAll = async () => {
-    if (busy || !result || result.groups.length === 0) return;
+  const performReplaceAll = async (revision: number) => {
+    if (!canReplace || !result || result.groups.length === 0 || result.signature !== signature) return;
     const paths = result.groups.flatMap((group) => group.files.map((file) => file.path));
 
     setBusy(true);
     setMessage(null);
     try {
       if (!(await prepare())) return;
+      if (
+        currentSignatureRef.current !== signature ||
+        signatureRevisionRef.current !== revision
+      ) return;
       // 按所属根分组：一次 fs_replace_all 只认一个沙箱根，跨根的文件得拆开跑
       const groups = new Map<string, string[]>();
       for (const path of paths) {
@@ -229,11 +256,16 @@ export function SearchPane({
   };
 
   const runReplaceOne = async (file: SearchFile, match: SearchMatch) => {
-    if (busy) return;
+    if (!canReplace || !resultIsCurrent) return;
+    const revision = signatureRevisionRef.current;
     setBusy(true);
     setMessage(null);
     try {
       if (!(await prepare())) return;
+      if (
+        currentSignatureRef.current !== signature ||
+        signatureRevisionRef.current !== revision
+      ) return;
       const owner = ownerRoot(roots, file.path);
       if (!owner) {
         setMessage({ kind: "error", text: "这个文件不在任何工作目录里" });
@@ -272,14 +304,14 @@ export function SearchPane({
         )}
 
         {!query && <p className="px-3 py-2 text-[11px] text-fg-faint">输入关键词开始搜索文件内容</p>}
-        {query && loading && !result && (
+        {query && loading && !resultIsCurrent && (
           <p className="px-3 py-2 text-[11px] text-fg-faint">搜索中…</p>
         )}
-        {query && result && result.groups.length === 0 && (
+        {query && resultIsCurrent && result && result.groups.length === 0 && (
           <p className="px-3 py-2 text-[11px] text-fg-faint">没有匹配</p>
         )}
 
-        {result && result.groups.length > 0 && (
+        {resultIsCurrent && result && result.groups.length > 0 && (
           <>
             <div className="flex items-center gap-2 px-3 py-1 text-[11px] text-fg-faint">
               <span className="min-w-0 flex-1 truncate">
@@ -291,7 +323,7 @@ export function SearchPane({
                 <button
                   type="button"
                   onClick={runReplaceAll}
-                  disabled={busy || totalMatches === 0}
+                  disabled={!canReplace || totalMatches === 0}
                   title="全部替换"
                   className={HEADER_BUTTON}
                 >
@@ -390,7 +422,7 @@ export function SearchPane({
                                         <button
                                           type="button"
                                           onClick={() => void runReplaceOne(file, match)}
-                                          disabled={busy}
+                                          disabled={!canReplace}
                                           title="只替换这一处"
                                           className="mr-2 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100 disabled:opacity-30"
                                         >
@@ -415,13 +447,20 @@ export function SearchPane({
       </div>
 
       {/* 全部替换一次改写多个文件、不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
-      {confirmReplaceAll && (
+      {confirmReplaceAll &&
+        confirmReplaceAll.signature === signature &&
+        confirmReplaceAll.revision === signatureRevisionRef.current && (
         <ConfirmDialog
           message={`将在 ${confirmReplaceAll.files} 个文件里替换 ${confirmReplaceAll.matches} 处，确定吗？`}
           confirmLabel="替换"
           onConfirm={() => {
             setConfirmReplaceAll(null);
-            void performReplaceAll();
+            if (
+              confirmReplaceAll.signature === currentSignatureRef.current &&
+              confirmReplaceAll.revision === signatureRevisionRef.current
+            ) {
+              void performReplaceAll(confirmReplaceAll.revision);
+            }
           }}
           onCancel={() => setConfirmReplaceAll(null)}
         />
