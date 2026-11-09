@@ -34,7 +34,7 @@ export function OfficePreview({ path, kind }: OfficePreviewProps) {
       if (cancelled) return;
 
       if (kind === "docx") {
-        const { renderAsync } = await import("docx-preview");
+        const { renderAsync } = await import("@apollo-design/docx-preview");
         if (cancelled) return;
         // body 与 style 都落在同一个容器上：样式跟着组件卸载一起消失，不会污染全局
         await renderAsync(buffer, host, host, {
@@ -43,6 +43,9 @@ export function OfficePreview({ path, kind }: OfficePreviewProps) {
           breakPages: true,
           renderHeaders: true,
           renderFooters: true,
+          // 内嵌字体转成 data URL，避免 WebView2 的 blob 字体在本地文档预览中
+          // 因 CSP / 生命周期限制失效，导致中文回退到浏览器默认字体。
+          useBase64URL: true,
         });
         if (cancelled) return;
 
