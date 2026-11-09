@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
@@ -1489,8 +1490,8 @@ pub struct DbExportResult {
 
 /// 导出用的取行 SQL。返回 `(要执行的 SQL, 是否可判定截断)`。
 ///
-/// - 单页语句（SHOW / EXPLAIN…）或自带 LIMIT/OFFSET 的语句：原样取，行数由语句本身决定，
-///   不做超限判定——用户自己写了 LIMIT，外面再套一层要么语义冲突要么翻空。
+/// - 单页语句（SHOW / EXPLAIN…）或自带 LIMIT/OFFSET 的语句：原样取；All 的上限由流式取数
+///   在保留用户分页语义的同时执行。
 /// - 可翻页且无自带分页的：`All` 接 `LIMIT 上限+1`（多取一行好判超限），`Page` 按页码接
 ///   `LIMIT page_size OFFSET page*page_size`。换行再加，末尾若是行注释不会被吃掉
 ///   （与 `append_paging` 同一个理由）。
@@ -1502,7 +1503,7 @@ fn build_export_sql(
     page_size: u32,
 ) -> (String, bool) {
     if class != SqlClass::RowsPaged || has_top_level_paging(sql) {
-        return (sql.to_string(), false);
+        return (sql.to_string(), scope == DbScope::All);
     }
     match scope {
         DbScope::All => (format!("{sql}\nLIMIT {}", EXPORT_MAX_ROWS + 1), true),
@@ -1514,8 +1515,7 @@ fn build_export_sql(
     }
 }
 
-/// 按范围取回要导出的列与行。单元格**不截断**（`clamp=false`，导出要全量——这是与交互查询
-/// 唯一的差别）。返回值第三项是「是否因超出行数上限被截断」。
+/// 按范围流式取回导出行。单元格**不截断**；All 最多消费上限 + 1 行，以额外一行判定截断。
 async fn collect_export_rows(
     session: &DbSession,
     sql: &str,
@@ -1532,13 +1532,90 @@ async fn collect_export_rows(
         return Err("该语句不产生结果集，无法导出".to_string());
     }
     let (query, truncatable) = build_export_sql(&trimmed, class, scope, page, page_size);
-    // paged=false：不做「多取一行」那套翻页处理，把返回的行原样拿走
-    let mut result = fetch_rows(session, &query, 0, page_size.max(1), false, false).await?;
-    let truncated = truncatable && result.rows.len() as u64 > EXPORT_MAX_ROWS;
+    let collect_limit = if scope == DbScope::All {
+        EXPORT_MAX_ROWS as usize + 1
+    } else {
+        page_size.max(1) as usize
+    };
+    let (columns, mut rows) = fetch_export_rows(session, &query, collect_limit).await?;
+    let truncated = truncatable && rows.len() as u64 > EXPORT_MAX_ROWS;
     if truncated {
-        result.rows.truncate(EXPORT_MAX_ROWS as usize);
+        rows.truncate(EXPORT_MAX_ROWS as usize);
     }
-    Ok((result.columns, result.rows, truncated))
+    Ok((columns, rows, truncated))
+}
+
+/// 导出专用的有界流式读取，避免 `fetch_all` 在宽行查询上无界占用内存。
+async fn fetch_export_rows(
+    session: &DbSession,
+    sql: &str,
+    limit: usize,
+) -> Result<(Vec<String>, Vec<Vec<Option<String>>>), String> {
+    match &session.pool {
+        DbPool::Mysql(pool) => {
+            let mut columns: Vec<String> = pool
+                .prepare(sql)
+                .await
+                .map(|s| s.columns().iter().map(|c| c.name().to_string()).collect())
+                .unwrap_or_default();
+            let mut stream = sqlx::query(sql).fetch(pool);
+            let mut rows = Vec::with_capacity(limit.min(1024));
+            while rows.len() < limit {
+                match stream.try_next().await.map_err(|e| e.to_string())? {
+                    Some(row) => {
+                        if columns.is_empty() {
+                            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                        }
+                        rows.push(cells_mysql(&row, false));
+                    }
+                    None => break,
+                }
+            }
+            Ok((columns, rows))
+        }
+        DbPool::Postgres(pool) => {
+            let mut columns: Vec<String> = pool
+                .prepare(sql)
+                .await
+                .map(|s| s.columns().iter().map(|c| c.name().to_string()).collect())
+                .unwrap_or_default();
+            let mut stream = sqlx::query(sql).fetch(pool);
+            let mut rows = Vec::with_capacity(limit.min(1024));
+            while rows.len() < limit {
+                match stream.try_next().await.map_err(|e| e.to_string())? {
+                    Some(row) => {
+                        if columns.is_empty() {
+                            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                        }
+                        rows.push(cells_pg(&row, false));
+                    }
+                    None => break,
+                }
+            }
+            Ok((columns, rows))
+        }
+        DbPool::Sqlite(pool) => {
+            let mut columns: Vec<String> = pool
+                .prepare(sql)
+                .await
+                .map(|s| s.columns().iter().map(|c| c.name().to_string()).collect())
+                .unwrap_or_default();
+            let mut stream = sqlx::query(sql).fetch(pool);
+            let mut rows = Vec::with_capacity(limit.min(1024));
+            while rows.len() < limit {
+                match stream.try_next().await.map_err(|e| e.to_string())? {
+                    Some(row) => {
+                        if columns.is_empty() {
+                            columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                        }
+                        rows.push(cells_sqlite(&row, false));
+                    }
+                    None => break,
+                }
+            }
+            Ok((columns, rows))
+        }
+    }
 }
 
 /// 按 RFC4180 转义一个字段：含逗号 / 引号 / 换行时加双引号，内部引号双写。
@@ -2182,11 +2259,11 @@ mod tests {
         assert_eq!(page, "SELECT * FROM t\nLIMIT 50 OFFSET 100");
         assert!(!truncatable);
 
-        // 自带 LIMIT / 单页语句原样取，不做截断判定
+        // 自带 LIMIT 保持原样，但 All 仍由流式读取检查上限
         let (kept, truncatable) =
             build_export_sql("SELECT * FROM t LIMIT 5", SqlClass::RowsPaged, DbScope::All, 0, 50);
         assert_eq!(kept, "SELECT * FROM t LIMIT 5");
-        assert!(!truncatable);
+        assert!(truncatable);
 
         let (single, _) = build_export_sql("SHOW TABLES", SqlClass::RowsSingle, DbScope::All, 0, 50);
         assert_eq!(single, "SHOW TABLES");
@@ -2245,6 +2322,29 @@ mod tests {
                 .unwrap();
         assert_eq!(page_rows.len(), 2);
         assert_eq!(page_rows[0][0].as_deref(), Some("3"));
+
+        // 用户自带的大 LIMIT 也在取数层截断，且原查询的排序 / OFFSET 语义保留。
+        let large = "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<150000) SELECT i FROM n ORDER BY i";
+        for sql in [large, &format!("{large} LIMIT 150000")] {
+            let (_, rows, truncated) =
+                collect_export_rows(&session, sql, DbScope::All, 0, 50).await.unwrap();
+            assert_eq!(rows.len(), EXPORT_MAX_ROWS as usize);
+            assert!(truncated);
+            assert_eq!(rows.first().unwrap()[0].as_deref(), Some("1"));
+            assert_eq!(rows.last().unwrap()[0].as_deref(), Some("100000"));
+        }
+        let (_, limited_rows, limited_truncated) = collect_export_rows(
+            &session,
+            "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<20) SELECT i FROM n ORDER BY i LIMIT 5 OFFSET 7",
+            DbScope::All,
+            0,
+            50,
+        )
+        .await
+        .unwrap();
+        assert_eq!(limited_rows.len(), 5);
+        assert_eq!(limited_rows[0][0].as_deref(), Some("8"));
+        assert!(!limited_truncated);
 
         // 写语句没有结果集，不给导出
         assert!(collect_export_rows(&session, "UPDATE t SET name='x'", DbScope::All, 0, 50)
