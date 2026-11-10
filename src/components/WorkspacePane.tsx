@@ -925,6 +925,7 @@ export function WorkspacePane({
     <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
       <div className={showToolRail ? "flex min-h-0 min-w-0 flex-1 pr-11" : "flex min-h-0 min-w-0 flex-1"}>
       <SplitPane
+        separatorLabel="主工作区"
         initial={76}
         min={48}
         max={90}

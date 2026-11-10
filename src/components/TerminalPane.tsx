@@ -16,7 +16,7 @@ import { useSettings } from "../lib/settings";
 import { agentEnvFor } from "../lib/agents";
 import { hasInternalTabs, prepareLaunch } from "../lib/cli-launch";
 import { acpProviderKey } from "../lib/acp";
-import { cliKey } from "../lib/cli-sessions";
+import { cliKey, cliProvider } from "../lib/cli-sessions";
 import { pathKey, samePath } from "../lib/fs";
 import { terminalTarget, useAttention } from "../lib/attention";
 import { useTouchActivity } from "../lib/activity";
@@ -45,6 +45,16 @@ const SHELL_MENU_ITEM =
 function formatLocation({ path, start, end }: EditorLocation): string {
   const text = `${path}:${start}${end > start ? `-${end}` : ""}`;
   return /\s/.test(path) ? `"${text}"` : text;
+}
+
+/** 过滤 shell 启动时发出的可执行文件路径，避免覆盖 AI CLI 的初始标签名。 */
+function isShellTitle(title: string): boolean {
+  const value = title.trim();
+  return (
+    /^(?:[a-z]:[\\/]|\\\\|\/)/iu.test(value) ||
+    /(?:^|[\\/])(?:bash|sh|zsh|pwsh|powershell|cmd)(?:\.exe|\.cmd)?$/iu.test(value) ||
+    /^(?:mingw\d*|msys|cygwin)(?:64)?(?:[: ]|$)/iu.test(value)
+  );
 }
 
 export interface TerminalPaneHandle {
@@ -174,6 +184,8 @@ export function TerminalPane({
   const customTitleByIdRef = useRef(new Map<number, string>());
   /** AI CLI / resume 的原始启动命令：用于顶栏精确匹配与 logo 识别 */
   const hintByIdRef = useRef(new Map<number, string>());
+  /** opencode 内部 session tab 关闭后，超级 Tab 回退显示的 Agent 名称 */
+  const agentTitleByIdRef = useRef(new Map<number, string>());
   /** 实际敲进终端的完整命令（带注入的附加目录参数），只用于标签的 hover 提示 */
   const launchCommandByIdRef = useRef(new Map<number, string>());
   /** 某些 CLI 的附加目录要靠环境变量传（opencode），按会话记一份，PTY 启动时设进去 */
@@ -320,6 +332,15 @@ export function TerminalPane({
     customTitleByIdRef.current.set(id, title);
     // 顶栏匹配用原始命令；实际敲进去的命令带上工作区的附加目录
     hintByIdRef.current.set(id, command);
+    if (cliProvider(command)?.key === "opencode") {
+      const configuredAgent = aiCommandsRef.current.find(
+        (item) => cliProvider(item.command)?.key === "opencode",
+      );
+      agentTitleByIdRef.current.set(
+        id,
+        configuredAgent?.name.trim() || title,
+      );
+    }
     const prepared = prepareLaunch(command, additionalRootsRef.current);
     launchCommandByIdRef.current.set(id, prepared.command);
     // 用户在「设置 → 智能体」里给这家 CLI 配的环境变量 + 启动时自动注入的权限配置。
@@ -604,16 +625,40 @@ export function TerminalPane({
                   // 只有从历史里 resume 出来的那个新会话带命令，其余一律 undefined
                   initialCommand={launchFor?.id === id ? launchFor.command : undefined}
                   onTitleChange={
-                    cliKey(hintByIdRef.current.get(id) ?? "") === "codex"
+                    ["codex", "opencode", "codebuddy", "copilot"].includes(cliKey(hintByIdRef.current.get(id) ?? ""))
                       ? (terminalTitle) => {
+                          const provider = cliKey(hintByIdRef.current.get(id) ?? "");
+                          if (
+                            provider === "opencode" &&
+                            /^(?:opencode|open ?code|oc)$/iu.test(terminalTitle.trim())
+                          ) {
+                            const agentTitle = agentTitleByIdRef.current.get(id) ?? "opencode";
+                            if (customTitleByIdRef.current.get(id) !== agentTitle) {
+                              customTitleByIdRef.current.set(id, agentTitle);
+                              setTitleRevision((revision) => revision + 1);
+                            }
+                            return;
+                          }
                           // Codex 默认 OSC 标题按“活动 | thread name | project”组合，
                           // 只取首段并剥掉活动 spinner，避免标签跟着动画每秒闪动。
                           const firstPart = terminalTitle.split(" | ", 1)[0]?.trim() ?? "";
-                          const name = firstPart
-                            .replace(/^[\u2800-\u28ff]\s*/u, "")
-                            .replace(/\s+/g, " ")
-                            .trim();
-                          if (!name || name === customTitleByIdRef.current.get(id)) return;
+                          const name =
+                            provider === "opencode"
+                              ? terminalTitle.match(/^OC\s\|\s*(.+)$/u)?.[1]?.trim() ?? ""
+                              : provider === "codebuddy"
+                                ? terminalTitle.replace(/\s+/g, " ").trim()
+                                : provider === "copilot"
+                                  ? terminalTitle.split(";").map((part) => part.trim()).filter(Boolean).pop() ?? ""
+                                  : firstPart
+                                      .replace(/^[\u2800-\u28ff]\s*/u, "")
+                                      .replace(/\s+/g, " ")
+                                      .trim();
+                          if (
+                            !name ||
+                            (provider === "codebuddy" && (/^codebuddy(?: code)?(?:\s+v?\d[\w.-]*)?$/iu.test(name) || isShellTitle(name))) ||
+                            (provider === "copilot" && /^github copilot$/iu.test(name)) ||
+                            name === customTitleByIdRef.current.get(id)
+                          ) return;
                           customTitleByIdRef.current.set(id, Array.from(name).slice(0, 60).join(""));
                           setTitleRevision((revision) => revision + 1);
                         }

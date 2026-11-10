@@ -676,6 +676,7 @@ export const TerminalSession = forwardRef<
     }, 0);
 
     const dataDisposable = term.onData(writeInput);
+    let pastedImageCount = 0;
 
     // 粘贴走 term.paste()：它会按当前是否开启 bracketed paste 决定包不包 ESC[200~，
     // 多行内容才不会被 shell 逐行当命令执行。
@@ -691,7 +692,21 @@ export const TerminalSession = forwardRef<
           return;
         }
         void hasClipboardImage().then((image) => {
-          if (!cancelled && image) ptyRef.current?.write("\x16");
+          if (cancelled || !image) return;
+          const handle = ptyRef.current;
+          if (!handle) return;
+          // 图片本身仍由 CLI 响应 Ctrl+V 从系统剪贴板读取；随后补一个可见名称，
+          // 让输入行能区分这次附带的图片。只在全屏 TUI 中追加，避免污染普通 shell 命令。
+          const marker = term.buffer.active.type === "alternate"
+            ? ` [图片: clipboard-image-${++pastedImageCount}.png]`
+            : "";
+          handle.write("\x16");
+          if (marker) {
+            // CLI 读取剪贴板是异步的，稍等它把图片加入输入后再写名称，避免标记抢先输入。
+            window.setTimeout(() => {
+              if (!cancelled) ptyRef.current?.write(marker);
+            }, 150);
+          }
         });
       });
     };
@@ -890,6 +905,8 @@ export const TerminalSession = forwardRef<
         return;
       }
       ptyRef.current?.resize(term.cols, term.rows);
+      // 隐藏标签期间终端仍会收输出；重新显示后显式重绘，避免留下未刷新的旧字形。
+      term.refresh(0, Math.max(0, term.rows - 1));
       term.focus();
     });
     return () => cancelAnimationFrame(frame);

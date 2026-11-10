@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -179,7 +180,7 @@ async fn list_opencode(command: &str, cwd: &str) -> Result<Vec<CliSession>, Stri
 
     let mut args = leading;
     args.extend(
-        ["session", "list", "--format", "json", "--max-count"]
+        ["--standalone", "session", "list", "--format", "json", "--max-count"]
             .iter()
             .map(|s| s.to_string()),
     );
@@ -328,6 +329,15 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
         }
     }
 
+    // Codex 自己维护的会话索引里有 agent 生成的标题，比从首条用户提问里抠更准。
+    // 整份索引只读一次，交给各线程共用（Option<&_> 是 Copy，跨线程借出去没问题）
+    let codex_titles = if provider == "codex" {
+        Some(read_codex_index_titles(projects))
+    } else {
+        None
+    };
+    let codex_titles = codex_titles.as_ref();
+
     // 读文件按 CPU 数切片并行：几百个会话时单线程光读文件头就要几百毫秒
     let workers = std::thread::available_parallelism()
         .map(|count| count.get())
@@ -344,7 +354,9 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
                 scope.spawn(move || {
                     let mut out = Vec::new();
                     for (path, updated) in slice {
-                        if let Some(session) = read_session(path, provider, target, *updated) {
+                        if let Some(session) =
+                            read_session(path, provider, target, *updated, codex_titles)
+                        {
                             out.push(session);
                         }
                     }
@@ -372,10 +384,16 @@ fn list_sessions_in(projects: &Path, provider: &str, cwd: &str) -> Vec<CliSessio
 /// 一遍的话，几百个会话就是几十 MB）。命中的才读满 HEAD_BYTES 去抠标题。
 ///
 /// 开头这段没读出 cwd（第一条就是一大段粘贴内容之类）时退回整段重扫，别漏掉会话。
-fn read_session(path: &Path, provider: &str, target: &str, updated: u64) -> Option<CliSession> {
+fn read_session(
+    path: &Path,
+    provider: &str,
+    target: &str,
+    updated: u64,
+    codex_titles: Option<&HashMap<String, String>>,
+) -> Option<CliSession> {
     // codex 的标题落在头部 128KB 之后是常态，得单独按行往后读
     if provider == "codex" {
-        return read_codex_session(path, target, updated);
+        return read_codex_session(path, target, updated, codex_titles);
     }
     if let Some(scan) = read_prefix(path, PEEK_BYTES).and_then(|peek| scan_head(&peek, provider)) {
         // 按 cwd 字段正向匹配。不去反算 slug——slug 有损，路径里本身的 '-'
@@ -405,12 +423,18 @@ fn read_session(path: &Path, provider: &str, target: &str, updated: u64) -> Opti
 /// 对不上（绝大多数文件属于别的项目）立刻返回，不为别的项目白读几百 KB。
 ///
 /// resume 用的是 session_meta 里的 UUID 而不是文件名：文件名带 rollout- 前缀和时间戳。
-fn read_codex_session(path: &Path, target: &str, updated: u64) -> Option<CliSession> {
+fn read_codex_session(
+    path: &Path,
+    target: &str,
+    updated: u64,
+    index_titles: Option<&HashMap<String, String>>,
+) -> Option<CliSession> {
     let file = fs::File::open(path).ok()?;
     let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut titles = Titles::default();
     let mut cwd = String::new();
     let mut id = None;
+    let mut index_title = None;
     let mut consumed = 0u64;
     let mut buf = Vec::new();
 
@@ -447,8 +471,15 @@ fn read_codex_session(path: &Path, target: &str, updated: u64) -> Option<CliSess
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
         }
+        // 索引里的 thread_name 是 Codex 自己给这条会话起的名字，优先于首条提问。
+        // 拿到它就没必要继续往后扫用户消息了，省掉几百 KB 的读盘
+        if index_title.is_none() {
+            index_title = id
+                .as_deref()
+                .and_then(|id| index_titles.and_then(|map| map.get(id).cloned()));
+        }
         scan_codex(&value, &mut titles);
-        if !titles.first.is_empty() {
+        if !cwd.is_empty() && (index_title.is_some() || !titles.first.is_empty()) {
             break;
         }
     }
@@ -460,10 +491,42 @@ fn read_codex_session(path: &Path, target: &str, updated: u64) -> Option<CliSess
     let stem = path.file_stem().and_then(|stem| stem.to_str())?;
     Some(CliSession {
         id: id.unwrap_or_else(|| stem.to_string()),
-        title: titles.pick(),
+        title: index_title.unwrap_or_else(|| titles.pick()),
         updated,
         cwd,
     })
+}
+
+/// 读 Codex 的会话索引（`~/.codex/session_index.jsonl`），返回 session id -> 标题。
+///
+/// 索引由 Codex 自己追加写入，同一 id 可能有多条（先写占位名、后写 agent 起的正式名），
+/// 后写的覆盖前面的。索引不存在或读坏都当没有，调用方退回首条用户提问。
+fn read_codex_index_titles(projects: &Path) -> HashMap<String, String> {
+    let mut titles = HashMap::new();
+    // projects 是 `<home>/.codex/sessions`，索引在它的上一级
+    let Some(dir) = projects.parent() else {
+        return titles;
+    };
+    let Ok(raw) = fs::read_to_string(dir.join("session_index.jsonl")) else {
+        return titles;
+    };
+    for line in raw.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue; // 半行 / 非 JSON，丢掉继续
+        };
+        let Some(id) = value.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(name) = value
+            .get("thread_name")
+            .and_then(|v| v.as_str())
+            .and_then(non_empty_title)
+        else {
+            continue;
+        };
+        titles.insert(id.to_string(), name);
+    }
+    titles
 }
 
 fn collect_jsonl_files(path: &Path, output: &mut Vec<PathBuf>) {
@@ -950,6 +1013,39 @@ mod tests {
         assert_eq!(found[0].id, "session-uuid");
         assert_eq!(found[0].title, "修复 Codex 历史");
         fs::remove_dir_all(&projects).ok();
+    }
+
+    /// Codex 会把 agent 起的会话名写进 `session_index.jsonl`，它比首条提问准。
+    /// 索引是追加写的，同一 id 后写的条目要覆盖先写的。
+    #[test]
+    fn codex_prefers_thread_name_from_session_index() {
+        let home = temp_projects();
+        let projects = home.join("sessions");
+        fs::write(
+            home.join("session_index.jsonl"),
+            [
+                r#"{"id":"session-named","thread_name":"旧名字","updated_at":"2026-03-17T00:00:00Z"}"#,
+                r#"{"id":"session-named","thread_name":"优化 Codex 历史对话名称","updated_at":"2026-03-17T00:01:00Z"}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &projects.join("2026").join("03").join("17"),
+            "ignored",
+            "rollout-2026-03-17T00-00-00-12345678-aaaa-bbbb",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"session-named","cwd":"/Users/someone/work"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"帮我改一下这个"}}"#,
+            ],
+        );
+
+        let found = list_sessions_in(&projects, "codex", WORK);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "session-named");
+        // 索引标题优先于首条用户提问
+        assert_eq!(found[0].title, "优化 Codex 历史对话名称");
+        fs::remove_dir_all(&home).ok();
     }
 
     #[test]

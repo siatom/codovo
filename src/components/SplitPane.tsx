@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 interface SplitPaneProps {
   first: ReactNode;
@@ -7,6 +14,8 @@ interface SplitPaneProps {
   initial?: number;
   min?: number;
   max?: number;
+  /** 比例分栏可用键盘调整时，填写受控第一块的名称。 */
+  separatorLabel?: string;
   /**
    * 收起第二块：不再占分栏宽度，改由它自己的内容撑开，分隔条也不画。
    * 右栏收起时第二块里只剩那条图标条，于是自然收成一条竖栏；
@@ -46,6 +55,7 @@ export function SplitPane({
   initial = 50,
   min = 15,
   max = 85,
+  separatorLabel,
   secondCollapsed = false,
   firstCollapsed = false,
   resetOnDoubleClick = false,
@@ -53,6 +63,12 @@ export function SplitPane({
   animateCollapse = false,
   collapsedSecondWidth = 0,
 }: SplitPaneProps) {
+  const firstPaneId = useId();
+  const keyboardResizable = Boolean(separatorLabel) && !keepFirstWidth;
+  const clampRatio = useCallback(
+    (value: number) => Math.min(max, Math.max(min, value)),
+    [min, max],
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const [ratio, setRatio] = useState(initial);
   /**
@@ -112,31 +128,43 @@ export function SplitPane({
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect || rect.width <= 0) return;
       // 两套写法共用同一份 min/max（容器百分比），只是落点一个是像素、一个是比例
-      const next = Math.min(
-        (rect.width * max) / 100,
-        Math.max((rect.width * min) / 100, event.clientX - rect.left),
-      );
+      const next = clampRatio(((event.clientX - rect.left) / rect.width) * 100);
       if (keepFirstWidth) {
-        firstWidthRef.current = next;
-        setFirstWidth(next);
+        const width = (next * rect.width) / 100;
+        firstWidthRef.current = width;
+        setFirstWidth(width);
         return;
       }
-      setRatio((next / rect.width) * 100);
+      setRatio(next);
     },
-    [dragging, keepFirstWidth, max, min],
+    [clampRatio, dragging, keepFirstWidth],
   );
 
   /** 双击复位：均分，但仍在 min/max 允许的区间内 */
   const resetRatio = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (keepFirstWidth && rect && rect.width > 0) {
-      const next = (rect.width * Math.min(max, Math.max(min, 50))) / 100;
+      const next = (rect.width * clampRatio(50)) / 100;
       firstWidthRef.current = next;
       setFirstWidth(next);
       return;
     }
-    setRatio(Math.min(max, Math.max(min, 50)));
-  }, [keepFirstWidth, max, min]);
+    setRatio(clampRatio(50));
+  }, [clampRatio, keepFirstWidth]);
+
+  const onSeparatorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const key = event.key;
+    if (key !== "ArrowLeft" && key !== "ArrowRight" && key !== "Home" && key !== "End") return;
+    event.preventDefault();
+    event.stopPropagation();
+    // 方向键每次移动 2 个百分点，和拖动共用范围约束。
+    setRatio((current) => {
+      if (key === "Home") return min;
+      if (key === "End") return max;
+      return clampRatio(current + (key === "ArrowLeft" ? -2 : 2));
+    });
+  };
 
   const stop = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -149,6 +177,7 @@ export function SplitPane({
   return (
     <div ref={containerRef} className="flex min-h-0 min-w-0 flex-1">
       <div
+        id={keyboardResizable ? firstPaneId : undefined}
         className="flex min-h-0 min-w-0 flex-col overflow-hidden"
         style={
           // 第二块收起时没有别的兄弟去占位，第一块得自己撑满，否则右边留一片空白。
@@ -177,17 +206,29 @@ export function SplitPane({
         <div
           role="separator"
           aria-orientation="vertical"
+          aria-label={keyboardResizable ? separatorLabel : undefined}
+          aria-controls={keyboardResizable ? firstPaneId : undefined}
+          aria-valuemin={keyboardResizable ? min : undefined}
+          aria-valuemax={keyboardResizable ? max : undefined}
+          aria-valuenow={
+            keyboardResizable ? Number(ratio.toFixed(1)) : undefined
+          }
+          aria-valuetext={
+            keyboardResizable ? `${Number(ratio.toFixed(1))}%` : undefined
+          }
+          tabIndex={keyboardResizable ? 0 : undefined}
+          onKeyDown={keyboardResizable ? onSeparatorKeyDown : undefined}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={stop}
           onPointerCancel={stop}
           onDoubleClick={resetOnDoubleClick ? resetRatio : undefined}
-          className="relative w-0 shrink-0 cursor-col-resize"
+          className="group/split relative w-0 shrink-0 cursor-col-resize"
         >
           {/* 分隔处不画常驻竖线：两侧靠背景深浅区分（侧栏 panel 比中间 surface 亮）。
               这里只留一条加宽的命中区，悬停 / 拖动时才浮出一条窄带提示分界在哪 */}
           <span
-            className={`absolute inset-y-0 -left-1 -right-1 transition-colors ${
+            className={`absolute inset-y-0 -left-1 -right-1 transition-colors group-focus-visible/split:bg-accent-strong ${
               dragging ? "bg-accent-strong/50" : "hover:bg-line-hover/35"
             }`}
           />

@@ -37,7 +37,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "publisher": "硅原子",
+    "publisher": "siatom",
     "windows": {
       "wix": {
         "language": "zh-CN"

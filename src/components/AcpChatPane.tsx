@@ -412,6 +412,7 @@ function PermissionCard({
  */
 export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, agents, ref }: AcpChatPaneProps) {
   const [slots, setSlots] = useState<Record<string, ChatSlot>>({});
+  const [storageWarning, setStorageWarning] = useState(false);
   const slotsRef = useRef(slots);
   const [draft, setDraft] = useState("");
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -527,7 +528,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
   useEffect(() => {
     if (!command || !slot) return;
     if (slot.chats.some((item) => item.busy || item.phase === "starting")) return;
-    saveStoredSlot(root, command, slot.chats, slot.active);
+    setStorageWarning(!saveStoredSlot(root, command, slot.chats, slot.active));
   }, [slot, command, root]);
 
   // 发完清空后把 textarea 的自适应高度收回去
@@ -725,13 +726,13 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
       delete next[slotKey];
       slotsRef.current = next;
       setSlots(next);
-      saveStoredSlot(root, chatCommand, [], "");
+      setStorageWarning(!saveStoredSlot(root, chatCommand, [], ""));
     } else {
       const active = currentSlot.active === chatId ? chats[0].chatId : currentSlot.active;
       const next = { ...slotsRef.current, [slotKey]: { ...currentSlot, chats, active } };
       slotsRef.current = next;
       setSlots(next);
-      saveStoredSlot(root, chatCommand, chats, active);
+      setStorageWarning(!saveStoredSlot(root, chatCommand, chats, active));
     }
     if (key === slotKey && currentSlot.active === chatId) setDraft("");
   }, [key, root]);
@@ -864,6 +865,11 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
 
       <div className="shrink-0 px-5 pt-2 pb-4">
         <div className="mx-auto w-full max-w-[800px]">
+          {storageWarning && (
+            <div role="status" className="mb-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[11px] leading-relaxed text-warn">
+              存储空间不足，当前对话无法跨重启恢复；对话仍可继续。
+            </div>
+          )}
           {chat?.permission && <PermissionCard chat={chat} onDecide={(id) => void decide(id)} />}
           <div className="rounded-2xl border border-line bg-app px-3 pt-3 pb-2 shadow-sm transition-colors focus-within:border-line-hover">
             <div className="flex items-end gap-2">
