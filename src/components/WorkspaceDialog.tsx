@@ -8,6 +8,8 @@ import {
   repoNameFromUrl,
   samePath,
   toDisplayPath,
+  wslListDirectories,
+  wslListDistributions,
 } from "../lib/fs";
 import type { CloneProgress } from "../lib/types";
 import { folderName } from "../lib/workspaces";
@@ -78,6 +80,11 @@ export function WorkspaceDialog({
   const [error, setError] = useState<string | null>(null);
   /** 选择框开着，防止连点重复弹 */
   const [picking, setPicking] = useState(false);
+  const [wslOpen, setWslOpen] = useState(false);
+  const [wslDistro, setWslDistro] = useState("");
+  const [wslPath, setWslPath] = useState("/");
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  const [wslDirs, setWslDirs] = useState<{ name: string; path: string }[]>([]);
 
   /** 创建模式下的两个子表单：本地目录 / 克隆仓库。编辑模式恒用 local */
   const [tab, setTab] = useState<"local" | "clone">("local");
@@ -220,6 +227,44 @@ export function WorkspaceDialog({
     }
   };
 
+  const openWslPicker = async () => {
+    setWslOpen(true);
+    setPicking(true);
+    setError(null);
+    try {
+      const distros = await wslListDistributions();
+      setWslDistros(distros);
+      const distro = distros[0];
+      setWslDistro(distro);
+      setWslPath("/");
+      setWslDirs(await wslListDirectories(distro, "/"));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const navigateWsl = async (distro: string, path: string) => {
+    setPicking(true);
+    setError(null);
+    try {
+      setWslDirs(await wslListDirectories(distro, path));
+      setWslDistro(distro);
+      setWslPath(path);
+    } catch (reason) {
+      setError(`无法读取 WSL 目录：${String(reason)}`);
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const addWslRoot = () => {
+    const unc = `\\\\wsl.localhost\\${wslDistro}${wslPath === "/" ? "" : wslPath.replace(/\//g, "\\")}`;
+    setRoots((current) => current.some((root) => samePath(root, unc)) ? current : [...current, unc]);
+    setWslOpen(false);
+  };
+
   const removeFolder = (target: string) => {
     setError(null);
     setRoots((current) => current.filter((root) => !samePath(root, target)));
@@ -335,15 +380,10 @@ export function WorkspaceDialog({
               {roots.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 px-4 py-6">
                   <p className="text-[12px] text-fg-dim">在此电脑上添加工作目录</p>
-                  <button
-                    type="button"
-                    onClick={() => void addFolder()}
-                    disabled={picking}
-                    className="flex items-center gap-1.5 rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40"
-                  >
-                    <IconFolderPlus className="h-3.5 w-3.5" />
-                    添加
-                  </button>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => void addFolder()} disabled={picking} className="flex items-center gap-1.5 rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40"><IconFolderPlus className="h-3.5 w-3.5" />添加 Windows 目录</button>
+                    {navigator.userAgent.toLowerCase().includes("windows") && <button type="button" onClick={() => void openWslPicker()} disabled={picking} className="rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40">添加 WSL 目录</button>}
+                  </div>
                 </div>
               ) : (
                 <ul>
@@ -388,15 +428,10 @@ export function WorkspaceDialog({
               )}
 
               {roots.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => void addFolder()}
-                  disabled={picking}
-                  className="flex w-full items-center gap-2 px-2.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40"
-                >
-                  <IconFolderPlus className="h-4 w-4 shrink-0" />
-                  添加工作目录
-                </button>
+                <div className="flex">
+                  <button type="button" onClick={() => void addFolder()} disabled={picking} className="flex flex-1 items-center gap-2 px-2.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40"><IconFolderPlus className="h-4 w-4 shrink-0" />添加 Windows 目录</button>
+                  {navigator.userAgent.toLowerCase().includes("windows") && <button type="button" onClick={() => void openWslPicker()} disabled={picking} className="px-2 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40">添加 WSL</button>}
+                </div>
               )}
             </div>
           </>
@@ -527,6 +562,20 @@ export function WorkspaceDialog({
           </div>
         </div>
       </div>
+      {wslOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-6">
+          <div role="dialog" aria-modal="true" className="flex max-h-[min(560px,80vh)] w-[440px] max-w-full flex-col rounded-xl border border-line-strong bg-raised p-4 shadow-lg">
+            <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-fg">选择 WSL 工作目录</h3><button type="button" onClick={() => setWslOpen(false)} className="text-xs text-fg-muted">关闭</button></div>
+            {wslDistros.length > 0 && <select value={wslDistro} onChange={(event) => void navigateWsl(event.target.value, "/")} className="mb-2 rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-fg">{wslDistros.map((distro) => <option key={distro}>{distro}</option>)}</select>}
+            <div className="mb-2 flex gap-2"><button type="button" disabled={wslPath === "/" || picking} onClick={() => void navigateWsl(wslDistro, wslPath.slice(0, wslPath.lastIndexOf("/")) || "/")} className="rounded bg-hover px-2 py-1 text-xs text-fg-muted disabled:opacity-40">上级</button><span className="truncate self-center font-mono text-xs text-fg-dim">{wslPath}</span></div>
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line">
+              {wslDirs.length === 0 ? <p className="p-4 text-center text-xs text-fg-dim">此目录没有子目录</p> : wslDirs.map((dir) => <button key={dir.path} type="button" disabled={picking} onClick={() => void navigateWsl(wslDistro, dir.path)} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg hover:bg-hover"><IconFolder className="h-4 w-4 text-fg-dim" />{dir.name}</button>)}
+            </div>
+            {error && <p className="mt-2 break-words text-[11px] text-danger">{error}</p>}
+            <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => setWslOpen(false)} className={CANCEL_BUTTON}>取消</button><button type="button" disabled={!wslDistro || picking} onClick={addWslRoot} className={PRIMARY_BUTTON}>选择此目录</button></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
