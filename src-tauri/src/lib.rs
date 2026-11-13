@@ -35,6 +35,8 @@ mod titlebar;
 mod tray;
 mod updater;
 mod watcher;
+#[cfg(windows)]
+mod wsl;
 
 #[cfg(windows)]
 pub fn run_acp_host(args: Vec<std::ffi::OsString>) -> i32 {
@@ -88,6 +90,10 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             shells::shell_list,
+            #[cfg(windows)]
+            wsl::wsl_list_distributions,
+            #[cfg(windows)]
+            wsl::wsl_list_directories,
             fs_api::workspace_activate,
             fs_api::workspace_register,
             fs_api::workspace_close,

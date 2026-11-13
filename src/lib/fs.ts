@@ -74,6 +74,12 @@ export async function pickFolder(): Promise<string[]> {
   return typeof picked === "string" ? [picked] : [];
 }
 
+export const wslListDistributions = (): Promise<string[]> =>
+  invoke("wsl_list_distributions");
+
+export const wslListDirectories = (distribution: string, path: string): Promise<{ name: string; path: string }[]> =>
+  invoke("wsl_list_directories", { distribution, path });
+
 /** 弹目录选择框（单选），返回选中的路径；用户取消时返回 null。克隆时用来选「克隆到哪个目录下」 */
 export async function pickCloneParent(): Promise<string | null> {
   const picked = await open({ directory: true, multiple: false, title: "选择克隆到的位置" });
