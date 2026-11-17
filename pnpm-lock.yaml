@@ -26,6 +26,9 @@ importers:
       '@tauri-apps/plugin-opener':
         specifier: ^2.5.5
         version: 2.5.5
+      '@vscode/tree-sitter-wasm':
+        specifier: 0.3.1
+        version: 0.3.1
       '@xterm/addon-fit':
         specifier: 0.11.0
         version: 0.11.0
@@ -77,6 +80,9 @@ importers:
       tabbable:
         specifier: ^6.5.1
         version: 6.5.1
+      web-tree-sitter:
+        specifier: 0.25.10
+        version: 0.25.10
       xterm-theme:
         specifier: ^1.1.0
         version: 1.1.0
@@ -579,6 +585,9 @@ packages:
         optional: true
       oxc-transform-react:
         optional: true
+
+  '@vscode/tree-sitter-wasm@0.3.1':
+    resolution: {integrity: sha512-RJFoomET6FajjG511fmQxeBQfU6M24a0aFZPqpid+ttIxanWf1VGytBG0UmsGjt07qmIPJS8U31D+aecuCucsQ==}
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -1271,6 +1280,14 @@ packages:
       yaml:
         optional: true
 
+  web-tree-sitter@0.25.10:
+    resolution: {integrity: sha512-Y09sF44/13XvgVKgO2cNDw5rGk6s26MgoZPXLESvMXeefBf7i6/73eFurre0IsTW6E14Y0ArIzhUMmjoc7xyzA==}
+    peerDependencies:
+      '@types/emscripten': ^1.40.0
+    peerDependenciesMeta:
+      '@types/emscripten':
+        optional: true
+
   xterm-theme@1.1.0:
     resolution: {integrity: sha512-n2GocBEbqcz4vEl4OYkU93hEVia8GWdnqchiz/0nQ/olRUyhulGf4wfha23x/D2m0imWaIavRZtt8c6kWZXdsA==}
 
@@ -1658,6 +1675,8 @@ snapshots:
     dependencies:
       '@rolldown/pluginutils': 1.0.1
       vite: 8.3.0(jiti@2.7.0)
+
+  '@vscode/tree-sitter-wasm@0.3.1': {}
 
   '@xterm/addon-fit@0.11.0': {}
 
@@ -2279,6 +2298,8 @@ snapshots:
     optionalDependencies:
       fsevents: 2.3.3
       jiti: 2.7.0
+
+  web-tree-sitter@0.25.10: {}
 
   xterm-theme@1.1.0: {}
 
