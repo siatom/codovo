@@ -70,6 +70,7 @@ import { PdfPreview } from "./PdfPreview";
 import { OfficePreview } from "./OfficePreview";
 import { legacyOfficeExtension, officeKindOf } from "../lib/office";
 import { SplitPane } from "./SplitPane";
+import { CodeOutline } from "./CodeOutline";
 import { ConfirmDialog } from "./ConfirmDialog";
 import {
   IconArrowDown,
@@ -701,6 +702,7 @@ export function EditorPane({
   /** 整个编辑器区域（标题栏 + 编辑区 + 状态栏），用来判断焦点是不是还在这一块 */
   const paneRef = useRef<HTMLElement>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
+  const [codeOutline, setCodeOutline] = useState(false);
   /**
    * 焦点最近是不是在 Monaco / 差异编辑器里。关掉当前标签、切到预览后，浏览器会把焦点
    * 退回 body，DOM 上已经找不到「还在编辑器里」的证据；连续按 Ctrl+W 得靠这个状态
@@ -3478,8 +3480,19 @@ export function EditorPane({
     },
   ];
 
+  const canShowCodeOutline = status.kind === "ready" && activeFile !== null && activeCached !== null &&
+    !activeCached.isLarge && !isPreview && !isTranslate && !isSplitPreview;
+
   const contextualToolbar = (
     <div className="flex h-full shrink-0 items-center gap-0.5">
+      {canShowCodeOutline && (
+        <button type="button" onClick={() => setCodeOutline((value) => !value)}
+          aria-label="代码大纲" aria-pressed={codeOutline}
+          title={codeOutline ? "隐藏代码大纲" : "显示代码大纲"}
+          className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${codeOutline ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}>
+          <IconList className="h-3.5 w-3.5" />
+        </button>
+      )}
       {canPreview && !isMarkdownFile && (
         <button
           type="button"
@@ -3969,6 +3982,16 @@ export function EditorPane({
             </div>
           }
         />
+        {canShowCodeOutline && codeOutline && activeCached && (
+          <CodeOutline key={activeKey} model={activeCached.model} onClose={() => setCodeOutline(false)}
+            onNavigate={(range) => {
+              const editor = editorRef.current;
+              if (!editor || editor.getModel() !== activeCached.model) return;
+              editor.setSelection(range);
+              editor.revealRangeInCenter(range);
+              editor.focus();
+            }} />
+        )}
         <div
           ref={diffContainerRef}
           className={isDiffTab ? "absolute inset-0" : "hidden"}
