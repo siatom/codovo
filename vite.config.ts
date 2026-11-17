@@ -71,6 +71,9 @@ function katexWoff2Only(): Plugin {
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss(), katexWoff2Only()],
 
+  // 解析器只在 Worker 中导入，显式预构建，避免第一次打开大纲时才发现依赖并更换缓存。
+  optimizeDeps: { include: ["web-tree-sitter"] },
+
   resolve: {
     alias: [
       {

@@ -39,7 +39,11 @@ export function createCodeOutlineReader() {
     if (data.error) entry.reject(new Error(data.error));
     else entry.resolve(data.symbols ?? []);
   };
-  worker.onerror = () => failAll("代码解析器加载失败");
+  worker.onerror = (event) => {
+    console.error("代码大纲 Worker 加载失败", event);
+    failAll(event.message || "解析服务加载失败，请刷新应用后重试");
+  };
+  worker.onmessageerror = () => failAll("解析服务返回了无效数据，请重试");
   return {
     read(language: string, uri: string, text: string) {
       if (failure) return Promise.reject(failure);
