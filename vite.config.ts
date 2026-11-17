@@ -7,6 +7,10 @@ import process from "node:process";
 import { readFileSync } from "node:fs";
 // @ts-expect-error type error without @types/node package
 import { execSync } from "node:child_process";
+// @ts-expect-error type error without @types/node package
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 const host = process.env.TAURI_DEV_HOST;
 
@@ -66,6 +70,17 @@ function katexWoff2Only(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react(), tailwindcss(), katexWoff2Only()],
+
+  resolve: {
+    alias: [
+      {
+        // 0.9.0 的 development export 指向未随 npm 包发布的 src；开发和构建均使用已发布的 ESM。
+        find: /^@apollo-design\/docx-preview$/,
+        replacement: require.resolve("@apollo-design/docx-preview/package.json")
+          .replace(/package\.json$/, "dist/docx-preview.mjs"),
+      },
+    ],
+  },
 
   define: {
     __APP_VERSION__: JSON.stringify(stamp ? `${version}+${stamp}` : version),
