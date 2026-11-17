@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { monaco } from "../lib/monaco-setup";
+import { createCodeOutlineReader, OUTLINE_LANGUAGES } from "../lib/code-outline";
 // Monaco 0.56.0 未公开符号查询 API；复用其内置命令，避免另写一套语言解析器。
 // @ts-expect-error Monaco 内部模块没有声明文件，升级版本时需验证此入口。
 import { StandaloneServices } from "monaco-editor/editor/standalone/browser/standaloneServices";
@@ -54,12 +55,15 @@ export function CodeOutline({ model, onNavigate, onClose }: Props) {
     let disposed = false;
     let revision = 0;
     let timer: ReturnType<typeof setTimeout>;
+    let reader: ReturnType<typeof createCodeOutlineReader> | undefined;
     const refresh = async () => {
       const current = ++revision;
       setState("loading");
       try {
-        const result: monaco.languages.DocumentSymbol[] = await StandaloneServices.get(ICommandService)
-          .executeCommand("_executeDocumentSymbolProvider", model.uri);
+        const language = model.getLanguageId();
+        const result: monaco.languages.DocumentSymbol[] = OUTLINE_LANGUAGES.has(language)
+          ? await (reader ??= createCodeOutlineReader()).read(language, model.uri.toString(), model.getValue())
+          : await StandaloneServices.get(ICommandService).executeCommand("_executeDocumentSymbolProvider", model.uri);
         if (disposed || current !== revision || model.isDisposed()) return;
         setSymbols(result ?? []);
         setState("ready");
@@ -84,6 +88,7 @@ export function CodeOutline({ model, onNavigate, onClose }: Props) {
       content.dispose();
       language.dispose();
       providers.dispose();
+      reader?.dispose();
     };
   }, [model]);
 
