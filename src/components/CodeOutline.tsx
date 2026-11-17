@@ -51,6 +51,8 @@ function SymbolItem({ symbol, depth, onNavigate }: {
 export function CodeOutline({ model, onNavigate, onClose }: Props) {
   const [symbols, setSymbols] = useState<monaco.languages.DocumentSymbol[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let disposed = false;
     let revision = 0;
@@ -67,8 +69,14 @@ export function CodeOutline({ model, onNavigate, onClose }: Props) {
         if (disposed || current !== revision || model.isDisposed()) return;
         setSymbols(result ?? []);
         setState("ready");
-      } catch {
-        if (!disposed && current === revision) setState("error");
+      } catch (error) {
+        if (!disposed && current === revision) {
+          setErrorMessage(error instanceof Error ? error.message : String(error));
+          setState("error");
+          // 加载失败的 Worker 不能复用；编辑后刷新或点击重试时重新创建。
+          reader?.dispose();
+          reader = undefined;
+        }
       }
     };
     const schedule = () => {
@@ -90,7 +98,7 @@ export function CodeOutline({ model, onNavigate, onClose }: Props) {
       providers.dispose();
       reader?.dispose();
     };
-  }, [model]);
+  }, [model, attempt]);
 
   return (
     <aside aria-label="代码大纲" className="flex h-full w-52 max-w-[40%] shrink-0 flex-col border-l border-line bg-surface">
@@ -104,9 +112,14 @@ export function CodeOutline({ model, onNavigate, onClose }: Props) {
       <nav aria-label="代码符号" className="min-h-0 flex-1 overflow-auto p-1">
         {symbols.length > 0 && state !== "error" ? <ul>{symbols.map((symbol, index) => (
           <SymbolItem key={`${model.uri}:${symbol.name}:${index}`} symbol={symbol} depth={0} onNavigate={onNavigate} />
-        ))}</ul> : <p role="status" className="px-2 py-4 text-[11px] leading-relaxed text-fg-faint">
-          {state === "loading" ? "正在加载大纲…" : state === "error" ? "大纲加载失败，请重新打开重试" : "当前文件没有可用符号，或该语言暂不支持大纲"}
-        </p>}
+        ))}</ul> : <div role="status" className="px-2 py-4 text-[11px] leading-relaxed text-fg-faint">
+          <p>{state === "loading" ? "正在加载大纲…" : state === "error" ? "大纲加载失败" : "当前文件没有可用符号，或该语言暂不支持大纲"}</p>
+          {state === "error" && <>
+            <p className="mt-1 break-words">{errorMessage}</p>
+            <button type="button" onClick={() => setAttempt((value) => value + 1)}
+              className="mt-2 rounded border border-line px-2 py-0.5 text-fg-dim hover:bg-hover hover:text-fg">重试加载</button>
+          </>}
+        </div>}
       </nav>
     </aside>
   );
