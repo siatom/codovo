@@ -77,6 +77,8 @@ export function WorkspaceDialog({
   const [name, setName] = useState(initialName ?? "");
   const [roots, setRoots] = useState<string[]>(initialRoots ?? []);
   const [group, setGroup] = useState(initialGroup ?? "");
+  const [groupOpen, setGroupOpen] = useState(false);
+  const [groupQuery, setGroupQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   /** 选择框开着，防止连点重复弹 */
   const [picking, setPicking] = useState(false);
@@ -102,6 +104,18 @@ export function WorkspaceDialog({
 
   // 编辑模式没有切换器，即使 state 停在 clone 也要落回本地表单
   const activeTab = mode === "create" ? tab : "local";
+  const visibleGroups = (groups ?? []).filter((item) =>
+    item.toLocaleLowerCase().includes(groupQuery.trim().toLocaleLowerCase()),
+  );
+  const canCreateGroup = groupQuery.trim() && !(groups ?? []).some(
+    (item) => item.toLocaleLowerCase() === groupQuery.trim().toLocaleLowerCase(),
+  );
+
+  const chooseGroup = (value: string) => {
+    setGroup(value);
+    setGroupOpen(false);
+    setGroupQuery("");
+  };
 
   /**
    * 取消 / 关闭对话框：先置标志再调 onCancel。上层卸载本对话框并不能中止
@@ -332,6 +346,65 @@ export function WorkspaceDialog({
           </div>
         )}
 
+        <div className="relative mb-3">
+          <p className="mb-1.5 text-[12px] font-medium text-fg-muted">分区 <span className="font-normal text-fg-faint">· 可选</span></p>
+          <button
+            type="button"
+            aria-haspopup="listbox"
+            aria-expanded={groupOpen}
+            onClick={() => { setGroupOpen((open) => !open); setGroupQuery(""); }}
+            className="flex h-9 w-full items-center gap-2 rounded-lg border border-line-strong bg-surface px-2.5 text-left hover:border-accent"
+          >
+            <IconTree className="h-4 w-4 shrink-0 text-fg-dim" />
+            <span className={`min-w-0 flex-1 truncate text-[13px] ${group ? "text-fg" : "text-fg-faint"}`}>
+              {group || "未分区"}
+            </span>
+            <span className="text-[11px] text-fg-dim">{groupOpen ? "⌃" : "⌄"}</span>
+          </button>
+          {groupOpen && (
+            <div className="absolute inset-x-0 top-full z-20 mt-1 overflow-hidden rounded-lg border border-line-strong bg-raised shadow-lg">
+              <div className="border-b border-line p-2">
+                <input
+                  autoFocus
+                  value={groupQuery}
+                  onChange={(event) => setGroupQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      if (canCreateGroup) chooseGroup(groupQuery.trim());
+                      else if (visibleGroups[0]) chooseGroup(visibleGroups[0]);
+                    }
+                    if (event.key === "Escape") { event.stopPropagation(); setGroupOpen(false); }
+                  }}
+                  placeholder="搜索或输入新分区名"
+                  aria-label="搜索或输入新分区名"
+                  className="h-8 w-full rounded-md border border-line-strong bg-surface px-2 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent"
+                />
+              </div>
+              <div role="listbox" className="max-h-44 overflow-auto p-1">
+                <button type="button" role="option" aria-selected={!group} onClick={() => chooseGroup("")}
+                  className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg">
+                  未分区 {group === "" && <span className="ml-auto text-accent">✓</span>}
+                </button>
+                {visibleGroups.map((item) => (
+                  <button key={item} type="button" role="option" aria-selected={group === item} onClick={() => chooseGroup(item)}
+                    className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg">
+                    <IconTree className="mr-2 h-3.5 w-3.5 text-fg-dim" />{item}
+                    {group === item && <span className="ml-auto text-accent">✓</span>}
+                  </button>
+                ))}
+                {canCreateGroup && (
+                  <button type="button" onClick={() => chooseGroup(groupQuery.trim())}
+                    className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-[12px] text-accent hover:bg-hover">
+                    + 新建分区“{groupQuery.trim()}”
+                  </button>
+                )}
+                {visibleGroups.length === 0 && !canCreateGroup && <p className="px-2.5 py-2 text-[11px] text-fg-faint">没有匹配的分区</p>}
+              </div>
+            </div>
+          )}
+        </div>
+
         {activeTab === "local" && (
           <>
             {/* 工作区名：整体是个带图标的输入框，失焦不提交，走下面的按钮 */}
@@ -347,27 +420,6 @@ export function WorkspaceDialog({
                 placeholder="工作区名称"
                 className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-fg-faint"
               />
-            </div>
-
-            {/* 分区：留空即「未分区」；分区名会作为左侧列表的一级标题 */}
-            <div className="mt-2 flex h-9 items-center gap-2 rounded-lg border border-line-strong bg-surface px-2.5 focus-within:border-accent">
-              <IconTree className="h-4 w-4 shrink-0 text-fg-dim" />
-              <input
-                list="workspace-group-options"
-                value={group}
-                onChange={(event) => setGroup(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") submit();
-                }}
-                placeholder="分区名称（可选，会显示为左侧标题）"
-                title="留空表示未分区；分区名相同的会归到同一区"
-                className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-fg-faint"
-              />
-              <datalist id="workspace-group-options">
-                {(groups ?? []).map((item) => (
-                  <option key={item} value={item} />
-                ))}
-              </datalist>
             </div>
 
             <div className="mt-3 mb-1 flex items-baseline justify-between">
