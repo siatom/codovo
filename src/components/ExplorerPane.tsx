@@ -1,3 +1,4 @@
+import i18n from "../lib/i18n";
 import {
   useCallback,
   useEffect,
@@ -10,6 +11,7 @@ import {
   type PointerEvent,
   type Ref,
 } from "react";
+import { useTranslation } from "react-i18next";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
@@ -280,6 +282,7 @@ export function ExplorerPane({
   reveal,
   ref,
 }: ExplorerPaneProps) {
+  const { t } = useTranslation();
   /** 每个工作目录的顶层条目，按根分组 */
   const [entries, setEntries] = useState<Map<string, FileEntry[]>>(new Map());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -641,8 +644,8 @@ export function ExplorerPane({
   const copyPath = useCallback(async (text: string) => {
     setMenu(null);
     setRootMenu(null);
-    if (!(await copyText(text))) setActionError("复制失败：系统剪贴板不可用");
-  }, []);
+    if (!(await copyText(text))) setActionError(t("复制失败：系统剪贴板不可用"));
+  }, [t]);
 
   /**
    * 复制这一行的名字 / 路径。点在选中集合里的行时复制整批，一项一行——
@@ -676,9 +679,9 @@ export function ExplorerPane({
     try {
       await revealItemInDir(path);
     } catch (reason) {
-      setActionError(`无法在文件管理器中显示：${String(reason)}`);
+      setActionError(t("无法在文件管理器中显示：{{error}}", { error: String(reason) }));
     }
-  }, []);
+  }, [t]);
 
   const openWithSystem = useCallback(async (entry: FileEntry) => {
     setMenu(null);
@@ -686,9 +689,9 @@ export function ExplorerPane({
     try {
       await openPath(entry.path);
     } catch (reason) {
-      setActionError(`无法打开：${String(reason)}`);
+      setActionError(t("无法打开：{{error}}", { error: String(reason) }));
     }
-  }, []);
+  }, [t]);
 
   /**
    * 把这一行丢给右栏的内置浏览器预览。切到哪个模块、面板怎么展开由外层决定，
@@ -735,13 +738,13 @@ export function ExplorerPane({
         setExplain({
           title,
           text: null,
-          error: "请先在「设置 → AI」里填写接口地址、模型和密钥",
+          error: t("请先在「设置 → AI」里填写接口地址、模型和密钥"),
         });
         return;
       }
       const owner = ownerRoot(roots, entry.path);
       if (!owner) {
-        setExplain({ title, text: null, error: "这个路径不在任何工作目录里" });
+        setExplain({ title, text: null, error: t("这个路径不在任何工作目录里") });
         return;
       }
 
@@ -756,7 +759,7 @@ export function ExplorerPane({
           if (explainSeq.current === seq) setExplain({ title, text: null, error: String(reason) });
         });
     },
-    [aiConfig, aiReady, relativePath, roots],
+    [aiConfig, aiReady, relativePath, roots, t],
   );
 
   const closeExplain = useCallback(() => {
@@ -776,7 +779,7 @@ export function ExplorerPane({
     if (!renaming || busy) return;
     const name = renaming.value.trim();
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
-      setRenameError("名称无效");
+      setRenameError(t("名称无效"));
       return;
     }
     // 名字没动就别白跑一趟后端，也免得下面把编辑器里的 model 丢掉重读
@@ -788,7 +791,7 @@ export function ExplorerPane({
     const { path } = renaming;
     const owner = ownerRoot(roots, path);
     if (!owner) {
-      setRenameError("这个路径不在任何工作目录里");
+      setRenameError(t("这个路径不在任何工作目录里"));
       return;
     }
     setBusy(true);
@@ -796,7 +799,7 @@ export function ExplorerPane({
     try {
       // 先落盘：下面编辑器会丢掉旧 model、按新路径重读，没存下来的改动会跟着一起没
       if (!(await onBeforeRename())) {
-        setRenameError("有文件没保存成功，已取消重命名");
+        setRenameError(t("有文件没保存成功，已取消重命名"));
         return;
       }
       const next = await renameEntry(owner, path, name);
@@ -822,7 +825,7 @@ export function ExplorerPane({
     } finally {
       setBusy(false);
     }
-  }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter]);
+  }, [renaming, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter, t]);
 
   /**
    * 请求删除：这一行在选中集合里就删整批（VS Code 语义），否则只删它自己。
@@ -854,7 +857,7 @@ export function ExplorerPane({
     for (const path of paths) {
       const owner = ownerRoot(roots, path);
       if (!owner) {
-        failures.push(`这个路径不在任何工作目录里: ${path}`);
+        failures.push(t("这个路径不在任何工作目录里: {{path}}", { path }));
         continue;
       }
       try {
@@ -879,7 +882,7 @@ export function ExplorerPane({
     }
     if (failures.length > 0) setActionError(failures.join("\n"));
     setBusy(false);
-  }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, dropFilter]);
+  }, [pendingDelete, busy, activeRow, roots, onDeleted, refreshDir, filtering, dropFilter, t]);
 
   /** 这批操作要处理哪些路径：点在选中集合里的行就取整批（VS Code 语义），否则只它自己 */
   const collectPaths = useCallback(
@@ -923,7 +926,7 @@ export function ExplorerPane({
       if (!clip || clip.paths.length === 0 || busy) return;
       const toOwner = ownerRoot(roots, targetDir);
       if (!toOwner) {
-        setActionError(`目标不在任何工作目录里: ${targetDir}`);
+        setActionError(t("目标不在任何工作目录里: {{path}}", { path: targetDir }));
         return;
       }
       setBusy(true);
@@ -931,7 +934,7 @@ export function ExplorerPane({
       try {
         // 剪切是移动，会丢掉旧 model，未保存的改动跟着一起没——先落盘
         if (clip.cut && !(await onBeforeRename())) {
-          setActionError("有文件没保存成功，已取消粘贴");
+          setActionError(t("有文件没保存成功，已取消粘贴"));
           return;
         }
         const moves: MovePair[] = [];
@@ -940,7 +943,7 @@ export function ExplorerPane({
         for (const path of clip.paths) {
           const fromOwner = ownerRoot(roots, path);
           if (!fromOwner) {
-            failures.push(`这个路径不在任何工作目录里: ${path}`);
+            failures.push(t("这个路径不在任何工作目录里: {{path}}", { path }));
             continue;
           }
           try {
@@ -999,7 +1002,7 @@ export function ExplorerPane({
         setBusy(false);
       }
     },
-    [clipboard, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter],
+    [clipboard, busy, roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter, t],
   );
 
   /**
@@ -1014,7 +1017,7 @@ export function ExplorerPane({
       if (!clip || clip.paths.length === 0 || busy) return;
       const toOwner = ownerRoot(roots, targetDir);
       if (!toOwner) {
-        setActionError(`目标不在任何工作目录里: ${targetDir}`);
+        setActionError(t("目标不在任何工作目录里: {{path}}", { path: targetDir }));
         return;
       }
       const separator = targetDir.includes("\\") ? "\\" : "/";
@@ -1036,7 +1039,7 @@ export function ExplorerPane({
         if (pathKey(target) === pathKey(path)) continue;
         // 批内同名：好几个源要落成同一个目标，放不进来
         if (seen.has(pathKey(target))) {
-          setActionError("选中的项里有同名文件，无法放到同一个目录");
+          setActionError(t("选中的项里有同名文件，无法放到同一个目录"));
           return;
         }
         seen.add(pathKey(target));
@@ -1049,7 +1052,7 @@ export function ExplorerPane({
       }
       await runPaste(targetDir, false);
     },
-    [clipboard, busy, roots, runPaste],
+    [clipboard, busy, roots, runPaste, t],
   );
 
   /** 右键项的粘贴目标：目录就粘进它，文件就粘进它所在目录（照 VS Code） */
@@ -1234,12 +1237,12 @@ export function ExplorerPane({
     if (!creating || creatingBusy) return;
     const name = creating.value.trim();
     if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\")) {
-      setCreateError("名称无效");
+      setCreateError(t("名称无效"));
       return;
     }
     const owner = ownerRoot(roots, creating.parent);
     if (!owner) {
-      setCreateError("这个路径不在任何工作目录里");
+      setCreateError(t("这个路径不在任何工作目录里"));
       return;
     }
     const separator = creating.parent.includes("\\") ? "\\" : "/";
@@ -1262,7 +1265,7 @@ export function ExplorerPane({
     } finally {
       setCreatingBusy(false);
     }
-  }, [creating, creatingBusy, roots, isRootPath]);
+  }, [creating, creatingBusy, roots, isRootPath, t]);
 
   /**
    * 标题栏在文件模块（FilesPane）里，新建 / 刷新按钮通过 ref 打回树上。
@@ -1629,7 +1632,7 @@ export function ExplorerPane({
       try {
         // 移动会丢掉旧 model，未保存的改动跟着一起没——先落盘
         if (!(await onBeforeRename())) {
-          setActionError("有文件没保存成功，已取消移动");
+          setActionError(t("有文件没保存成功，已取消移动"));
           return;
         }
         const moves: MovePair[] = [];
@@ -1670,7 +1673,7 @@ export function ExplorerPane({
         setBusy(false);
       }
     },
-    [roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter],
+    [roots, onBeforeRename, onRenamed, refreshDir, filtering, dropFilter, t],
   );
 
   /** 浮标跟着指针走。直接改 DOM，不走 state：不然每个 pointermove 都要重渲染整棵树 */
@@ -2014,10 +2017,10 @@ export function ExplorerPane({
         {filtering && (
           <p className="px-2 py-1 text-[11px] text-fg-faint">
             {hits === null
-              ? "搜索中…"
+              ? i18n.t("搜索中…")
               : hits.length === 0
-                ? "没有匹配的文件"
-                : `${hits.length} 个匹配`}
+                ? t("没有匹配的文件")
+                : t("{{count}} 个匹配", { count: hits.length })}
           </p>
         )}
         {actionError && (
@@ -2067,7 +2070,7 @@ export function ExplorerPane({
               {!collapsed && (
                 <>
                   {empty && (
-                    <p className="px-2 py-1 text-[11px] text-fg-faint">空目录</p>
+                    <p className="px-2 py-1 text-[11px] text-fg-faint">{t("空目录")}</p>
                   )}
                   {/* 整棵子树往右缩一级：树行自身是 depth*INDENT+4，根标题行只有 4px，
                       不额外给左内边距两者就齐平了，看不出谁在谁里面 */}
@@ -2092,8 +2095,8 @@ export function ExplorerPane({
                             setCreateError(null);
                           }
                         }}
-                        placeholder={creating.kind === "file" ? "文件名" : "文件夹名"}
-                        aria-label={creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                        placeholder={creating.kind === "file" ? t("文件名") : t("文件夹名")}
+                        aria-label={creating.kind === "file" ? t("新建文件名") : t("新建文件夹名")}
                         className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
                       />
                     </div>
@@ -2146,10 +2149,11 @@ export function ExplorerPane({
       {/* 粘贴撞上同名项：覆盖是破坏性的（目标目录会被整个删掉再换源），必须问清楚 */}
       {pendingPaste && (
         <ConfirmDialog
-          message={`目标位置已有同名的 ${pendingPaste.conflicts.length} 项：${pendingPaste.conflicts.join(
-            "、",
-          )}。继续将用源替换它们，其中的文件夹会被整个删除且无法恢复。`}
-          confirmLabel="覆盖"
+          message={t("目标位置已有同名的 {{count}} 项：{{names}}。继续将用源替换它们，其中的文件夹会被整个删除且无法恢复。", {
+            count: pendingPaste.conflicts.length,
+            names: pendingPaste.conflicts.join(", "),
+          })}
+          confirmLabel={t("覆盖")}
           onConfirm={() => {
             const pending = pendingPaste;
             setPendingPaste(null);
@@ -2166,8 +2170,8 @@ export function ExplorerPane({
           text={explain.text}
           error={explain.error}
           onClose={closeExplain}
-          titlePrefix="文件解读"
-          loadingText="正在解读这个文件…"
+          titlePrefix={t("文件解读")}
+          loadingText={t("正在解读这个文件…")}
         />
       )}
 
@@ -2202,7 +2206,7 @@ export function ExplorerPane({
                   className={MENU_ITEM}
                 >
                   <IconSparkle className="h-3.5 w-3.5" />
-                  AI 解读文件
+                  {t("AI 解读文件")}
                 </button>
                 <div className={MENU_DIVIDER} />
               </>
@@ -2210,16 +2214,16 @@ export function ExplorerPane({
             {/* 二、剪贴板。粘贴只在剪贴板有东西时给 */}
             <button type="button" onClick={() => doCopy(menu.entry)} className={MENU_ITEM}>
               <IconCopy className="h-3.5 w-3.5" />
-              复制
+              {t("复制")}
             </button>
             <button type="button" onClick={() => doCut(menu.entry)} className={MENU_ITEM}>
               <IconScissors className="h-3.5 w-3.5" />
-              剪切
+              {t("剪切")}
             </button>
             {clipboard && (
               <button type="button" onClick={() => requestPaste(menu.entry)} className={MENU_ITEM}>
                 <IconClipboard className="h-3.5 w-3.5" />
-                粘贴
+                {t("粘贴")}
               </button>
             )}
             <div className={MENU_DIVIDER} />
@@ -2230,7 +2234,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconFile className="h-3.5 w-3.5" />
-              复制文件名
+              {t("复制文件名")}
             </button>
             <button
               type="button"
@@ -2238,7 +2242,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconFile className="h-3.5 w-3.5" />
-              复制路径
+              {t("复制路径")}
             </button>
             <button
               type="button"
@@ -2246,7 +2250,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconTree className="h-3.5 w-3.5" />
-              复制相对路径
+              {t("复制相对路径")}
             </button>
             <div className={MENU_DIVIDER} />
             {/* 四、打开方式：内置浏览器 / 文件管理器 / 关联程序。
@@ -2259,7 +2263,7 @@ export function ExplorerPane({
                 className={MENU_ITEM}
               >
                 <IconGlobe className="h-3.5 w-3.5" />
-                在内置浏览器中打开
+                {t("在内置浏览器中打开")}
               </button>
             )}
             <button
@@ -2268,7 +2272,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconFolderOpen className="h-3.5 w-3.5" />
-              在文件管理器中显示
+              {t("在文件管理器中显示")}
             </button>
             <button
               type="button"
@@ -2276,7 +2280,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconExternalLink className="h-3.5 w-3.5" />
-              用默认程序打开
+              {t("用默认程序打开")}
             </button>
             {/* 五、git：已经被忽略的行不给这一项，再写一条同样的规则没有意义。
                 整组连分隔线一起藏在条件里，否则它不出现时会多出一条孤线 */}
@@ -2289,7 +2293,7 @@ export function ExplorerPane({
                   className={MENU_ITEM}
                 >
                   <IconEyeOff className="h-3.5 w-3.5" />
-                  加入 .gitignore
+                  {t("加入 .gitignore")}
                 </button>
               </>
             )}
@@ -2306,7 +2310,7 @@ export function ExplorerPane({
                 className={MENU_ITEM}
               >
                 <IconWand className="h-3.5 w-3.5" />
-                格式化文档
+                {t("格式化文档")}
               </button>
             )}
             <button
@@ -2315,7 +2319,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconPencil className="h-3.5 w-3.5" />
-              重命名
+              {t("重命名")}
             </button>
             <button
               type="button"
@@ -2323,7 +2327,7 @@ export function ExplorerPane({
               className={`${MENU_ITEM} text-danger hover:text-danger`}
             >
               <IconTrash className="h-3.5 w-3.5" />
-              删除
+              {t("删除")}
             </button>
           </div>
         </>
@@ -2356,7 +2360,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconPlus className="h-3.5 w-3.5" />
-              新建文件
+              {t("新建文件")}
             </button>
             <button
               type="button"
@@ -2364,7 +2368,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconFolderPlus className="h-3.5 w-3.5" />
-              新建文件夹
+              {t("新建文件夹")}
             </button>
             {clipboard && (
               <button
@@ -2377,7 +2381,7 @@ export function ExplorerPane({
                 className={MENU_ITEM}
               >
                 <IconClipboard className="h-3.5 w-3.5" />
-                粘贴
+                {t("粘贴")}
               </button>
             )}
             <div className={MENU_DIVIDER} />
@@ -2391,13 +2395,13 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconRefresh className="h-3.5 w-3.5" />
-              刷新
+              {t("刷新")}
             </button>
             <div className={MENU_DIVIDER} />
             {/* 三、路径 */}
             <button type="button" onClick={() => void copyPath(rootMenu.root)} className={MENU_ITEM}>
               <IconFile className="h-3.5 w-3.5" />
-              复制路径
+              {t("复制路径")}
             </button>
             <button
               type="button"
@@ -2405,7 +2409,7 @@ export function ExplorerPane({
               className={MENU_ITEM}
             >
               <IconFolderOpen className="h-3.5 w-3.5" />
-              在文件管理器中显示
+              {t("在文件管理器中显示")}
             </button>
           </div>
         </>

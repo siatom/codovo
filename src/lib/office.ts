@@ -1,4 +1,5 @@
 import { assetUrl } from "./asset-url";
+import i18n from "./i18n";
 
 /**
  * 能就地渲染的 Office 文档类型。`docm` / `xlsm` 与对应的 docx / xlsx 是同一套
@@ -48,16 +49,16 @@ const MAX_OFFICE_BYTES = 80 * 1024 * 1024;
 export async function readOfficeBytes(path: string): Promise<ArrayBuffer> {
   const response = await fetch(assetUrl(path));
   if (!response.ok) {
-    throw new Error(`读取文件失败（HTTP ${response.status}）`);
+    throw new Error(i18n.t("读取文件失败（HTTP {{status}}）", { status: response.status }));
   }
   // 先看响应头，能省掉把超大文件整个拉进内存
   const declared = Number(response.headers.get("content-length") ?? "0");
   if (declared > MAX_OFFICE_BYTES) {
-    throw new Error("文件超过 80MB，已跳过预览");
+    throw new Error(i18n.t("文件超过 80MB，已跳过预览"));
   }
   const buffer = await response.arrayBuffer();
   if (buffer.byteLength > MAX_OFFICE_BYTES) {
-    throw new Error("文件超过 80MB，已跳过预览");
+    throw new Error(i18n.t("文件超过 80MB，已跳过预览"));
   }
   return buffer;
 }

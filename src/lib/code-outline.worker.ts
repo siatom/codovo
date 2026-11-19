@@ -2,6 +2,7 @@ import { collectSymbols } from "./outline-symbols";
 import { Parser, Language } from "web-tree-sitter";
 import type { languages } from "monaco-editor";
 import type { OutlineRequest, OutlineResponse } from "./code-outline";
+import i18n from "./i18n";
 import runtimeUrl from "web-tree-sitter/tree-sitter.wasm?url";
 import rustUrl from "@vscode/tree-sitter-wasm/wasm/tree-sitter-rust.wasm?url";
 import cppUrl from "@vscode/tree-sitter-wasm/wasm/tree-sitter-cpp.wasm?url";
@@ -36,7 +37,7 @@ async function parse(request: OutlineRequest): Promise<languages.DocumentSymbol[
     parser.setLanguage(await grammar);
     const deadline = performance.now() + 1000;
     const tree = parser.parse(request.text, null, { progressCallback: () => performance.now() > deadline });
-    if (!tree) throw new Error("代码解析超时");
+    if (!tree) throw new Error(i18n.t("代码解析超时"));
     try { return collectSymbols(tree.rootNode, request.language); }
     finally { tree.delete(); }
   } finally { parser.delete(); }

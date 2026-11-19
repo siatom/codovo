@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import type { KeyboardEvent, MouseEvent, PointerEvent } from "react";
+import i18n from "../lib/i18n";
 import type { FileEntry } from "../lib/types";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import { formatBytes } from "../lib/remote";
@@ -98,13 +100,14 @@ function rowTooltip(entry: FileEntry): string {
   const lines = [toDisplayPath(entry.path)];
   if (!entry.isDir && entry.size !== undefined) {
     // formatBytes 对 0 返回空串，空文件要显示成 0 B 而不是一片空白
-    lines.push(`大小：${formatBytes(entry.size) || "0 B"}`);
+    lines.push(i18n.t("大小：{{size}}", { size: formatBytes(entry.size) || "0 B" }));
   }
-  lines.push(`最近修改：${formatModified(entry.modified)}`);
+  lines.push(i18n.t("最近修改：{{date}}", { date: formatModified(entry.modified) }));
   return lines.join("\n");
 }
 
 export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
+  const { t } = useTranslation();
   const isOpen = entry.isDir && tree.expanded.has(entry.path);
   const isSelected = tree.selection.has(pathKey(entry.path));
   const isLoading = tree.loading.has(entry.path);
@@ -163,7 +166,7 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
               requestAnimationFrame(() => input.setSelectionRange(0, end));
             }}
             onBlur={tree.onRenameSubmit}
-            aria-label="重命名"
+            aria-label={t("重命名")}
             className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
           />
           {tree.renameError && (
@@ -241,8 +244,8 @@ export function FileTreeNode({ entry, depth, tree }: FileTreeNodeProps) {
                       tree.onCreateCancel();
                     }
                   }}
-                  placeholder={tree.creating.kind === "file" ? "文件名" : "文件夹名"}
-                  aria-label={tree.creating.kind === "file" ? "新建文件名" : "新建文件夹名"}
+                  placeholder={tree.creating.kind === "file" ? i18n.t("文件名") : i18n.t("文件夹名")}
+                  aria-label={tree.creating.kind === "file" ? i18n.t("新建文件名") : i18n.t("新建文件夹名")}
                   className="h-6 w-full rounded border border-accent bg-surface px-1.5 text-[12px] text-fg outline-none"
                 />
               </div>

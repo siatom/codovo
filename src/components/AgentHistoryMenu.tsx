@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useState } from "react";
+import i18n from "../lib/i18n";
 import { formatTime } from "../lib/agent";
 import type { AttentionKind } from "../lib/attention";
 import type { AgentSessionSummary } from "../lib/types";
@@ -36,6 +38,7 @@ export function AgentHistoryMenu({
   /** 有待用户处理的会话 id -> 原因（在行上点一颗脉冲点，文案按原因出） */
   waitingKinds?: ReadonlyMap<string, AttentionKind>;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const [itemMenu, setItemMenu] = useState<{
@@ -63,7 +66,7 @@ export function AgentHistoryMenu({
     // 挂在工具条上的话下拉会跟着工具条对齐、跑到别的按钮底下
     <div className="relative shrink-0">
       <IconButton
-        label="历史对话"
+        label={t("历史对话")}
         active={open}
         onClick={() => setOpen((isOpen) => !isOpen)}
       >
@@ -83,11 +86,10 @@ export function AgentHistoryMenu({
               className={MENU_ITEM}
             >
               <IconPlus className="h-3.5 w-3.5" />
-              新建对话
-            </button>
+              {t("新建对话")}</button>
             <div className="my-1 h-px shrink-0 bg-line" />
             {sessions.length === 0 ? (
-              <p className="px-2 py-1.5 text-[11px] text-fg-faint">还没有历史对话</p>
+              <p className="px-2 py-1.5 text-[11px] text-fg-faint">{t("还没有历史对话")}</p>
             ) : (
               <ul className="flex flex-col">
                 {sessions.map((item) => {
@@ -96,9 +98,9 @@ export function AgentHistoryMenu({
                   // 只有 done 是「已完成」；permission / question / prompt 都是在等回应
                   const attentionHint =
                     kind === "done"
-                      ? "任务完成，等待你的下一步指令"
+                      ? i18n.t("任务完成，等待你的下一步指令")
                       : kind
-                        ? "正在等你输入"
+                        ? i18n.t("正在等你输入")
                         : null;
                   return (
                     <li
@@ -158,7 +160,7 @@ export function AgentHistoryMenu({
                                 y: rect.bottom + 4,
                               });
                             }}
-                            title="更多操作"
+                            title={t("更多操作")}
                             className="pointer-events-none mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:text-fg focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/hist:pointer-events-auto group-hover/hist:opacity-100"
                           >
                             <IconMore className="h-3.5 w-3.5" />
@@ -190,8 +192,7 @@ export function AgentHistoryMenu({
                 setItemMenu(null);
               }}
             >
-              重命名
-            </button>
+              {t("重命名")}</button>
             <button
               type="button"
               className={`${MENU_ITEM} text-danger hover:text-danger`}
@@ -200,8 +201,7 @@ export function AgentHistoryMenu({
                 setItemMenu(null);
               }}
             >
-              删除
-            </button>
+              {t("删除")}</button>
           </div>
         </>
       )}

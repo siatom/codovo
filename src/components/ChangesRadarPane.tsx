@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import i18n from "../lib/i18n";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { pathKey } from "../lib/fs";
@@ -69,11 +71,18 @@ const EMPTY_CONTROLLER: GitController = {
 function relativeTime(seconds: number): string {
   if (!seconds) return "";
   const diff = Date.now() / 1000 - seconds;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
-  return new Date(seconds * 1000).toLocaleDateString();
+  if (diff < 60) return i18n.t("刚刚");
+  if (diff < 3600) return i18n.t("{{count}} minutes ago", { count: Math.floor(diff / 60) });
+  if (diff < 86400) return i18n.t("{{count}} hours ago", { count: Math.floor(diff / 3600) });
+  if (diff < 86400 * 30) return i18n.t("{{count}} days ago", { count: Math.floor(diff / 86400) });
+  return new Date(seconds * 1000).toLocaleDateString(i18n.language);
+}
+
+function workstreamLabel(label: string): string {
+  const conflicts = /^冲突 (\d+)$/.exec(label);
+  return conflicts
+    ? i18n.t("冲突 {{count}}", { count: Number(conflicts[1]) })
+    : i18n.t(label);
 }
 
 const DOT: Record<WorkstreamState["tone"], string> = {
@@ -142,6 +151,7 @@ export function ChangesRadarPane({
   onOpenGit,
   onOpenAdvanced,
 }: ChangesRadarPaneProps) {
+  const { t } = useTranslation();
   const [selectedRoot, setSelectedRoot] = useState(root);
   const [tab, setTab] = useState<ListTab>("worktree");
   const [items, setItems] = useState<WorkstreamInfo[]>([]);
@@ -303,7 +313,7 @@ export function ChangesRadarPane({
       await writeText(text);
       setNotice(message);
     } catch {
-      setNotice("复制失败");
+      setNotice(i18n.t("复制失败"));
     }
   }, []);
 
@@ -311,13 +321,18 @@ export function ChangesRadarPane({
     async (item: WorkstreamInfo) => {
       const state = workstreamState(item, signalsOf(sessions, item.path));
       const prompt = [
-        `请继续处理工作树 ${item.path || item.branch || item.name}。`,
-        `分支：${item.branch ?? "(游离 HEAD)"}，基准：${item.base ?? base}`,
-        `当前状态：${state.label}；已提交改动 ${item.diffFiles} 个文件，+${item.additions} / -${item.deletions}。`,
-        item.changed > 0 ? `另有 ${item.changed} 处未提交改动。` : "",
+        i18n.t("请继续处理工作树 {{worktree}}。", { worktree: item.path || item.branch || item.name }),
+        i18n.t("分支：{{branch}}，基准：{{base}}", { branch: item.branch ?? i18n.t("(游离 HEAD)"), base: item.base ?? base }),
+        i18n.t("当前状态：{{status}}；已提交改动 {{files}} 个文件，+{{additions}} / -{{deletions}}。", {
+          status: workstreamLabel(state.label),
+          files: item.diffFiles,
+          additions: item.additions,
+          deletions: item.deletions,
+        }),
+        item.changed > 0 ? i18n.t("另有 {{count}} 处未提交改动。", { count: item.changed }) : "",
         "",
-        "请先阅读当前工作树里的改动，然后按下面的反馈调整：",
-        "（在这里补充反馈）",
+        i18n.t("请先阅读当前工作树里的改动，然后按下面的反馈调整："),
+        i18n.t("（在这里补充反馈）"),
       ]
         .filter(Boolean)
         .join("\n");
@@ -333,7 +348,7 @@ export function ChangesRadarPane({
       const next = await workstreamRemove(selectedRoot, pendingRemove.path);
       setItems(next);
       setPendingRemove(null);
-      setNotice("工作树已移除，分支保留");
+      setNotice(i18n.t("工作树已移除，分支保留"));
     } catch (reason) {
       setError(String(reason));
       setPendingRemove(null);
@@ -347,7 +362,7 @@ export function ChangesRadarPane({
       await refresh();
       git.refresh();
       setPendingMerge(null);
-      setNotice("已合并进基准分支");
+      setNotice(i18n.t("已合并进基准分支"));
     } catch (reason) {
       setError(String(reason));
       setPendingMerge(null);
@@ -371,7 +386,7 @@ export function ChangesRadarPane({
     <>
       {roots.length > 1 && (
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-1.5">
-          <span className="text-[10px] text-fg-faint">仓库</span>
+          <span className="text-[10px] text-fg-faint">{t("仓库")}</span>
           <select
             value={selectedRoot}
             onChange={(event) => setSelectedRoot(event.target.value)}
@@ -388,14 +403,13 @@ export function ChangesRadarPane({
 
       {!gitReady ? (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-3 py-8 text-center">
-          <p className="text-[12px] text-fg-dim">这个目录还不是 Git 仓库。</p>
+          <p className="text-[12px] text-fg-dim">{t("这个目录还不是 Git 仓库。")}</p>
           <button
             type="button"
             onClick={onOpenAdvanced}
             className="mt-2 rounded border border-line-strong px-2.5 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
           >
-            打开完整 Git
-          </button>
+            {t("打开完整 Git")}</button>
         </div>
       ) : (
         <>
@@ -405,20 +419,20 @@ export function ChangesRadarPane({
             <Segmented
               value={tab}
               onChange={setTab}
-              label="变更列表"
+              label={t("变更列表")}
               className="min-w-0 flex-1"
               options={[
                 {
                   value: "worktree",
                   icon: <IconWorktree className={ICON_XS} />,
-                  label: "工作树",
+                  label: i18n.t("工作树"),
                   count: ranked.length,
                   alert: waitingCount,
                 },
                 {
                   value: "branch",
                   icon: <IconBranch className={ICON_XS} />,
-                  label: "分支",
+                  label: i18n.t("分支"),
                   count: branchRows.length,
                 },
               ]}
@@ -430,8 +444,8 @@ export function ChangesRadarPane({
               ranked.length === 0 ? (
                 <p className="px-3 py-3 text-[11px] text-fg-faint">
                   {loading
-                    ? "正在读取工作树…"
-                    : "还没有检出。智能体在别处创建的 worktree 也会自动出现在这里。"}
+                    ? i18n.t("正在读取工作树…")
+                    : i18n.t("还没有检出。智能体在别处创建的 worktree 也会自动出现在这里。")}
                 </p>
               ) : (
                 <ul className="flex flex-col py-1">
@@ -447,10 +461,10 @@ export function ChangesRadarPane({
                         onToggleMenu={() =>
                           setMenu((current) => (current === keyOf(item) ? null : keyOf(item)))
                         }
-                        onCopy={(text) => void copy(text, "路径已复制")}
+                        onCopy={(text) => void copy(text, i18n.t("路径已复制"))}
                         onReveal={(path) => {
                           setMenu(null);
-                          void revealItemInDir(path).catch(() => setNotice("无法打开文件管理器"));
+                          void revealItemInDir(path).catch(() => setNotice(i18n.t("无法打开文件管理器")));
                         }}
                         onSendBack={() => void sendBack(item)}
                         onMerge={() => {
@@ -468,7 +482,7 @@ export function ChangesRadarPane({
               )
             ) : branchRows.length === 0 ? (
               <p className="px-3 py-3 text-[11px] text-fg-faint">
-                {loading ? "正在读取分支…" : "这个仓库还没有本地分支。"}
+                {loading ? i18n.t("正在读取分支…") : i18n.t("这个仓库还没有本地分支。")}
               </p>
             ) : (
               <ul className="flex flex-col py-1">
@@ -493,8 +507,7 @@ export function ChangesRadarPane({
                   onClick={() => void refresh()}
                   className="shrink-0 underline hover:no-underline"
                 >
-                  重试
-                </button>
+                  {t("重试")}</button>
               </div>
             )}
             {notice && !error && (
@@ -508,18 +521,22 @@ export function ChangesRadarPane({
 
       {pendingRemove && (
         <ConfirmDialog
-          message={`移除工作树「${folderName(pendingRemove.path)}」？分支 ${
-            pendingRemove.branch ?? pendingRemove.name
-          } 会保留；工作树里有未提交改动时后端会拒绝。被忽略的本地文件（node_modules、.env 等）会随目录一起删除。`}
-          confirmLabel="移除"
+          message={i18n.t("移除工作树「{{path}}」？分支 {{branch}} 会保留；工作树里有未提交改动时后端会拒绝。被忽略的本地文件（node_modules、.env 等）会随目录一起删除。", {
+            path: folderName(pendingRemove.path),
+            branch: pendingRemove.branch ?? pendingRemove.name,
+          })}
+          confirmLabel={t("移除")}
           onConfirm={() => void remove()}
           onCancel={() => setPendingRemove(null)}
         />
       )}
       {pendingMerge && (
         <ConfirmDialog
-          message={`把「${pendingMerge.branch ?? pendingMerge.name}」合并进 ${base}？主检出有未提交改动时后端会拒绝。`}
-          confirmLabel="合并"
+          message={i18n.t("把「{{branch}}」合并进 {{base}}？主检出有未提交改动时后端会拒绝。", {
+            branch: pendingMerge.branch ?? pendingMerge.name,
+            base,
+          })}
+          confirmLabel={t("合并")}
           onConfirm={() => void merge()}
           onCancel={() => setPendingMerge(null)}
         />
@@ -563,6 +580,7 @@ function WorktreeRow({
   onMerge: () => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const branch = item.detached ? "游离 HEAD" : (item.branch ?? item.name);
   // 有独有提交、且工作区干净，才值得给「合并」入口；脏的时候合了也带不走未提交内容。
   // 主检出自己就是合并的落点，不给自己合并自己。
@@ -586,23 +604,21 @@ function WorktreeRow({
         <span className="min-w-0 flex-1 truncate text-[12px] text-fg">{branch}</span>
         {item.kind === "main" && (
           <span className="shrink-0 rounded border border-line-strong px-1 text-[9px] leading-4 text-fg-faint">
-            主检出
-          </span>
+            {t("主检出")}</span>
         )}
         <span className={`shrink-0 rounded border px-1 text-[10px] leading-4 ${CHIP[state.tone]}`}>
-          {state.label}
+          {workstreamLabel(state.label)}
         </span>
       </button>
       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 pr-10 pl-3 text-[10px] text-fg-faint">
         <span className="min-w-0 truncate">{folderName(item.path)}</span>
         {terminals > 0 && (
           <span className="shrink-0 text-accent" title={`${terminals} 个终端落在这个目录`}>
-            {terminals} 终端
-          </span>
+            {terminals} {t("终端")}</span>
         )}
         {item.additions > 0 && <span className="shrink-0 text-ok">+{item.additions}</span>}
         {item.deletions > 0 && <span className="shrink-0 text-danger">-{item.deletions}</span>}
-        {item.diffFiles > 0 && <span className="shrink-0">{item.diffFiles} 文件</span>}
+        {item.diffFiles > 0 && <span className="shrink-0">{item.diffFiles} {t("文件")}</span>}
         {item.ahead > 0 && <span className="shrink-0 text-accent">↑{item.ahead}</span>}
         {item.behind > 0 && <span className="shrink-0">↓{item.behind}</span>}
         <span className="ml-auto shrink-0">{relativeTime(item.lastCommitTime)}</span>
@@ -612,7 +628,7 @@ function WorktreeRow({
       <div className="absolute right-1.5 top-1 flex items-center gap-0.5">
         <button
           type="button"
-          title="在这个工作树里打开终端"
+          title={t("在这个工作树里打开终端")}
           onClick={(event) => {
             event.stopPropagation();
             onTerminal();
@@ -623,7 +639,7 @@ function WorktreeRow({
         </button>
         <button
           type="button"
-          title="更多"
+          title={t("更多")}
           onClick={(event) => {
             event.stopPropagation();
             onToggleMenu();
@@ -636,11 +652,11 @@ function WorktreeRow({
 
       {menuOpen && (
         <div className="absolute right-2 top-8 z-20 w-44 rounded-md border border-line-strong bg-raised py-1 shadow-lg">
-          <MenuItem label="复制路径" onClick={() => onCopy(item.path)} />
-          <MenuItem label="在文件管理器中显示" onClick={() => onReveal(item.path)} />
-          <MenuItem label="复制反馈模板" onClick={onSendBack} />
-          {mergeable && <MenuItem label={`合并进 ${item.base ?? "基准分支"}`} onClick={onMerge} />}
-          {removable && <MenuItem label="移除工作树" onClick={onRemove} danger />}
+          <MenuItem label={t("复制路径")} onClick={() => onCopy(item.path)} />
+          <MenuItem label={t("在文件管理器中显示")} onClick={() => onReveal(item.path)} />
+          <MenuItem label={t("复制反馈模板")} onClick={onSendBack} />
+          {mergeable && <MenuItem label={i18n.t("合并进 {{base}}", { base: item.base ?? i18n.t("基准分支") })} onClick={onMerge} />}
+          {removable && <MenuItem label={t("移除工作树")} onClick={onRemove} danger />}
         </div>
       )}
     </div>
@@ -668,11 +684,12 @@ function BranchRow({
   checkedOut: WorkstreamInfo | undefined;
   onOpen: () => void;
 }) {
+  const { t } = useTranslation();
   const branch = item.branch ?? item.name;
   // 基准分支和自己是零差异，说「已合并」是假话，单独标成基准
   const isBase = item.base === branch;
   const tone: WorkstreamState["tone"] = isBase ? "muted" : state.tone;
-  const label = isBase ? "基准" : state.label;
+  const label = workstreamLabel(isBase ? "基准" : state.label);
 
   const body = (
     <>
@@ -687,17 +704,17 @@ function BranchRow({
       <span className="mt-0.5 flex min-w-0 items-center gap-1.5 pl-3 text-[10px] text-fg-faint">
         {checkedOut ? (
           <span className="flex min-w-0 items-center gap-1">
-            <span className="shrink-0 text-accent">已检出</span>
+            <span className="shrink-0 text-accent">{t("已检出")}</span>
             <span className="min-w-0 truncate">
-              {checkedOut.kind === "main" ? "主检出" : folderName(checkedOut.path)}
+              {checkedOut.kind === "main" ? i18n.t("主检出") : folderName(checkedOut.path)}
             </span>
           </span>
         ) : (
-          <span className="shrink-0">未检出</span>
+          <span className="shrink-0">{t("未检出")}</span>
         )}
         {item.additions > 0 && <span className="shrink-0 text-ok">+{item.additions}</span>}
         {item.deletions > 0 && <span className="shrink-0 text-danger">-{item.deletions}</span>}
-        {item.diffFiles > 0 && <span className="shrink-0">{item.diffFiles} 文件</span>}
+        {item.diffFiles > 0 && <span className="shrink-0">{item.diffFiles} {t("文件")}</span>}
         {item.ahead > 0 && <span className="shrink-0 text-accent">↑{item.ahead}</span>}
         {item.behind > 0 && <span className="shrink-0">↓{item.behind}</span>}
         <span className="ml-auto shrink-0">{relativeTime(item.lastCommitTime)}</span>
@@ -713,7 +730,7 @@ function BranchRow({
     <button
       type="button"
       onClick={onOpen}
-      title={`打开 ${folderName(checkedOut.path)} 的完整 Git`}
+      title={i18n.t("打开 {{path}} 的完整 Git", { path: folderName(checkedOut.path) })}
       className="block w-full px-2 py-1.5 text-left hover:bg-hover"
     >
       {body}

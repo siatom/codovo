@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
+import i18n from "../lib/i18n";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   dbTableStructure,
@@ -43,11 +45,11 @@ function Section({
   );
 }
 
-function Empty({ text = "无" }: { text?: string }) {
+function Empty({ text = i18n.t("无") }: { text?: string }) {
   return <p className="px-2 pb-2 text-[11px] text-fg-faint">{text}</p>;
 }
 
-const yesNo = (value: boolean) => (value ? "是" : "否");
+const yesNo = (value: boolean) => (value ? i18n.t("是") : i18n.t("否"));
 
 /**
  * 表结构视图（右侧「表格」子视图里的「结构」页）：列 / 索引 / 外键 / 建表 DDL。
@@ -62,6 +64,7 @@ export function TableStructure({
   /** 选中的表；没选就是 null */
   table: TableInfo | null;
 }) {
+  const { t } = useTranslation();
   const [structure, setStructure] = useState<TableStructureData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -97,8 +100,8 @@ export function TableStructure({
     // schema / tableName 都来自 table，直接依赖它即可
   }, [sessionId, schema, tableName, table]);
 
-  if (!table) return <Centered>从左侧选中一张表后再看结构。</Centered>;
-  if (sessionId === null) return <Centered>{loading ? "加载中…" : "连接尚未就绪。"}</Centered>;
+  if (!table) return <Centered>{t("从左侧选中一张表后再看结构。")}</Centered>;
+  if (sessionId === null) return <Centered>{loading ? i18n.t("加载中…") : i18n.t("连接尚未就绪。")}</Centered>;
   if (error) {
     return (
       <div className="min-h-0 flex-1 overflow-auto p-3">
@@ -108,23 +111,23 @@ export function TableStructure({
       </div>
     );
   }
-  if (!structure) return <Centered>{loading ? "加载中…" : "暂无结构信息。"}</Centered>;
+  if (!structure) return <Centered>{loading ? i18n.t("加载中…") : i18n.t("暂无结构信息。")}</Centered>;
 
   return (
     <div className="min-h-0 flex-1 overflow-auto pb-2">
-      <Section title="列">
+      <Section title={t("列")}>
         {structure.columns.length === 0 ? (
           <Empty />
         ) : (
           <table className="w-max min-w-full border-collapse text-[12px]">
             <thead>
               <tr>
-                <th className={TH}>列名</th>
-                <th className={TH}>类型</th>
-                <th className={TH}>可空</th>
-                <th className={TH}>默认值</th>
-                <th className={TH}>主键</th>
-                <th className={TH}>注释</th>
+                <th className={TH}>{t("列名")}</th>
+                <th className={TH}>{t("类型")}</th>
+                <th className={TH}>{t("可空")}</th>
+                <th className={TH}>{t("默认值")}</th>
+                <th className={TH}>{t("主键")}</th>
+                <th className={TH}>{t("注释")}</th>
               </tr>
             </thead>
             <tbody>
@@ -147,17 +150,17 @@ export function TableStructure({
         )}
       </Section>
 
-      <Section title="索引">
+      <Section title={t("索引")}>
         {structure.indexes.length === 0 ? (
           <Empty />
         ) : (
           <table className="w-max min-w-full border-collapse text-[12px]">
             <thead>
               <tr>
-                <th className={TH}>索引名</th>
-                <th className={TH}>列</th>
-                <th className={TH}>唯一</th>
-                <th className={TH}>主键</th>
+                <th className={TH}>{t("索引名")}</th>
+                <th className={TH}>{t("列")}</th>
+                <th className={TH}>{t("唯一")}</th>
+                <th className={TH}>{t("主键")}</th>
               </tr>
             </thead>
             <tbody>
@@ -174,16 +177,16 @@ export function TableStructure({
         )}
       </Section>
 
-      <Section title="外键">
+      <Section title={t("外键")}>
         {structure.foreignKeys.length === 0 ? (
           <Empty />
         ) : (
           <table className="w-max min-w-full border-collapse text-[12px]">
             <thead>
               <tr>
-                <th className={TH}>约束名</th>
-                <th className={TH}>本表列</th>
-                <th className={TH}>引用</th>
+                <th className={TH}>{t("约束名")}</th>
+                <th className={TH}>{t("本表列")}</th>
+                <th className={TH}>{t("引用")}</th>
               </tr>
             </thead>
             <tbody>
@@ -201,9 +204,9 @@ export function TableStructure({
         )}
       </Section>
 
-      <Section title="建表 DDL" hint={structure.ddlApproximate ? "（由元数据尽力拼出）" : undefined}>
+      <Section title={t("建表 DDL")} hint={structure.ddlApproximate ? i18n.t("（由元数据尽力拼出）") : undefined}>
         {structure.ddl === null ? (
-          <Empty text="没有可用的 DDL。" />
+          <Empty text={t("没有可用的 DDL。")} />
         ) : (
           <div className="px-2 pb-2">
             <div className="flex justify-end">
@@ -212,8 +215,7 @@ export function TableStructure({
                 onClick={() => void writeText(structure.ddl ?? "").catch(() => {})}
                 className="rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
               >
-                复制
-              </button>
+                {t("复制")}</button>
             </div>
             <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded border border-line bg-surface p-2 text-[11px] leading-relaxed text-fg">
               {structure.ddl}

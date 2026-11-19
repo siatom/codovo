@@ -6,6 +6,7 @@ import "katex/dist/katex.min.css";
 import "./styles.css";
 import App from "./App";
 import { SettingsProvider } from "./lib/settings";
+import { LocaleProvider } from "./lib/locale";
 import { ThemeProvider, applyTheme, readSavedTheme, resolveTheme } from "./lib/theme";
 
 // macOS 的原生红绿灯叠在窗口顶部；弹窗遮罩留出标题栏高度，避免遮暗或挡住窗口控件。
@@ -41,9 +42,11 @@ if (!import.meta.env.DEV) {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ThemeProvider>
-      <SettingsProvider>
-        <App />
-      </SettingsProvider>
+      <LocaleProvider>
+        <SettingsProvider>
+          <App />
+        </SettingsProvider>
+      </LocaleProvider>
     </ThemeProvider>
   </React.StrictMode>,
 );

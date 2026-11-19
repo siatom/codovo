@@ -9,6 +9,8 @@ import {
   type PointerEvent as ReactPointerEvent,
   type UIEvent as ReactUIEvent,
 } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../lib/i18n";
 import {
   gitAddToIgnore,
   gitAmend,
@@ -345,11 +347,11 @@ function statusMark(status: string): GitMark {
 /** 相对时间，够用就行——提交列表里不需要精确到分秒 */
 function formatTime(seconds: number): string {
   const diff = Date.now() / 1000 - seconds;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
-  return new Date(seconds * 1000).toLocaleDateString();
+  if (diff < 60) return i18n.t("刚刚");
+  if (diff < 3600) return i18n.t("{{count}} minutes ago", { count: Math.floor(diff / 60) });
+  if (diff < 86400) return i18n.t("{{count}} hours ago", { count: Math.floor(diff / 3600) });
+  if (diff < 86400 * 30) return i18n.t("{{count}} days ago", { count: Math.floor(diff / 86400) });
+  return new Date(seconds * 1000).toLocaleDateString(i18n.language);
 }
 
 function baseName(relative: string): string {
@@ -506,23 +508,31 @@ const MERGE_ABORT_BUTTON =
  * 说"继续××"。四种现在都能在面板里收尾，文案按类型分开，不再指回终端。
  */
 const ONGOING: Record<string, { name: string; verb: string }> = {
-  merge: { name: "合并", verb: "完成" },
-  rebase: { name: "变基", verb: "继续" },
-  cherryPick: { name: "拣选", verb: "继续" },
-  revert: { name: "还原", verb: "继续" },
+  merge: { name: i18n.t("合并"), verb: i18n.t("完成") },
+  rebase: { name: i18n.t("变基"), verb: i18n.t("继续") },
+  cherryPick: { name: i18n.t("拣选"), verb: i18n.t("继续") },
+  revert: { name: i18n.t("还原"), verb: i18n.t("继续") },
 };
 
 /** 认不出的类型（理论上不会发生）也给个能读的兜底，别把 undefined 拼进文案里 */
 function ongoingLabels(kind: GitStatusPayload["mergeKind"]): { name: string; verb: string } {
-  return (kind && ONGOING[kind]) || { name: "操作", verb: "继续" };
+  return (kind && ONGOING[kind]) || { name: i18n.t("操作"), verb: i18n.t("继续") };
 }
 
 /** "进行中"提示条的整句文案：还剩几个冲突 + 点哪个按钮收尾 */
 function ongoingText(kind: GitStatusPayload["mergeKind"], conflicts: number): string {
   const { name, verb } = ongoingLabels(kind);
   return conflicts > 0
-    ? `正在进行${name}：还有 ${conflicts} 个冲突未解决，解决后点「${verb}${name}」`
-    : `正在进行${name}：点「${verb}${name}」完成，或「中止${name}」放弃`;
+    ? i18n.t("正在进行{{name}}：还有 {{count}} 个冲突未解决，解决后点「{{action}}」", {
+        name,
+        count: conflicts,
+        action: `${verb}${name}`,
+      })
+    : i18n.t("正在进行{{name}}：点「{{action}}」完成，或「{{abort}}」放弃", {
+        name,
+        action: `${verb}${name}`,
+        abort: i18n.t("中止{{name}}", { name }),
+      });
 }
 
 /** AI 生成：塞进提交框内部的纯图标按钮，居中对齐、平时淡、悬停才亮 */
@@ -641,14 +651,14 @@ function canHunkStaged(change: GitChange): boolean {
 
 /** 网络操作可能要跑几分钟，光靠按钮变灰看不出在干什么，下面补一行字 */
 const SYNC_NOTICE = {
-  fetch: "正在获取远程更新…",
-  pull: "正在拉取…",
-  push: "正在推送…",
-  commitPush: "正在提交并推送…",
-  commitSync: "正在提交并同步…",
-  merge: "正在合并…",
-  mergeAbort: "正在中止当前操作…",
-  mergeContinue: "正在完成当前操作…",
+  fetch: i18n.t("正在获取远程更新…"),
+  pull: i18n.t("正在拉取…"),
+  push: i18n.t("正在推送…"),
+  commitPush: i18n.t("正在提交并推送…"),
+  commitSync: i18n.t("正在提交并同步…"),
+  merge: i18n.t("正在合并…"),
+  mergeAbort: i18n.t("正在中止当前操作…"),
+  mergeContinue: i18n.t("正在完成当前操作…"),
 } as const;
 
 /** 右键菜单：宽度按最长的一项量，高度按项数算出来，用来贴着窗口边缘收一收 */
@@ -790,18 +800,19 @@ function HunkList({
   onUnstage: (patch: string, lines: number[]) => void;
   onDiscard: (patch: string, lines: number[], what: string) => void;
 }) {
+  const { t } = useTranslation();
   const notice = (text: string) => (
     <p className="py-1 text-[11px] text-fg-faint" style={{ paddingLeft: indent }}>
       {text}
     </p>
   );
 
-  if (!file) return notice(loading ? "加载中…" : "读不到这个文件的改动");
+  if (!file) return notice(loading ? i18n.t("加载中…") : i18n.t("读不到这个文件的改动"));
   if (file.hunks.length === 0) {
     return notice(
       staged
-        ? "这个文件只能整文件取消暂存（新增、删除或二进制）"
-        : "这个文件只能整文件暂存 / 放弃（新增、删除或二进制）",
+        ? i18n.t("这个文件只能整文件取消暂存（新增、删除或二进制）")
+        : i18n.t("这个文件只能整文件暂存 / 放弃（新增、删除或二进制）"),
     );
   }
 
@@ -819,7 +830,7 @@ function HunkList({
         // 选中的行下标排好序传回后端（顺序无所谓，排一下好读）
         const selected = selection.get(index);
         const picked = selected ? [...selected].sort((a, b) => a - b) : [];
-        const scope = picked.length > 0 ? `选中的 ${picked.length} 行` : "这块改动";
+        const scope = picked.length > 0 ? i18n.t("选中的 {{count}} 行", { count: picked.length }) : i18n.t("这块改动");
         return (
           <div key={index} className="border-b border-line last:border-b-0">
             <div className="flex items-center gap-1.5 bg-surface px-2 py-0.5 font-mono text-[11px]">
@@ -827,9 +838,8 @@ function HunkList({
                 {hunk.header}
               </span>
               {picked.length > 0 && (
-                <span className="shrink-0 text-accent" title="按钮只作用于选中的行">
-                  已选 {picked.length} 行
-                </span>
+                <span className="shrink-0 text-accent" title={t("按钮只作用于选中的行")}>
+                  {t("已选")}{picked.length} {t("行")}</span>
               )}
               {hunk.added > 0 && <span className="shrink-0 text-ok">+{hunk.added}</span>}
               {hunk.removed > 0 && <span className="shrink-0 text-danger">-{hunk.removed}</span>}
@@ -838,7 +848,7 @@ function HunkList({
                   type="button"
                   onClick={() => onUnstage(patch, picked)}
                   disabled={busy}
-                  title={`取消暂存${scope}`}
+                  title={i18n.t("取消暂存{{scope}}", { scope })}
                   className={HUNK_ACTION}
                 >
                   <IconMinus className="h-3 w-3" />
@@ -849,7 +859,7 @@ function HunkList({
                     type="button"
                     onClick={() => onDiscard(patch, picked, scope)}
                     disabled={busy}
-                    title={`放弃${scope}（还原到暂存区）`}
+                    title={i18n.t("放弃{{scope}}（还原到暂存区）", { scope })}
                     className={HUNK_DANGER}
                   >
                     <IconUndo className="h-3 w-3" />
@@ -858,7 +868,7 @@ function HunkList({
                     type="button"
                     onClick={() => onStage(patch, picked)}
                     disabled={busy}
-                    title={`暂存${scope}`}
+                    title={i18n.t("暂存{{scope}}", { scope })}
                     className={HUNK_ACTION}
                   >
                     <IconPlus className="h-3 w-3" />
@@ -878,7 +888,7 @@ function HunkList({
                       if (!change) return;
                       onLineClick(index, lineIndex, change, event.shiftKey);
                     }}
-                    title={change ? "点击选中这一行（Shift 点击连选一段）" : undefined}
+                    title={change ? i18n.t("点击选中这一行（Shift 点击连选一段）") : undefined}
                     className={`whitespace-pre px-2 ${hunkLineClass(line)} ${
                       change ? "cursor-pointer hover:bg-hover" : ""
                     } ${on ? "bg-accent/15" : ""}`}
@@ -925,6 +935,7 @@ function ChangeRow({
   selected: (change: GitChange) => boolean;
   onSelect: (change: GitChange, event: ReactMouseEvent) => void;
 }) {
+  const { t } = useTranslation();
   const slash = change.relative.lastIndexOf("/");
   const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
   const dir = slash === -1 ? "" : change.relative.slice(0, slash);
@@ -1008,7 +1019,7 @@ function ChangeRow({
               type="button"
               onClick={() => onDiscard(change)}
               disabled={busy}
-              title={staged ? "放弃修改（还原到 HEAD）" : "放弃修改（还原到暂存区）"}
+              title={staged ? i18n.t("放弃修改（还原到 HEAD）") : i18n.t("放弃修改（还原到暂存区）")}
               className={ROW_DANGER}
             >
               <IconUndo className="h-3 w-3" />
@@ -1018,7 +1029,7 @@ function ChangeRow({
             type="button"
             onClick={() => onToggle(change.path)}
             disabled={busy}
-            title={staged ? "取消暂存" : "暂存"}
+            title={staged ? i18n.t("取消暂存") : i18n.t("暂存")}
             className={ROW_ACTION}
           >
             {staged ? <IconMinus className="h-3 w-3" /> : <IconPlus className="h-3 w-3" />}
@@ -1027,7 +1038,7 @@ function ChangeRow({
             <button
               type="button"
               onClick={() => onOpenFile(change.path)}
-              title="打开文件（看完整内容，不开差异）"
+              title={t("打开文件（看完整内容，不开差异）")}
               className={ROW_ACTION}
             >
               <IconPencil className="h-3 w-3" />
@@ -1039,7 +1050,7 @@ function ChangeRow({
             <button
               type="button"
               onClick={() => hunks.onToggle(change.path, staged)}
-              title={staged ? "展开逐块操作（逐块 / 逐行取消暂存）" : "展开逐块操作（逐块 / 逐行暂存 / 放弃）"}
+              title={staged ? i18n.t("展开逐块操作（逐块 / 逐行取消暂存）") : i18n.t("展开逐块操作（逐块 / 逐行暂存 / 放弃）")}
               className={ROW_HUNK_TOGGLE}
             >
               <IconChevronRight className="h-3 w-3" />
@@ -1052,7 +1063,7 @@ function ChangeRow({
           <button
             type="button"
             onClick={() => hunks.onToggle(change.path, staged)}
-            title="收起逐块操作"
+            title={t("收起逐块操作")}
             className={ROW_HUNK_TOGGLE}
           >
             <IconChevronDown className="h-3 w-3" />
@@ -1298,6 +1309,7 @@ function ConflictRow({
   /** 开「解决冲突」菜单（固定定位，画在面板底部那一层） */
   onMenu: (change: GitChange, staged: boolean, event: ReactMouseEvent) => void;
 }) {
+  const { t } = useTranslation();
   const slash = change.relative.lastIndexOf("/");
   const name = slash === -1 ? change.relative : change.relative.slice(slash + 1);
   const dir = slash === -1 ? "" : change.relative.slice(0, slash);
@@ -1325,7 +1337,7 @@ function ConflictRow({
           type="button"
           onClick={(event) => onMenu(change, false, event)}
           disabled={busy}
-          title="解决冲突（接受当前 / 接受传入 / 保留两者）"
+          title={t("解决冲突（接受当前 / 接受传入 / 保留两者）")}
           className={ROW_HUNK_TOGGLE}
         >
           <IconMerge className="h-3 w-3" />
@@ -1339,10 +1351,10 @@ function ConflictRow({
 
 /** 引用 chip 的 kind -> 中文说明，只用在 title 上 */
 const REF_KIND_LABEL: Record<CommitRef["kind"], string> = {
-  head: "当前分支",
-  branch: "分支",
-  remote: "远程分支",
-  tag: "标签",
+  head: i18n.t("当前分支"),
+  branch: i18n.t("分支"),
+  remote: i18n.t("远程分支"),
+  tag: i18n.t("标签"),
 };
 
 /** 提交行里的引用标签：当前分支填色、标签用警示色，其余描边，和 VS Code 的语汇一致 */
@@ -1419,6 +1431,7 @@ function CommitRow({
   /** 右键这一行：开「打标签 / 删标签」菜单 */
   onMenu: (event: ReactMouseEvent) => void;
 }) {
+  const { t } = useTranslation();
   const relativeTime = formatTime(commit.time);
 
   return (
@@ -1481,10 +1494,10 @@ function CommitRow({
         </button>
 
         {expanded && files === undefined && (
-          <p className="py-[3px] pl-6 text-[11px] text-fg-faint">加载中…</p>
+          <p className="py-[3px] pl-6 text-[11px] text-fg-faint">{t("加载中…")}</p>
         )}
         {expanded && files?.length === 0 && (
-          <p className="py-[3px] pl-6 text-[11px] text-fg-faint">这个提交没有文件更改</p>
+          <p className="py-[3px] pl-6 text-[11px] text-fg-faint">{t("这个提交没有文件更改")}</p>
         )}
         {expanded && files && files.length > 0 && (
           <ul>
@@ -1539,6 +1552,7 @@ function TagDialog({
   onConfirm: (name: string, message?: string) => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [annotated, setAnnotated] = useState(false);
   const [message, setMessage] = useState("");
@@ -1574,8 +1588,7 @@ function TagDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <p className="text-[12px] text-fg">
-          在提交 <span className="font-mono text-fg-muted">{commit.short}</span> 上新建标签
-        </p>
+          {t("在提交 {{commit}} 上新建标签", { commit: commit.short })}</p>
         <div className="mt-3 flex flex-col gap-2">
           <input
             autoFocus
@@ -1584,7 +1597,7 @@ function TagDialog({
             onKeyDown={(event) => {
               if (event.key === "Enter") submit();
             }}
-            placeholder="标签名（如 v1.0.0）"
+            placeholder={t("标签名（如 v1.0.0）")}
             className={TEXT_INPUT}
           />
           <label className="flex cursor-pointer items-center gap-2 text-[12px] text-fg-muted">
@@ -1594,13 +1607,12 @@ function TagDialog({
               onChange={(event) => setAnnotated(event.target.checked)}
               className="accent-accent"
             />
-            附注标签
-          </label>
+            {t("附注标签")}</label>
           {annotated && (
             <textarea
               value={message}
               onChange={(event) => setMessage(event.target.value)}
-              placeholder="说明（可留空）"
+              placeholder={t("说明（可留空）")}
               rows={3}
               className={`${TEXT_INPUT} resize-none`}
             />
@@ -1608,11 +1620,9 @@ function TagDialog({
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" onClick={onCancel} className={DIALOG_CANCEL}>
-            取消
-          </button>
+            {t("取消")}</button>
           <button type="button" onClick={submit} disabled={!name.trim()} className={DIALOG_CONFIRM}>
-            创建标签
-          </button>
+            {t("创建标签")}</button>
         </div>
       </div>
     </div>
@@ -1636,12 +1646,13 @@ function WorktreeRow({
   status: WorktreeStatus | null;
   onPick: (target: WorktreeInfo) => void;
 }) {
+  const { t } = useTranslation();
   const broken = worktree.prunable || !worktree.exists;
   const branch = worktree.bare
     ? "bare"
     : worktree.detached
-      ? "游离 HEAD"
-      : (worktree.branch ?? "游离 HEAD");
+      ? i18n.t("游离 HEAD")
+      : (worktree.branch ?? i18n.t("游离 HEAD"));
   const changed = status?.changed ?? null;
   const merging = status?.merging ?? false;
   return (
@@ -1664,15 +1675,15 @@ function WorktreeRow({
         />
         <span className="min-w-0 flex-1 truncate text-[12px] text-fg-muted">{worktree.name}</span>
         {broken ? (
-          <span className="shrink-0 text-[10px] text-danger">已失效</span>
+          <span className="shrink-0 text-[10px] text-danger">{t("已失效")}</span>
         ) : merging ? (
-          <span className="shrink-0 text-[10px] text-warn">合并中</span>
+          <span className="shrink-0 text-[10px] text-warn">{t("合并中")}</span>
         ) : changed !== null && changed > 0 ? (
-          <span className="shrink-0 text-[10px] text-fg-muted">{changed} 变更</span>
+          <span className="shrink-0 text-[10px] text-fg-muted">{changed} {t("变更")}</span>
         ) : changed === 0 ? (
-          <span className="shrink-0 text-[10px] text-fg-faint">干净</span>
+          <span className="shrink-0 text-[10px] text-fg-faint">{t("干净")}</span>
         ) : null}
-        {worktree.locked && <span className="shrink-0 text-[10px] text-warn">已锁定</span>}
+        {worktree.locked && <span className="shrink-0 text-[10px] text-warn">{t("已锁定")}</span>}
       </span>
       <span className="flex min-w-0 items-center gap-1.5 pl-3 text-[10px] text-fg-faint">
         <span className="min-w-0 truncate">{branch}</span>
@@ -1713,6 +1724,7 @@ function WorktreeOverview({
   onPick: (target: WorktreeInfo) => void;
   onPrune: () => void;
 }) {
+  const { t } = useTranslation();
   const hasPrunable = worktrees.some((item) => item.prunable || !item.exists);
   return (
     <div className="flex shrink-0 flex-col border-b border-line">
@@ -1722,7 +1734,7 @@ function WorktreeOverview({
         <button
           type="button"
           onClick={onToggleCollapsed}
-          title={collapsed ? "展开工作树概览" : "收起工作树概览"}
+          title={collapsed ? i18n.t("展开工作树概览") : i18n.t("收起工作树概览")}
           className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-fg"
         >
           {collapsed ? (
@@ -1730,7 +1742,7 @@ function WorktreeOverview({
           ) : (
             <IconChevronDown className="h-3 w-3 shrink-0" />
           )}
-          <span className="shrink-0 whitespace-nowrap">工作树</span>
+          <span className="shrink-0 whitespace-nowrap">{t("工作树")}</span>
           <span className="shrink-0 text-fg-faint">{worktrees.length}</span>
           {/* 收起时把当前工作树名带出来，否则收起后就不知道自己在哪棵树上了 */}
           {collapsed && currentName && (
@@ -1742,7 +1754,7 @@ function WorktreeOverview({
             type="button"
             onClick={onPrune}
             disabled={busy}
-            title="清理目录已不存在的 worktree 记录（git worktree prune）"
+            title={t("清理目录已不存在的 worktree 记录（git worktree prune）")}
             className={GROUP_ICON}
           >
             <IconTrash className="h-3 w-3" />
@@ -1783,6 +1795,7 @@ export function GitChangesPane({
   onOpenFile,
   onSelectWorktree,
 }: GitChangesPaneProps) {
+  const { t } = useTranslation();
   const { settings } = useSettings();
   const [message, setMessage] = useState("");
   /**
@@ -2557,7 +2570,7 @@ export function GitChangesPane({
       setStashes(list);
       const found = list.find((item) => item.hash === entry.hash);
       if (!found) {
-        throw new Error("这条储藏已经不存在了（可能被别的操作删掉了）");
+        throw new Error(i18n.t("这条储藏已经不存在了（可能被别的操作删掉了）"));
       }
       return found.index;
     },
@@ -2622,7 +2635,7 @@ export function GitChangesPane({
   const generate = useCallback(() => {
     // 配置齐不齐由 useEffectiveAiConfig 判（.env 覆盖也算数），文案和原来一致
     if (!aiReady) {
-      setError("请先在「设置 → AI」里填写接口地址、模型和密钥");
+      setError(i18n.t("请先在「设置 → AI」里填写接口地址、模型和密钥"));
       return;
     }
     const stageAllFirst = staged.length === 0 && unstaged.length > 0;
@@ -2690,7 +2703,7 @@ export function GitChangesPane({
         setExplain({
           title,
           text: null,
-          error: "请先在「设置 → AI」里填写接口地址、模型和密钥",
+          error: i18n.t("请先在「设置 → AI」里填写接口地址、模型和密钥"),
         });
         return;
       }
@@ -2723,7 +2736,7 @@ export function GitChangesPane({
   const copyPath = useCallback(async (text: string) => {
     setMenu(null);
     setError(null);
-    if (!(await copyText(text))) setError("复制失败：系统剪贴板不可用");
+    if (!(await copyText(text))) setError(i18n.t("复制失败：系统剪贴板不可用"));
   }, []);
 
   /**
@@ -3622,7 +3635,7 @@ export function GitChangesPane({
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <IconBranch className="h-6 w-6 text-fg-faint" />
-        <p className="text-[12px] text-fg-dim">当前目录还不是 Git 仓库</p>
+        <p className="text-[12px] text-fg-dim">{t("当前目录还不是 Git 仓库")}</p>
         {/* 面板切到了某个 worktree 时，「初始化」是在那个（多半已不存在的）目录里跑
             git init，纯属死路；改成给「切回工作区根」的出口 */}
         {offWorkspaceRoot ? (
@@ -3631,7 +3644,7 @@ export function GitChangesPane({
             onClick={() => onSelectWorktree(workspaceRoot)}
             className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-app hover:opacity-90"
           >
-            切回 {folderName(workspaceRoot)}
+            {t("切回")}{folderName(workspaceRoot)}
           </button>
         ) : (
           <button
@@ -3640,7 +3653,7 @@ export function GitChangesPane({
             disabled={busy !== null}
             className="rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-app hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
           >
-            {busy === "init" ? "正在初始化…" : "初始化 Git 仓库"}
+            {busy === "init" ? i18n.t("正在初始化…") : i18n.t("初始化 Git 仓库")}
           </button>
         )}
         {error && (
@@ -3651,7 +3664,7 @@ export function GitChangesPane({
             也要显示——那正是切回去的出口 */}
         {wtList && (
           <div className="mt-1 flex w-full max-w-[260px] flex-col rounded border border-line-strong bg-raised py-1 text-left">
-            <p className="px-3 py-1 text-[11px] text-fg-faint">切换到其他工作树</p>
+            <p className="px-3 py-1 text-[11px] text-fg-faint">{t("切换到其他工作树")}</p>
             {wtList.map((item) => (
               <button
                 key={item.path}
@@ -3666,7 +3679,7 @@ export function GitChangesPane({
                 </span>
                 <span className="min-w-0 flex-1 truncate">{item.name}</span>
                 <span className="shrink-0 truncate text-[10px] text-fg-faint">
-                  {item.prunable || !item.exists ? "已失效" : (item.branch ?? "游离 HEAD")}
+                  {item.prunable || !item.exists ? i18n.t("已失效") : (item.branch ?? i18n.t("游离 HEAD"))}
                 </span>
               </button>
             ))}
@@ -3680,7 +3693,7 @@ export function GitChangesPane({
             disabled={busy !== null}
             className="text-[11px] text-fg-muted underline-offset-2 hover:text-fg hover:underline disabled:opacity-40"
           >
-            {busy === "prune" ? "正在清理…" : "清理失效记录"}
+            {busy === "prune" ? i18n.t("正在清理…") : i18n.t("清理失效记录")}
           </button>
         )}
       </div>
@@ -3719,7 +3732,7 @@ export function GitChangesPane({
    * 空列表提示已经说清了。
    */
   const commitHint =
-    staged.length > 0 && busy === null && !message.trim() ? "填好提交信息就能提交" : null;
+    staged.length > 0 && busy === null && !message.trim() ? i18n.t("填好提交信息就能提交") : null;
 
   /**
    * 提交框拖动条的无障碍数值（像素）。提交框没拖过时高度是内容撑的、不在 state 里，
@@ -3762,11 +3775,11 @@ export function GitChangesPane({
             type="button"
             onClick={() => (branchMenu ? setBranchMenu(false) : openBranchMenu())}
             disabled={busy !== null}
-            title={`当前分支：${snapshot.branch ?? "游离 HEAD"}（点击查看其它分支）`}
+            title={i18n.t("当前分支：{{branch}}（点击查看其它分支）", { branch: snapshot.branch ?? i18n.t("游离 HEAD") })}
             className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-fg-dim hover:bg-active hover:text-fg disabled:opacity-40"
           >
             <IconBranch className="h-3 w-3 shrink-0" />
-            <span className="min-w-0 truncate">{snapshot.branch ?? "游离 HEAD"}</span>
+            <span className="min-w-0 truncate">{snapshot.branch ?? i18n.t("游离 HEAD")}</span>
             <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
           </button>
 
@@ -3775,14 +3788,14 @@ export function GitChangesPane({
           {compare?.branch && (
             <span
               className="flex min-w-0 items-center gap-1 rounded border border-accent-line bg-selected px-1 py-0.5 text-[11px] text-accent"
-              title={`正在查看分支 ${compare.branch}，只读对比，不会检出`}
+              title={i18n.t("正在查看分支 {{branch}}，只读对比，不会检出", { branch: compare.branch })}
             >
               <IconArrowsLeftRight className="h-3 w-3 shrink-0" />
-              <span className="min-w-0 truncate">正在查看 {compare.branch}</span>
+              <span className="min-w-0 truncate">{t("正在查看")}{compare.branch}</span>
               <button
                 type="button"
                 onClick={exitCompare}
-                title="回到当前分支"
+                title={t("回到当前分支")}
                 className="flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-active"
               >
                 <IconClose className="h-3 w-3" />
@@ -3802,7 +3815,7 @@ export function GitChangesPane({
                   </p>
                 )}
                 {branches.length === 0 && !branchError && (
-                  <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
+                  <p className="px-3 py-1 text-[11px] text-fg-faint">{t("没有本地分支")}</p>
                 )}
                 {branches.map((item) => {
                   // 正在查看的那条：左侧用对比图标标出，再点一次就退出查看
@@ -3818,12 +3831,12 @@ export function GitChangesPane({
                       disabled={busy !== null}
                       title={
                         occupied && item.worktree
-                          ? `已在工作树 ${toDisplayPath(item.worktree)} 中检出（这里只看差异，不会切过去）`
+                          ? i18n.t("已在工作树 {{path}} 中检出（这里只看差异，不会切过去）", { path: toDisplayPath(item.worktree) })
                           : item.gone
-                            ? `上游 ${item.upstream} 已经不存在了`
+                            ? i18n.t("上游 {{branch}} 已经不存在了", { branch: item.upstream })
                             : item.upstream
-                              ? `上游 ${item.upstream}`
-                              : "还没有上游分支"
+                              ? i18n.t("上游 {{branch}}", { branch: item.upstream })
+                              : i18n.t("还没有上游分支")
                       }
                       className="flex items-center gap-1.5 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60 disabled:hover:bg-transparent"
                     >
@@ -3838,25 +3851,23 @@ export function GitChangesPane({
                       {occupied ? (
                         <span className="flex shrink-0 items-center gap-0.5 text-[10px] text-warn">
                           <IconWorktree className="h-3 w-3" />
-                          已检出
-                        </span>
+                          {t("已检出")}</span>
                       ) : item.gone ? (
-                        <span className="shrink-0 text-[10px] text-danger">已删除</span>
+                        <span className="shrink-0 text-[10px] text-danger">{t("已删除")}</span>
                       ) : (
                         <span className="flex shrink-0 items-center gap-1 text-[10px] text-fg-faint">
                           {item.ahead > 0 && <span>↑{item.ahead}</span>}
                           {item.behind > 0 && <span>↓{item.behind}</span>}
                         </span>
                       )}
-                      <span className={MENU_CMD}>{viewing ? "关闭" : "view"}</span>
+                      <span className={MENU_CMD}>{viewing ? i18n.t("关闭") : "view"}</span>
                     </button>
                   );
                 })}
 
                 {/* 菜单底部一句说明：这套下拉只做查看，不做检出，免得人误以为点了就切过去了 */}
                 <p className="mt-1 border-t border-line px-3 pt-1 text-[10px] leading-relaxed text-fg-faint">
-                  选中分支只查看差异，不会检出
-                </p>
+                  {t("选中分支只查看差异，不会检出")}</p>
               </div>
             </>
           )}
@@ -3868,12 +3879,12 @@ export function GitChangesPane({
         {/* 领先/落后上游的提交数：只在非零时出现（没有上游时天然是 0），
             紧挨着拉取/推送按钮，一眼能看出该点哪个 */}
         {snapshot.ahead > 0 && (
-          <span className="shrink-0 text-[11px] text-fg-faint" title="领先上游的提交数">
+          <span className="shrink-0 text-[11px] text-fg-faint" title={t("领先上游的提交数")}>
             ↑{snapshot.ahead}
           </span>
         )}
         {snapshot.behind > 0 && (
-          <span className="shrink-0 text-[11px] text-fg-faint" title="落后上游的提交数">
+          <span className="shrink-0 text-[11px] text-fg-faint" title={t("落后上游的提交数")}>
             ↓{snapshot.behind}
           </span>
         )}
@@ -3884,7 +3895,7 @@ export function GitChangesPane({
             只留下面主按钮区的「完成合并 / 中止合并」 */}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <IconButton
-            label="获取远程更新"
+            label={t("获取远程更新")}
             onClick={fetch}
             disabled={busy !== null || snapshot.merging}
           >
@@ -3893,22 +3904,22 @@ export function GitChangesPane({
             />
           </IconButton>
           <IconButton
-            label="拉取（只允许快进）"
+            label={t("拉取（只允许快进）")}
             onClick={pull}
             disabled={busy !== null || snapshot.merging}
           >
             <IconArrowDownToLine className={`${ICON_SM}${busy === "pull" ? " animate-pulse" : ""}`} />
           </IconButton>
           <IconButton
-            label="合并远程分支"
-            title="合并远程分支（先获取再合并，分叉时产生合并提交）"
+            label={t("合并远程分支")}
+            title={t("合并远程分支（先获取再合并，分叉时产生合并提交）")}
             onClick={merge}
             disabled={!canMerge}
           >
             <IconMerge className={`${ICON_SM}${busy === "merge" ? " animate-pulse" : ""}`} />
           </IconButton>
           <IconButton
-            label="推送"
+            label={t("推送")}
             onClick={push}
             disabled={busy !== null || snapshot.merging}
           >
@@ -3917,7 +3928,7 @@ export function GitChangesPane({
 
           {/* 改动列表的排法切换：图标画的是**当前**模式，点一下换成另一种 */}
           <IconButton
-            label={view === "list" ? "切换为树形显示" : "切换为列表显示"}
+            label={view === "list" ? i18n.t("切换为树形显示") : i18n.t("切换为列表显示")}
             onClick={() => setViewPersisted(view === "list" ? "tree" : "list")}
           >
             {view === "list" ? (
@@ -3930,7 +3941,7 @@ export function GitChangesPane({
           {/* 路径筛选收成这个漏斗按钮：默认不占地方，点开才在改动列表上方出现输入框 */}
           {showPathFilter && (
             <IconButton
-              label={filterOpen ? "关闭路径筛选" : "按路径筛选"}
+              label={filterOpen ? i18n.t("关闭路径筛选") : i18n.t("按路径筛选")}
               active={filterOpen}
               onClick={() => setFilterOpen((open) => !open)}
               // 按下别让输入框失焦：否则「失焦收起」和这次 toggle 会打架
@@ -3943,7 +3954,7 @@ export function GitChangesPane({
           {/* 不常用的写历史 / 储藏操作收进这个「更多」按钮：默认只占一个图标，
               点开才展开菜单。定位照分支下拉：absolute 锚在这组按钮上 + 透明遮罩接外部点击 */}
           <IconButton
-            label="更多 Git 操作"
+            label={t("更多 Git 操作")}
             active={moreMenu}
             onClick={() => setMoreMenu((open) => !open)}
             disabled={busy !== null}
@@ -3965,12 +3976,11 @@ export function GitChangesPane({
                         setPendingAmend(true);
                       }}
                       disabled={busy !== null}
-                      title="修正上一次提交（把已暂存的改动并进去，提交框里有信息就顺便改掉）"
+                      title={t("修正上一次提交（把已暂存的改动并进去，提交框里有信息就顺便改掉）")}
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconPencil className="h-3.5 w-3.5 shrink-0" />
-                      修正上一次提交
-                      <span className={MENU_CMD}>amend</span>
+                      {t("修正上一次提交")}<span className={MENU_CMD}>amend</span>
                     </button>
                     <button
                       type="button"
@@ -3979,12 +3989,11 @@ export function GitChangesPane({
                         undoCommit();
                       }}
                       disabled={busy !== null}
-                      title="撤销上一次提交（改动回到暂存区，再提交一次就是重提）"
+                      title={t("撤销上一次提交（改动回到暂存区，再提交一次就是重提）")}
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconUndo className="h-3.5 w-3.5 shrink-0" />
-                      撤销上一次提交
-                      <span className={MENU_CMD}>reset</span>
+                      {t("撤销上一次提交")}<span className={MENU_CMD}>reset</span>
                     </button>
                   </>
                 )}
@@ -3992,8 +4001,7 @@ export function GitChangesPane({
                 {/* 有改动但都收不走（只有未跟踪的新文件）：说一句，别让人以为漏了入口 */}
                 {changes.length > 0 && stashable.length === 0 && (
                   <p className="px-3 py-1 text-[11px] text-fg-faint">
-                    只有未跟踪的新文件，储藏收不走
-                  </p>
+                    {t("只有未跟踪的新文件，储藏收不走")}</p>
                 )}
 
                 {/* 储藏：把手上这摊改动收起来去做别的事。有可收的改动时才给——
@@ -4008,12 +4016,11 @@ export function GitChangesPane({
                         stash();
                       }}
                       disabled={busy !== null}
-                      title={`把当前 ${stashable.length} 处改动收进 stash（未跟踪的新文件不在此列）`}
+                      title={i18n.t("把当前 {{count}} 处改动收进 stash（未跟踪的新文件不在此列）", { count: stashable.length })}
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconArrowDownToLine className="h-3.5 w-3.5 shrink-0" />
-                      储藏改动
-                      <span className={MENU_CMD}>stash</span>
+                      {t("储藏改动")}<span className={MENU_CMD}>stash</span>
                     </button>
                     {/* 说明留空就让 git 自己生成 WIP on <branch>: ... */}
                     <div className="px-2 pb-1">
@@ -4026,7 +4033,7 @@ export function GitChangesPane({
                           stash();
                         }}
                         disabled={busy !== null}
-                        placeholder="说明（可留空）"
+                        placeholder={t("说明（可留空）")}
                         className={`${TEXT_INPUT} w-full`}
                       />
                     </div>
@@ -4037,7 +4044,7 @@ export function GitChangesPane({
                 {stashes && stashes.length > 0 && (
                   <>
                     <div className={MENU_DIVIDER} />
-                    <p className="px-3 py-1 text-[10px] text-fg-faint">储藏</p>
+                    <p className="px-3 py-1 text-[10px] text-fg-faint">{t("储藏")}</p>
                     {stashes.map((entry) => (
                       <div
                         key={entry.index}
@@ -4057,7 +4064,7 @@ export function GitChangesPane({
                               stashBack(entry);
                             }}
                             disabled={busy !== null}
-                            title="恢复并删掉这条记录（stash pop）"
+                            title={t("恢复并删掉这条记录（stash pop）")}
                             className={ROW_ACTION}
                           >
                             <IconArrowDownToLine className="h-3 w-3" />
@@ -4069,7 +4076,7 @@ export function GitChangesPane({
                               applyStash(entry);
                             }}
                             disabled={busy !== null}
-                            title="恢复，但保留记录（stash apply，可以再应用到别的分支）"
+                            title={t("恢复，但保留记录（stash apply，可以再应用到别的分支）")}
                             className={ROW_ACTION}
                           >
                             <IconCheck className="h-3 w-3" />
@@ -4081,7 +4088,7 @@ export function GitChangesPane({
                               setPendingStashDrop(entry);
                             }}
                             disabled={busy !== null}
-                            title="丢掉这条储藏（stash drop，不动工作区）"
+                            title={t("丢掉这条储藏（stash drop，不动工作区）")}
                             className={ROW_DANGER}
                           >
                             <IconTrash className="h-3 w-3" />
@@ -4097,7 +4104,7 @@ export function GitChangesPane({
                   stashable.length === 0 &&
                   changes.length === 0 &&
                   !(stashes && stashes.length > 0) && (
-                    <p className="px-3 py-1 text-[11px] text-fg-faint">没有更多操作</p>
+                    <p className="px-3 py-1 text-[11px] text-fg-faint">{t("没有更多操作")}</p>
                   )}
               </div>
             </>
@@ -4135,7 +4142,7 @@ export function GitChangesPane({
               if (error) setError(null);
             }}
             onKeyDown={onMessageKeyDown}
-            placeholder={`消息（${formatShortcut(settings.shortcuts["git.commit"])}）`}
+            placeholder={i18n.t("消息（{{shortcut}}）", { shortcut: formatShortcut(settings.shortcuts["git.commit"]) })}
             style={messageHeight === null ? undefined : { height: messageHeight }}
             className={`${TEXT_INPUT} block resize-none pr-8 leading-4`}
           />
@@ -4143,7 +4150,7 @@ export function GitChangesPane({
             type="button"
             onClick={generate}
             disabled={!canGenerate}
-            title="用 AI 生成提交信息（没暂存时会先全部暂存；改动跨主题时给出分条方案）"
+            title={t("用 AI 生成提交信息（没暂存时会先全部暂存；改动跨主题时给出分条方案）")}
             className={GENERATE_ICON}
           >
             <IconSparkle
@@ -4167,7 +4174,7 @@ export function GitChangesPane({
           onPointerUp={onMessageHandleUp}
           onPointerCancel={onMessageHandleUp}
           onKeyDown={onMessageHandleKeyDown}
-          title="拖动调整提交框的高度"
+          title={t("拖动调整提交框的高度")}
           className={`-my-1.5 h-1.5 shrink-0 cursor-row-resize rounded-full transition-colors focus-visible:bg-accent-strong focus-visible:outline-none ${
             plan ? "hidden" : draggingMessage ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
@@ -4189,9 +4196,9 @@ export function GitChangesPane({
                     className={PRIMARY_BUTTON}
                   >
                     {busy === "mergeContinue"
-                      ? "处理中…"
+                      ? i18n.t("处理中…")
                       : snapshot.conflicts > 0
-                        ? `还有 ${snapshot.conflicts} 个冲突`
+                        ? i18n.t("还有 {{count}} 个冲突", { count: snapshot.conflicts })
                         : `${verb}${name}`}
                   </button>
                   <button
@@ -4200,7 +4207,7 @@ export function GitChangesPane({
                     disabled={busy !== null}
                     className={MERGE_ABORT_BUTTON}
                   >
-                    {busy === "mergeAbort" ? "中止中…" : `中止${name}`}
+                    {busy === "mergeAbort" ? i18n.t("中止中…") : i18n.t("中止{{name}}", { name })}
                   </button>
                 </>
               );
@@ -4209,13 +4216,13 @@ export function GitChangesPane({
             // 分裂按钮：左边提交，右边箭头拉出其它提交方式（照 VS Code）
             <div className="relative flex min-w-0 flex-1 items-stretch">
               <button type="button" onClick={commit} disabled={!canCommit} className={SPLIT_MAIN}>
-                {commitBusy ? "提交中…" : "提交"}
+                {commitBusy ? i18n.t("提交中…") : i18n.t("提交")}
               </button>
               <button
                 type="button"
                 onClick={() => setCommitMenuOpen((open) => !open)}
                 disabled={busy !== null}
-                title="更多提交方式"
+                title={t("更多提交方式")}
                 className={SPLIT_CARET}
               >
                 <IconChevronDown className="h-3.5 w-3.5" />
@@ -4235,8 +4242,7 @@ export function GitChangesPane({
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconCheck className="h-3.5 w-3.5 shrink-0" />
-                      提交
-                      <span className={MENU_CMD}>commit</span>
+                      {t("提交")}<span className={MENU_CMD}>commit</span>
                     </button>
                     <button
                       type="button"
@@ -4248,8 +4254,7 @@ export function GitChangesPane({
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconPencil className="h-3.5 w-3.5 shrink-0" />
-                      提交（修改）
-                      <span className={MENU_CMD}>amend</span>
+                      {t("提交（修改）")}<span className={MENU_CMD}>amend</span>
                     </button>
                     <button
                       type="button"
@@ -4261,8 +4266,7 @@ export function GitChangesPane({
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconArrowUpFromLine className="h-3.5 w-3.5 shrink-0" />
-                      提交并推送
-                      <span className={MENU_CMD}>commit + push</span>
+                      {t("提交并推送")}<span className={MENU_CMD}>commit + push</span>
                     </button>
                     <button
                       type="button"
@@ -4274,8 +4278,7 @@ export function GitChangesPane({
                       className={`${MENU_ITEM} disabled:opacity-60 disabled:hover:bg-transparent`}
                     >
                       <IconSync className="h-3.5 w-3.5 shrink-0" />
-                      提交并同步
-                      <span className={MENU_CMD}>commit + sync</span>
+                      {t("提交并同步")}<span className={MENU_CMD}>commit + sync</span>
                     </button>
                   </div>
                 </>
@@ -4290,12 +4293,11 @@ export function GitChangesPane({
               className={PRIMARY_BUTTON}
             >
               <IconSync className={`h-3.5 w-3.5 ${busy === "push" ? "animate-spin" : ""}`} />
-              {busy === "push" ? "推送中…" : `推送变更 ${snapshot.ahead} 个`}
+              {busy === "push" ? i18n.t("推送中…") : i18n.t("推送变更 {{count}} 个", { count: snapshot.ahead })}
             </button>
           ) : (
-            <button type="button" disabled className={PRIMARY_BUTTON} title="还没有暂存的更改">
-              提交
-            </button>
+            <button type="button" disabled className={PRIMARY_BUTTON} title={t("还没有暂存的更改")}>
+              {t("提交")}</button>
           )}
         </div>
 
@@ -4305,9 +4307,8 @@ export function GitChangesPane({
           <div className="flex max-h-[50%] min-h-0 shrink-0 flex-col overflow-hidden rounded-md border border-line bg-raised">
             <div className="flex shrink-0 items-center justify-between gap-2 border-b border-line px-2 py-1.5">
               <span className="text-[11px] font-medium text-fg">
-                分条提交方案（{plan.length} 条）
-              </span>
-              <span className="text-[10px] text-fg-faint">按主题自动拆分</span>
+                {t("分条提交方案（")}{plan.length} {t("条）")}</span>
+              <span className="text-[10px] text-fg-faint">{t("按主题自动拆分")}</span>
             </div>
             <div className="min-h-0 flex-1 overflow-auto p-1.5">
               <ol className="flex flex-col gap-1.5">
@@ -4338,15 +4339,14 @@ export function GitChangesPane({
                 disabled={busy !== null}
                 className={DIALOG_CANCEL}
               >
-                取消
-              </button>
+                {t("取消")}</button>
               <button
                 type="button"
                 onClick={commitPlan}
                 disabled={busy !== null}
                 className={DIALOG_CONFIRM}
               >
-                {busy === "commit" ? "提交中…" : `提交 ${plan.length} 条`}
+                {busy === "commit" ? i18n.t("提交中…") : i18n.t("提交 {{count}} 条", { count: plan.length })}
               </button>
             </div>
           </div>
@@ -4374,8 +4374,8 @@ export function GitChangesPane({
             <button
               type="button"
               onClick={() => setError(null)}
-              aria-label="关闭错误信息"
-              title="关闭错误信息"
+              aria-label={t("关闭错误信息")}
+              title={t("关闭错误信息")}
               className="shrink-0 rounded px-1 text-danger/80 hover:bg-danger/10 hover:text-danger"
             >
               ×
@@ -4406,14 +4406,14 @@ export function GitChangesPane({
                 setFilter("");
                 setFilterOpen(false);
               }}
-              placeholder="按路径筛选"
+              placeholder={t("按路径筛选")}
               className={`${TEXT_INPUT} pr-7`}
             />
             {filter && (
               <button
                 type="button"
                 onClick={() => setFilter("")}
-                title="清空筛选"
+                title={t("清空筛选")}
                 className="absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
               >
                 <IconClose className="h-3 w-3" />
@@ -4430,14 +4430,14 @@ export function GitChangesPane({
               <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
                 <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  {compare.branch ? `只读对比 ${compare.label}` : `对比 ${compare.label}`}
+                  {compare.branch ? i18n.t("只读对比 {{label}}", { label: compare.label }) : i18n.t("对比 {{label}}", { label: compare.label })}
                 </span>
                 <button type="button" onClick={exitCompare} className={GROUP_ACTION}>
-                  {compare.branch ? "回到当前分支" : "退出对比"}
+                  {compare.branch ? i18n.t("回到当前分支") : i18n.t("退出对比")}
                 </button>
               </div>
               {compareBusy && (
-                <p className="px-1 py-1 text-[11px] text-fg-faint">加载中…</p>
+                <p className="px-1 py-1 text-[11px] text-fg-faint">{t("加载中…")}</p>
               )}
               {compareError && (
                 <p className="px-1 py-1 text-[11px] whitespace-pre-wrap text-danger">
@@ -4447,8 +4447,8 @@ export function GitChangesPane({
               {!compareBusy && !compareError && compareFiles?.length === 0 && (
                 <p className="px-1 py-1 text-[11px] text-fg-faint">
                   {compare.from.trim() === compare.to.trim()
-                    ? "同一个提交，无需比较"
-                    : "两者之间没有差异"}
+                    ? i18n.t("同一个提交，无需比较")
+                    : i18n.t("两者之间没有差异")}
                 </p>
               )}
               {!compareBusy && compareFiles && compareFiles.length > 0 && (
@@ -4485,13 +4485,12 @@ export function GitChangesPane({
           ) : (
             <>
           {staged.length === 0 && unstaged.length === 0 && conflicts.length === 0 && (
-            <p className="px-1 py-1 text-[11px] text-fg-faint">没有未提交的更改</p>
+            <p className="px-1 py-1 text-[11px] text-fg-faint">{t("没有未提交的更改")}</p>
           )}
 
           {filteredOut && (
             <p className="px-1 py-1 text-[11px] text-fg-faint">
-              没有匹配「{filter.trim()}」的更改
-            </p>
+              {i18n.t("没有匹配「{{filter}}」的更改", { filter: filter.trim() })}</p>
           )}
 
           {/* 「合并冲突」组排在最上面：它就是最该先处理的东西。筛空了整个不画 */}
@@ -4499,7 +4498,7 @@ export function GitChangesPane({
             <>
               <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-danger">
-                  合并冲突 ({conflictsShown.length}
+                  {t("合并冲突 (")}{conflictsShown.length}
                   {conflictsShown.length === conflicts.length ? "" : `/${conflicts.length}`})
                 </span>
               </div>
@@ -4520,21 +4519,21 @@ export function GitChangesPane({
             <>
               <div className="flex items-center gap-1 px-1 pt-1 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  暂存的更改 ({stagedShown.length}
+                  {t("暂存的更改 (")}{stagedShown.length}
                   {stagedShown.length === staged.length ? "" : `/${staged.length}`})
                 </span>
                 {/* 有选中项时，整组操作换成针对选中项的那几个（语义从"整组"收窄到"这一批"） */}
                 {stagedSelected.length > 0 ? (
                   <>
                     <span className="shrink-0 text-[11px] text-accent">
-                      已选 {stagedSelected.length}
+                      {t("已选")}{stagedSelected.length}
                     </span>
                     {stagedSelected.some((change) => canDiscard(change, true)) && (
                       <button
                         type="button"
                         onClick={() => discardSelectedRows(true)}
                         disabled={busy !== null}
-                        title={`放弃选中的 ${stagedSelected.length} 个文件`}
+                        title={i18n.t("放弃选中的 {{count}} 个文件", { count: stagedSelected.length })}
                         className={GROUP_ICON_DANGER}
                       >
                         <IconUndo className="h-3 w-3" />
@@ -4544,7 +4543,7 @@ export function GitChangesPane({
                       type="button"
                       onClick={unstageSelectedRows}
                       disabled={busy !== null}
-                      title={`取消暂存选中的 ${stagedSelected.length} 个文件`}
+                      title={i18n.t("取消暂存选中的 {{count}} 个文件", { count: stagedSelected.length })}
                       className={GROUP_ICON}
                     >
                       <IconMinus className="h-3 w-3" />
@@ -4557,7 +4556,7 @@ export function GitChangesPane({
                         type="button"
                         onClick={discardAllStaged}
                         disabled={busy !== null}
-                        title="放弃这个分组里所有文件的更改"
+                        title={t("放弃这个分组里所有文件的更改")}
                         className={GROUP_ICON_DANGER}
                       >
                         <IconUndo className="h-3 w-3" />
@@ -4567,7 +4566,7 @@ export function GitChangesPane({
                       type="button"
                       onClick={() => void run("unstage", () => gitUnstage(root))}
                       disabled={busy !== null}
-                      title="全部取消暂存"
+                      title={t("全部取消暂存")}
                       className={GROUP_ICON}
                     >
                       <IconMinus className="h-3 w-3" />
@@ -4602,21 +4601,21 @@ export function GitChangesPane({
             <>
               <div className="flex items-center gap-1 px-1 pt-1.5 pb-0.5">
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-                  更改 ({unstagedShown.length}
+                  {t("更改 (")}{unstagedShown.length}
                   {unstagedShown.length === unstaged.length ? "" : `/${unstaged.length}`})
                 </span>
                 {/* 同暂存组：有选中项就换成针对选中项的操作 */}
                 {unstagedSelected.length > 0 ? (
                   <>
                     <span className="shrink-0 text-[11px] text-accent">
-                      已选 {unstagedSelected.length}
+                      {t("已选")}{unstagedSelected.length}
                     </span>
                     {unstagedSelected.some((change) => canDiscard(change, false)) && (
                       <button
                         type="button"
                         onClick={() => discardSelectedRows(false)}
                         disabled={busy !== null}
-                        title={`放弃选中的 ${unstagedSelected.length} 个文件`}
+                        title={i18n.t("放弃选中的 {{count}} 个文件", { count: unstagedSelected.length })}
                         className={GROUP_ICON_DANGER}
                       >
                         <IconUndo className="h-3 w-3" />
@@ -4626,7 +4625,7 @@ export function GitChangesPane({
                       type="button"
                       onClick={stageSelectedRows}
                       disabled={busy !== null}
-                      title={`暂存选中的 ${unstagedSelected.length} 个文件`}
+                      title={i18n.t("暂存选中的 {{count}} 个文件", { count: unstagedSelected.length })}
                       className={GROUP_ICON}
                     >
                       <IconPlus className="h-3 w-3" />
@@ -4639,7 +4638,7 @@ export function GitChangesPane({
                         type="button"
                         onClick={discardAllUnstaged}
                         disabled={busy !== null}
-                        title="放弃这个分组里所有文件的更改"
+                        title={t("放弃这个分组里所有文件的更改")}
                         className={GROUP_ICON_DANGER}
                       >
                         <IconUndo className="h-3 w-3" />
@@ -4649,7 +4648,7 @@ export function GitChangesPane({
                       type="button"
                       onClick={() => void run("stage", () => gitStage(root))}
                       disabled={busy !== null}
-                      title="全部暂存"
+                      title={t("全部暂存")}
                       className={GROUP_ICON}
                     >
                       <IconPlus className="h-3 w-3" />
@@ -4689,17 +4688,15 @@ export function GitChangesPane({
       {compareSel.length === 2 && comparePair && (
         <div className="flex shrink-0 items-center gap-1.5 border-t border-line px-2 py-1">
           <IconArrowsLeftRight className="h-3 w-3 shrink-0 text-accent" />
-          <span className="min-w-0 flex-1 truncate text-[11px] text-fg">已选 2 个提交</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-fg">{t("已选 2 个提交")}</span>
           <button
             type="button"
             onClick={() => startCompare(comparePair.from, comparePair.to, comparePair.label)}
             className={GROUP_ACTION}
           >
-            比较
-          </button>
+            {t("比较")}</button>
           <button type="button" onClick={() => setCompareSel([])} className={GROUP_ACTION}>
-            清除
-          </button>
+            {t("清除")}</button>
         </div>
       )}
 
@@ -4715,7 +4712,7 @@ export function GitChangesPane({
           aria-valuemax={MAX_LOG_HEIGHT}
           onPointerDown={onHandleDown}
           onKeyDown={onHandleKeyDown}
-          title="拖动调整提交历史的高度"
+          title={t("拖动调整提交历史的高度")}
           className={`relative h-px shrink-0 cursor-row-resize bg-line-strong transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-strong ${
             draggingLog ? "bg-accent-strong" : "hover:bg-line-hover"
           }`}
@@ -4736,7 +4733,7 @@ export function GitChangesPane({
           <button
             type="button"
             onClick={() => setLogCollapsedPersisted(!logCollapsed)}
-            title={logCollapsed ? "展开提交历史" : "收起提交历史"}
+            title={logCollapsed ? i18n.t("展开提交历史") : i18n.t("收起提交历史")}
             className="flex min-w-0 flex-1 items-center gap-1 text-left hover:text-fg"
           >
             {logCollapsed ? (
@@ -4744,19 +4741,19 @@ export function GitChangesPane({
             ) : (
               <IconChevronDown className="h-3 w-3 shrink-0" />
             )}
-            <span>提交历史</span>
+            <span>{t("提交历史")}</span>
             {commits && commits.length > 0 && (
               <span className="text-fg-faint">{commits.length}</span>
             )}
           </button>
           {!logCollapsed && snapshot.head && (
-            <IconButton label="回到当前提交（HEAD）" onClick={jumpToHead}>
+            <IconButton label={t("回到当前提交（HEAD）")} onClick={jumpToHead}>
               <IconTarget className={ICON_SM} />
             </IconButton>
           )}
           {!logCollapsed && showLogFilter && (
             <IconButton
-              label={logFilterOpen ? "关闭过滤" : "过滤提交"}
+              label={logFilterOpen ? i18n.t("关闭过滤") : i18n.t("过滤提交")}
               active={logFilterOpen}
               onClick={() => setLogFilterOpen((open) => !open)}
               // 按下别让输入框失焦：否则「失焦收起」和这次 toggle 会打架，
@@ -4794,14 +4791,14 @@ export function GitChangesPane({
                   setLogFilter("");
                   setLogFilterOpen(false);
                 }}
-                placeholder={logFilterPath ? "按改动过的路径过滤" : "按主题 / 作者过滤"}
+                placeholder={logFilterPath ? i18n.t("按改动过的路径过滤") : i18n.t("按主题 / 作者过滤")}
                 className={`${TEXT_INPUT} pr-7`}
               />
               {logFilter && (
                 <button
                   type="button"
                   onClick={() => setLogFilter("")}
-                  title="清空过滤"
+                  title={t("清空过滤")}
                   className="absolute top-1/2 right-1 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-fg-dim hover:bg-active hover:text-fg"
                 >
                   <IconClose className="h-3 w-3" />
@@ -4813,15 +4810,14 @@ export function GitChangesPane({
               onClick={() => setLogFilterPath((value) => !value)}
               title={
                 logFilterPath
-                  ? "当前按路径过滤，点击改为按主题 / 作者"
-                  : "当前按主题 / 作者过滤，点击改为按路径"
+                  ? i18n.t("当前按路径过滤，点击改为按主题 / 作者")
+                  : i18n.t("当前按主题 / 作者过滤，点击改为按路径")
               }
               className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] ${
                 logFilterPath ? "bg-accent-strong text-app" : "text-fg-faint hover:bg-hover hover:text-fg"
               }`}
             >
-              路径
-            </button>
+              {t("路径")}</button>
           </div>
         )}
 
@@ -4833,11 +4829,11 @@ export function GitChangesPane({
           >
             {logError && <p className="px-1 py-1 text-[11px] text-danger">{logError}</p>}
             {commits === null && !logError && (
-              <p className="px-1 py-1 text-[11px] text-fg-faint">加载中…</p>
+              <p className="px-1 py-1 text-[11px] text-fg-faint">{t("加载中…")}</p>
             )}
             {commits?.length === 0 && !logError && (
               <p className="px-1 py-1 text-[11px] text-fg-faint">
-                {filteringLog ? `没有匹配「${logNeedle}」的提交` : "还没有提交"}
+                {filteringLog ? i18n.t("没有匹配「{{filter}}」的提交", { filter: logNeedle }) : i18n.t("还没有提交")}
               </p>
             )}
 
@@ -4874,8 +4870,7 @@ export function GitChangesPane({
                 onClick={() => setLogLimit((limit) => limit + LOG_PAGE)}
                 className={`${GROUP_ACTION} mt-1 ml-1`}
               >
-                加载更多
-              </button>
+                {t("加载更多")}</button>
             )}
           </div>
         )}
@@ -4884,10 +4879,11 @@ export function GitChangesPane({
       {/* 弹框用 fixed 定位，挂在这儿不会挤到面板布局（祖先里没有 transform） */}
       {pendingDiscard && (
         <ConfirmDialog
-          message={`放弃 ${pendingDiscard.what} 的更改？将还原到${
-            pendingDiscard.source.mode === "staged" ? "上次提交（HEAD）" : "暂存区"
-          }的版本，无法撤销。`}
-          confirmLabel="放弃"
+          message={i18n.t("放弃 {{what}} 的更改？将还原到{{target}}的版本，无法撤销。", {
+            what: pendingDiscard.what,
+            target: pendingDiscard.source.mode === "staged" ? i18n.t("上次提交（HEAD）") : i18n.t("暂存区"),
+          })}
+          confirmLabel={t("放弃")}
           onConfirm={confirmDiscard}
           onCancel={() => setPendingDiscard(null)}
         />
@@ -4895,8 +4891,8 @@ export function GitChangesPane({
 
       {pendingHunkDiscard && (
         <ConfirmDialog
-          message={`放弃 ${pendingHunkDiscard.what}？将还原到暂存区里的版本，无法撤销。`}
-          confirmLabel="放弃"
+          message={i18n.t("放弃 {{what}}？将还原到暂存区里的版本，无法撤销。", { what: pendingHunkDiscard.what })}
+          confirmLabel={t("放弃")}
           onConfirm={confirmHunkDiscard}
           onCancel={() => setPendingHunkDiscard(null)}
         />
@@ -4904,8 +4900,8 @@ export function GitChangesPane({
 
       {pendingMergeAbort && (
         <ConfirmDialog
-          message="中止合并？将丢弃这次合并尝试，工作区与暂存区回到合并前的状态，无法撤销。"
-          confirmLabel="中止合并"
+          message={t("中止合并？将丢弃这次合并尝试，工作区与暂存区回到合并前的状态，无法撤销。")}
+          confirmLabel={t("中止合并")}
           onConfirm={confirmMergeAbort}
           onCancel={() => setPendingMergeAbort(false)}
         />
@@ -4913,10 +4909,12 @@ export function GitChangesPane({
 
       {pendingAmend && (
         <ConfirmDialog
-          message={`修正上一次提交？${
-            message.trim() ? "提交信息会换成输入框里的内容，" : "提交信息保持不变，"
-          }已暂存的改动会并进那条提交。提交号会变——如果它已经推送到远程，本地就和远程分叉了。`}
-          confirmLabel="修正提交"
+          message={i18n.t("修正上一次提交？{{messageAction}}已暂存的改动会并进那条提交。提交号会变——如果它已经推送到远程，本地就和远程分叉了。", {
+            messageAction: message.trim()
+              ? i18n.t("提交信息会换成输入框里的内容，")
+              : i18n.t("提交信息保持不变，"),
+          })}
+          confirmLabel={t("修正提交")}
           onConfirm={confirmAmend}
           onCancel={() => setPendingAmend(false)}
         />
@@ -4924,8 +4922,8 @@ export function GitChangesPane({
 
       {pendingStashDrop && (
         <ConfirmDialog
-          message={`丢掉这条储藏记录？「${pendingStashDrop.message}」里的改动将无法恢复（工作区不受影响）。`}
-          confirmLabel="丢掉"
+          message={i18n.t("丢掉这条储藏记录？「{{message}}」里的改动将无法恢复（工作区不受影响）。", { message: pendingStashDrop.message })}
+          confirmLabel={t("丢掉")}
           onConfirm={confirmStashDrop}
           onCancel={() => setPendingStashDrop(null)}
         />
@@ -4933,8 +4931,8 @@ export function GitChangesPane({
 
       {pendingTagDelete && (
         <ConfirmDialog
-          message={`删除标签「${pendingTagDelete.name}」？只删掉这个标签，提交本身不受影响。`}
-          confirmLabel="删除标签"
+          message={i18n.t("删除标签「{{name}}」？只删掉这个标签，提交本身不受影响。", { name: pendingTagDelete.name })}
+          confirmLabel={t("删除标签")}
           onConfirm={confirmTagDelete}
           onCancel={() => setPendingTagDelete(null)}
         />
@@ -4977,8 +4975,7 @@ export function GitChangesPane({
                   disabled={busy !== null}
                 >
                   <IconArrowLeftToLine className="h-3.5 w-3.5 shrink-0" />
-                  接受当前更改
-                  <span className={MENU_CMD}>checkout --ours</span>
+                  {t("接受当前更改")}<span className={MENU_CMD}>checkout --ours</span>
                 </button>
                 <button
                   type="button"
@@ -4987,8 +4984,7 @@ export function GitChangesPane({
                   disabled={busy !== null}
                 >
                   <IconArrowRightToLine className="h-3.5 w-3.5 shrink-0" />
-                  接受传入更改
-                  <span className={MENU_CMD}>checkout --theirs</span>
+                  {t("接受传入更改")}<span className={MENU_CMD}>checkout --theirs</span>
                 </button>
                 <button
                   type="button"
@@ -4997,8 +4993,7 @@ export function GitChangesPane({
                   disabled={busy !== null}
                 >
                   <IconMerge className="h-3.5 w-3.5 shrink-0" />
-                  保留两者
-                  <span className={MENU_CMD}>both</span>
+                  {t("保留两者")}<span className={MENU_CMD}>both</span>
                 </button>
                 <button
                   type="button"
@@ -5007,8 +5002,7 @@ export function GitChangesPane({
                   disabled={busy !== null}
                 >
                   <IconCheck className="h-3.5 w-3.5 shrink-0" />
-                  标记为已解决
-                  <span className={MENU_CMD}>add</span>
+                  {t("标记为已解决")}<span className={MENU_CMD}>add</span>
                 </button>
                 <div className={MENU_DIVIDER} />
               </>
@@ -5022,8 +5016,7 @@ export function GitChangesPane({
                   className={MENU_ITEM}
                 >
                   <IconSparkle className="h-3.5 w-3.5" />
-                  AI 变更解读
-                </button>
+                  {t("AI 变更解读")}</button>
                 <div className={MENU_DIVIDER} />
               </>
             )}
@@ -5034,16 +5027,14 @@ export function GitChangesPane({
               className={MENU_ITEM}
             >
               <IconFile className="h-3.5 w-3.5" />
-              复制路径
-            </button>
+              {t("复制路径")}</button>
             <button
               type="button"
               onClick={() => void copyPath(menu.change.relative)}
               className={MENU_ITEM}
             >
               <IconTree className="h-3.5 w-3.5" />
-              复制相对路径
-            </button>
+              {t("复制相对路径")}</button>
             {/* 三、git：已经跟踪的文件加 .gitignore 不生效（规则只管未跟踪的），不给这一项。
                 整组连分隔线一起藏在条件里，否则它不出现时会多出一条孤线 */}
             {markOfColumn(menu.staged ? menu.change.index : menu.change.worktree).kind ===
@@ -5056,8 +5047,7 @@ export function GitChangesPane({
                   className={MENU_ITEM}
                 >
                   <IconEyeOff className="h-3.5 w-3.5" />
-                  加入 .gitignore
-                </button>
+                  {t("加入 .gitignore")}</button>
               </>
             )}
           </div>
@@ -5095,8 +5085,7 @@ export function GitChangesPane({
               className={MENU_ITEM}
             >
               <IconTarget className="h-3.5 w-3.5 shrink-0" />
-              在此提交打标签…
-              <span className={MENU_CMD}>tag</span>
+              {t("在此提交打标签…")}<span className={MENU_CMD}>tag</span>
             </button>
             {/* 比较组：与 HEAD 直接进比较视图；与分支比较先弹一个分支列表 */}
             <div className={MENU_DIVIDER} />
@@ -5110,8 +5099,7 @@ export function GitChangesPane({
               className={MENU_ITEM}
             >
               <IconArrowsLeftRight className="h-3.5 w-3.5 shrink-0" />
-              与 HEAD 比较
-              <span className={MENU_CMD}>diff</span>
+              {t("与 HEAD 比较")}<span className={MENU_CMD}>diff</span>
             </button>
             <button
               type="button"
@@ -5124,8 +5112,7 @@ export function GitChangesPane({
               className={MENU_ITEM}
             >
               <IconBranch className="h-3.5 w-3.5 shrink-0" />
-              与分支比较…
-            </button>
+              {t("与分支比较…")}</button>
             {/* 这个提交上已经带的标签，逐条给一个删除入口。整组连分隔线一起藏在条件里，
                 否则没有标签时会多出一条孤线 */}
             {commitMenuTags.length > 0 && (
@@ -5142,7 +5129,7 @@ export function GitChangesPane({
                     className={MENU_ITEM}
                   >
                     <IconTrash className="h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0 truncate">删除标签 {reference.name}</span>
+                    <span className="min-w-0 truncate">{t("删除标签")}{reference.name}</span>
                     <span className={MENU_CMD}>tag -d</span>
                   </button>
                 ))}
@@ -5172,14 +5159,14 @@ export function GitChangesPane({
               top: Math.max(4, Math.min(compareBranchMenu.y, window.innerHeight - 300)),
             }}
           >
-            <p className="px-3 py-1 text-[10px] text-fg-faint">与分支比较</p>
+            <p className="px-3 py-1 text-[10px] text-fg-faint">{t("与分支比较")}</p>
             {branchError && (
               <p className="px-3 py-1 text-[11px] whitespace-pre-wrap text-danger">
                 {branchError}
               </p>
             )}
             {branches.length === 0 && !branchError && (
-              <p className="px-3 py-1 text-[11px] text-fg-faint">没有本地分支</p>
+              <p className="px-3 py-1 text-[11px] text-fg-faint">{t("没有本地分支")}</p>
             )}
             {branches.map((item) => (
               <button

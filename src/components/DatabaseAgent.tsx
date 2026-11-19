@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSettings } from "../lib/settings";
 import { useEffectiveAiConfig } from "../lib/ai";
@@ -59,6 +60,7 @@ export function DatabaseAgent({
   /** 这个子视图是不是正被展示（第一次为真时才去拉服务） */
   active: boolean;
 }) {
+  const { t } = useTranslation();
   const { settings } = useSettings();
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
@@ -353,8 +355,7 @@ export function DatabaseAgent({
             onClick={() => void boot()}
             className="mt-3 rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
           >
-            重试
-          </button>
+            {t("重试")}</button>
         </div>
       </div>
     );
@@ -364,8 +365,7 @@ export function DatabaseAgent({
     return (
       <div className="flex flex-1 items-center justify-center px-6">
         <p className="max-w-[340px] text-center text-[12px] leading-relaxed text-fg-faint">
-          从左侧选一个连接，再用对话让智能体生成并执行只读 SQL。
-        </p>
+          {t("从左侧选一个连接，再用对话让智能体生成并执行只读 SQL。")}</p>
       </div>
     );
   }
@@ -373,8 +373,7 @@ export function DatabaseAgent({
   if (phase !== "ready") {
     return (
       <div className="flex flex-1 items-center justify-center text-[12px] text-fg-faint">
-        正在启动智能体…
-      </div>
+        {t("正在启动智能体…")}</div>
     );
   }
 
@@ -393,7 +392,7 @@ export function DatabaseAgent({
           onRename={(id, title) => void renameSession(id, title)}
           onDelete={setPendingDelete}
         />
-        <IconButton label="新建对话" onClick={newSession}>
+        <IconButton label={t("新建对话")} onClick={newSession}>
           <IconPlus className={ICON_SM} />
         </IconButton>
       </div>
@@ -411,11 +410,9 @@ export function DatabaseAgent({
                 <IconBot className="h-5 w-5" />
               </span>
               <div className="text-[13px] font-medium text-fg-muted">
-                用一句话描述你想查什么
-              </div>
+                {t("用一句话描述你想查什么")}</div>
               <div className="text-[12px] leading-relaxed text-fg-faint">
-                智能体会先看表结构，再生成只读 SQL 并执行。写操作一律被拒绝。
-              </div>
+                {t("智能体会先看表结构，再生成只读 SQL 并执行。写操作一律被拒绝。")}</div>
             </div>
           ) : (
             messages.map((message) => (
@@ -444,15 +441,14 @@ export function DatabaseAgent({
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
             rows={1}
-            placeholder={`在「${connection.name}」上查点什么…`}
+            placeholder={t("在「{{connection}}」上查点什么…", { connection: connection.name })}
             className="min-h-6 max-h-36 w-full resize-none bg-transparent text-[13px] leading-relaxed text-fg outline-none placeholder:text-fg-faint"
           />
           <div className="mt-1 flex items-center gap-2">
             <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-              Enter 发送 · Shift+Enter 换行 · 仅查询
-            </span>
+              {t("Enter 发送 · Shift+Enter 换行 · 仅查询")}</span>
             {conversation.streaming ? (
-              <button type="button" onClick={stop} title="停止" className={STOP_BUTTON}>
+              <button type="button" onClick={stop} title={t("停止")} className={STOP_BUTTON}>
                 <IconStop className="h-3.5 w-3.5" />
               </button>
             ) : (
@@ -460,7 +456,7 @@ export function DatabaseAgent({
                 type="button"
                 onClick={() => void send()}
                 disabled={!draft.trim()}
-                title="发送"
+                title={t("发送")}
                 className={SEND_BUTTON}
               >
                 <IconSend className="h-3.5 w-3.5" />
@@ -473,8 +469,8 @@ export function DatabaseAgent({
       {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
         <ConfirmDialog
-          message={`删除会话「${pendingDelete.title}」？这条对话的消息会一起删掉，不可撤销。`}
-          confirmLabel="删除"
+          message={t("删除会话「{{title}}」？这条对话的消息会一起删掉，不可撤销。", { title: pendingDelete.title })}
+          confirmLabel={t("删除")}
           onConfirm={() => {
             void deleteSession(pendingDelete.id);
             setPendingDelete(null);

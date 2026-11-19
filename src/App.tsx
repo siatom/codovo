@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -101,6 +102,7 @@ function parentDir(path: string): string {
  * 侧栏那份 `workspaces` 是「用过的工作区」，`opened` 是其中已经打开的那些。
  */
 function Shell() {
+  const { t } = useTranslation();
   /** 全部工作区，最近创建/打开的排在最前 */
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   /** 已经打开的工作区 id（各自有工作区实例），按打开顺序 */
@@ -282,7 +284,7 @@ function Shell() {
     } catch (reason) {
       // 用 Toast 而不是 notice：notice 只在「一个工作区都没开」的空态里显示，
       // 而点开失效工作区多半发生在已经有工作区开着的时候，那种情况 notice 是看不见的
-      setToast(`这个目录打不开了：${reason}`);
+      setToast(t("这个目录打不开了：{{reason}}", { reason }));
       return null;
     }
   }, []);
@@ -407,7 +409,7 @@ function Shell() {
       try {
         const [present] = await pathsPresent([path]);
         if (!present) {
-          setToast(`文件不存在：${toDisplayPath(path)}`);
+          setToast(t("文件不存在：{{path}}", { path: toDisplayPath(path) }));
           return;
         }
       } catch {
@@ -428,7 +430,7 @@ function Shell() {
 
       const dir = parentDir(path);
       if (!dir) {
-        setToast(`打不开这个路径：${toDisplayPath(path)}`);
+        setToast(t("打不开这个路径：{{path}}", { path: toDisplayPath(path) }));
         return;
       }
       const reusable = workspacesRef.current.find((ws) =>
@@ -462,7 +464,7 @@ function Shell() {
       const target = await pickOpenPath();
       if (target !== null) await openFileAnywhere(target);
     } catch (reason) {
-      setToast(`选择文件失败：${reason}`);
+      setToast(t("选择文件失败：{{reason}}", { reason }));
     }
   }, [openFileAnywhere]);
   chooseFileRef.current = chooseFile;
@@ -476,7 +478,7 @@ function Shell() {
       const picked = await pickFolder();
       if (picked.length > 0) await openFolders(picked);
     } catch (reason) {
-      setToast(`选择文件夹失败：${reason}`);
+      setToast(t("选择文件夹失败：{{reason}}", { reason }));
     }
   }, [openFolders]);
 
@@ -513,7 +515,7 @@ function Shell() {
           next.roots = resolved;
           next.activeRoot = resolved[index >= 0 ? index : 0] ?? next.activeRoot;
         } catch (reason) {
-          setNotice(`工作区改不动了：${reason}`);
+          setNotice(t("工作区改不动了：{{reason}}", { reason }));
         }
       }
       setWorkspaces(saveWorkspace(next));
@@ -727,7 +729,7 @@ function Shell() {
         const ctx = appAgentCtxRef.current;
         if (!ctx) {
           // 界面还没装配好（理论上不会发生）：也要回一句，别让工具干等到超时
-          await respondAppAgent(request.id, false, "界面还没准备好，请稍后再试");
+          await respondAppAgent(request.id, false, t("界面还没准备好，请稍后再试"));
           return;
         }
         try {
@@ -755,7 +757,7 @@ function Shell() {
   const openAppAgent = useCallback(() => {
     const workspace = workspacesRef.current.find((item) => item.id === activeIdRef.current);
     if (!workspace) {
-      setToast("先打开一个工作区，应用助手要在工作区里跑");
+      setToast(t("先打开一个工作区，应用助手要在工作区里跑"));
       return;
     }
     setAssistantOpen(true);
@@ -793,7 +795,7 @@ function Shell() {
         if (cancelled) return;
         // 目录被删了/换盘了，清掉记录回到空态，别让用户每次启动都撞同一个错
         clearLastWorkspaceId();
-        setNotice(`上次的工作区打不开了：${reason}`);
+        setNotice(t("上次的工作区打不开了：{{reason}}", { reason }));
       })
       .finally(() => {
         if (!cancelled) setBooting(false);
@@ -904,7 +906,7 @@ function Shell() {
             if (folders.length > 0) await openFolders(folders);
             for (const file of files) await openFileAnywhere(file);
           } catch (reason) {
-            setToast(`打开拖入的内容失败：${reason}`);
+            setToast(t("打开拖入的内容失败：{{reason}}", { reason }));
           }
         });
       })
@@ -952,7 +954,7 @@ function Shell() {
       <div className="flex h-full w-full flex-col overflow-hidden bg-window">
         <TitleBar workspace={null} />
         <div className="flex flex-1 items-center justify-center text-[12px] text-fg-faint">
-          正在恢复上次的工作区…
+          {t("正在恢复上次的工作区…")}
         </div>
       </div>
     );
@@ -1073,8 +1075,8 @@ function Shell() {
       {/* 移除工作区不可撤销（工作区配置会一起没），走自研确认框 */}
       {pendingRemove && (
         <ConfirmDialog
-          message={`从列表里移除工作区「${pendingRemove.name}」？只去掉 Codovo 里的记录，不会动磁盘上的文件夹。`}
-          confirmLabel="移除"
+          message={t("从列表里移除工作区「{{name}}」？只去掉 Codovo 里的记录，不会动磁盘上的文件夹。", { name: pendingRemove.name })}
+          confirmLabel={t("移除")}
           onConfirm={() => {
             removeWorkspace(pendingRemove);
             setPendingRemove(null);
@@ -1096,10 +1098,10 @@ function Shell() {
 
       {closePrompt && (
         <ConfirmDialog
-          message={`还有 ${opened.length} 个工作区开着，终端与智能体仍在后台运行。`}
-          confirmLabel="退出程序"
-          cancelLabel="最小化到托盘"
-          checkboxLabel="下次不再询问，直接最小化到托盘"
+          message={t("还有 {{count}} 个工作区开着，终端与智能体仍在后台运行。", { count: opened.length })}
+          confirmLabel={t("退出程序")}
+          cancelLabel={t("最小化到托盘")}
+          checkboxLabel={t("下次不再询问，直接最小化到托盘")}
           onConfirm={(remember) => {
             if (remember) update({ closeToTray: true });
             setClosePrompt(false);
@@ -1119,9 +1121,9 @@ function Shell() {
       {dropActive && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-app/70 backdrop-blur-sm">
           <div className="rounded-xl border border-dashed border-accent-strong bg-raised px-10 py-7 text-center shadow-xl">
-            <p className="text-[14px] font-medium text-fg">松开以打开</p>
+            <p className="text-[14px] font-medium text-fg">{t("松开以打开")}</p>
             <p className="mt-1.5 text-[12px] text-fg-faint">
-              文件夹会作为工作区打开，文件会直接进入编辑器
+              {t("文件夹会作为工作区打开，文件会直接进入编辑器")}
             </p>
           </div>
         </div>

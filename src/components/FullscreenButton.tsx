@@ -1,3 +1,4 @@
+import i18n from "../lib/i18n";
 import { IconFullscreen, IconFullscreenExit } from "./icons";
 import { ICON_SM, IconButton } from "./ui";
 
@@ -14,7 +15,7 @@ interface FullscreenButtonProps {
 export function FullscreenButton({ fullscreen, onToggle }: FullscreenButtonProps) {
   return (
     <IconButton
-      label={fullscreen ? "退出全屏（Esc）" : "全屏展示"}
+      label={fullscreen ? i18n.t("退出全屏（Esc）") : i18n.t("全屏展示")}
       onClick={onToggle}
     >
       {fullscreen ? <IconFullscreenExit className={ICON_SM} /> : <IconFullscreen className={ICON_SM} />}

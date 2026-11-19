@@ -1,3 +1,5 @@
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import {
   useRef,
   useState,
@@ -136,6 +138,7 @@ export function FilePanel({
   onDropEntry,
   dropDir,
 }: FilePanelProps) {
+  const { t } = useTranslation();
   const [creating, setCreating] = useState(false);
   const [createDraft, setCreateDraft] = useState("");
   const [renaming, setRenaming] = useState<PanelEntry | null>(null);
@@ -256,24 +259,24 @@ export function FilePanel({
           <span className="shrink-0">{icon}</span>
           <span className="truncate text-[11px] font-medium tracking-wide">{label}</span>
         </span>
-        <IconButton label="重新列目录" onClick={onRefresh}>
+        <IconButton label={t("重新列目录")} onClick={onRefresh}>
           <IconRefresh className={ICON_SM} />
         </IconButton>
         <IconButton
-          label={side === "left" ? "把选中的文件传到右侧远程目录" : "把选中的文件下载到左侧本地目录"}
+          label={side === "left" ? i18n.t("把选中的文件传到右侧远程目录") : i18n.t("把选中的文件下载到左侧本地目录")}
           onClick={() => selected && canTransfer && onTransfer(selected)}
           disabled={!canTransfer}
         >
           <TransferIcon className={ICON_SM} />
         </IconButton>
-        <IconButton label="更多" onClick={openMenu}>
+        <IconButton label={t("更多")} onClick={openMenu}>
           <IconMore className={ICON_SM} />
         </IconButton>
       </div>
 
       {/* 下行：上一级 + 面包屑 */}
       <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-2">
-        <IconButton label="上一级" disabled={!canUp} onClick={onUp}>
+        <IconButton label={t("上一级")} disabled={!canUp} onClick={onUp}>
           <IconArrowUp className={ICON_SM} />
         </IconButton>
         <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto whitespace-nowrap">
@@ -285,7 +288,7 @@ export function FilePanel({
                 onClick={() => onNavigate(crumb.path)}
                 className="rounded px-1 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
               >
-                {crumb.name}
+                {crumb.name === "此电脑" ? t(crumb.name) : crumb.name}
               </button>
             </span>
           ))}
@@ -300,8 +303,7 @@ export function FilePanel({
             onClick={onDismissError}
             className="shrink-0 rounded px-1 hover:bg-hover"
           >
-            关闭
-          </button>
+            {t("关闭")}</button>
         </div>
       )}
       {actionError && (
@@ -312,8 +314,7 @@ export function FilePanel({
             onClick={() => setActionError("")}
             className="shrink-0 rounded px-1 hover:bg-hover"
           >
-            关闭
-          </button>
+            {t("关闭")}</button>
         </div>
       )}
 
@@ -337,7 +338,7 @@ export function FilePanel({
               onChange={(event) => setCreateDraft(event.target.value)}
               onKeyDown={(event) => inputKey(event, () => void commitCreate())}
               onBlur={() => void commitCreate()}
-              placeholder="新目录名"
+              placeholder={t("新目录名")}
               spellCheck={false}
               className={ROW_INPUT}
             />
@@ -345,10 +346,10 @@ export function FilePanel({
         )}
 
         {!path && !error && (
-          <p className="px-3 py-4 text-[12px] text-fg-faint">正在定位目录…</p>
+          <p className="px-3 py-4 text-[12px] text-fg-faint">{t("正在定位目录…")}</p>
         )}
         {path && entries.length === 0 && !loading && !creating && (
-          <p className="px-3 py-4 text-[12px] text-fg-faint">空目录</p>
+          <p className="px-3 py-4 text-[12px] text-fg-faint">{t("空目录")}</p>
         )}
 
         {entries.map((entry) => {
@@ -442,8 +443,7 @@ export function FilePanel({
               }}
             >
               <IconRefresh className="mr-2 h-3.5 w-3.5 shrink-0" />
-              刷新
-            </button>
+              {t("刷新")}</button>
             <button
               type="button"
               className={MENU_ITEM}
@@ -455,8 +455,7 @@ export function FilePanel({
               }}
             >
               <IconFolderPlus className="mr-2 h-3.5 w-3.5 shrink-0" />
-              新建目录
-            </button>
+              {t("新建目录")}</button>
             <button
               type="button"
               disabled={!selected}
@@ -470,8 +469,7 @@ export function FilePanel({
               }}
             >
               <IconPencil className="mr-2 h-3.5 w-3.5 shrink-0" />
-              重命名
-            </button>
+              {t("重命名")}</button>
             <button
               type="button"
               disabled={!selected}
@@ -483,8 +481,7 @@ export function FilePanel({
               }}
             >
               <IconTrash className="mr-2 h-3.5 w-3.5 shrink-0" />
-              删除
-            </button>
+              {t("删除")}</button>
           </div>
         </>
       )}

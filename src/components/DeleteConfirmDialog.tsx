@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useId, useState } from "react";
+import i18n from "../lib/i18n";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 /** 只用到名字与「是不是目录」，文件树的 FileEntry 和文件面板的 PanelEntry 都满足 */
@@ -68,6 +70,7 @@ export function DeleteConfirmDialog({
   onConfirm,
   onCancel,
 }: DeleteConfirmDialogProps) {
+  const { t } = useTranslation();
   const permanentOnly = !canTrash;
   const [permanent, setPermanent] = useState(permanentOnly || initialPermanent);
   const group = useId();
@@ -75,14 +78,17 @@ export function DeleteConfirmDialog({
   const head =
     items.length === 1
       ? items[0].isDir
-        ? `删除文件夹「${items[0].name}」及其中全部内容？`
-        : `删除文件「${items[0].name}」？`
-      : `删除选中的 ${items.length} 项？`;
+        ? t("删除文件夹「{{name}}」及其中全部内容？", { name: items[0].name })
+        : t("删除文件「{{name}}」？", { name: items[0].name })
+      : t("删除选中的 {{count}} 项？", { count: items.length });
 
   return (
     <ConfirmDialog
-      message={`${head}${permanent ? "此操作不可撤销。" : "会移到系统回收站，可从回收站恢复。"}`}
-      confirmLabel={permanent ? "永久删除" : "移到回收站"}
+      message={t("{{heading}} {{warning}}", {
+        heading: head,
+        warning: permanent ? t("此操作不可撤销。") : t("会移到系统回收站，可从回收站恢复。"),
+      })}
+      confirmLabel={permanent ? i18n.t("永久删除") : i18n.t("移到回收站")}
       // 只有彻底删除才用危险色：进回收站还能找回，别让它看着像不可撤销
       danger={permanent}
       onConfirm={() => onConfirm(permanent)}
@@ -93,15 +99,15 @@ export function DeleteConfirmDialog({
           <DeleteOption
             group={group}
             checked={!permanent}
-            title="移到回收站"
-            note="删错了可以从系统回收站恢复"
+            title={t("移到回收站")}
+            note={t("删错了可以从系统回收站恢复")}
             onSelect={() => setPermanent(false)}
           />
           <DeleteOption
             group={group}
             checked={permanent}
-            title="永久删除"
-            note="不进入回收站，此操作不可撤销"
+            title={t("永久删除")}
+            note={t("不进入回收站，此操作不可撤销")}
             onSelect={() => setPermanent(true)}
           />
         </div>

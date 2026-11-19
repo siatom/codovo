@@ -7,6 +7,8 @@ import {
   useState,
   type Ref,
 } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../lib/i18n";
 import { emptyAgentLayer, useSettings, type AgentLayer } from "../lib/settings";
 import { samePath } from "../lib/fs";
 import { useEffectiveAiConfig } from "../lib/ai";
@@ -123,7 +125,7 @@ function createChip(location: EditorLocation): HTMLElement {
   chip.className = CHIP_CLASS;
   chip.innerHTML =
     `${fileIconHtml("h-3 w-3 shrink-0")}<span>${escapeHtml(text)}</span>` +
-    `<span data-chip-del title="移除" class="${CHIP_DEL_CLASS}">${closeIconHtml("h-2.5 w-2.5")}</span>`;
+    `<span data-chip-del title="${i18n.t("移除")}" class="${CHIP_DEL_CLASS}">${closeIconHtml("h-2.5 w-2.5")}</span>`;
   return chip;
 }
 
@@ -177,6 +179,7 @@ function focusComposerEnd(root: HTMLElement): void {
  * 装配提示词与工具，面板这边不给用户切换——要聊代码请用终端里的 AI CLI。
  */
 export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
+  const { t } = useTranslation();
   const { settings } = useSettings();
   // 会话列表和当前会话按工作区存在 agent-session 里：抽屉的历史菜单要靠它切会话
   const {
@@ -328,13 +331,13 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   /** 拉服务 → 接着上次的会话（没了就接最近的一条；一条都没有就停在空态，等用户发第一句再建） */
   const boot = useCallback(async () => {
     if (!root) {
-      setFatal("先选一个工作目录，助手要知道在哪个仓库里干活");
+      setFatal(t("先选一个工作目录，助手要知道在哪个仓库里干活"));
       setPhase("error");
       return;
     }
     if (!aiReady) {
       setFatal(
-        "请先在「设置 → AI → 模型提供商」里加一个提供商，并把它下面的模型设为默认",
+        t("请先在「设置 → AI → 模型提供商」里加一个提供商，并把它下面的模型设为默认"),
       );
       setPhase("error");
       return;
@@ -382,6 +385,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
     refreshSessions,
     openSession,
     setCurrentId,
+    t,
   ]);
 
   useEffect(() => {
@@ -675,7 +679,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
               onClick={() => void boot()}
               className="rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
             >
-              重试
+              {t("重试")}
             </button>
             {/* 这一屏没有标题栏，关闭按钮得在这儿给一个，否则只能靠 Esc */}
             <button
@@ -683,7 +687,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
               onClick={onClose}
               className="rounded border border-line-strong px-2 py-1 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
             >
-              关闭
+              {t("关闭")}
             </button>
           </div>
         </div>
@@ -694,7 +698,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   if (phase !== "ready") {
     return (
       <div className="flex h-full items-center justify-center text-[12px] text-fg-faint">
-        正在启动应用助手…
+        {t("正在启动应用助手…")}
       </div>
     );
   }
@@ -702,14 +706,14 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-3">
-        <span className="shrink-0 text-[12px] font-medium text-fg">{APP_AGENT_LABEL}</span>
+        <span className="shrink-0 text-[12px] font-medium text-fg">{t(APP_AGENT_LABEL)}</span>
         <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
           Rig ·{" "}
           {/* 只在真配了提供商时才把引用译成名字：开发调试下提供商是后端合成的，
               译出来会是 `codovo/xxx`，不如直接显示 .env 里的模型名 */}
           {(settings.aiProviders.length > 0 && sendModel
             ? modelRefLabel(settings, sendModel)
-            : aiConfig.model) || "未配置模型"}
+            : aiConfig.model) || t("未配置模型")}
         </span>
         {/* 历史 / 新建：面板里这一份是为了不用去侧栏就能切会话 */}
         <AgentHistoryMenu
@@ -721,10 +725,10 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
           onDelete={setPendingDelete}
           waitingKinds={waitingKinds}
         />
-        <IconButton label="新建对话" onClick={newSession}>
+        <IconButton label={t("新建对话")} onClick={newSession}>
           <IconPlus className={ICON_SM} />
         </IconButton>
-        <IconButton label="关闭助手" onClick={onClose}>
+        <IconButton label={t("关闭助手")} onClick={onClose}>
           <IconClose className={ICON_SM} />
         </IconButton>
       </div>
@@ -742,10 +746,10 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
                 <IconBot className="h-5 w-5" />
               </span>
               <div className="text-[13px] font-medium text-fg-muted">
-                问答 Codovo 用法，或让它改设置与界面
+                {t("问答 Codovo 用法，或让它改设置与界面")}
               </div>
               <div className="text-[12px] leading-relaxed text-fg-faint">
-                改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框
+                {t("改设置、加 / 删工作区、切右栏模块；不可逆操作会先弹确认框")}
               </div>
             </div>
           ) : (
@@ -782,16 +786,16 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             onClick={onComposerClick}
-            data-placeholder="问 Codovo 用法，或让它改设置与界面…"
+            data-placeholder={t("问 Codovo 用法，或让它改设置与界面…")}
             className="agent-composer min-h-6 max-h-40 w-full overflow-y-auto whitespace-pre-wrap break-words bg-transparent text-[13px] leading-relaxed text-fg outline-none"
           />
           <div className="mt-1 flex items-center gap-2">
             {/* 键盘提示常驻在底行，占位文案就能只留一句人话 */}
             <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
-              Enter 发送 · Shift+Enter 换行
+              {t("Enter 发送 · Shift+Enter 换行")}
             </span>
             {conversation.streaming ? (
-              <button type="button" onClick={stop} title="停止" className={STOP_BUTTON}>
+              <button type="button" onClick={stop} title={t("停止")} className={STOP_BUTTON}>
                 <IconStop className="h-3.5 w-3.5" />
               </button>
             ) : (
@@ -799,7 +803,7 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
                 type="button"
                 onClick={send}
                 disabled={!draft.trim()}
-                title="发送"
+                title={t("发送")}
                 className={SEND_BUTTON}
               >
                 <IconSend className="h-3.5 w-3.5" />
@@ -812,8 +816,8 @@ export function AgentPane({ root, active, onClose, ref }: AgentPaneProps) {
       {/* 删除会话不可撤销，走自研确认框（三端一致，见 ConfirmDialog 的说明） */}
       {pendingDelete && (
         <ConfirmDialog
-          message={`删除会话「${pendingDelete.title}」？这条对话的消息会一起删掉，不可撤销。`}
-          confirmLabel="删除"
+          message={t("删除会话「{{title}}」？这条对话的消息会一起删掉，不可撤销。", { title: pendingDelete.title })}
+          confirmLabel={t("删除")}
           onConfirm={() => {
             requestDelete(pendingDelete.id);
             setPendingDelete(null);

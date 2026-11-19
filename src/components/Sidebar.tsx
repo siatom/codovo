@@ -1,4 +1,6 @@
+import i18n from "../lib/i18n";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { useTranslation } from "react-i18next";
 import {
   useEffect,
   useLayoutEffect,
@@ -271,6 +273,7 @@ export function Sidebar({
   onOpenSettings,
   onCloseSettings,
 }: SidebarProps) {
+  const { t } = useTranslation();
   /** 展开态宽度，拖动分隔条改 */
   const [width, setWidth] = useState(readWidth);
   /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
@@ -879,15 +882,14 @@ export function Sidebar({
         <nav className="flex shrink-0 flex-col gap-0.5 px-2 pt-2 pb-1">
           <button type="button" onClick={onCreate} className={ROW}>
             <IconFolderPlus />
-            <span className="truncate">新建工作区</span>
+            <span className="truncate">{t("新建工作区")}</span>
           </button>
         </nav>
 
         {/* 工作区标题行：名字多了才给过滤入口，默认收成一个搜索图标，点开才出现输入框 */}
         <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-1">
           <span className="shrink-0 text-[13px] font-semibold tracking-wide text-fg-faint">
-            工作区
-          </span>
+            {t("工作区")}</span>
           {workspaces.length > 1 &&
             (wsSearchOpen ? (
               <input
@@ -905,7 +907,7 @@ export function Sidebar({
                 onBlur={() => {
                   if (!wsQuery.trim()) setWsSearchOpen(false);
                 }}
-                placeholder="过滤"
+                placeholder={t("过滤")}
                 spellCheck={false}
                 className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
               />
@@ -913,7 +915,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => setWsSearchOpen(true)}
-                title="过滤工作区"
+                title={t("过滤工作区")}
                 className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-hover hover:text-fg"
               >
                 <IconSearch className="h-3.5 w-3.5" />
@@ -922,16 +924,17 @@ export function Sidebar({
         </div>
         <ul className="min-h-0 flex-1 overflow-auto px-2 py-1">
           {ordered.length === 0 && (
-            <li className="px-2 py-1 text-[12px] text-fg-faint">还没有工作区</li>
+            <li className="px-2 py-1 text-[12px] text-fg-faint">{t("还没有工作区")}</li>
           )}
           {ordered.length > 0 && visible.length === 0 && (
-            <li className="px-2 py-1 text-[12px] text-fg-faint">没有匹配的工作区</li>
+            <li className="px-2 py-1 text-[12px] text-fg-faint">{t("没有匹配的工作区")}</li>
           )}
           {sections.map((section) => {
             // 过滤时强制展开：命中项被折叠藏起来，用户会以为没搜到
             const groupCollapsed = !query && collapsedGroups.includes(section.key);
             const sectionName = section.title;
             const isNamedSection = section.key.startsWith("group:");
+            const displaySectionName = sectionName === i18n.t("未分区") ? t("未分区") : sectionName === i18n.t("置顶") ? t("置顶") : sectionName;
             const targetGroup = section.key === "ungrouped"
               ? ""
               : isNamedSection ? sectionName : null;
@@ -962,7 +965,7 @@ export function Sidebar({
                         type="button"
                         onClick={() => toggleGroup(section.key)}
                         aria-expanded={!groupCollapsed}
-                        title={groupCollapsed ? `展开「${sectionName}」` : `收起「${sectionName}」`}
+                        title={groupCollapsed ? t("展开「{{name}}」", { name: sectionName }) : t("收起「{{name}}」", { name: sectionName })}
                         onPointerDown={(event) => {
                           // 只有真正的分区能拖动排序；置顶 / 未分区是系统分段，位置固定
                           if (!isNamedSection || event.button !== 0 || event.pointerType === "touch") {
@@ -991,7 +994,7 @@ export function Sidebar({
                         className="flex min-w-0 flex-1 items-center gap-1 text-left"
                       >
                         <span className="truncate text-[12px] font-semibold tracking-wide">
-                          {sectionName}
+                          {displaySectionName}
                         </span>
                         <span className="shrink-0 text-[10px] font-normal text-fg-faint">
                           {section.items.length}
@@ -1002,7 +1005,7 @@ export function Sidebar({
                         <button
                           type="button"
                           onClick={(event) => openSectionMenu(sectionName, event.currentTarget)}
-                          title="分区操作"
+                          title={t("分区操作")}
                           className={ROW_ACTION}
                         >
                           <IconMore className="h-3.5 w-3.5" />
@@ -1028,8 +1031,8 @@ export function Sidebar({
                     const historyOpen = expanded.includes(workspace.id);
                     const waitingTitle =
                       waiting?.kind === "done"
-                        ? "有 AI 会话任务已完成，点击跳过去"
-                        : "有 AI 会话在等你输入，点击跳过去";
+                        ? i18n.t("有 AI 会话任务已完成，点击跳过去")
+                        : i18n.t("有 AI 会话在等你输入，点击跳过去");
                     return (
                       <li
                         key={workspace.id}
@@ -1093,7 +1096,7 @@ export function Sidebar({
                                   <StatusDot tone="busy" />
                                   {!isCurrent && (
                                     <span className="rounded bg-warn-bg px-1 text-[10px] leading-4 whitespace-nowrap text-warn">
-                                      {waiting.kind === "done" ? "已完成" : "等待输入"}
+                                      {waiting.kind === "done" ? i18n.t("已完成") : i18n.t("等待输入")}
                                     </span>
                                   )}
                                 </span>
@@ -1101,7 +1104,7 @@ export function Sidebar({
                               {/* 目录失效的警告：放在名字后面，一眼看出这条为什么点不开 */}
                               {broken && (
                                 <span
-                                  title="工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除"
+                                  title={t("工作目录不存在，点开会失败；可用「⋯」菜单编辑或移除")}
                                   className="shrink-0 text-warn"
                                 >
                                   <IconAlert className="h-3.5 w-3.5" />
@@ -1110,7 +1113,7 @@ export function Sidebar({
                               {/* 一个工作区挂多个工作目录时，名字后缀一枚数量徽章，不用展开「⋯」菜单也知道它含几个文件夹 */}
                               {workspace.roots.length > 1 && (
                                 <span
-                                  title={`包含 ${workspace.roots.length} 个工作目录`}
+                                  title={t("包含 {{count}} 个工作目录", { count: workspace.roots.length })}
                                   className="shrink-0 rounded bg-active px-1 text-[10px] leading-4 text-fg-faint"
                                 >
                                   {workspace.roots.length}
@@ -1118,13 +1121,13 @@ export function Sidebar({
                               )}
                               {/* 置顶的工作区在名字后缀一枚图钉，一眼看得出它为什么排在前面 */}
                               {workspace.pinned && (
-                                <span title="已置顶" className="shrink-0 text-fg-faint">
+                                <span title={t("已置顶")} className="shrink-0 text-fg-faint">
                                   <IconPin className="h-3 w-3" />
                                 </span>
                               )}
                               {/* 已打开的工作区在名字末尾点一个绿点：切到后台的也在后台跑着，一眼可辨 */}
                               {isOpen && (
-                                <StatusDot tone="ok" title="工作区已打开" />
+                                <StatusDot tone="ok" title={t("工作区已打开")} />
                               )}
                             </button>
                             {/* 行内操作按钮成一组：组内间距比主按钮更小，右侧排得更紧凑 */}
@@ -1132,7 +1135,7 @@ export function Sidebar({
                               <button
                                 type="button"
                                 onClick={(event) => openMenu(workspace, event.currentTarget)}
-                                title="更多操作"
+                                title={t("更多操作")}
                                 className={ROW_ACTION}
                               >
                                 <IconMore className="h-3.5 w-3.5" />
@@ -1167,8 +1170,7 @@ export function Sidebar({
                           }))}
                           className="text-[12px] text-fg-faint hover:text-fg"
                         >
-                          更多（再显示 10 个，剩余 {section.items.length - 10 - (groupVisibleCounts[section.key] ?? 0)} 个）
-                        </button>
+                          {t("更多（再显示 10 个，剩余")}{section.items.length - 10 - (groupVisibleCounts[section.key] ?? 0)} {t("个）")}</button>
                       </li>
                     )}
                 </ul>
@@ -1182,7 +1184,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={toggle}
-            title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+            title={theme === "dark" ? i18n.t("切换到浅色主题") : i18n.t("切换到深色主题")}
             className={FOOTER_BUTTON}
           >
             {theme === "dark" ? <IconSun /> : <IconMoon />}
@@ -1190,7 +1192,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={() => setFeedbackOpen(true)}
-            title="意见反馈"
+            title={t("意见反馈")}
             className={FOOTER_BUTTON}
           >
             <IconFeedback />
@@ -1198,7 +1200,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onOpenSettings}
-            title="设置"
+            title={t("设置")}
             className={FOOTER_BUTTON}
           >
             <IconSettings />
@@ -1207,7 +1209,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onOpenAppAgent}
-            title="应用助手"
+            title={t("应用助手")}
             className={FOOTER_BUTTON}
           >
             <IconSparkle />
@@ -1216,7 +1218,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={() => onSetCollapsed(true)}
-            title="收起侧边栏"
+            title={t("收起侧边栏")}
             className={`${FOOTER_BUTTON} ml-auto`}
           >
             <IconPanelCollapse />
@@ -1240,7 +1242,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onCreate}
-            title="新建工作区"
+            title={t("新建工作区")}
             className={`flex w-7 ${ROW_H} items-center justify-center rounded-lg text-fg-dim hover:bg-hover hover:text-fg`}
           >
             <IconFolderPlus />
@@ -1251,7 +1253,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={toggle}
-            title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+            title={theme === "dark" ? i18n.t("切换到浅色主题") : i18n.t("切换到深色主题")}
             className={FOOTER_BUTTON}
           >
             {theme === "dark" ? <IconSun /> : <IconMoon />}
@@ -1259,7 +1261,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={() => setFeedbackOpen(true)}
-            title="意见反馈"
+            title={t("意见反馈")}
             className={FOOTER_BUTTON}
           >
             <IconFeedback />
@@ -1267,7 +1269,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onOpenSettings}
-            title="设置"
+            title={t("设置")}
             className={FOOTER_BUTTON}
           >
             <IconSettings />
@@ -1276,7 +1278,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={onOpenAppAgent}
-            title="应用助手"
+            title={t("应用助手")}
             className={FOOTER_BUTTON}
           >
             <IconSparkle />
@@ -1284,7 +1286,7 @@ export function Sidebar({
           <button
             type="button"
             onClick={() => onSetCollapsed(false)}
-            title="展开侧边栏"
+            title={t("展开侧边栏")}
             className={FOOTER_BUTTON}
           >
             <IconPanelExpand />
@@ -1332,7 +1334,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={() => openInSystem(menu.workspace.roots[0])}
-                title="在文件管理器中打开"
+                title={t("在文件管理器中打开")}
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-dim hover:text-fg"
               >
                 <IconExternalLink className="h-3.5 w-3.5" />
@@ -1361,7 +1363,7 @@ export function Sidebar({
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconPin className="h-3.5 w-3.5 shrink-0" />
-              {menu.workspace.pinned ? "取消置顶" : "置顶"}
+              {menu.workspace.pinned ? i18n.t("取消置顶") : i18n.t("置顶")}
             </button>
             <button
               type="button"
@@ -1372,7 +1374,7 @@ export function Sidebar({
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconTree className="h-3.5 w-3.5 shrink-0" />
-              <span className="flex-1">分区</span>
+              <span className="flex-1">{t("分区")}</span>
               {menu.workspace.group && (
                 <span className="max-w-[120px] truncate text-[11px] text-fg-faint">
                   {menu.workspace.group}
@@ -1394,7 +1396,7 @@ export function Sidebar({
                         key={name}
                         type="button"
                         onClick={() => applyGroup(name)}
-                        title={`归入「${name}」`}
+                        title={t("归入「{{name}}」", { name })}
                         className={`${GROUP_CHIP} ${
                           menu.workspace.group === name ? GROUP_CHIP_ACTIVE : ""
                         }`}
@@ -1414,7 +1416,7 @@ export function Sidebar({
                     className={`${MENU_ITEM} flex items-center gap-2 rounded px-1`}
                   >
                     <IconClose className="h-3.5 w-3.5 shrink-0" />
-                    移出分区
+                    {t("移出分区")}
                   </button>
                 )}
                 <div className="flex items-center gap-1.5">
@@ -1425,7 +1427,7 @@ export function Sidebar({
                     onKeyDown={(event) => {
                       if (event.key === "Enter") createGroup();
                     }}
-                    placeholder={groupNames.length > 0 ? "新分区…" : "输入分区名…"}
+                    placeholder={groupNames.length > 0 ? t("新分区…") : t("输入分区名…")}
                     spellCheck={false}
                     className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
                   />
@@ -1435,7 +1437,7 @@ export function Sidebar({
                     disabled={!newGroup.trim()}
                     className="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-40"
                   >
-                    归入
+                    {t("归入")}
                   </button>
                 </div>
               </div>
@@ -1450,7 +1452,7 @@ export function Sidebar({
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconPencil className="h-3.5 w-3.5 shrink-0" />
-              编辑
+              {t("编辑")}
             </button>
             {/* 只对已打开的工作区露出「关闭」：关进程、丢实例，但留在列表里，下次点还是它 */}
             {opened.includes(menu.workspace.id) && (
@@ -1464,7 +1466,7 @@ export function Sidebar({
                 className={`${MENU_ITEM} flex items-center gap-2`}
               >
                 <IconClose className="h-3.5 w-3.5 shrink-0" />
-                关闭
+                {t("关闭")}
               </button>
             )}
             <button
@@ -1477,7 +1479,7 @@ export function Sidebar({
               className={`${MENU_ITEM} flex items-center gap-2`}
             >
               <IconTrash className="h-3.5 w-3.5 shrink-0" />
-              移除
+              {t("移除")}
             </button>
           </div>
         </>
@@ -1517,7 +1519,7 @@ export function Sidebar({
                       closeSectionMenu();
                     }
                   }}
-                  placeholder="分区名称"
+                  placeholder={t("分区名称")}
                   spellCheck={false}
                   className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-fg placeholder:text-fg-faint focus:border-accent-strong focus:outline-none"
                 />
@@ -1527,7 +1529,7 @@ export function Sidebar({
                   disabled={!sectionDraft.trim()}
                   className="shrink-0 rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-40"
                 >
-                  保存
+                  {t("保存")}
                 </button>
               </div>
             ) : (
@@ -1542,16 +1544,16 @@ export function Sidebar({
                   className={`${MENU_ITEM} flex items-center gap-2`}
                 >
                   <IconPencil className="h-3.5 w-3.5 shrink-0" />
-                  重命名
+                  {t("重命名")}
                 </button>
                 <button
                   type="button"
                   onClick={removeSection}
-                  title="只删除分区，项目会移到「未分区」"
+                  title={t("只删除分区，项目会移到「未分区」")}
                   className={`${MENU_ITEM} flex items-center gap-2`}
                 >
                   <IconTrash className="h-3.5 w-3.5 shrink-0" />
-                  删除分区
+                  {t("删除分区")}
                 </button>
               </>
             )}

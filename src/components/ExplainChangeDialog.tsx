@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useMemo, useRef } from "react";
 import { renderMarkdown } from "../lib/markdown";
 import { useMermaidBlocks } from "../lib/mermaid";
@@ -39,6 +40,7 @@ export function ExplainChangeDialog({
   titlePrefix = "变更解读",
   loadingText = "正在解读这个文件的改动…",
 }: ExplainChangeDialogProps) {
+  const { t } = useTranslation();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -75,7 +77,7 @@ export function ExplainChangeDialog({
           <span className="min-w-0 flex-1 truncate text-[13px] text-fg" title={title}>
             {title}
           </span>
-          <button type="button" onClick={onClose} title="关闭" className={CLOSE_BUTTON}>
+          <button type="button" onClick={onClose} title={t("关闭")} className={CLOSE_BUTTON}>
             <IconClose className="h-3.5 w-3.5" />
           </button>
         </header>

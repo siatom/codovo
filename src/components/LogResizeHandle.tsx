@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useRef, useState } from "react";
 
 /** 键盘上下键调高度时每一档的像素 */
@@ -35,6 +36,7 @@ export function LogResizeHandle({
   onCommit,
   onReset,
 }: LogResizeHandleProps) {
+  const { t } = useTranslation();
   const startRef = useRef<{ y: number; height: number } | null>(null);
   /** 拖动 / 键盘连续改高度时，父组件的 state 还没走到这一帧，先自己记最新的 */
   const latestRef = useRef(height);
@@ -99,7 +101,7 @@ export function LogResizeHandle({
       onPointerCancel={onPointerUp}
       onKeyDown={onKeyDown}
       onDoubleClick={onReset}
-      title="拖动调整日志高度，双击复位"
+      title={t("拖动调整日志高度，双击复位")}
       className={`relative h-px shrink-0 cursor-row-resize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-strong ${
         dragging ? "bg-accent-strong" : "bg-line-strong hover:bg-line-hover"
       }`}

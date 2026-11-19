@@ -1,4 +1,5 @@
 import type { GitMark, GitMarkKind } from "../lib/git";
+import i18n from "../lib/i18n";
 
 const COLOR: Record<GitMarkKind, string> = {
   modified: "text-warn",
@@ -20,7 +21,7 @@ const TITLE: Record<GitMarkKind, string> = {
 export function GitMarkBadge({ mark, className = "" }: { mark: GitMark; className?: string }) {
   return (
     <span
-      title={TITLE[mark.kind]}
+      title={i18n.t(TITLE[mark.kind])}
       className={`shrink-0 font-medium ${COLOR[mark.kind]} ${className}`}
     >
       {mark.label}
@@ -35,7 +36,7 @@ export function GitMarkBadge({ mark, className = "" }: { mark: GitMark; classNam
 export function GitMarkDot({ mark, className = "" }: { mark: GitMark; className?: string }) {
   return (
     <span
-      title={TITLE[mark.kind]}
+      title={i18n.t(TITLE[mark.kind])}
       className={`shrink-0 rounded-full bg-current ${COLOR[mark.kind]} ${className}`}
     />
   );

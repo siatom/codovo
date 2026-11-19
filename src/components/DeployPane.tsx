@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import { FullscreenButton } from "./FullscreenButton";
 import { LogResizeHandle, readStoredLogHeight, writeStoredLogHeight } from "./LogResizeHandle";
@@ -74,6 +76,7 @@ export function DeployPane({
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
+  const { t } = useTranslation();
   const [config, setConfig] = useState<CicdConfigFile | null>(null);
   const [yaml, setYaml] = useState("");
   const [dirty, setDirty] = useState(false);
@@ -273,13 +276,13 @@ export function DeployPane({
       .map((line) => line.line)
       .join("\n");
 
-    setDialog({ title: stage || "部署失败", text: null, error: null });
+    setDialog({ title: stage || i18n.t("部署失败"), text: null, error: null });
     setAiBusy("diagnose");
     try {
       const text = await diagnoseCicd(root, aiConfig, stage, command, stageLog);
-      setDialog({ title: stage || "部署失败", text, error: null });
+      setDialog({ title: stage || i18n.t("部署失败"), text, error: null });
     } catch (reason) {
-      setDialog({ title: stage || "部署失败", text: null, error: String(reason) });
+      setDialog({ title: stage || i18n.t("部署失败"), text: null, error: String(reason) });
     } finally {
       setAiBusy("");
     }
@@ -298,11 +301,10 @@ export function DeployPane({
         <StatusDot
           size="md"
           tone={running ? "ok" : "off"}
-          title={running ? "流水线运行中" : "空闲"}
+          title={running ? t("流水线运行中") : t("空闲")}
         />
         <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
-          部署
-        </span>
+          {t("部署")}</span>
         {version && (
           <span className="shrink-0 rounded bg-hover px-1.5 py-0.5 text-[10px] text-fg-dim">
             {version}
@@ -318,13 +320,13 @@ export function DeployPane({
           type="button"
           onClick={running ? stop : start}
           disabled={!running && yaml.trim().length === 0}
-          title={running ? "停止流水线" : "在本机跑一条流水线"}
+          title={running ? t("停止流水线") : t("在本机跑一条流水线")}
           className="flex h-6 shrink-0 items-center gap-1 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
         >
           <IconRocket className="h-3.5 w-3.5" />
-          {running ? "停止" : "部署"}
+          {running ? i18n.t("停止") : i18n.t("部署")}
         </button>
-        <IconButton label="重新读取配置与状态" onClick={() => void load()} disabled={running}>
+        <IconButton label={t("重新读取配置与状态")} onClick={() => void load()} disabled={running}>
           <IconRefresh className={ICON_SM} />
         </IconButton>
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
@@ -337,10 +339,10 @@ export function DeployPane({
             type="button"
             onClick={() => void diagnose()}
             disabled={!aiReady || aiBusy !== ""}
-            title={aiReady ? "让大模型分析失败原因" : "先在「设置 → 智能体 → 模型提供商」里配置"}
+            title={aiReady ? i18n.t("让大模型分析失败原因") : i18n.t("先在「设置 → 智能体 → 模型提供商」里配置")}
             className="h-6 shrink-0 rounded border border-danger-line px-2 text-[11px] text-danger hover:bg-hover disabled:opacity-50"
           >
-            {aiBusy === "diagnose" ? "分析中…" : "AI 诊断"}
+            {aiBusy === "diagnose" ? t("分析中…") : t("AI 诊断")}
           </button>
         </div>
       )}
@@ -359,10 +361,10 @@ export function DeployPane({
             ) : (
               <IconChevronRight className="h-3 w-3" />
             )}
-            <span>配置</span>
-            {dirty && <span className="text-warn">·未保存</span>}
+            <span>{t("配置")}</span>
+            {dirty && <span className="text-warn">{t("·未保存")}</span>}
             <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
-              {config?.exists === false ? "（尚未创建）" : ""}
+              {config?.exists === false ? i18n.t("（尚未创建）") : ""}
             </span>
           </button>
           {configOpen && (
@@ -375,7 +377,7 @@ export function DeployPane({
                   setConfigMsg("");
                 }}
                 spellCheck={false}
-                placeholder=".local-cicd.yaml 内容"
+                placeholder={t(".local-cicd.yaml 内容")}
                 className="h-52 w-full resize-y rounded border border-line-strong bg-surface p-2 font-mono text-[11px] leading-relaxed text-fg outline-none placeholder:text-fg-faint focus:border-accent"
               />
               <div className="mt-2 flex items-center gap-2">
@@ -385,23 +387,21 @@ export function DeployPane({
                   disabled={!dirty}
                   className="h-6 rounded bg-accent px-2 text-[11px] font-medium text-app hover:opacity-90 disabled:opacity-50"
                 >
-                  保存
-                </button>
+                  {t("保存")}</button>
                 <button
                   type="button"
                   onClick={() => void detect()}
                   className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
                 >
-                  按项目探测
-                </button>
+                  {t("按项目探测")}</button>
                 <button
                   type="button"
                   onClick={() => void suggestConfig()}
                   disabled={!aiReady || aiBusy !== ""}
-                  title={aiReady ? "让大模型按项目标记起草配置" : "先在「设置 → 智能体 → 模型提供商」里配置"}
+                  title={aiReady ? i18n.t("让大模型按项目标记起草配置") : i18n.t("先在「设置 → 智能体 → 模型提供商」里配置")}
                   className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
                 >
-                  {aiBusy === "config" ? "生成中…" : "AI 生成配置"}
+                  {aiBusy === "config" ? i18n.t("生成中…") : i18n.t("AI 生成配置")}
                 </button>
                 <span className="min-w-0 flex-1 truncate text-[11px] text-fg-faint">
                   {configMsg}
@@ -454,7 +454,7 @@ export function DeployPane({
       >
         {logs.length === 0 ? (
           <p className="text-fg-faint">
-            {running ? "正在等待输出…" : "（暂无输出，点右上角「部署」开跑）"}
+            {running ? i18n.t("正在等待输出…") : i18n.t("（暂无输出，点右上角「部署」开跑）")}
           </p>
         ) : (
           logs.map((line, index) => (
@@ -474,8 +474,8 @@ export function DeployPane({
           text={dialog.text}
           error={dialog.error}
           onClose={() => setDialog(null)}
-          titlePrefix="部署诊断"
-          loadingText="正在分析失败日志…"
+          titlePrefix={t("部署诊断")}
+          loadingText={t("正在分析失败日志…")}
         />
       )}
     </section>

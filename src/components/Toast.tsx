@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect } from "react";
 import { IconAlert, IconClose } from "./icons";
 
@@ -17,6 +18,7 @@ const DURATION = 6000;
  * 也不能像这样不打断操作地飘在角落。
  */
 export function Toast({ message, onClose }: ToastProps) {
+  const { t } = useTranslation();
   useEffect(() => {
     const timer = window.setTimeout(onClose, DURATION);
     return () => window.clearTimeout(timer);
@@ -33,7 +35,7 @@ export function Toast({ message, onClose }: ToastProps) {
       <button
         type="button"
         onClick={onClose}
-        title="关闭"
+        title={t("关闭")}
         className="-mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded opacity-70 hover:opacity-100"
       >
         <IconClose className="h-3.5 w-3.5" />

@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
+import i18n from "../lib/i18n";
 import type { DbExportFormat, DbExportScope } from "../lib/database";
 import { IconChevronDown, IconDownload } from "./icons";
 
@@ -38,6 +40,7 @@ export function DbExportMenu({
   defaultScope = "page",
   align = "right",
 }: DbExportMenuProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [scope, setScope] = useState<DbExportScope>(defaultScope);
   const [pos, setPos] = useState({ left: 0, top: 0 });
@@ -77,11 +80,11 @@ export function DbExportMenu({
         type="button"
         disabled={disabled || busy}
         onClick={toggle}
-        title="导出结果"
+        title={t("导出结果")}
         className="flex items-center gap-1 rounded border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
       >
         <IconDownload className="h-3 w-3" />
-        {busy ? "导出中…" : "导出"}
+        {busy ? i18n.t("导出中…") : i18n.t("导出")}
         <IconChevronDown className="h-3 w-3" />
       </button>
 
@@ -102,16 +105,14 @@ export function DbExportMenu({
                     scope === value ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"
                   }`}
                 >
-                  {value === "page" ? "当前页" : "全部"}
+                  {value === "page" ? i18n.t("当前页") : i18n.t("全部")}
                 </button>
               ))}
             </div>
             <button type="button" className={ITEM} onClick={() => pick("csv")}>
-              导出为 CSV
-            </button>
+              {t("导出为 CSV")}</button>
             <button type="button" className={ITEM} onClick={() => pick("xlsx")}>
-              导出为 Excel
-            </button>
+              {t("导出为 Excel")}</button>
           </div>
         </>
       )}

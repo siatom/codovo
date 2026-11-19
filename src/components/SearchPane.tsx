@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import { ownerRoot, pathKey, replaceAll, replaceOne, searchContents, toDisplayPath } from "../lib/fs";
 import { folderName } from "../lib/workspaces";
 import type { SearchFile, SearchMatch, SearchOptions } from "../lib/types";
@@ -78,6 +80,7 @@ export function SearchPane({
   onBeforeReplace,
   onAfterReplace,
 }: SearchPaneProps) {
+  const { t } = useTranslation();
   const [result, setResult] = useState<SearchGroups | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -241,12 +244,12 @@ export function SearchPane({
       if (failures.length > 0) {
         setMessage({
           kind: "error",
-          text: `改了 ${changed} 个文件，${failures.length} 个失败：${failures[0].message}`,
+          text: t("改了 {{changed}} 个文件，{{failed}} 个失败：{{error}}", { changed, failed: failures.length, error: failures[0].message }),
         });
       } else if (changed > 0) {
-        setMessage({ kind: "note", text: `已在 ${changed} 个文件里替换 ${totalReplaced} 处` });
+        setMessage({ kind: "note", text: t("已在 {{changed}} 个文件里替换 {{count}} 处", { changed, count: totalReplaced }) });
       } else {
-        setMessage({ kind: "note", text: "没有需要替换的内容" });
+        setMessage({ kind: "note", text: t("没有需要替换的内容") });
       }
     } catch (reason) {
       setMessage({ kind: "error", text: String(reason) });
@@ -303,33 +306,31 @@ export function SearchPane({
           </p>
         )}
 
-        {!query && <p className="px-3 py-2 text-[11px] text-fg-faint">输入关键词开始搜索文件内容</p>}
+        {!query && <p className="px-3 py-2 text-[11px] text-fg-faint">{t("输入关键词开始搜索文件内容")}</p>}
         {query && loading && !resultIsCurrent && (
-          <p className="px-3 py-2 text-[11px] text-fg-faint">搜索中…</p>
+          <p className="px-3 py-2 text-[11px] text-fg-faint">{t("搜索中…")}</p>
         )}
         {query && resultIsCurrent && result && result.groups.length === 0 && (
-          <p className="px-3 py-2 text-[11px] text-fg-faint">没有匹配</p>
+          <p className="px-3 py-2 text-[11px] text-fg-faint">{t("没有匹配")}</p>
         )}
 
         {resultIsCurrent && result && result.groups.length > 0 && (
           <>
             <div className="flex items-center gap-2 px-3 py-1 text-[11px] text-fg-faint">
               <span className="min-w-0 flex-1 truncate">
-                {totalFiles} 个文件 · {totalMatches} 处
-                {result.truncated && "（结果已截断）"}
-                {result.skippedLarge > 0 && `（跳过 ${result.skippedLarge} 个超过 2MB 的文件）`}
+                {totalFiles} {t("个文件 ·")}{totalMatches} {t("处")}{result.truncated && i18n.t("（结果已截断）")}
+                {result.skippedLarge > 0 && t("（跳过 {{count}} 个超过 2MB 的文件）", { count: result.skippedLarge })}
               </span>
               {showReplace && (
                 <button
                   type="button"
                   onClick={runReplaceAll}
                   disabled={!canReplace || totalMatches === 0}
-                  title="全部替换"
+                  title={t("全部替换")}
                   className={HEADER_BUTTON}
                 >
                   <IconReplaceAll className="h-3.5 w-3.5" />
-                  全部替换
-                </button>
+                  {t("全部替换")}</button>
               )}
             </div>
             <ul>
@@ -357,8 +358,7 @@ export function SearchPane({
                         )}
                         <span className="min-w-0 flex-1 truncate">{folderName(group.root)}</span>
                         <span className="shrink-0 text-fg-faint tabular-nums">
-                          {group.files.length} 个文件 · {groupMatches} 处
-                        </span>
+                          {group.files.length} {t("个文件 ·")}{groupMatches} {t("处")}</span>
                       </button>
                     )}
                     {!groupCollapsed && (
@@ -423,11 +423,10 @@ export function SearchPane({
                                           type="button"
                                           onClick={() => void runReplaceOne(file, match)}
                                           disabled={!canReplace}
-                                          title="只替换这一处"
+                                          title={t("只替换这一处")}
                                           className="mr-2 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100 disabled:opacity-30"
                                         >
-                                          替换
-                                        </button>
+                                          {t("替换")}</button>
                                       )}
                                     </li>
                                   ))}
@@ -451,8 +450,8 @@ export function SearchPane({
         confirmReplaceAll.signature === signature &&
         confirmReplaceAll.revision === signatureRevisionRef.current && (
         <ConfirmDialog
-          message={`将在 ${confirmReplaceAll.files} 个文件里替换 ${confirmReplaceAll.matches} 处，确定吗？`}
-          confirmLabel="替换"
+          message={t("将在 {{files}} 个文件里替换 {{matches}} 处，确定吗？", { files: confirmReplaceAll.files, matches: confirmReplaceAll.matches })}
+          confirmLabel={t("替换")}
           onConfirm={() => {
             setConfirmReplaceAll(null);
             if (

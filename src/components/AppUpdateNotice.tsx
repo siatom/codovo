@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
+import i18n from "../lib/i18n";
 import { createPortal } from "react-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettings } from "../lib/settings";
@@ -16,6 +18,7 @@ const ACTION =
 const LAST_CHECK = "codovo.updateLastCheck";
 
 export function AppUpdateNotice() {
+  const { t } = useTranslation();
   const { settings, update } = useSettings();
   const state = useAppUpdate();
   const [confirm, setConfirm] = useState(false);
@@ -53,10 +56,10 @@ export function AppUpdateNotice() {
   return createPortal(
     <div className="relative z-[60]">
       <aside
-        aria-label="软件更新"
+        aria-label={t("软件更新")}
         className="fixed right-4 bottom-4 z-40 w-96 max-w-[calc(100vw-2rem)] space-y-2 rounded-xl border border-line-strong bg-raised p-4 text-[12px] text-fg shadow-lg"
       >
-        <p className="font-semibold">Codovo v{release.version} 可用</p>
+        <p className="font-semibold">Codovo v{release.version} {t("可用")}</p>
         <p className="text-fg-faint">{updateSize(release.size)}</p>
         {release.notes && (
           <p className="max-h-32 overflow-auto whitespace-pre-wrap break-words text-fg-muted">
@@ -65,20 +68,20 @@ export function AppUpdateNotice() {
         )}
         {release.installStatus === "unsupported" && (
           <p className="text-fg-faint">
-            当前安装方式或此版本暂不支持应用内安装，请从发布页升级。
-          </p>
+            {t("当前安装方式或此版本暂不支持应用内安装，请从发布页升级。")}</p>
         )}
         {release.installStatus === "checkFailed" && (
           <p className="text-fg-faint">
-            暂时无法检查应用内更新，请检查网络后重试；也可从发布页手动升级。
-          </p>
+            {t("暂时无法检查应用内更新，请检查网络后重试；也可从发布页手动升级。")}</p>
         )}
         {progress && (
           <div role="status" className="space-y-1">
             <p>
               {progress.phase === "installing"
-                ? "正在安装并重启…"
-                : `正在下载 ${updateSize(progress.downloaded)}${percent === null ? "" : `（${percent}%）`}`}
+                ? i18n.t("正在安装并重启…")
+                : percent === null
+                  ? i18n.t("正在下载 {{size}}", { size: updateSize(progress.downloaded) })
+                  : i18n.t("正在下载 {{size}}（{{percent}}%）", { size: updateSize(progress.downloaded), percent })}
             </p>
             <progress
               className="w-full accent-accent"
@@ -100,8 +103,7 @@ export function AppUpdateNotice() {
               disabled={state.busy || state.checking}
               onClick={() => setConfirm(true)}
             >
-              下载并安装
-            </button>
+              {t("下载并安装")}</button>
           )}
           <button
             type="button"
@@ -109,8 +111,7 @@ export function AppUpdateNotice() {
             disabled={state.busy}
             onClick={() => void openUrl(release.releaseUrl).catch(() => {})}
           >
-            打开发布页
-          </button>
+            {t("打开发布页")}</button>
           {release.installStatus === "checkFailed" && (
             <button
               type="button"
@@ -118,7 +119,7 @@ export function AppUpdateNotice() {
               disabled={state.busy || state.checking}
               onClick={() => void checkAppUpdate(true)}
             >
-              {state.checking ? "正在检查…" : "重新检查"}
+              {state.checking ? i18n.t("正在检查…") : i18n.t("重新检查")}
             </button>
           )}
           <button
@@ -130,14 +131,13 @@ export function AppUpdateNotice() {
               hideAppUpdate();
             }}
           >
-            跳过此版本
-          </button>
+            {t("跳过此版本")}</button>
         </div>
       </aside>
       {confirm && (
         <ConfirmDialog
-          message={`安装 v${release.version} 后将重启 Codovo，并结束正在运行的终端与任务。请先保存文件。`}
-          confirmLabel="下载、安装并重启"
+          message={i18n.t("安装 v{{version}} 后将重启 Codovo，并结束正在运行的终端与任务。请先保存文件。", { version: release.version })}
+          confirmLabel={t("下载、安装并重启")}
           onCancel={() => setConfirm(false)}
           onConfirm={() => {
             setConfirm(false);

@@ -1,3 +1,4 @@
+import i18n from "../lib/i18n";
 import {
   useEffect,
   useRef,
@@ -70,6 +71,8 @@ import {
   type DependencyStatus,
 } from "../lib/installer";
 import { RIGHT_TOOLS } from "./ToolRail";
+import { useLocale, type LocalePreference } from "../lib/locale";
+import { useTranslation } from "react-i18next";
 import type { ToolId } from "./ToolPane";
 import type { TranslateTarget } from "../lib/types";
 import { checkAppUpdate, useAppUpdate } from "../lib/updater";
@@ -207,8 +210,8 @@ const VISIBLE_OPTIONS: { value: boolean; label: string }[] = [
 
 /** 通用的开 / 关（启动恢复、minimap 这类没有更贴切措辞的布尔项） */
 const ON_OFF_OPTIONS: { value: boolean; label: string }[] = [
-  { value: true, label: "开启" },
-  { value: false, label: "关闭" },
+  { value: true, label: "开启状态" },
+  { value: false, label: "关闭状态" },
 ];
 
 /** 更新检查间隔（小时）：只给几档，和 settings 里的校验保持一致 */
@@ -298,14 +301,15 @@ function Field({
   action?: ReactNode;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 text-[12px] font-medium text-fg-muted">{label}</span>
+        <span className="min-w-0 flex-1 text-[12px] font-medium text-fg-muted">{t(label)}</span>
         {action}
       </div>
       <div className="flex items-center gap-2">{children}</div>
-      {hint && <p className="text-[11px] leading-relaxed text-fg-faint">{hint}</p>}
+      {hint && <p className="text-[11px] leading-relaxed text-fg-faint">{t(hint)}</p>}
     </div>
   );
 }
@@ -322,13 +326,14 @@ function Row({
   hint?: string;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-3">
-        <span className="w-24 shrink-0 text-[12px] text-fg-muted">{label}</span>
+        <span className="w-24 shrink-0 text-[12px] text-fg-muted">{t(label)}</span>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2">{children}</div>
       </div>
-      {hint && <p className="pl-[108px] text-[11px] leading-relaxed text-fg-faint">{hint}</p>}
+      {hint && <p className="pl-[108px] text-[11px] leading-relaxed text-fg-faint">{t(hint)}</p>}
     </div>
   );
 }
@@ -350,15 +355,16 @@ function Section({
   dense?: boolean;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   return (
     <section className="flex flex-col gap-2">
       <div className="flex flex-col gap-1 px-0.5">
         <div className="flex min-h-6 items-center gap-2">
-          <h3 className="shrink-0 text-[12px] font-semibold tracking-wide text-fg">{title}</h3>
+          <h3 className="shrink-0 text-[12px] font-semibold tracking-wide text-fg">{t(title)}</h3>
           <span className="h-px min-w-2 flex-1 bg-line" />
           {action}
         </div>
-        {hint && <p className="text-[11px] leading-relaxed text-fg-faint">{hint}</p>}
+        {hint && <p className="text-[11px] leading-relaxed text-fg-faint">{t(hint)}</p>}
       </div>
       <div
         className={`flex flex-col rounded-xl border border-line bg-surface/50 p-3.5 ${
@@ -450,7 +456,7 @@ function ShortcutRecorder({
             : "border-line-strong text-fg hover:border-line-hover"
         }`}
       >
-        {recording ? "按下组合键…" : formatShortcut(combo)}
+        {recording ? i18n.t("按下组合键…") : formatShortcut(combo)}
       </button>
       {error && <span className="shrink-0 text-[11px] text-danger">{error}</span>}
     </div>
@@ -524,6 +530,7 @@ function BoolToggle({
   disabledValue?: boolean;
   onChange: (next: boolean) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex shrink-0 gap-0.5 rounded-lg border border-line-strong bg-surface/60 p-0.5">
       {options.map((option) => {
@@ -540,7 +547,7 @@ function BoolToggle({
                 : "text-fg-dim hover:bg-hover hover:text-fg"
             } ${disabled ? "cursor-not-allowed opacity-40 hover:bg-transparent" : ""}`}
           >
-            {option.label}
+            {t(option.label)}
           </button>
         );
       })}
@@ -558,6 +565,7 @@ function Select<T extends string>({
   options: { value: T; label: string }[];
   onChange: (next: T) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const current = options.find((item) => item.value === value);
 
@@ -578,7 +586,7 @@ function Select<T extends string>({
         onClick={() => setOpen((isOpen) => !isOpen)}
         className={`${TEXT_INPUT} flex items-center gap-2 text-left hover:border-line-hover`}
       >
-        <span className="min-w-0 flex-1 truncate">{current?.label ?? ""}</span>
+        <span className="min-w-0 flex-1 truncate">{current ? t(current.label) : ""}</span>
         <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
       </button>
 
@@ -605,7 +613,7 @@ function Select<T extends string>({
                     : "text-fg-muted hover:bg-hover hover:text-fg"
                 }`}
               >
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                <span className="min-w-0 flex-1 truncate">{t(item.label)}</span>
                 {value === item.value && (
                   <IconCheck className="h-3.5 w-3.5 shrink-0 text-accent" />
                 )}
@@ -620,25 +628,26 @@ function Select<T extends string>({
 
 /** 关于页的更新设置：和右下角的更新卡片共用同一份状态，点检查后有结果会直接弹卡片 */
 function UpdateSettings() {
+  const { t } = useTranslation();
   const { settings, update } = useSettings();
   const state = useAppUpdate();
   return (
     <>
-      <Row label="自动检查">
+      <Row label={t("自动检查")}>
         <BoolToggle
           value={settings.updateAutoCheck}
           options={ON_OFF_OPTIONS}
           onChange={(updateAutoCheck) => update({ updateAutoCheck })}
         />
       </Row>
-      <Row label="检查间隔" hint="自动检查按这个间隔判断；手动检查不受限制">
+      <Row label={t("检查间隔")} hint={t("自动检查按这个间隔判断；手动检查不受限制")}>
         <Select
           value={String(settings.updateIntervalHours)}
           options={UPDATE_INTERVAL_OPTIONS}
           onChange={(next) => update({ updateIntervalHours: Number(next) })}
         />
       </Row>
-      <Row label="立即检查">
+      <Row label={t("立即检查")}>
         <button
           type="button"
           className={BUTTON}
@@ -646,13 +655,12 @@ function UpdateSettings() {
           onClick={() => void checkAppUpdate(true)}
         >
           <IconRefresh className={`h-3.5 w-3.5 ${state.checking ? "animate-spin" : ""}`} />
-          {state.checking ? "正在检查…" : "检查更新"}
+          {state.checking ? i18n.t("正在检查…") : i18n.t("检查更新")}
         </button>
       </Row>
       {settings.updateSkippedVersion && (
         <p className="text-[11px] leading-relaxed text-fg-faint">
-          已跳过 v{settings.updateSkippedVersion}，手动检查仍会显示此版本。
-        </p>
+          {t("已跳过 v")}{settings.updateSkippedVersion}{t("，手动检查仍会显示此版本。")}</p>
       )}
       {state.message && (
         <p role="status" className="text-[11px] leading-relaxed text-fg-muted">
@@ -769,7 +777,7 @@ function TerminalThemeSelect({
       >
         {swatch(value)}
         <span className="min-w-0 flex-1 truncate">
-          {current?.label ?? "跟随界面主题"}
+          {current?.label ?? i18n.t("跟随界面主题")}
         </span>
         <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
       </button>
@@ -784,7 +792,7 @@ function TerminalThemeSelect({
             onWheel={(event) => event.stopPropagation()}
             className="absolute top-full left-0 z-40 mt-1 flex max-h-64 w-full flex-col gap-px overflow-auto overscroll-contain rounded-lg border border-line-strong bg-raised p-1 shadow-2xl"
           >
-            {option("", "跟随界面主题")}
+            {option("", i18n.t("跟随界面主题"))}
             {TERMINAL_THEME_OPTIONS.map((item) => option(item.key, item.label))}
           </div>
         </>
@@ -796,6 +804,7 @@ function TerminalThemeSelect({
 /** 主题下拉：悬停或按 ↑↓ 都能实时预览整套配色（界面 + 终端 + 编辑器），
     移开或关闭即还原，点到 / 回车才真正落盘 */
 function ThemeSelect() {
+  const { t } = useTranslation();
   const { preference, setPreference, previewTheme } = useTheme();
   const [open, setOpen] = useState(false);
   /** 键盘高亮的下标；-1 表示还没用键盘选过 */
@@ -890,7 +899,7 @@ function ThemeSelect() {
         className={`${TEXT_INPUT} flex items-center gap-2 text-left hover:border-line-hover`}
       >
         {current && <ThemeSwatch swatch={current.swatch} />}
-        <span className="min-w-0 flex-1 truncate">{current?.label ?? ""}</span>
+        <span className="min-w-0 flex-1 truncate">{current ? t(current.label) : ""}</span>
         <IconChevronDown className="h-3.5 w-3.5 shrink-0 text-fg-faint" />
       </button>
 
@@ -922,7 +931,7 @@ function ThemeSelect() {
                 }`}
               >
                 <ThemeSwatch swatch={item.swatch} />
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                <span className="min-w-0 flex-1 truncate">{t(item.label)}</span>
                 {preference === item.value && (
                   <IconCheck className="h-3.5 w-3.5 shrink-0 text-accent" />
                 )}
@@ -1081,13 +1090,14 @@ function ModelRow({
   onChange: (next: ProviderModel) => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-1.5">
       <input
         type="text"
         value={model.id}
         spellCheck={false}
-        placeholder="模型 ID，如 deepseek-chat"
+        placeholder={t("模型 ID，如 deepseek-chat")}
         onChange={(event) => onChange({ ...model, id: event.target.value })}
         className={`${TEXT_INPUT} min-w-0 flex-1 font-mono`}
       />
@@ -1095,16 +1105,16 @@ function ModelRow({
         type="text"
         value={model.name}
         spellCheck={false}
-        placeholder="显示名（可选）"
+        placeholder={t("显示名（可选）")}
         onChange={(event) => onChange({ ...model, name: event.target.value })}
         className={`${TEXT_INPUT} min-w-0 flex-1`}
       />
       <Toggle
         checked={model.enabled}
-        title={model.enabled ? "已启用" : "已停用"}
+        title={model.enabled ? i18n.t("已启用") : i18n.t("已停用")}
         onChange={(next) => onChange({ ...model, enabled: next })}
       />
-      <button type="button" onClick={onRemove} title="删除模型" className={LIST_ACTION}>
+      <button type="button" onClick={onRemove} title={t("删除模型")} className={LIST_ACTION}>
         <IconClose className="h-3.5 w-3.5" />
       </button>
     </div>
@@ -1141,6 +1151,7 @@ function ModelPicker({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   const keyword = filter.trim().toLowerCase();
   const shown = keyword
     ? models.filter(
@@ -1157,7 +1168,7 @@ function ModelPicker({
           type="text"
           value={filter}
           spellCheck={false}
-          placeholder={`筛选（共 ${models.length} 个）`}
+          placeholder={i18n.t("筛选（共 {{count}} 个）", { count: models.length })}
           onChange={(event) => onFilter(event.target.value)}
           className={`${TEXT_INPUT} min-w-0 flex-1`}
         />
@@ -1168,14 +1179,14 @@ function ModelPicker({
           className={BUTTON_SM}
         >
           {selectable.length > 0 && selectable.every((id) => picked.has(id))
-            ? "全不选"
-            : "全选"}
+            ? i18n.t("全不选")
+            : i18n.t("全选")}
         </button>
       </div>
 
       <div className="flex max-h-56 min-h-0 flex-col overflow-y-auto rounded-lg border border-line bg-surface">
         {shown.length === 0 ? (
-          <p className="px-2 py-3 text-center text-[11px] text-fg-faint">没有匹配的模型</p>
+          <p className="px-2 py-3 text-center text-[11px] text-fg-faint">{t("没有匹配的模型")}</p>
         ) : (
           shown.map((model) => {
             const added = existing.has(model.id);
@@ -1205,7 +1216,7 @@ function ModelPicker({
                     {model.name}
                   </span>
                 )}
-                {added && <span className="shrink-0 text-[11px] text-fg-faint">已添加</span>}
+                {added && <span className="shrink-0 text-[11px] text-fg-faint">{t("已添加")}</span>}
               </button>
             );
           })
@@ -1214,19 +1225,16 @@ function ModelPicker({
 
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 text-[11px] text-fg-faint">
-          已选 {picked.size} 个
-        </span>
+          {t("已选")}{picked.size} {t("个")}</span>
         <button type="button" onClick={onCancel} className={BUTTON}>
-          取消
-        </button>
+          {t("取消")}</button>
         <button
           type="button"
           onClick={onConfirm}
           disabled={picked.size === 0}
           className={BUTTON_PRIMARY}
         >
-          添加选中的
-        </button>
+          {t("添加选中的")}</button>
       </div>
     </div>
   );
@@ -1255,6 +1263,7 @@ function ProviderEditor({
   onDuplicate: () => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation();
   const patch = (part: Partial<AiProvider>) => onChange({ ...provider, ...part });
 
   /** 刚敲进去、还没落钥匙串的密钥。存进去就清空——明文不在设置面板里过夜 */
@@ -1370,48 +1379,46 @@ function ProviderEditor({
         <CollapseHeader
           open={open}
           onToggle={onToggle}
-          placeholder="未命名提供商"
+          placeholder={t("未命名提供商")}
           label={provider.name}
         />
         {isDefault && (
           <span className="shrink-0 rounded-md bg-accent/10 px-1.5 py-0.5 text-[10px] font-medium text-accent-soft ring-1 ring-accent/20">
-            默认
-          </span>
+            {t("默认")}</span>
         )}
         {!provider.enabled && (
-          <span className="shrink-0 text-[11px] text-fg-faint">已停用</span>
+          <span className="shrink-0 text-[11px] text-fg-faint">{t("已停用")}</span>
         )}
         <span className="shrink-0 text-[11px] text-fg-faint">
-          {enabledModelCount} 个模型
-        </span>
+          {enabledModelCount} {t("个模型")}</span>
         <Toggle
           checked={provider.enabled}
-          title={provider.enabled ? "已启用" : "已停用"}
+          title={provider.enabled ? i18n.t("已启用") : i18n.t("已停用")}
           onChange={(next) => patch({ enabled: next })}
         />
-        <button type="button" onClick={onDuplicate} title="复制提供商" className={HEAD_ACTION}>
+        <button type="button" onClick={onDuplicate} title={t("复制提供商")} className={HEAD_ACTION}>
           <IconCopy className="h-3.5 w-3.5" />
         </button>
-        <button type="button" onClick={onRemove} title="删除提供商" className={LIST_ACTION}>
+        <button type="button" onClick={onRemove} title={t("删除提供商")} className={LIST_ACTION}>
           <IconClose className="h-3.5 w-3.5" />
         </button>
       </div>
 
       {open && (
         <div className="flex flex-col gap-3 border-t border-line p-3">
-          <Field label="名称" hint="只用于界面展示，改名不会动 ID">
+          <Field label={t("名称")} hint={t("只用于界面展示，改名不会动 ID")}>
             <input
               type="text"
               value={provider.name}
               spellCheck={false}
-              placeholder="如 DeepSeek"
+              placeholder={t("如 DeepSeek")}
               onChange={(event) => patch({ name: event.target.value })}
               className={TEXT_INPUT}
             />
           </Field>
           <Field
-            label="接口地址"
-            hint="OpenAI 兼容基地址，如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）"
+            label={t("接口地址")}
+            hint={t("OpenAI 兼容基地址，如 https://api.deepseek.com/v1、http://localhost:11434/v1（Ollama）")}
           >
             <input
               type="text"
@@ -1423,15 +1430,14 @@ function ProviderEditor({
             />
           </Field>
           <Field
-            label="API 密钥"
-            hint="存进操作系统的凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service），
-              明文不写进设置；本地模型可以留空"
+            label={t("API 密钥")}
+            hint={t("存进操作系统的凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service），\n              明文不写进设置；本地模型可以留空")}
           >
             <input
               type={revealKey ? "text" : "password"}
               value={draftKey}
               spellCheck={false}
-              placeholder={provider.apiKeySet ? "已保存，填新的可覆盖" : "sk-…"}
+              placeholder={provider.apiKeySet ? i18n.t("已保存，填新的可覆盖") : "sk-…"}
               onChange={(event) => setDraftKey(event.target.value)}
               className={TEXT_INPUT}
             />
@@ -1440,27 +1446,25 @@ function ProviderEditor({
               onClick={() => setRevealKey((current) => !current)}
               className={BUTTON_SM}
             >
-              {revealKey ? "隐藏" : "显示"}
+              {revealKey ? i18n.t("隐藏") : i18n.t("显示")}
             </button>
             <button
               type="button"
               onClick={() => void saveKey()}
               disabled={busy || draftKey.trim() === "" || secretStoreError !== ""}
-              title={secretStoreError !== "" ? secretStoreError : "写进系统钥匙串"}
+              title={secretStoreError !== "" ? secretStoreError : i18n.t("写进系统钥匙串")}
               className={BUTTON_SM}
             >
-              保存
-            </button>
+              {t("保存")}</button>
             {provider.apiKeySet && (
               <button
                 type="button"
                 onClick={() => void clearKey()}
                 disabled={busy}
-                title="从系统钥匙串删掉这个提供商的密钥"
+                title={t("从系统钥匙串删掉这个提供商的密钥")}
                 className={BUTTON_DANGER}
               >
-                清除
-              </button>
+                {t("清除")}</button>
             )}
           </Field>
 
@@ -1472,18 +1476,18 @@ function ProviderEditor({
             {secretStoreError !== ""
               ? secretStoreError
               : provider.apiKeySet
-                ? "密钥已保存在系统钥匙串，这里不会再回显。"
-                : "还没有保存密钥。点「保存」后写进系统钥匙串，之后不回显。"}
+                ? i18n.t("密钥已保存在系统钥匙串，这里不会再回显。")
+                : i18n.t("还没有保存密钥。点「保存」后写进系统钥匙串，之后不回显。")}
           </p>
 
           <Field
-            label="模型"
-            hint="可以手动填 ID，也可以「从接口拉取」勾选；停用或没填 ID 的不会下发"
+            label={t("模型")}
+            hint={t("可以手动填 ID，也可以「从接口拉取」勾选；停用或没填 ID 的不会下发")}
             action={
               <>
                 <button
                   type="button"
-                  title="从接口拉取可用模型"
+                  title={t("从接口拉取可用模型")}
                   onClick={() => void fetchModels()}
                   disabled={provider.baseUrl.trim() === "" || busy}
                   className={`${HEAD_ACTION} ${
@@ -1496,7 +1500,7 @@ function ProviderEditor({
                 </button>
                 <button
                   type="button"
-                  title="手动新增模型"
+                  title={t("手动新增模型")}
                   onClick={() => patch({ models: [...provider.models, emptyModel()] })}
                   className={HEAD_ACTION}
                 >
@@ -1507,7 +1511,7 @@ function ProviderEditor({
           >
             <div className="flex w-full flex-col gap-2">
               {provider.models.length === 0 ? (
-                <p className="text-[11px] text-fg-faint">还没有模型</p>
+                <p className="text-[11px] text-fg-faint">{t("还没有模型")}</p>
               ) : (
                 provider.models.map((model, index) => (
                   <ModelRow
@@ -1569,18 +1573,17 @@ function ProviderEditor({
               disabled={provider.baseUrl.trim() === "" || busy}
               className={BUTTON}
             >
-              {busy ? "测试中…" : "测试连接"}
+              {busy ? i18n.t("测试中…") : i18n.t("测试连接")}
             </button>
             {!isDefault && (
               <button
                 type="button"
                 onClick={onSetDefault}
                 disabled={missing}
-                title={missing ? "先填接口地址、并至少启用一个模型" : "设为全局默认"}
+                title={missing ? i18n.t("先填接口地址、并至少启用一个模型") : i18n.t("设为全局默认")}
                 className={BUTTON}
               >
-                设为默认
-              </button>
+                {t("设为默认")}</button>
             )}
           </div>
 
@@ -1636,6 +1639,7 @@ function DependencyRow({
   status?: DependencyStatus;
   onInstall?: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const installed = status?.installed === true;
   return (
     <div
@@ -1661,8 +1665,7 @@ function DependencyRow({
           <p className="text-[12px] font-medium text-fg">{label}</p>
           {installed && (
             <span className="rounded-full bg-ok/10 px-1.5 py-0.5 text-[10px] font-medium text-ok">
-              已安装
-            </span>
+              {t("已安装")}</span>
           )}
         </div>
         <p className="mt-0.5 truncate text-[11px] text-fg-faint">{detail}</p>
@@ -1671,7 +1674,7 @@ function DependencyRow({
         )}
       </div>
       {installed ? (
-        <span className="shrink-0 text-[11px] text-ok">就绪</span>
+        <span className="shrink-0 text-[11px] text-ok">{t("就绪")}</span>
       ) : onInstall ? (
         <button
           type="button"
@@ -1679,10 +1682,10 @@ function DependencyRow({
           onClick={() => onInstall(id)}
           className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line-strong px-2.5 py-1.5 text-[12px] text-fg-muted transition-colors hover:border-accent-line hover:bg-hover hover:text-fg disabled:cursor-wait disabled:opacity-50"
         >
-          {checking ? "检查中…" : installing ? "安装中…" : "安装"}
+          {checking ? i18n.t("检查中…") : installing ? i18n.t("安装中…") : i18n.t("安装")}
         </button>
       ) : (
-        <span className="shrink-0 text-[11px] text-fg-faint">需手动安装</span>
+        <span className="shrink-0 text-[11px] text-fg-faint">{t("需手动安装")}</span>
       )}
     </div>
   );
@@ -1696,27 +1699,26 @@ function AgentStatusBadge({
   status?: AgentCliStatus;
   checking: boolean;
 }) {
+  const { t } = useTranslation();
   if (!status) {
     return (
       <span className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] text-fg-faint">
-        {checking ? "检测中…" : "未检测"}
+        {checking ? i18n.t("检测中…") : i18n.t("未检测")}
       </span>
     );
   }
   return status.installed ? (
     <span
-      title={status.version ?? "已安装"}
+      title={status.version ?? i18n.t("已安装")}
       className="shrink-0 rounded-full bg-ok/10 px-1.5 py-0.5 text-[10px] font-medium text-ok"
     >
-      已安装
-    </span>
+      {t("已安装")}</span>
   ) : (
     <span
-      title="在 PATH 里找不到这个可执行文件"
+      title={t("在 PATH 里找不到这个可执行文件")}
       className="shrink-0 rounded-full bg-danger-bg px-1.5 py-0.5 text-[10px] font-medium text-danger"
     >
-      未安装
-    </span>
+      {t("未安装")}</span>
   );
 }
 
@@ -1733,13 +1735,14 @@ function EnvVarEditor({
   env: AgentEnvVar[];
   onChange: (next: AgentEnvVar[]) => void;
 }) {
+  const { t } = useTranslation();
   const patch = (index: number, part: Partial<AgentEnvVar>) =>
     onChange(env.map((entry, i) => (i === index ? { ...entry, ...part } : entry)));
 
   return (
     <div className="flex w-full flex-col gap-1.5">
       {env.length === 0 && (
-        <p className="text-[11px] text-fg-faint">还没有环境变量</p>
+        <p className="text-[11px] text-fg-faint">{t("还没有环境变量")}</p>
       )}
       {env.map((entry, index) => (
         <div key={index} className="flex items-center gap-1.5">
@@ -1747,7 +1750,7 @@ function EnvVarEditor({
             type="text"
             value={entry.key}
             spellCheck={false}
-            placeholder="变量名，如 ANTHROPIC_BASE_URL"
+            placeholder={t("变量名，如 ANTHROPIC_BASE_URL")}
             onChange={(event) => patch(index, { key: event.target.value })}
             className={TEXT_INPUT + " min-w-0 flex-1 font-mono"}
           />
@@ -1756,14 +1759,14 @@ function EnvVarEditor({
             type="text"
             value={entry.value}
             spellCheck={false}
-            placeholder="值"
+            placeholder={t("值")}
             onChange={(event) => patch(index, { value: event.target.value })}
             className={TEXT_INPUT + " min-w-0 flex-[1.3] font-mono"}
           />
           <button
             type="button"
             onClick={() => onChange(env.filter((_, i) => i !== index))}
-            title="删除这个环境变量"
+            title={t("删除这个环境变量")}
             className={LIST_ACTION}
           >
             <IconClose className="h-3 w-3" />
@@ -1777,8 +1780,7 @@ function EnvVarEditor({
           className={BUTTON_SM}
         >
           <IconPlus className="h-3 w-3" />
-          添加变量
-        </button>
+          {t("添加变量")}</button>
       </div>
     </div>
   );
@@ -1806,6 +1808,7 @@ function AgentCommandList({
   onOpenChange: (index: number | null) => void;
   onChange: (next: AiCommand[]) => void;
 }) {
+  const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{ from: number; startY: number; started: boolean } | null>(null);
   const [pending, setPending] = useState(false);
@@ -1928,7 +1931,7 @@ function AgentCommandList({
             <div className="flex items-center gap-1.5 p-2.5">
               <div
                 onPointerDown={onHandleDown(index)}
-                title="拖动调整顺序"
+                title={t("拖动调整顺序")}
                 className={
                   "flex h-6 w-4 shrink-0 cursor-grab items-center justify-center text-fg-faint hover:text-fg-muted " +
                   (dragFrom === index ? "opacity-40" : "")
@@ -1953,10 +1956,10 @@ function AgentCommandList({
                   className="h-4 w-4 shrink-0"
                 />
                 <span className="truncate text-[12px] text-fg">
-                  {item.name.trim() || "未命名智能体"}
+                  {item.name.trim() || i18n.t("未命名智能体")}
                 </span>
                 <span className="truncate font-mono text-[11px] text-fg-faint">
-                  {item.command.trim() || "未填写命令"}
+                  {item.command.trim() || i18n.t("未填写命令")}
                 </span>
               </button>
               {item.command.trim() !== "" && (
@@ -1975,7 +1978,7 @@ function AgentCommandList({
                     onOpenChange(openIndex - 1);
                   }
                 }}
-                title="删除这个智能体"
+                title={t("删除这个智能体")}
                 className={LIST_ACTION}
               >
                 <IconClose className="h-3 w-3" />
@@ -1984,12 +1987,12 @@ function AgentCommandList({
 
             {open && (
               <div className="flex flex-col gap-3 border-t border-line p-3">
-                <Field label="名称" hint="只用于界面展示，也是终端顶栏按钮上的名字">
+                <Field label={t("名称")} hint={t("只用于界面展示，也是终端顶栏按钮上的名字")}>
                   <input
                     type="text"
                     value={item.name}
                     spellCheck={false}
-                    placeholder="如 Claude Code"
+                    placeholder={t("如 Claude Code")}
                     onChange={(event) =>
                       onChange(
                         commands.map((entry, i) =>
@@ -2001,14 +2004,14 @@ function AgentCommandList({
                   />
                 </Field>
                 <Field
-                  label="启动命令"
-                  hint="裸命令名会去 PATH 里找，也可以填完整路径；会原样在当前终端执行，工作区的其他目录由 CLI 自己支持的参数注入"
+                  label={t("启动命令")}
+                  hint={t("裸命令名会去 PATH 里找，也可以填完整路径；会原样在当前终端执行，工作区的其他目录由 CLI 自己支持的参数注入")}
                 >
                   <input
                     type="text"
                     value={item.command}
                     spellCheck={false}
-                    placeholder="如 claude"
+                    placeholder={t("如 claude")}
                     onChange={(event) =>
                       onChange(
                         commands.map((entry, i) =>
@@ -2020,8 +2023,8 @@ function AgentCommandList({
                   />
                 </Field>
                 <Field
-                  label="环境变量"
-                  hint="启动时按原样注入这个 CLI 的进程环境，同名变量后写的覆盖先写的。值明文保存在本机设置里，密钥类建议交给 CLI 自己的配置或系统凭据库"
+                  label={t("环境变量")}
+                  hint={t("启动时按原样注入这个 CLI 的进程环境，同名变量后写的覆盖先写的。值明文保存在本机设置里，密钥类建议交给 CLI 自己的配置或系统凭据库")}
                 >
                   <EnvVarEditor
                     env={item.env}
@@ -2055,6 +2058,7 @@ function SupportedAgentList({
   onAdd: (item: AgentCatalogItem) => void;
   onOpenConfigured: (index: number) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-2">
       {AGENT_CATALOG.map((item) => {
@@ -2094,35 +2098,32 @@ function SupportedAgentList({
                 <AgentStatusBadge status={status} checking={checking} />
                 {canChat && (
                   <span
-                    title="可以在中间区的「对话」视图里用 ACP 接入"
+                    title={t("可以在中间区的「对话」视图里用 ACP 接入")}
                     className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim"
                   >
-                    支持对话
-                  </span>
+                    {t("支持对话")}</span>
                 )}
               </div>
               <p className="mt-0.5 truncate font-mono text-[10px] text-fg-faint">
                 {item.command}
                 {status?.version ? " · " + status.version : ""}
               </p>
-              <p className="mt-0.5 truncate text-[10px] text-fg-faint" title={item.hint}>
-                {missing ? "安装：" + item.install : item.hint}
+              <p className="mt-0.5 truncate text-[10px] text-fg-faint" title={i18n.t(item.hint)}>
+              {missing ? i18n.t("安装：") + (item.install.startsWith("npm ") ? item.install : i18n.t(item.install)) : i18n.t(item.hint)}
               </p>
             </div>
             {index !== null ? (
               <button
                 type="button"
                 onClick={() => onOpenConfigured(index)}
-                title="去已配置列表里编辑它"
+                title={t("去已配置列表里编辑它")}
                 className={BUTTON_SM}
               >
-                已添加
-              </button>
+                {t("已添加")}</button>
             ) : (
               <button type="button" onClick={() => onAdd(item)} className={BUTTON_SM}>
                 <IconPlus className="h-3 w-3" />
-                添加
-              </button>
+                {t("添加")}</button>
             )}
           </div>
         );
@@ -2132,6 +2133,8 @@ function SupportedAgentList({
 }
 
 export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
+  const { preference: localePreference, setPreference: setLocalePreference } = useLocale();
+  const { t } = useTranslation();
   const { settings, update, reset, resetSection, secretNotice } = useSettings();
   // 开发调试版可能被 src-tauri/.env 覆盖，下面在 AI 分组里如实标出来（正式版恒为空）
   const devAi = useDevAiOverrides();
@@ -2178,7 +2181,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
     const owner = SHORTCUT_COMMANDS.find(
       (command) => command.id !== id && settings.shortcuts[command.id] === combo,
     );
-    if (owner) return `与「${owner.label}」冲突`;
+    if (owner) return i18n.t("与「{{label}}」冲突", { label: i18n.t(owner.label) });
     update({ shortcuts: { ...settings.shortcuts, [id]: combo } });
     return null;
   };
@@ -2203,7 +2206,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
       const statuses = await checkDependencies();
       setDependencyStatuses(Object.fromEntries(statuses.map((status) => [status.id, status])));
     } catch (error) {
-      setInstallMessage(`检查依赖失败：${String(error)}`);
+      setInstallMessage(i18n.t("检查依赖失败：{{error}}", { error: String(error) }));
     } finally {
       setCheckingDependencies(false);
     }
@@ -2521,6 +2524,9 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
 
   /** 当前页的标题与说明；tab 一定在 TABS 里，兜底只是让 TS 不用非空断言 */
   const currentTab = TABS.find((item) => item.id === tab) ?? TABS[0];
+  const tabLabels = TABS.map((item) => t(item.label));
+  const tabDescriptions = TABS.map((item) => t(item.desc));
+  const currentTabIndex = TABS.findIndex((item) => item.id === currentTab.id);
 
   return (
     <div
@@ -2540,7 +2546,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label="设置"
+        aria-label={t("设置")}
         style={
           box
             ? {
@@ -2560,7 +2566,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
           <div
             key={handle.className}
             role="separator"
-            aria-label="拖动调整窗口大小"
+            aria-label={t("拖动调整窗口大小")}
             onPointerDown={onResizeDown(handle.edges)}
             onPointerMove={onResizeMove}
             onPointerUp={onResizeUp}
@@ -2580,13 +2586,13 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
             <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-accent/10 text-accent ring-1 ring-accent/20">
               <IconSettings className="h-4 w-4" />
             </span>
-            <span className="text-[13px] font-semibold tracking-wide text-fg">设置</span>
+            <span className="text-[13px] font-semibold tracking-wide text-fg">{t("设置")}</span>
           </div>
           <button
             type="button"
             onClick={onClose}
-            title="关闭"
-            aria-label="关闭设置"
+            title={t("关闭")}
+            aria-label={t("关闭设置")}
             className="codovo-mac-close-button flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-fg-dim transition-colors hover:bg-hover hover:text-fg"
           >
             <IconClose className="h-3.5 w-3.5" />
@@ -2615,7 +2621,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       active ? "text-accent" : "text-fg-icon group-hover:text-fg-muted"
                     }`}
                   />
-                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  <span className="min-w-0 flex-1 truncate">{tabLabels[TABS.indexOf(item)]}</span>
                   {active && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
                 </button>
               );
@@ -2631,23 +2637,36 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
             <div className="codovo-tab-in flex flex-col gap-5 p-5">
               <div className="flex flex-col gap-1">
                 <h2 className="text-[15px] font-semibold tracking-tight text-fg">
-                  {currentTab.label}
+                  {tabLabels[currentTabIndex]}
                 </h2>
-                <p className="text-[11px] leading-relaxed text-fg-faint">{currentTab.desc}</p>
+                <p className="text-[11px] leading-relaxed text-fg-faint">{tabDescriptions[currentTabIndex]}</p>
               </div>
               {tab === "appearance" && (
                 <>
-                  <Section title="主题" dense>
-                    <Row label="配色方案">
+                  <Section title={t("主题")} dense>
+                    <Row label={t("配色方案")}>
                       <ThemeSelect />
                     </Row>
                   </Section>
+                  <Section title={t("语言")} dense>
+                    <Row label={t("界面语言")}>
+                      <select
+                        value={localePreference}
+                        onChange={(event) => setLocalePreference(event.target.value as LocalePreference)}
+                        className={TEXT_INPUT}
+                      >
+                        <option value="system">{t("跟随系统")}</option>
+                        <option value="zh-CN">{t("简体中文")}</option>
+                        <option value="en">English</option>
+                      </select>
+                    </Row>
+                  </Section>
                   <Section
-                    title="窗口"
+                    title={t("窗口")}
                     dense
-                    hint="调低后窗口底色变半透明、透出桌面，系统会在窗口后面铺一层毛玻璃。终端与编辑器跟着一起透，用的还是各自主题的配色。"
+                    hint={t("调低后窗口底色变半透明、透出桌面，系统会在窗口后面铺一层毛玻璃。终端与编辑器跟着一起透，用的还是各自主题的配色。")}
                   >
-                    <Row label="界面透明度">
+                    <Row label={t("界面透明度")}>
                       <PercentSlider
                         value={settings.uiOpacity}
                         min={UI_OPACITY_MIN}
@@ -2657,11 +2676,11 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     </Row>
                   </Section>
                   <Section
-                    title="字体"
+                    title={t("字体")}
                     dense
-                    hint={`字体名写 CSS font-family，可写多个用逗号分隔。界面留空用默认无衬线栈；终端与编辑器留空用 ${DEFAULT_MONO_FONT}；界面等宽字体留空跟随编辑器字体`}
+                    hint={i18n.t("字体名写 CSS font-family，可写多个用逗号分隔。界面留空用默认无衬线栈；终端与编辑器留空用 {{font}}；界面等宽字体留空跟随编辑器字体", { font: DEFAULT_MONO_FONT })}
                   >
-                    <Row label="界面字体">
+                    <Row label={t("界面字体")}>
                       <input
                         type="text"
                         value={settings.uiFontFamily}
@@ -2671,7 +2690,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         className={TEXT_INPUT}
                       />
                     </Row>
-                    <Row label="终端字体">
+                    <Row label={t("终端字体")}>
                       <input
                         type="text"
                         value={settings.terminalFontFamily}
@@ -2683,20 +2702,20 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         className={TEXT_INPUT}
                       />
                     </Row>
-                    <Row label="终端字号">
+                    <Row label={t("终端字号")}>
                       <SizeSlider
                         value={settings.terminalFontSize}
                         onChange={(terminalFontSize) => update({ terminalFontSize })}
                       />
                     </Row>
-                    <Row label="终端字重">
+                    <Row label={t("终端字重")}>
                       <BoolToggle
                         value={settings.terminalFontBold}
                         options={WEIGHT_OPTIONS}
                         onChange={(terminalFontBold) => update({ terminalFontBold })}
                       />
                     </Row>
-                    <Row label="编辑器字体">
+                    <Row label={t("编辑器字体")}>
                       <input
                         type="text"
                         value={settings.editorFontFamily}
@@ -2708,7 +2727,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         className={TEXT_INPUT}
                       />
                     </Row>
-                    <Row label="界面等宽字体">
+                    <Row label={t("界面等宽字体")}>
                       <input
                         type="text"
                         value={settings.uiMonoFontFamily}
@@ -2720,13 +2739,13 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         className={TEXT_INPUT}
                       />
                     </Row>
-                    <Row label="编辑器字号">
+                    <Row label={t("编辑器字号")}>
                       <SizeSlider
                         value={settings.editorFontSize}
                         onChange={(editorFontSize) => update({ editorFontSize })}
                       />
                     </Row>
-                    <Row label="编辑器字重">
+                    <Row label={t("编辑器字重")}>
                       <BoolToggle
                         value={settings.editorFontBold}
                         options={WEIGHT_OPTIONS}
@@ -2735,11 +2754,11 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     </Row>
                   </Section>
                   <Section
-                    title="界面"
+                    title={t("界面")}
                     dense
-                    hint="右栏模块显隐；关掉的模块不再出现在图标条上，至少留一个。"
+                    hint={t("右栏模块显隐；关掉的模块不再出现在图标条上，至少留一个。")}
                   >
-                    <Row label="文件">
+                    <Row label={t("文件")}>
                       <BoolToggle
                         value={settings.rightFilesVisible}
                         options={VISIBLE_OPTIONS}
@@ -2747,7 +2766,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(rightFilesVisible) => update({ rightFilesVisible })}
                       />
                     </Row>
-                    <Row label="变更">
+                    <Row label={t("变更")}>
                       <BoolToggle
                         value={settings.rightChangesVisible}
                         options={VISIBLE_OPTIONS}
@@ -2755,7 +2774,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(rightChangesVisible) => update({ rightChangesVisible })}
                       />
                     </Row>
-                    <Row label="浏览器">
+                    <Row label={t("浏览器")}>
                       <BoolToggle
                         value={settings.rightBrowserVisible}
                         options={VISIBLE_OPTIONS}
@@ -2763,7 +2782,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(rightBrowserVisible) => update({ rightBrowserVisible })}
                       />
                     </Row>
-                    <Row label="远程连接">
+                    <Row label={t("远程连接")}>
                       <BoolToggle
                         value={settings.rightRemoteVisible}
                         options={VISIBLE_OPTIONS}
@@ -2771,7 +2790,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(rightRemoteVisible) => update({ rightRemoteVisible })}
                       />
                     </Row>
-                    <Row label="数据库">
+                    <Row label={t("数据库")}>
                       <BoolToggle
                         value={settings.rightDatabaseVisible}
                         options={VISIBLE_OPTIONS}
@@ -2779,7 +2798,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(rightDatabaseVisible) => update({ rightDatabaseVisible })}
                       />
                     </Row>
-                    <Row label="预览">
+                    <Row label={t("预览")}>
                       <BoolToggle
                         value={settings.rightPreviewVisible}
                         options={VISIBLE_OPTIONS}
@@ -2787,7 +2806,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(rightPreviewVisible) => update({ rightPreviewVisible })}
                       />
                     </Row>
-                    <Row label="部署">
+                    <Row label={t("部署")}>
                       <BoolToggle
                         value={settings.rightDeployVisible}
                         options={VISIBLE_OPTIONS}
@@ -2796,10 +2815,10 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Row>
                   </Section>
-                  <Section title="行为" dense>
+                  <Section title={t("行为")} dense>
                     <Row
-                      label="关闭窗口"
-                      hint="开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、助手不受影响）；要真退出请用托盘菜单"
+                      label={t("关闭窗口")}
+                      hint={t("开着工作区时，关闭只收起界面让它在托盘里继续跑（终端、助手不受影响）；要真退出请用托盘菜单")}
                     >
                       <BoolToggle
                         value={settings.closeToTray}
@@ -2808,8 +2827,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Row>
                     <Row
-                      label="启动恢复工作区"
-                      hint="启动时自动打开上次的工作区；关掉则每次从空界面开始（记录留着，开回来还在）"
+                      label={t("启动恢复工作区")}
+                      hint={t("启动时自动打开上次的工作区；关掉则每次从空界面开始（记录留着，开回来还在）")}
                     >
                       <BoolToggle
                         value={settings.restoreWorkspace}
@@ -2823,16 +2842,16 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
 
               {tab === "terminal" && (
                 <>
-                  <Section title="终端" hint="只影响新建的终端；已在运行的会话保持原样">
-                    <Field label="终端程序">
+                  <Section title={t("终端")} hint={t("只影响新建的终端；已在运行的会话保持原样")}>
+                    <Field label={t("终端程序")}>
                       <TerminalShellSelect
                         value={settings.terminalShell}
                         onChange={(terminalShell) => update({ terminalShell })}
                       />
                     </Field>
                     <Field
-                      label="配色主题"
-                      hint="默认跟界面的深/浅色走；选了具体主题就固定下来"
+                      label={t("配色主题")}
+                      hint={t("默认跟界面的深/浅色走；选了具体主题就固定下来")}
                     >
                       <TerminalThemeSelect
                         value={settings.terminalTheme}
@@ -2842,8 +2861,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                     <Field
-                      label="GPU 加速"
-                      hint="用 WebGL 渲染终端，重输出时更省 CPU；部分显卡或 DPI 缩放组合可能让字体发虚、花屏。默认关闭以保证文字清晰，开启或关闭后只对新建的终端生效"
+                      label={t("GPU 加速")}
+                      hint={t("用 WebGL 渲染终端，重输出时更省 CPU；部分显卡或 DPI 缩放组合可能让字体发虚、花屏。默认关闭以保证文字清晰，开启或关闭后只对新建的终端生效")}
                     >
                       <BoolToggle
                         value={settings.terminalGpuAcceleration}
@@ -2854,8 +2873,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                     <Field
-                      label="等待提示"
-                      hint="终端里 AI CLI 停在需要输入的提示上、或一轮任务跑完回到空闲时，在标签和侧栏标出来；靠输出特征判断，可能误报"
+                      label={t("等待提示")}
+                      hint={t("终端里 AI CLI 停在需要输入的提示上、或一轮任务跑完回到空闲时，在标签和侧栏标出来；靠输出特征判断，可能误报")}
                     >
                       <BoolToggle
                         value={settings.terminalWaitHint}
@@ -2869,10 +2888,10 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
 
               {tab === "editor" && (
                 <>
-                  <Section title="排版">
+                  <Section title={t("排版")}>
                     <Field
-                      label="缩进宽度"
-                      hint="按文件内容自动探测是 Monaco 的默认行为；选了具体宽度就固定下来"
+                      label={t("缩进宽度")}
+                      hint={t("按文件内容自动探测是 Monaco 的默认行为；选了具体宽度就固定下来")}
                     >
                       <Select
                         value={settings.editorIndent}
@@ -2880,21 +2899,21 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                         onChange={(editorIndent) => update({ editorIndent })}
                       />
                     </Field>
-                    <Field label="缩略图" hint="编辑器右侧的 minimap（代码缩略图）">
+                    <Field label={t("缩略图")} hint={t("编辑器右侧的 minimap（代码缩略图）")}>
                       <BoolToggle
                         value={settings.editorMinimap}
                         options={ON_OFF_OPTIONS}
                         onChange={(editorMinimap) => update({ editorMinimap })}
                       />
                     </Field>
-                    <Field label="自动换行" hint="长行在编辑器里自动折行；关掉后按原样横向滚动">
+                    <Field label={t("自动换行")} hint={t("长行在编辑器里自动折行；关掉后按原样横向滚动")}>
                       <BoolToggle
                         value={settings.editorWordWrap}
                         options={ON_OFF_OPTIONS}
                         onChange={(editorWordWrap) => update({ editorWordWrap })}
                       />
                     </Field>
-                    <Field label="行号" hint="编辑器左侧的行号栏。差异视图同样跟着变">
+                    <Field label={t("行号")} hint={t("编辑器左侧的行号栏。差异视图同样跟着变")}>
                       <BoolToggle
                         value={settings.editorLineNumbers}
                         options={ON_OFF_OPTIONS}
@@ -2902,8 +2921,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                     <Field
-                      label="当前行高亮"
-                      hint="把光标所在的那一行（连同行号）标出来；关掉后编辑区更干净，但不好定位光标"
+                      label={t("当前行高亮")}
+                      hint={t("把光标所在的那一行（连同行号）标出来；关掉后编辑区更干净，但不好定位光标")}
                     >
                       <BoolToggle
                         value={settings.editorHighlightActiveLine}
@@ -2914,8 +2933,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                     <Field
-                      label="行高"
-                      hint="存的是倍数，按「字号 × 倍数」交给 Monaco，所以改字号时行距跟着一起变；Monaco 自己的默认约为 1.35（Windows / Linux）/ 1.5（macOS）"
+                      label={t("行高")}
+                      hint={t("存的是倍数，按「字号 × 倍数」交给 Monaco，所以改字号时行距跟着一起变；Monaco 自己的默认约为 1.35（Windows / Linux）/ 1.5（macOS）")}
                     >
                       <Select
                         value={settings.editorLineHeight}
@@ -2924,10 +2943,10 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                   </Section>
-                  <Section title="保存">
+                  <Section title={t("保存")}>
                     <Field
-                      label="自动保存"
-                      hint="四种时机照 VS Code 来；有未保存改动的文件都会写回磁盘"
+                      label={t("自动保存")}
+                      hint={t("四种时机照 VS Code 来；有未保存改动的文件都会写回磁盘")}
                     >
                       <Select
                         value={settings.editorAutoSave}
@@ -2936,7 +2955,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                     {settings.editorAutoSave === "afterDelay" && (
-                      <Field label="自动保存延迟" hint="停手多久之后落盘">
+                      <Field label={t("自动保存延迟")} hint={t("停手多久之后落盘")}>
                         <input
                           type="number"
                           min={AUTOSAVE_DELAY_MIN}
@@ -2950,12 +2969,12 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                           }
                           className={TEXT_INPUT}
                         />
-                        <span className="shrink-0 text-[12px] text-fg-dim">毫秒</span>
+                        <span className="shrink-0 text-[12px] text-fg-dim">{t("毫秒")}</span>
                       </Field>
                     )}
                     <Field
-                      label="保存时格式化"
-                      hint="落盘前先用 Prettier 格式化一遍；当前文件类型不被 Prettier 支持、或格式化失败时按原内容保存"
+                      label={t("保存时格式化")}
+                      hint={t("落盘前先用 Prettier 格式化一遍；当前文件类型不被 Prettier 支持、或格式化失败时按原内容保存")}
                     >
                       <BoolToggle
                         value={settings.editorFormatOnSave}
@@ -2964,8 +2983,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       />
                     </Field>
                     <Field
-                      label="保存前检查语法"
-                      hint="用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析"
+                      label={t("保存前检查语法")}
+                      hint={t("用 Prettier 的解析器解析一遍（JSON / JSONC / JSON5 / YAML / JS / TS / CSS / HTML / Markdown / GraphQL 等）。手动保存有问题会问「仍然保存 / 取消」，自动保存跳过校验以避免频繁解析")}
                     >
                       <BoolToggle
                         value={settings.editorCheckSyntaxOnSave}
@@ -2981,14 +3000,14 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
 
               {tab === "shortcuts" && (
                 <Section
-                  title="应用命令"
-                  hint="点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效；编辑器命令（保存 / 查找 / 格式化 / 切换标签…）在编辑器区按下时生效；窗口级命令（设置 / 侧栏 / 字号）在除终端与输入框以外的任何地方生效——终端里 Ctrl+B、Ctrl+PageUp/Down 这类键有自己的含义，宿主不抢。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。"
+                  title={t("应用命令")}
+                  hint={t("点一下控件再按下要用的组合键即可录制，Esc 取消。「关闭标签页」在编辑器、终端和右侧面板里都生效；编辑器命令（保存 / 查找 / 格式化 / 切换标签…）在编辑器区按下时生效；窗口级命令（设置 / 侧栏 / 字号）在除终端与输入框以外的任何地方生效——终端里 Ctrl+B、Ctrl+PageUp/Down 这类键有自己的含义，宿主不抢。终端里的 Ctrl+C / Ctrl+V 与 Esc 关闭弹窗保留内置，不在这里配置。")}
                 >
                   {SHORTCUT_COMMANDS.map((command) => (
                     <Field
                       key={command.id}
-                      label={command.label}
-                      hint={`默认 ${formatShortcut(command.defaultCombo)}`}
+                      label={t(command.label)}
+                      hint={i18n.t("默认 {{shortcut}}", { shortcut: formatShortcut(command.defaultCombo) })}
                       action={
                         <button
                           type="button"
@@ -2996,8 +3015,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                           onClick={() => applyShortcut(command.id, command.defaultCombo)}
                           className="rounded-md border border-line-strong px-2 py-0.5 text-[11px] text-fg-muted transition-colors hover:border-line-hover hover:bg-hover hover:text-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-line-strong disabled:hover:bg-transparent disabled:hover:text-fg-muted"
                         >
-                          恢复默认
-                        </button>
+                          {t("恢复默认")}</button>
                       }
                     >
                       <ShortcutRecorder
@@ -3012,18 +3030,17 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
               {tab === "dependencies" && (
                 <>
                   <Section
-                    title="基础运行环境"
-                    hint="这些工具用于文件变更、终端和本机 AI 命令。已安装的会显示版本。"
+                    title={t("基础运行环境")}
+                    hint={t("这些工具用于文件变更、终端和本机 AI 命令。已安装的会显示版本。")}
                     action={
                       <span className="text-[11px] text-fg-faint">
-                        {Object.values(dependencyStatuses).filter((status) => status.installed).length}/7 已就绪
-                      </span>
+                        {Object.values(dependencyStatuses).filter((status) => status.installed).length}{t("/7 已就绪")}</span>
                     }
                   >
                     <DependencyRow
                       id="git"
                       label="Git"
-                      detail="文件变更、暂存、提交和历史记录"
+                      detail={t("文件变更、暂存、提交和历史记录")}
                       installing={installing === "git"}
                       checking={checkingDependencies}
                       status={dependencyStatuses.git}
@@ -3032,7 +3049,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     <DependencyRow
                       id="node"
                       label="Node.js"
-                      detail="运行 npm 和各类 JavaScript CLI"
+                      detail={t("运行 npm 和各类 JavaScript CLI")}
                       installing={installing === "node"}
                       checking={checkingDependencies}
                       status={dependencyStatuses.node}
@@ -3041,8 +3058,8 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                   </Section>
 
                   <Section
-                    title="AI 命令行工具"
-                    hint="按需安装；装好后到「智能体」页配置启动命令和环境变量。"
+                    title={t("AI 命令行工具")}
+                    hint={t("按需安装；装好后到「智能体」页配置启动命令和环境变量。")}
                   >
                     <DependencyRow
                       id="opencode"
@@ -3083,13 +3100,13 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                   </Section>
 
                   <Section
-                    title="可选扩展"
-                    hint="只在使用 Codovo 的 GitHub 反馈功能时需要。"
+                    title={t("可选扩展")}
+                    hint={t("只在使用 Codovo 的 GitHub 反馈功能时需要。")}
                   >
                     <DependencyRow
                       id="gh"
                       label="GitHub CLI"
-                      detail="https://cli.github.com/ · 安装后运行 gh auth login"
+                      detail={t("https://cli.github.com/ · 安装后运行 gh auth login")}
                       installing={false}
                       checking={checkingDependencies}
                       status={dependencyStatuses.gh}
@@ -3101,16 +3118,15 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     </p>
                   )}
                   <p className="text-[11px] leading-relaxed text-fg-faint">
-                    Windows 的 WebView2 由系统提供；如果应用无法启动，请先安装 Microsoft Edge WebView2 Runtime。
-                  </p>
+                    {t("Windows 的 WebView2 由系统提供；如果应用无法启动，请先安装 Microsoft Edge WebView2 Runtime。")}</p>
                 </>
               )}
 
               {tab === "agents" && (
                 <>
                   <Section
-                    title="已配置"
-                    hint="终端顶栏按这里的顺序摆按钮，空命令的条目不会出现；按住左侧把手可调整顺序，点条目展开改命令和环境变量"
+                    title={t("已配置")}
+                    hint={t("终端顶栏按这里的顺序摆按钮，空命令的条目不会出现；按住左侧把手可调整顺序，点条目展开改命令和环境变量")}
                     action={
                       <button
                         type="button"
@@ -3123,7 +3139,7 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                             ],
                           });
                         }}
-                        title="添加一个编程 Agent"
+                        title={t("添加一个编程 Agent")}
                         className={HEAD_ACTION}
                       >
                         <IconPlus className="h-3 w-3" />
@@ -3133,10 +3149,9 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                     {settings.aiCommands.length === 0 ? (
                       <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-6 text-center">
                         <IconBot className="h-5 w-5 text-fg-faint" />
-                        <p className="text-[12px] text-fg-muted">还没有配置编程 Agent</p>
+                        <p className="text-[12px] text-fg-muted">{t("还没有配置编程 Agent")}</p>
                         <p className="max-w-[320px] text-[11px] leading-relaxed text-fg-faint">
-                          从下面的「系统支持」里挑一个，或者点右上角的加号手动添加一条命令。
-                        </p>
+                          {t("从下面的「系统支持」里挑一个，或者点右上角的加号手动添加一条命令。")}</p>
                       </div>
                     ) : (
                       <AgentCommandList
@@ -3151,14 +3166,14 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                   </Section>
 
                   <Section
-                    title="系统支持"
-                    hint="本机是否安装按可执行文件是否在 PATH 中判断；用 npx 这类包运行器临时启动的会显示未安装，装了但读不出版本号仍按已安装算"
+                    title={t("系统支持")}
+                    hint={t("本机是否安装按可执行文件是否在 PATH 中判断；用 npx 这类包运行器临时启动的会显示未安装，装了但读不出版本号仍按已安装算")}
                     action={
                       <button
                         type="button"
                         onClick={() => void refreshAgents()}
                         disabled={checkingAgents}
-                        title="重新检测本机安装情况"
+                        title={t("重新检测本机安装情况")}
                         className={HEAD_ACTION + " disabled:opacity-40"}
                       >
                         <IconRefresh
@@ -3193,12 +3208,12 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
               {tab === "agent" && (
                 <>
                   <Section
-                    title="模型提供商"
-                    hint="OpenAI 兼容的服务都能接入，一家一条；应用助手和「变更」里的提交信息生成都读这里"
+                    title={t("模型提供商")}
+                    hint={t("OpenAI 兼容的服务都能接入，一家一条；应用助手和「变更」里的提交信息生成都读这里")}
                     action={
                       <button
                         type="button"
-                        title="新增提供商"
+                        title={t("新增提供商")}
                         onClick={addProvider}
                         className={HEAD_ACTION}
                       >
@@ -3210,14 +3225,12 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       {settings.aiProviders.length === 0 ? (
                         <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-line-strong px-4 py-6 text-center">
                           <IconBot className="h-5 w-5 text-fg-faint" />
-                          <p className="text-[12px] text-fg-muted">还没有提供商</p>
+                          <p className="text-[12px] text-fg-muted">{t("还没有提供商")}</p>
                           <p className="max-w-[320px] text-[11px] leading-relaxed text-fg-faint">
-                            填好接口地址和至少一个模型就能用；应用助手、文档翻译和提交信息生成都读这里。
-                          </p>
+                            {t("填好接口地址和至少一个模型就能用；应用助手、文档翻译和提交信息生成都读这里。")}</p>
                           <button type="button" onClick={addProvider} className={BUTTON}>
                             <IconPlus className="h-3 w-3" />
-                            添加提供商
-                          </button>
+                            {t("添加提供商")}</button>
                         </div>
                       ) : (
                         settings.aiProviders.map((provider, index) => (
@@ -3241,30 +3254,27 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                       )}
                       {overriddenAi.length > 0 && (
                         <p className="text-[11px] leading-relaxed text-fg-faint">
-                          开发调试：src-tauri/.env 覆盖了「{overriddenAi.join("、")}」，
-                          它们会顶掉「默认提供商」的接口地址、模型和密钥（密钥不再走钥匙串，
-                          直接注入子进程环境）。改完重开应用生效；已在跑的助手要停掉再起。
-                        </p>
+                          {t("开发调试：src-tauri/.env 覆盖了「")}{overriddenAi.join("、")}{t("」， 它们会顶掉「默认提供商」的接口地址、模型和密钥（密钥不再走钥匙串， 直接注入子进程环境）。改完重开应用生效；已在跑的助手要停掉再起。")}</p>
                       )}
                     </div>
                   </Section>
 
                   <Section
-                    title="默认模型"
-                    hint="应用助手、提交信息与部署诊断这些 AI 功能默认用它"
+                    title={t("默认模型")}
+                    hint={t("应用助手、提交信息与部署诊断这些 AI 功能默认用它")}
                   >
                     <Field
-                      label="全局默认"
+                      label={t("全局默认")}
                       hint={
                         settings.aiProviders.length === 0
-                          ? "先去上面加一个提供商"
-                          : "选项来自已启用的提供商和模型"
+                          ? i18n.t("先去上面加一个提供商")
+                          : i18n.t("选项来自已启用的提供商和模型")
                       }
                     >
                       <Select
                         value={defaultRef}
                         options={[
-                          { value: "", label: "未配置" },
+                          { value: "", label: i18n.t("未配置") },
                           ...modelRefOptions(settings),
                         ]}
                         onChange={(next) => updateDefaultModel(next)}
@@ -3273,12 +3283,12 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                   </Section>
 
                   <Section
-                    title="文档翻译"
-                    hint="Markdown / 纯文本文档的翻译复用上面的全局默认模型，不需要单独配置接口和密钥"
+                    title={t("文档翻译")}
+                    hint={t("Markdown / 纯文本文档的翻译复用上面的全局默认模型，不需要单独配置接口和密钥")}
                   >
                     <Field
-                      label="目标语言"
-                      hint="切换后翻译视图会按新语言重新翻译；也可以在翻译视图里直接切换"
+                      label={t("目标语言")}
+                      hint={t("切换后翻译视图会按新语言重新翻译；也可以在翻译视图里直接切换")}
                     >
                       <Select
                         value={settings.translateTarget}
@@ -3295,22 +3305,21 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
 
               {tab === "about" && (
                 <>
-                  <Section title="版本" dense>
-                    <Row label="当前版本">
+                  <Section title={t("版本")} dense>
+                    <Row label={t("当前版本")}>
                       <span className="rounded-md bg-hover px-2 py-0.5 font-mono text-[11px] text-fg-dim tabular-nums">
                         v{__APP_VERSION__}
                       </span>
                       {import.meta.env.DEV && (
                         <span className="rounded-full border border-line px-1.5 py-0.5 text-[10px] text-fg-faint">
-                          开发版
-                        </span>
+                          {t("开发版")}</span>
                       )}
                     </Row>
                   </Section>
                   <Section
-                    title="更新"
+                    title={t("更新")}
                     dense
-                    hint="从 GitHub Releases 获取最新版本；发现新版本时右下角会出现更新卡片，也可以从发布页手动下载"
+                    hint={t("从 GitHub Releases 获取最新版本；发现新版本时右下角会出现更新卡片，也可以从发布页手动下载")}
                   >
                     <UpdateSettings />
                   </Section>
@@ -3334,16 +3343,14 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
                 onClick={() => setConfirmReset(tab)}
                 className={RESET_BUTTON}
               >
-                恢复本页默认
-              </button>
+                {t("恢复本页默认")}</button>
             )}
             <button
               type="button"
               onClick={() => setConfirmReset("all")}
               className={RESET_BUTTON}
             >
-              恢复全部默认
-            </button>
+              {t("恢复全部默认")}</button>
           </div>
         </footer>
       </div>
@@ -3352,10 +3359,10 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
           `confirmReset` 挡掉，不会连设置面板一起关 */}
       {pendingRemove && (
         <ConfirmDialog
-          message={`删除提供商「${
-            pendingRemove.provider.name || pendingRemove.provider.id
-          }」？它的模型配置会一起去掉，无法撤销。`}
-          confirmLabel="删除"
+          message={i18n.t("删除提供商「{{name}}」？它的模型配置会一起去掉，无法撤销。", {
+            name: pendingRemove.provider.name || pendingRemove.provider.id,
+          })}
+          confirmLabel={t("删除")}
           onConfirm={() => {
             removeProvider(pendingRemove.provider);
             setPendingRemove(null);
@@ -3368,14 +3375,15 @@ export function SettingsDialog({ onClose, initialTab }: SettingsDialogProps) {
         <ConfirmDialog
           message={
             confirmReset === "all"
-              ? "恢复全部默认设置？模型提供商、密钥、编程 Agent 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。"
+              ? i18n.t("恢复全部默认设置？模型提供商、密钥、编程 Agent 列表、字体、主题、快捷键和右栏模块都会回到初始值，无法撤销。")
               : isResettableTab(confirmReset)
-                ? `恢复「${
-                    TABS.find((item) => item.id === confirmReset)?.label
-                  }」这一页的默认设置？${SECTION_RESET_HINT[confirmReset]}会回到初始值，无法撤销。`
+                ? i18n.t("恢复「{{section}}」这一页的默认设置？{{details}}会回到初始值，无法撤销。", {
+                    section: t(TABS.find((item) => item.id === confirmReset)?.label ?? "设置"),
+                    details: t(SECTION_RESET_HINT[confirmReset]),
+                  })
                 : ""
           }
-          confirmLabel="恢复默认"
+          confirmLabel={t("恢复默认")}
           onConfirm={() => {
             const target = confirmReset;
             if (target === "all") {

@@ -1,4 +1,5 @@
 import type { Options, Plugin } from "prettier";
+import i18n from "./i18n";
 
 /**
  * 格式化引擎 —— 直接复用社区事实标准 Prettier，不自己造 formatter。
@@ -125,7 +126,7 @@ interface FormatEngine {
 async function loadEngine(filename: string): Promise<FormatEngine> {
   const ext = extensionOf(filename);
   const group = SPECS.get(ext);
-  if (!group) throw new Error(`暂不支持格式化 .${ext || "?"} 文件`);
+  if (!group) throw new Error(i18n.t("暂不支持格式化 .{{extension}} 文件", { extension: ext || "?" }));
 
   const [prettier, plugins] = await Promise.all([
     import("prettier/standalone"),
@@ -194,7 +195,7 @@ function toSyntaxIssue(err: unknown): SyntaxIssue {
     }
   }
 
-  const message = firstLine.replace(/\s*\(\d+:\d+\)\s*$/, "").trim() || "语法错误";
+  const message = firstLine.replace(/\s*\(\d+:\d+\)\s*$/, "").trim() || i18n.t("语法错误");
   return { message, line, column };
 }
 
@@ -230,12 +231,12 @@ export async function validateText(source: string, filename: string): Promise<Sy
 /** 把语法问题的位置拼成中文提示，如「（第 3 行 第 5 列）」；解析器没给位置时返回空串 */
 export function formatIssueLocation(issue: SyntaxIssue): string {
   if (issue.line === null) return "";
-  const column = issue.column === null ? "" : ` 第 ${issue.column} 列`;
-  return `（第 ${issue.line} 行${column}）`;
+  const column = issue.column === null ? "" : i18n.t("，第 {{column}} 列", { column: issue.column });
+  return i18n.t("（第 {{line}} 行{{column}}）", { line: issue.line, column });
 }
 
 /** Prettier 的报错常带一段 codeframe，只取首行给用户看 */
 export function errorText(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err);
-  return raw.split("\n")[0]?.trim() || "未知错误";
+  return raw.split("\n")[0]?.trim() || i18n.t("未知错误");
 }

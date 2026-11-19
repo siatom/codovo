@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import i18n from "../lib/i18n";
 import type { GitController, GitMark } from "../lib/git";
 import type { DiffSource } from "../lib/tabs";
 import { pathKey, toDisplayPath, type MovePair } from "../lib/fs";
@@ -147,6 +149,7 @@ export function ToolPane({
   onRequestCloseTab,
   filesReveal,
 }: ToolPaneProps) {
+  const { t } = useTranslation();
   const { settings } = useSettings();
   /**
    * 「变更」只有雷达一个主视图，完整 Git 面板是它上面的一个覆盖视图。
@@ -237,11 +240,10 @@ export function ToolPane({
             不再用两个 tab 平分注意力——Agent 编程下绝大多数时间只需要看状态。 */}
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
-            变更
-          </span>
+            {t("变更")}</span>
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <IconButton
-              label={radarBusy ? "正在刷新…" : "刷新"}
+              label={radarBusy ? i18n.t("正在刷新…") : i18n.t("刷新")}
               disabled={radarBusy}
               onClick={() => {
                 // 雷达里「主检出」那行读的是 git 快照（2 秒轮询），只重拉 worktree 列表

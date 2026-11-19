@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState, type ReactNode } from "react";
+import i18n from "../lib/i18n";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   clearHostSecrets,
@@ -38,6 +40,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
  * localStorage 里只落「有没有」的布尔位（照 AI 提供商那套）。
  */
 export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState(host?.name ?? "");
   const [address, setAddress] = useState(host?.host ?? "");
   const [port, setPort] = useState(String(host?.port ?? 22));
@@ -81,24 +84,24 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
   /** 校验表单，通过返回解析后的端口，不通过则设错误并返回 null */
   const validate = (): number | null => {
     if (!address.trim()) {
-      setError("请填写主机地址");
+      setError(i18n.t("请填写主机地址"));
       return null;
     }
     if (!user.trim()) {
-      setError("请填写用户名");
+      setError(i18n.t("请填写用户名"));
       return null;
     }
     const portNumber = Number(port);
     if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
-      setError("端口要在 1–65535 之间");
+      setError(i18n.t("端口要在 1–65535 之间"));
       return null;
     }
     if (auth === "key" && !keyPath.trim()) {
-      setError("私钥认证需要选择私钥文件");
+      setError(i18n.t("私钥认证需要选择私钥文件"));
       return null;
     }
     if (auth === "password" && !password && !savedPassword) {
-      setError("请填写密码");
+      setError(i18n.t("请填写密码"));
       return null;
     }
     return portNumber;
@@ -128,7 +131,9 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
       });
       setTestResult({
         ok: true,
-        message: result.fingerprint ? `连接成功，主机指纹 ${result.fingerprint}` : "连接成功",
+        message: result.fingerprint
+          ? i18n.t("连接成功，主机指纹 {{fingerprint}}", { fingerprint: result.fingerprint })
+          : i18n.t("连接成功"),
       });
     } catch (reason) {
       setTestResult({ ok: false, message: String(reason) });
@@ -204,24 +209,24 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
         onClick={(event) => event.stopPropagation()}
       >
         <h2 className="text-[13px] font-medium text-fg">
-          {host ? "编辑主机" : "新增主机"}
+          {host ? i18n.t("编辑主机") : i18n.t("新增主机")}
         </h2>
 
         <div className="flex gap-3">
           <div className="flex-[2]">
-            <Row label="名称">
+            <Row label={t("名称")}>
               <input
                 autoFocus
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="如 生产服务器"
+                placeholder={t("如 生产服务器")}
                 spellCheck={false}
                 className={INPUT}
               />
             </Row>
           </div>
           <div className="flex-1">
-            <Row label="端口">
+            <Row label={t("端口")}>
               <input
                 value={port}
                 onChange={(event) => setPort(event.target.value)}
@@ -232,83 +237,81 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
           </div>
         </div>
 
-        <Row label="主机地址">
+        <Row label={t("主机地址")}>
           <input
             value={address}
             onChange={(event) => setAddress(event.target.value)}
-            placeholder="IP 或域名"
+            placeholder={t("IP 或域名")}
             spellCheck={false}
             className={INPUT}
           />
         </Row>
 
-        <Row label="用户名">
+        <Row label={t("用户名")}>
           <input
             value={user}
             onChange={(event) => setUser(event.target.value)}
-            placeholder="如 root"
+            placeholder={t("如 root")}
             spellCheck={false}
             className={INPUT}
           />
         </Row>
 
-        <Row label="认证方式">
+        <Row label={t("认证方式")}>
           <div className="flex gap-1 rounded-md border border-line-strong p-0.5">
             <button
               type="button"
               onClick={() => setAuth("password")}
               className={`${SEGMENT} ${auth === "password" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
             >
-              密码
-            </button>
+              {t("密码")}</button>
             <button
               type="button"
               onClick={() => setAuth("key")}
               className={`${SEGMENT} ${auth === "key" ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover"}`}
             >
-              私钥文件
-            </button>
+              {t("私钥文件")}</button>
           </div>
         </Row>
 
         {auth === "password" ? (
-          <Row label="密码">
+          <Row label={t("密码")}>
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder={savedPassword ? "已保存，留空则不改动" : "输入登录密码"}
+              placeholder={savedPassword ? i18n.t("已保存，留空则不改动") : i18n.t("输入登录密码")}
               spellCheck={false}
               className={INPUT}
             />
           </Row>
         ) : (
           <>
-            <Row label="私钥文件">
+            <Row label={t("私钥文件")}>
               <div className="flex gap-2">
                 <input
                   value={keyPath}
                   onChange={(event) => setKeyPath(event.target.value)}
-                  placeholder="如 ~/.ssh/id_ed25519"
+                  placeholder={t("如 ~/.ssh/id_ed25519")}
                   spellCheck={false}
                   className={INPUT}
                 />
                 <button
                   type="button"
                   onClick={() => void pickKey()}
-                  title="选择私钥文件"
+                  title={t("选择私钥文件")}
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-line-strong text-fg-dim hover:bg-hover hover:text-fg"
                 >
                   <IconFolderOpen className="h-3.5 w-3.5" />
                 </button>
               </div>
             </Row>
-            <Row label="私钥口令">
+            <Row label={t("私钥口令")}>
               <input
                 type="password"
                 value={passphrase}
                 onChange={(event) => setPassphrase(event.target.value)}
-                placeholder={savedPassphrase ? "已保存，留空则不改动" : "私钥没加密就留空"}
+                placeholder={savedPassphrase ? i18n.t("已保存，留空则不改动") : i18n.t("私钥没加密就留空")}
                 spellCheck={false}
                 className={INPUT}
               />
@@ -324,7 +327,7 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
               onClick={() => void clearCredentials()}
               className="text-[11px] text-fg-dim hover:text-danger disabled:opacity-60"
             >
-              {clearing ? "清除中…" : "清除已保存凭据"}
+              {clearing ? i18n.t("清除中…") : i18n.t("清除已保存凭据")}
             </button>
           </div>
         )}
@@ -338,7 +341,7 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
             onClick={() => void runTest()}
             className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60"
           >
-            {testing ? "测试中…" : "测试连接"}
+            {testing ? i18n.t("测试中…") : i18n.t("测试连接")}
           </button>
           <span
             className={`min-w-0 flex-1 truncate text-[11px] ${
@@ -353,15 +356,14 @@ export function RemoteHostDialog({ host, onSave, onClose }: RemoteHostDialogProp
             onClick={onClose}
             className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
           >
-            取消
-          </button>
+            {t("取消")}</button>
           <button
             type="button"
             disabled={saving}
             onClick={() => void submit()}
             className="shrink-0 rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected disabled:opacity-60"
           >
-            {saving ? "保存中…" : "保存"}
+            {saving ? i18n.t("保存中…") : i18n.t("保存")}
           </button>
         </div>
       </div>

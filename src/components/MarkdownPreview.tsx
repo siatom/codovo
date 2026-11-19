@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import i18n from "../lib/i18n";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { highlightCodeFences, syncHighlightTheme } from "../lib/highlight";
 import { pathsExist, pathsPresent, samePath } from "../lib/fs";
@@ -87,6 +89,7 @@ export function MarkdownPreview({
   roots,
   onOpenPath,
 }: MarkdownPreviewProps) {
+  const { t } = useTranslation();
   const bodyRef = useRef<HTMLDivElement>(null);
   const outlineNavRef = useRef<HTMLElement>(null);
   const { palette, theme } = useTheme();
@@ -263,9 +266,9 @@ export function MarkdownPreview({
   if (isLarge) {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface px-6 text-center">
-        <p className="text-[13px] text-warn">大文件已关闭 Markdown 预览</p>
-        <p className="text-[12px] text-fg-faint">文件超过 8 MB，为保持编辑流畅，预览不再渲染。</p>
-        <p className="text-[12px] text-fg-faint">切回编辑模式可查看与修改源文本。</p>
+        <p className="text-[13px] text-warn">{t("大文件已关闭 Markdown 预览")}</p>
+        <p className="text-[12px] text-fg-faint">{t("文件超过 8 MB，为保持编辑流畅，预览不再渲染。")}</p>
+        <p className="text-[12px] text-fg-faint">{t("切回编辑模式可查看与修改源文本。")}</p>
       </div>
     );
   }
@@ -281,15 +284,14 @@ export function MarkdownPreview({
       />
       {showOutline && (
         <aside
-          aria-label="文档大纲"
+          aria-label={t("文档大纲")}
           // 宽度跟容器走：分屏时正文可能只有几百像素，固定 220 会把两边都挤扁
           style={{ width: "clamp(148px, 22%, 220px)" }}
           className="flex h-full shrink-0 flex-col border-l border-line bg-content"
         >
           <div className="flex shrink-0 items-center gap-1.5 px-3 pt-3 pb-1.5 text-[11px] font-medium text-fg-dim">
             <IconList className="h-3.5 w-3.5 text-fg-icon" />
-            大纲
-          </div>
+            {t("大纲")}</div>
           <nav ref={outlineNavRef} className="min-h-0 flex-1 overflow-auto px-1.5 pb-3">
             {outlineItems.map((item, index) => {
               const indent = Math.min(3, Math.max(0, item.level - outlineMinLevel));
@@ -300,13 +302,13 @@ export function MarkdownPreview({
                   type="button"
                   onClick={() => handleOutlineClick(index)}
                   aria-current={active ? "location" : undefined}
-                  title={item.text || "未命名标题"}
+                  title={item.text || i18n.t("未命名标题")}
                   style={{ paddingLeft: `${8 + indent * 12}px` }}
                   className={`mt-0.5 flex w-full items-center rounded py-1 pr-2 text-left text-[12px] leading-snug transition-colors ${
                     active ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
                   }`}
                 >
-                  <span className="truncate">{item.text || "未命名标题"}</span>
+                  <span className="truncate">{item.text || i18n.t("未命名标题")}</span>
                 </button>
               );
             })}

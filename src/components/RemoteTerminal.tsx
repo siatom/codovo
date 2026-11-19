@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -96,6 +97,7 @@ export function RemoteTerminal({
   onRequestClose,
   onRequestNew,
 }: RemoteTerminalProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<RemoteHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -461,8 +463,7 @@ export function RemoteTerminal({
             onClick={() => setSessionKey((key) => key + 1)}
             className="shrink-0 rounded border border-danger-line px-2 py-0.5 hover:bg-hover"
           >
-            重连
-          </button>
+            {t("重连")}</button>
         </div>
       )}
       {exited && !error && (
@@ -473,15 +474,14 @@ export function RemoteTerminal({
             onClick={() => setSessionKey((key) => key + 1)}
             className="rounded border border-warn-line-strong px-2 py-0.5 hover:bg-warn-line"
           >
-            重连
-          </button>
+            {t("重连")}</button>
         </div>
       )}
       {!atBottom && (
         <button
           type="button"
-          title="回到最新输出"
-          aria-label="回到最新输出"
+          title={t("回到最新输出")}
+          aria-label={t("回到最新输出")}
           onClick={() => {
             termRef.current?.scrollToBottom();
             termRef.current?.focus();

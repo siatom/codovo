@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { assetUrl } from "../lib/asset-url";
 
 interface PdfPreviewProps {
@@ -18,11 +19,12 @@ interface PdfPreviewProps {
  * 才会用内置阅读器打开；若给成 octet-stream 就变成下载了。
  */
 export function PdfPreview({ path }: PdfPreviewProps) {
+  const { t } = useTranslation();
   return (
     <iframe
       key={path}
       src={assetUrl(path)}
-      title="PDF 预览"
+      title={t("PDF 预览")}
       className="absolute inset-0 h-full w-full border-0 bg-surface"
     />
   );

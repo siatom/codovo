@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { IconArrowDownToLine } from "./icons";
 
@@ -58,11 +59,12 @@ export function useStickToBottom(signal: unknown) {
 
 /** 悬在对话流右下角的「回到底部」按钮，和终端那边同款观感 */
 export function ScrollToBottomButton({ onClick }: { onClick: () => void }) {
+  const { t } = useTranslation();
   return (
     <button
       type="button"
-      title="回到最新消息"
-      aria-label="回到最新消息"
+      title={t("回到最新消息")}
+      aria-label={t("回到最新消息")}
       onClick={onClick}
       className="absolute right-3 bottom-3 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-line-strong bg-surface text-fg-dim shadow-lg hover:bg-hover hover:text-fg"
     >

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import {
   useImperativeHandle,
   useRef,
@@ -65,6 +66,7 @@ export function AppAssistantDrawer({
   onClose,
   ref,
 }: AppAssistantDrawerProps) {
+  const { t } = useTranslation();
   const [width, setWidth] = useState(readWidth);
   const paneRef = useRef<AgentPaneHandle>(null);
   /** 拖动中：记下起点，按像素差算宽度；null 表示没在拖 */
@@ -130,7 +132,7 @@ export function AppAssistantDrawer({
       <div
         role="separator"
         aria-orientation="vertical"
-        aria-label="拖动调整助手宽度"
+        aria-label={t("拖动调整助手宽度")}
         onPointerDown={onResizeDown}
         onPointerMove={onResizeMove}
         onPointerUp={stopResize}

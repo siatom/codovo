@@ -1,4 +1,5 @@
 import type { languages } from "monaco-editor";
+import i18n from "./i18n";
 import OutlineWorker from "./code-outline.worker?worker";
 
 export const OUTLINE_LANGUAGES = new Set([
@@ -41,9 +42,9 @@ export function createCodeOutlineReader() {
   };
   worker.onerror = (event) => {
     console.error("代码大纲 Worker 加载失败", event);
-    failAll(event.message || "解析服务加载失败，请刷新应用后重试");
+    failAll(event.message || i18n.t("解析服务加载失败，请刷新应用后重试"));
   };
-  worker.onmessageerror = () => failAll("解析服务返回了无效数据，请重试");
+  worker.onmessageerror = () => failAll(i18n.t("解析服务返回了无效数据，请重试"));
   return {
     read(language: string, uri: string, text: string) {
       if (failure) return Promise.reject(failure);
@@ -55,7 +56,7 @@ export function createCodeOutlineReader() {
     },
     dispose() {
       worker.terminate();
-      failAll("代码大纲已关闭");
+      failAll(i18n.t("代码大纲已关闭"));
     },
   };
 }

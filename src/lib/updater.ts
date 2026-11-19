@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import i18n from "./i18n";
 import { useSyncExternalStore } from "react";
 
 export interface AppUpdate {
@@ -55,10 +56,10 @@ export async function checkAppUpdate(manual = false): Promise<void> {
   publish({ checking: true, message: "" });
   try {
     const update = await invoke<AppUpdate | null>("app_update_check");
-    publish({ update, message: manual && !update ? "当前已是最新版本" : "" });
+    publish({ update, message: manual && !update ? i18n.t("当前已是最新版本") : "" });
   } catch {
     // 离线、限流、尚无发布都不弹错误，也不抹掉已经发现的更新。
-    if (manual) publish({ message: "暂未取得更新信息，可稍后再检查" });
+    if (manual) publish({ message: i18n.t("暂未取得更新信息，可稍后再检查") });
   } finally {
     publish({ checking: false });
   }
@@ -87,6 +88,6 @@ export async function installAppUpdate(): Promise<void> {
 
 export function updateSize(bytes: number | null): string {
   return bytes === null
-    ? "大小暂不可用"
+    ? i18n.t("大小暂不可用")
     : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }

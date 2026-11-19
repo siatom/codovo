@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { AiConfig } from "./ai";
 import { translateText } from "./ai";
+import i18n from "./i18n";
 import {
   assembleTranslation,
   contentSignature,
@@ -340,11 +341,11 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
     };
 
     if (!content.trim()) {
-      invalid("文档内容为空，没有可翻译的文本");
+      invalid(i18n.t("文档内容为空，没有可翻译的文本"));
       return;
     }
     if (content.length > MAX_TRANSLATE_CHARS) {
-      invalid(`文档超过 ${Math.floor(MAX_TRANSLATE_CHARS / 1000)}k 字符，暂不支持整篇翻译`);
+      invalid(i18n.t("文档超过 {{count}}k 字符，暂不支持整篇翻译", { count: Math.floor(MAX_TRANSLATE_CHARS / 1000) }));
       return;
     }
 
@@ -357,7 +358,7 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
     }
 
     if (prepared.chunks.length === 0 || !hasTranslatableProse(prepared.chunks)) {
-      invalid("文档主要由代码、目录结构或空白组成，没有需要翻译的正文");
+      invalid(i18n.t("文档主要由代码、目录结构或空白组成，没有需要翻译的正文"));
       return;
     }
 
@@ -398,7 +399,7 @@ export async function startTranslation(input: StartTranslationInput): Promise<vo
       if (!text) {
         fail(
           prepared.chunks.length > 1
-            ? `第 ${index + 1}/${prepared.chunks.length} 段翻译失败：${errorMessage(lastError)}`
+            ? i18n.t("第 {{index}}/{{total}} 段翻译失败：{{error}}", { index: index + 1, total: prepared.chunks.length, error: errorMessage(lastError) })
             : errorMessage(lastError),
         );
         return;
@@ -449,7 +450,7 @@ export function cancelTranslation(tabKey: string): void {
   setRun(tabKey, {
     ...run,
     status: "error",
-    error: "已停止翻译",
+    error: i18n.t("已停止翻译"),
     runId: ++runSeq,
   });
 }

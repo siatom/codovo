@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ExplainChangeDialog } from "./ExplainChangeDialog";
 import { FullscreenButton } from "./FullscreenButton";
@@ -103,6 +104,7 @@ export function PreviewPane({
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
+  const { t } = useTranslation();
   const { settings } = useSettings();
   const { config: aiConfig, ready: aiReady } = useEffectiveAiConfig();
 
@@ -224,12 +226,12 @@ export function PreviewPane({
     void onPreviewExit((exitRoot, code) => {
       if (exitRoot !== root) return;
       void previewStatus(root).then(setStatus);
-      if (code !== 0) setError(`预览进程退出，退出码 ${code}`);
+      if (code !== 0) setError(t("预览进程退出，退出码 {{code}}", { code }));
     }).then((fn) => {
       unlisten = fn;
     });
     return () => unlisten?.();
-  }, [root]);
+  }, [root, t]);
 
   // 预览助手的执行过程：后端全量转发事件，只认本面板那个哨兵 root，再按会话归并
   useEffect(() => {
@@ -287,10 +289,10 @@ export function PreviewPane({
       // 手改过才当覆盖下发给助手：和探测结果一样就让它自己判断
       const detectedCommand = detection?.command ?? "";
       const detectedPort = detection?.port != null ? String(detection.port) : "";
-      let prompt = "启动这个项目的预览。";
-      if (command && command !== detectedCommand) prompt += ` 用这个启动命令：${command}。`;
-      if (portText && portText !== detectedPort) prompt += ` 端口用 ${portText}。`;
-      prompt += " 起好后用一句话汇报地址或 CDP 调试端口。";
+      let prompt = t("启动这个项目的预览。");
+      if (command && command !== detectedCommand) prompt += t(" 用这个启动命令：{{command}}。", { command });
+      if (portText && portText !== detectedPort) prompt += t(" 端口用 {{port}}。", { port: portText });
+      prompt += t(" 起好后用一句话汇报地址或 CDP 调试端口。");
 
       await startAgent(previewAgentRoot(root), {
         providers,
@@ -305,7 +307,7 @@ export function PreviewPane({
 
       let sessionId = sessionIdRef.current;
       if (!sessionId) {
-        sessionId = (await createAgentSession(previewAgentRoot(root), "预览启动")).id;
+        sessionId = (await createAgentSession(previewAgentRoot(root), t("预览启动"))).id;
         sessionIdRef.current = sessionId;
       }
       await sendAgentMessage(previewAgentRoot(root), sessionId, prompt, modelRef);
@@ -315,6 +317,7 @@ export function PreviewPane({
       setBusy(false);
     }
   }, [
+    t,
     aiReady,
     root,
     customCommand,
@@ -346,7 +349,7 @@ export function PreviewPane({
   const diagnose = useCallback(async () => {
     const command = lastLogRef.current.command || customCommand.trim();
     const log = lastLogRef.current.logs.join("\n");
-    const title = command || "预览启动失败";
+    const title = command || t("预览启动失败");
 
     setDialog({ title, text: null, error: null });
     setAiBusy(true);
@@ -358,7 +361,7 @@ export function PreviewPane({
     } finally {
       setAiBusy(false);
     }
-  }, [root, aiConfig, customCommand]);
+  }, [root, aiConfig, customCommand, t]);
 
   const running = status?.running === true;
   const url = status?.url ?? null;
@@ -377,13 +380,13 @@ export function PreviewPane({
         <StatusDot
           size="md"
           tone={running ? "ok" : "off"}
-          title={running ? "预览运行中" : "未运行"}
+          title={running ? t("预览运行中") : t("未运行")}
         />
         <span className="shrink-0 text-[11px] font-medium tracking-wide text-fg-dim">
-          预览
+          {t("预览")}
         </span>
         <span className="shrink-0 rounded bg-hover px-1.5 py-0.5 text-[10px] text-fg-dim">
-          {KIND_LABEL[kind] ?? kind}
+          {t(KIND_LABEL[kind] ?? kind)}
         </span>
         <span
           className="min-w-0 flex-1 truncate text-[11px] text-fg-faint"
@@ -395,7 +398,7 @@ export function PreviewPane({
           type="button"
           onClick={running ? stop : start}
           disabled={running ? busy : busy || agentBusy}
-          title={running ? "停止预览" : "由预览助手启动预览"}
+          title={running ? t("停止预览") : t("由预览助手启动预览")}
           className="flex h-6 shrink-0 items-center gap-1 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover disabled:opacity-50"
         >
           {running ? (
@@ -403,17 +406,17 @@ export function PreviewPane({
           ) : (
             <IconPlay className="h-3.5 w-3.5" />
           )}
-          {running ? "停止" : agentBusy ? "启动中…" : "启动"}
+          {running ? t("停止") : agentBusy ? t("启动中…") : t("启动")}
         </button>
         <IconButton
-          label="重新加载"
+          label={t("重新加载")}
           onClick={() => setNonce((count) => count + 1)}
           disabled={!url}
         >
           <IconRefresh className={ICON_SM} />
         </IconButton>
         <IconButton
-          label="用系统浏览器打开"
+          label={t("用系统浏览器打开")}
           onClick={() => url && void openUrl(url).catch(() => {})}
           disabled={!url}
         >
@@ -437,12 +440,12 @@ export function PreviewPane({
             disabled={!aiReady || aiBusy}
             title={
               aiReady
-                ? "让大模型分析启动失败原因"
-                : "先在「设置 → 智能体 → 模型提供商」里配置"
+                ? t("让大模型分析启动失败原因")
+                : t("先在「设置 → 智能体 → 模型提供商」里配置")
             }
             className="h-6 shrink-0 rounded border border-danger-line px-2 text-[11px] text-danger hover:bg-hover disabled:opacity-50"
           >
-            {aiBusy ? "分析中…" : "AI 诊断"}
+            {aiBusy ? t("分析中…") : t("AI 诊断")}
           </button>
         </div>
       )}
@@ -459,7 +462,7 @@ export function PreviewPane({
           ) : (
             <IconChevronRight className="h-3 w-3" />
           )}
-          <span>配置</span>
+          <span>{t("配置")}</span>
           <span className="min-w-0 flex-1 truncate text-right text-fg-faint">
             {detection?.reason ?? ""}
           </span>
@@ -467,11 +470,11 @@ export function PreviewPane({
         {configOpen && (
           <div className="space-y-2 px-3 pb-2">
             <label className="block">
-              <span className="text-fg-dim">启动命令</span>
+              <span className="text-fg-dim">{t("启动命令")}</span>
               <input
                 value={customCommand}
                 onChange={(event) => setCustomCommand(event.target.value)}
-                placeholder={detection ? "" : "探测中…"}
+                placeholder={detection ? "" : t("探测中…")}
                 spellCheck={false}
                 className={INPUT}
               />
@@ -479,11 +482,11 @@ export function PreviewPane({
 
             {kind === "web" && (
               <label className="block">
-                <span className="text-fg-dim">端口</span>
+                <span className="text-fg-dim">{t("端口")}</span>
                 <input
                   value={customPort}
                   onChange={(event) => setCustomPort(event.target.value)}
-                  placeholder="留空则用探测到的端口"
+                  placeholder={t("留空则用探测到的端口")}
                   spellCheck={false}
                   className={INPUT}
                 />
@@ -495,7 +498,7 @@ export function PreviewPane({
               onClick={() => void runDetect()}
               className="h-6 rounded border border-line-strong px-2 text-[11px] text-fg hover:bg-hover"
             >
-              按项目重新探测
+              {t("按项目重新探测")}
             </button>
           </div>
         )}
@@ -507,37 +510,36 @@ export function PreviewPane({
           <iframe
             key={nonce}
             src={url}
-            title="预览"
+            title={t("预览")}
             className="absolute inset-0 h-full w-full border-0 bg-white"
           />
         ) : running && cdpPort ? (
           <div className="flex h-full items-center justify-center px-6">
             <div className="max-w-[380px] text-center text-[12px] leading-relaxed text-fg-dim">
               <p>
-                已启动 Tauri 开发实例，CDP 调试端口{" "}
-                <span className="font-medium text-fg">{cdpPort}</span>。
+                {t("已启动 Tauri 开发实例，CDP 调试端口 {{port}}。", { port: cdpPort })}
               </p>
               <p className="mt-2 text-fg-faint">
-                用 CDP 工具连 127.0.0.1:{cdpPort} 做界面验证；输出见下方日志。
+                {t("用 CDP 工具连 127.0.0.1:{{port}} 做界面验证；输出见下方日志。", { port: cdpPort })}
               </p>
             </div>
           </div>
         ) : agentBusy ? (
           <div className="flex h-full items-center justify-center px-6">
             <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
-              {PREVIEW_AGENT_LABEL}正在分析项目并启动预览…
+              {t("{{name}}正在分析项目并启动预览…", { name: t(PREVIEW_AGENT_LABEL) })}
             </p>
           </div>
         ) : running ? (
           <div className="flex h-full items-center justify-center px-6">
             <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
-              已启动，正在等待 dev server 就绪。地址会从输出里自动识别，见下方日志。
+              {t("已启动，正在等待 dev server 就绪。地址会从输出里自动识别，见下方日志。")}
             </p>
           </div>
         ) : (
           <div className="flex h-full items-center justify-center px-6">
             <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
-              点右上角「启动」，{PREVIEW_AGENT_LABEL}会按项目决定怎么起；也可以在「配置」里手改命令或端口。
+              {t("点右上角「启动」，{{name}}会按项目决定怎么起；也可以在「配置」里手改命令或端口。", { name: t(PREVIEW_AGENT_LABEL) })}
             </p>
           </div>
         )}
@@ -572,7 +574,7 @@ export function PreviewPane({
           ) : (
             <IconChevronRight className="h-3 w-3" />
           )}
-          日志{logs.length > 0 ? `（${logs.length}）` : ""}
+          {t("日志")}{logs.length > 0 ? ` (${logs.length})` : ""}
         </button>
         {showLogs && (
           <div
@@ -582,7 +584,7 @@ export function PreviewPane({
             {agentLines.length > 0 && (
               <div className="mb-2">
                 <div className="mb-0.5 font-mono text-[10px] tracking-wide text-fg-faint">
-                  智能体
+                  {t("智能体")}
                 </div>
                 {agentLines.map((line, index) =>
                   line.startsWith("▸") ? (
@@ -598,10 +600,10 @@ export function PreviewPane({
               </div>
             )}
             <div className="mb-0.5 font-mono text-[10px] tracking-wide text-fg-faint">
-              预览进程
+              {t("预览进程")}
             </div>
             <div className="font-mono whitespace-pre-wrap text-fg-dim">
-              {logs.length > 0 ? logs.join("\n") : "（暂无输出）"}
+              {logs.length > 0 ? logs.join("\n") : t("（暂无输出）")}
             </div>
           </div>
         )}
@@ -613,8 +615,8 @@ export function PreviewPane({
           text={dialog.text}
           error={dialog.error}
           onClose={() => setDialog(null)}
-          titlePrefix="预览诊断"
-          loadingText="正在分析启动日志…"
+          titlePrefix={t("预览诊断")}
+          loadingText={t("正在分析启动日志…")}
         />
       )}
     </section>

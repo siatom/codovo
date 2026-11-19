@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { RemoteBrowser } from "./RemoteBrowser";
@@ -79,6 +81,7 @@ export function RemotePane({
   toolbarTarget?: HTMLElement | null;
   onRegisterDisconnect: (handler: (hostId: string) => void) => void;
 }) {
+  const { t } = useTranslation();
   const { hosts, addHost, updateHost, removeHost } = useRemoteHosts();
   // 回调里要读最新的主机列表（连接成功回报指纹时），用 ref 免得闭包读到旧值
   const hostsRef = useRef(hosts);
@@ -306,9 +309,8 @@ export function RemotePane({
     <div className="flex h-full w-full min-w-0 flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
-            远程连接
-          </span>
-          <IconButton label="新增主机" onClick={() => {
+            {t("远程连接")}</span>
+          <IconButton label={t("新增主机")} onClick={() => {
             onOpenContent();
             setDialog({ host: null });
           }}>
@@ -318,8 +320,7 @@ export function RemotePane({
         <div className="min-h-0 flex-1 overflow-auto py-1">
           {hosts.length === 0 ? (
             <p className="px-3 py-2 text-[11px] leading-relaxed text-fg-faint">
-              还没有主机。点右上角 + 添加一台。
-            </p>
+              {t("还没有主机。点右上角 + 添加一台。")}</p>
           ) : (
             hosts.map((host) => {
               const state = stateOfHost(host.id);
@@ -341,7 +342,7 @@ export function RemotePane({
                     </span>
                   </span>
                   <IconButton
-                    label="更多"
+                    label={t("更多")}
                     size="xs"
                     onClick={(event) => openMenu(event, host)}
                     className="opacity-0 group-hover:opacity-100"
@@ -368,14 +369,14 @@ export function RemotePane({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {toolbarTarget && createPortal(
           <div className="flex shrink-0 items-center gap-0.5">
-            <IconButton label="终端" active={subTab === "terminal"} onClick={() => pickTab("terminal")}>
+            <IconButton label={t("终端")} active={subTab === "terminal"} onClick={() => pickTab("terminal")}>
               <IconTerminal className={ICON_SM} />
             </IconButton>
-            <IconButton label="文件" active={subTab === "files"} onClick={() => pickTab("files")}>
+            <IconButton label={t("文件")} active={subTab === "files"} onClick={() => pickTab("files")}>
               <IconFile className={ICON_SM} />
             </IconButton>
             {subTab === "files" && (
-              <IconButton label="左右交换位置" onClick={toggleSwap}>
+              <IconButton label={t("左右交换位置")} onClick={toggleSwap}>
                 <IconArrowsLeftRight className={ICON_SM} />
               </IconButton>
             )}
@@ -386,14 +387,13 @@ export function RemotePane({
         {activeHost && activeState?.phase === "error" && (
           <div className="flex shrink-0 items-start gap-2 border-b border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
             <span className="flex-1 break-all">{activeState.error}</span>
-            {activeState.error?.includes("指纹") && (
+            {activeState.error?.includes(i18n.t("指纹")) && (
               <button
                 type="button"
                 onClick={() => trustFingerprint(activeHost)}
                 className="shrink-0 rounded border border-danger-line px-2 py-0.5 hover:bg-hover"
               >
-                信任新指纹并重连
-              </button>
+                {t("信任新指纹并重连")}</button>
             )}
           </div>
         )}
@@ -402,19 +402,17 @@ export function RemotePane({
           {!activeHost ? (
             <div className="absolute inset-0 flex items-center justify-center px-6">
               <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
-                从左侧选一台主机，点一下即连接。连接后可以在这里开远程终端，或浏览、上传下载远端文件。
-              </p>
+                {t("从左侧选一台主机，点一下即连接。连接后可以在这里开远程终端，或浏览、上传下载远端文件。")}</p>
             </div>
           ) : !isConnected(activeHost.id) ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6">
-              <p className="text-[12px] text-fg-faint">已选主机，尚未连接。</p>
+              <p className="text-[12px] text-fg-faint">{t("已选主机，尚未连接。")}</p>
               <button
                 type="button"
                 onClick={() => openHost(activeHost)}
                 className="rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected"
               >
-                连接
-              </button>
+                {t("连接")}</button>
             </div>
           ) : (
             <>
@@ -448,8 +446,8 @@ export function RemotePane({
                     <p className="max-w-[320px] text-center text-[12px] leading-relaxed text-fg-faint">
                       {/* 连不上时别一直停在「正在建立连接」，否则和上面的报错自相矛盾 */}
                       {activeState?.phase === "error"
-                        ? "连接失败，无法浏览远端文件。"
-                        : "正在建立连接…"}
+                        ? t("连接失败，无法浏览远端文件。")
+                        : t("正在建立连接…")}
                     </p>
                   </div>
                 )
@@ -477,8 +475,8 @@ export function RemotePane({
 
       {pendingDelete && (
         <ConfirmDialog
-          message={`删除主机「${pendingDelete.name}」？已保存的凭据也会一并清除。`}
-          confirmLabel="删除"
+          message={t("删除主机「{{name}}」？已保存的凭据也会一并清除。", { name: pendingDelete.name })}
+          confirmLabel={t("删除")}
           onConfirm={() => {
             deleteHost(pendingDelete);
             setPendingDelete(null);
@@ -503,8 +501,7 @@ export function RemotePane({
                 setMenu(null);
               }}
             >
-              编辑
-            </button>
+              {t("编辑")}</button>
             {isConnected(menu.host.id) && (
               <button
                 type="button"
@@ -514,8 +511,7 @@ export function RemotePane({
                   setMenu(null);
                 }}
               >
-                断开连接
-              </button>
+                {t("断开连接")}</button>
             )}
             <button
               type="button"
@@ -526,8 +522,7 @@ export function RemotePane({
                 setMenu(null);
               }}
             >
-              删除
-            </button>
+              {t("删除")}</button>
           </div>
         </>
       )}

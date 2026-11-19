@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import {
   forwardRef,
   useEffect,
@@ -10,6 +11,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import i18n from "../lib/i18n";
 import {
   readImage,
   readText,
@@ -329,6 +331,7 @@ export const TerminalSession = forwardRef<
   },
   ref,
 ) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const ptyRef = useRef<PtyHandle | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -647,7 +650,7 @@ export const TerminalSession = forwardRef<
           // shell 都没了，挂在标签上的标记（在等回应 / 已完成）也一并撤掉
           workSeen = false;
           report(null);
-          term.write(`\r\n\x1b[90m[shell 已退出，退出码 ${code}]\x1b[0m\r\n`);
+          term.write(`\r\n\x1b[90m[${i18n.t("shell 已退出，退出码 {{code}}", { code })}]\x1b[0m\r\n`);
         },
       });
       // 卸载可能发生在这行之前（React StrictMode 会立刻重挂一次），此时必须自己收尾
@@ -698,7 +701,7 @@ export const TerminalSession = forwardRef<
           // 图片本身仍由 CLI 响应 Ctrl+V 从系统剪贴板读取；随后补一个可见名称，
           // 让输入行能区分这次附带的图片。只在全屏 TUI 中追加，避免污染普通 shell 命令。
           const marker = term.buffer.active.type === "alternate"
-            ? ` [图片: clipboard-image-${++pastedImageCount}.png]`
+            ? ` [${i18n.t("图片: clipboard-image-{{count}}.png", { count: ++pastedImageCount })}]`
             : "";
           handle.write("\x16");
           if (marker) {
@@ -940,27 +943,26 @@ export const TerminalSession = forwardRef<
       <div ref={containerRef} className="absolute inset-0" />
       {error && (
         <div className="absolute inset-x-2 top-2 rounded border border-danger-line bg-danger-bg px-2 py-1 text-[11px] text-danger">
-          终端启动失败：{error}
+          {t("终端启动失败：")}{error}
         </div>
       )}
       {exited && !error && (
         <div className="absolute inset-x-2 top-2 flex items-center gap-2 rounded border border-warn-line bg-warn-bg px-2 py-1 text-[11px] text-warn">
-          <span className="flex-1">shell 已退出。</span>
+          <span className="flex-1">{t("shell 已退出。")}</span>
           <button
             type="button"
             onClick={() => setSessionKey((key) => key + 1)}
             className="rounded border border-warn-line-strong px-2 py-0.5 hover:bg-warn-line"
           >
-            重开
-          </button>
+            {t("重开")}</button>
         </div>
       )}
       {/* 滚离底部时才浮出。点一下回尾部，并顺手把焦点还给终端，免得之后打字落到按钮上 */}
       {!atBottom && (
         <button
           type="button"
-          title="回到最新输出"
-          aria-label="回到最新输出"
+          title={t("回到最新输出")}
+          aria-label={t("回到最新输出")}
           onClick={() => {
             termRef.current?.scrollToBottom();
             termRef.current?.focus();

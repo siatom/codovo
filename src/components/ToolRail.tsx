@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
+import i18n from "../lib/i18n";
 import type { ToolId } from "./ToolPane";
 import {
   IconBranch,
@@ -13,6 +14,7 @@ import {
   IconServer,
 } from "./icons";
 import { ICON_MD, IconButton } from "./ui";
+import { useTranslation } from "react-i18next";
 
 /** 和左侧栏收起时同宽，两条竖栏看起来才是一套。
     不画右边框：整块界面靠背景深浅区分，没有常驻竖线。
@@ -71,12 +73,17 @@ export function ToolRail({
   onToggleRight,
   onBlankClick,
 }: ToolRailProps) {
+  const { t } = useTranslation();
+  const labels: Record<string, string> = {
+    files: t("文件"), changes: t("变更"), remote: t("远程连接"), database: t("数据库"),
+    preview: t("预览"), deploy: t("部署"), browser: t("浏览器"),
+  };
   return (
     <div className={RAIL} onClick={onBlankClick}>
       <IconButton label="Agent" size="md" radius="md" active={agentActive} onClick={onPickAgent}>
         <IconBot className={ICON_MD} />
       </IconButton>
-      {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, label, Icon }) => {
+      {RIGHT_TOOLS.filter((tool) => visible[tool.id]).map(({ id, Icon }) => {
         // 有改动时才挂角标，0 就不显示——空白角标反而像加载失败
         const badge =
           id === "changes" && changed > 0
@@ -87,7 +94,7 @@ export function ToolRail({
         return (
           <IconButton
             key={id}
-            label={label}
+            label={labels[id]}
             size="md"
             radius="md"
             active={active === id}
@@ -106,7 +113,7 @@ export function ToolRail({
 
       {/* mt-auto 把它顶到底部，和左侧栏的收起按钮一条水平线 */}
       <IconButton
-        label={rightOpen ? "收起右侧面板" : "展开右侧面板"}
+        label={rightOpen ? i18n.t("收起右侧面板") : i18n.t("展开右侧面板")}
         size="md"
         radius="md"
         onClick={onToggleRight}

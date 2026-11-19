@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import i18n from "../lib/i18n";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { renderMarkdown } from "../lib/markdown";
 import { useSettings } from "../lib/settings";
@@ -72,6 +74,7 @@ export function TranslationView({
   onOpenSettings,
   onOpenPath,
 }: TranslationViewProps) {
+  const { t } = useTranslation();
   const { settings, update } = useSettings();
   const { config, ready } = useEffectiveAiConfig();
   const run = useTranslationRun(tabKey);
@@ -207,11 +210,10 @@ export function TranslationView({
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-2">
         <span className="flex shrink-0 items-center gap-1 text-[11px] text-fg-muted">
           <IconTranslate className="h-3.5 w-3.5" />
-          文档翻译
-        </span>
+          {t("文档翻译")}</span>
         <div
           role="group"
-          aria-label="翻译目标语言"
+          aria-label={t("翻译目标语言")}
           className="flex shrink-0 items-center gap-0.5 rounded-md border border-line-strong p-0.5"
         >
           {targetButtons.map((item) => (
@@ -232,13 +234,13 @@ export function TranslationView({
         </div>
         <span className="min-w-0 truncate text-[11px] text-fg-faint">
           {loading && progressTotal > 0
-            ? `翻译中 ${progressDone}/${progressTotal} 段`
+            ? i18n.t("翻译中 {{done}}/{{total}} 段", { done: progressDone, total: progressTotal })
             : run?.fromCache
-              ? "来自本地缓存"
+              ? i18n.t("来自本地缓存")
               : done
-                ? "翻译完成"
+                ? i18n.t("翻译完成")
                 : failed && !showTranslated
-                  ? "翻译未完成"
+                  ? i18n.t("翻译未完成")
                   : ""}
         </span>
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
@@ -246,42 +248,39 @@ export function TranslationView({
             type="button"
             onClick={() => start(true)}
             disabled={!ready || loading || isLarge}
-            title="忽略缓存，重新翻译整篇文档"
+            title={t("忽略缓存，重新翻译整篇文档")}
             className={TOOL_BUTTON}
           >
             <IconRefresh className="h-3.5 w-3.5" />
-            重新翻译
-          </button>
+            {t("重新翻译")}</button>
           {loading && (
             <button
               type="button"
               onClick={() => cancelTranslation(tabKey)}
-              title="停止翻译：已发出的请求不会中断，但不会再发送后续片段"
+              title={t("停止翻译：已发出的请求不会中断，但不会再发送后续片段")}
               className={TOOL_BUTTON}
             >
               <IconStop className="h-3.5 w-3.5" />
-              停止
-            </button>
+              {t("停止")}</button>
           )}
           <button
             type="button"
             onClick={copy}
             disabled={!showTranslated}
-            title="复制译文"
+            title={t("复制译文")}
             className={TOOL_BUTTON}
           >
             {copied ? <IconCheck className="h-3.5 w-3.5 text-ok" /> : <IconCopy className="h-3.5 w-3.5" />}
-            {copied ? "已复制" : "复制"}
+            {copied ? i18n.t("已复制") : i18n.t("复制")}
           </button>
           <button
             type="button"
             onClick={onOpenSettings}
-            title="打开设置（AI → 文档翻译）"
+            title={t("打开设置（AI → 文档翻译）")}
             className={TOOL_BUTTON}
           >
             <IconSettings className="h-3.5 w-3.5" />
-            设置
-          </button>
+            {t("设置")}</button>
         </div>
       </div>
 
@@ -296,14 +295,14 @@ export function TranslationView({
       )}
 
       <div className="flex min-h-0 flex-1">
-        <section className="flex min-w-0 flex-1 flex-col border-r border-line" aria-label="原文">
+        <section className="flex min-w-0 flex-1 flex-col border-r border-line" aria-label={t("原文")}>
           <div className="flex h-7 shrink-0 items-center justify-between border-b border-line px-3 text-[11px] text-fg-dim">
-            <span>原文</span>
-            <span className="text-fg-faint">{markdown ? "Markdown" : "文本"}</span>
+            <span>{t("原文")}</span>
+            <span className="text-fg-faint">{markdown ? "Markdown" : i18n.t("文本")}</span>
           </div>
           <div ref={leftHostRef} className="relative min-h-0 flex-1 overflow-auto">
             {content.trim() === "" ? (
-              <p className="px-4 py-3 text-[12px] text-fg-faint">文档为空</p>
+              <p className="px-4 py-3 text-[12px] text-fg-faint">{t("文档为空")}</p>
             ) : markdown ? (
               <MarkdownPreview
                 html={originalHtml}
@@ -319,70 +318,64 @@ export function TranslationView({
           </div>
         </section>
 
-        <section className="flex min-w-0 flex-1 flex-col" aria-label="译文">
+        <section className="flex min-w-0 flex-1 flex-col" aria-label={t("译文")}>
           <div className="flex h-7 shrink-0 items-center justify-between border-b border-line px-3 text-[11px] text-fg-dim">
-            <span>译文</span>
+            <span>{t("译文")}</span>
             <span className="text-fg-faint">{translateTargetLabel(target)}</span>
           </div>
           <div ref={rightHostRef} className="relative min-h-0 flex-1 overflow-auto">
             {!supported ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                 <IconAlert className="h-6 w-6 text-warn" />
-                <p className="text-[13px] text-fg">该文件不是文档类型</p>
+                <p className="text-[13px] text-fg">{t("该文件不是文档类型")}</p>
                 <p className="text-[12px] leading-relaxed text-fg-faint">
-                  文档翻译仅支持 Markdown、纯文本等文档；源码、脚本和配置文件不参与翻译。
-                </p>
+                  {t("文档翻译仅支持 Markdown、纯文本等文档；源码、脚本和配置文件不参与翻译。")}</p>
               </div>
             ) : isLarge ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                 <IconAlert className="h-6 w-6 text-warn" />
-                <p className="text-[13px] text-fg">文档过大</p>
-                <p className="text-[12px] text-fg-faint">超过 8 MB 的文档不启用翻译，请切分后再试。</p>
+                <p className="text-[13px] text-fg">{t("文档过大")}</p>
+                <p className="text-[12px] text-fg-faint">{t("超过 8 MB 的文档不启用翻译，请切分后再试。")}</p>
               </div>
             ) : !ready ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
                 <IconTranslate className="h-6 w-6 text-fg-faint" />
-                <p className="text-[13px] text-fg">尚未配置翻译模型</p>
+                <p className="text-[13px] text-fg">{t("尚未配置翻译模型")}</p>
                 <p className="max-w-[320px] text-[12px] leading-relaxed text-fg-faint">
-                  文档翻译复用「设置 → AI」里的全局默认模型。填好接口地址、模型和 API
-                  密钥即可开始；密钥只保存在系统钥匙串，不会传进界面。
-                </p>
+                  {t("文档翻译复用「设置 → AI」里的全局默认模型。填好接口地址、模型和 API 密钥即可开始；密钥只保存在系统钥匙串，不会传进界面。")}</p>
                 <button
                   type="button"
                   onClick={onOpenSettings}
                   className="rounded border border-accent-line px-3 py-1 text-[12px] text-accent-soft hover:bg-active"
                 >
-                  打开设置
-                </button>
+                  {t("打开设置")}</button>
               </div>
             ) : content.length > MAX_TRANSLATE_CHARS ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                 <IconAlert className="h-6 w-6 text-warn" />
-                <p className="text-[13px] text-fg">文档过长</p>
+                <p className="text-[13px] text-fg">{t("文档过长")}</p>
                 <p className="text-[12px] text-fg-faint">
-                  超过 {Math.floor(MAX_TRANSLATE_CHARS / 1000)}k 字符，暂不支持整篇翻译。
-                </p>
+                  {t("超过")}{Math.floor(MAX_TRANSLATE_CHARS / 1000)}{t("k 字符，暂不支持整篇翻译。")}</p>
               </div>
             ) : failed && !showTranslated ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
                 <IconAlert className="h-6 w-6 text-warn" />
-                <p className="text-[13px] text-fg">翻译未完成</p>
+                <p className="text-[13px] text-fg">{t("翻译未完成")}</p>
                 <p className="max-w-[420px] text-[12px] leading-relaxed text-fg-faint">
-                  {run?.error ?? "未能取得译文"}
+                  {run?.error ?? i18n.t("未能取得译文")}
                 </p>
                 <button
                   type="button"
                   onClick={() => start(true)}
                   className="rounded border border-accent-line px-3 py-1 text-[12px] text-accent-soft hover:bg-active"
                 >
-                  重试
-                </button>
+                  {t("重试")}</button>
               </div>
             ) : !showTranslated ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                 <span className="h-4 w-4 animate-spin rounded-full border-2 border-line-strong border-t-accent-soft" />
                 <p className="text-[12px] text-fg-faint">
-                  {loading ? "正在准备译文…" : "进入翻译视图后自动开始"}
+                  {loading ? i18n.t("正在准备译文…") : i18n.t("进入翻译视图后自动开始")}
                 </p>
               </div>
             ) : markdown ? (
@@ -405,14 +398,13 @@ export function TranslationView({
               className="flex shrink-0 items-center gap-2 border-t border-line bg-danger-bg px-3 py-1.5 text-[11px] text-danger"
             >
               <IconAlert className="h-3.5 w-3.5 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">{run?.error ?? "翻译未完成"}</span>
+              <span className="min-w-0 flex-1 truncate">{run?.error ?? i18n.t("翻译未完成")}</span>
               <button
                 type="button"
                 onClick={() => start(true)}
                 className="shrink-0 rounded border border-danger-line px-2 py-0.5 hover:bg-hover"
               >
-                重试
-              </button>
+                {t("重试")}</button>
             </div>
           )}
         </section>

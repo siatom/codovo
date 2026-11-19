@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type Dispatch, type Ref, type SetStateAction } from "react";
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import {
   cancelAcpChat,
   chatFromStored,
@@ -186,8 +188,9 @@ function ToolContent({ content, call }: { content: AcpToolContent; call: AcpTool
 }
 
 function ToolBlock({ call }: { call: AcpToolCall }) {
+  const { t } = useTranslation();
   const status = call.status ?? "pending";
-  const title = call.title || call.name || "工具调用";
+  const title = call.title || call.name || t("工具调用");
   return (
     <div className="my-2 rounded-lg border border-line bg-raised/50 px-2.5 py-2">
       <div className="flex items-center gap-1.5 text-[11px]">
@@ -216,10 +219,11 @@ function ToolBlock({ call }: { call: AcpToolCall }) {
 }
 
 function PlanBlock({ entries }: { entries: AcpPlanEntry[] }) {
+  const { t } = useTranslation();
   if (entries.length === 0) return null;
   return (
     <div className="my-2 rounded-lg border border-line bg-raised/40 px-2.5 py-2">
-      <div className="mb-1 text-[10px] font-medium tracking-wide text-fg-faint">执行计划</div>
+      <div className="mb-1 text-[10px] font-medium tracking-wide text-fg-faint">{t("执行计划")}</div>
       <div className="space-y-1">
         {entries.map((entry, index) => {
           const done = entry.status === "completed";
@@ -255,6 +259,7 @@ function PlanBlock({ entries }: { entries: AcpPlanEntry[] }) {
  * 否则每轮结束都会把用户手动展开的内容再收回去。
  */
 function ThoughtBlock({ block }: { block: Extract<AcpBlock, { kind: "thought" }> }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState<boolean | null>(null);
   const expanded = open ?? block.streaming;
   const text = block.text.trim();
@@ -265,7 +270,7 @@ function ThoughtBlock({ block }: { block: Extract<AcpBlock, { kind: "thought" }>
       <button
         type="button"
         onClick={() => setOpen(!expanded)}
-        title={expanded ? "收起思考过程" : "展开思考过程"}
+          title={expanded ? t("收起思考过程") : t("展开思考过程")}
         className="flex w-full items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-hover"
       >
         {expanded ? (
@@ -278,7 +283,7 @@ function ThoughtBlock({ block }: { block: Extract<AcpBlock, { kind: "thought" }>
             block.streaming ? "text-accent-strong" : "text-fg-dim"
           }`}
         >
-          {block.streaming ? "思考中…" : "思考过程"}
+          {block.streaming ? t("思考中…") : t("思考过程")}
         </span>
         {!expanded &&
           (preview ? (
@@ -287,7 +292,7 @@ function ThoughtBlock({ block }: { block: Extract<AcpBlock, { kind: "thought" }>
             <span className="flex-1" />
           ))}
         {!expanded && (
-          <span className="shrink-0 text-[10px] tabular-nums text-fg-faint">{text.length} 字</span>
+          <span className="shrink-0 text-[10px] tabular-nums text-fg-faint">{t("{{count}} 字", { count: text.length })}</span>
         )}
       </button>
       {expanded && (
@@ -360,9 +365,10 @@ function PermissionCard({
   chat: AcpChat;
   onDecide: (optionId: string | null) => void;
 }) {
+  const { t } = useTranslation();
   const permission = chat.permission;
   if (!permission) return null;
-  const title = permission.toolCall.title || permission.toolCall.name || "需要你的授权";
+  const title = permission.toolCall.title || permission.toolCall.name || t("需要你的授权");
   return (
     <div className="mb-2 rounded-xl border border-warn/40 bg-warn/5 px-3 py-2.5">
       <div className="flex items-start gap-2">
@@ -370,7 +376,7 @@ function PermissionCard({
         <div className="min-w-0 flex-1">
           <div className="text-[12px] font-medium text-fg">{title}</div>
           <div className="mt-0.5 text-[11px] text-fg-dim">
-            Agent 想执行上面这个操作，确认后才继续。
+            {t("Agent 想执行上面这个操作，确认后才继续。")}
           </div>
         </div>
       </div>
@@ -397,7 +403,7 @@ function PermissionCard({
           onClick={() => onDecide(null)}
           className="rounded-md px-2.5 py-1 text-[11px] text-fg-faint hover:bg-hover hover:text-danger"
         >
-          取消
+          {t("取消")}
         </button>
       </div>
     </div>
@@ -411,6 +417,7 @@ function PermissionCard({
  * 后端会话一直活着，直到用户关闭对应的超级 Tab 或退出应用。
  */
 export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, agents, ref }: AcpChatPaneProps) {
+  const { t } = useTranslation();
   const [slots, setSlots] = useState<Record<string, ChatSlot>>({});
   const [storageWarning, setStorageWarning] = useState(false);
   const slotsRef = useRef(slots);
@@ -613,7 +620,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
                 {
                   id: `notice_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                   kind: "notice" as const,
-                  text: "没能恢复上次的会话，已经从新对话开始。",
+                  text: t("没能恢复上次的会话，已经从新对话开始。"),
                   tone: "info" as const,
                 },
               ]
@@ -766,10 +773,9 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
         <span className="flex h-10 w-10 items-center justify-center rounded-full bg-raised text-fg-dim">
           <IconBot className="h-5 w-5" />
         </span>
-        <div className="text-[13px] font-medium text-fg-muted">还没有可对话的 CLI</div>
+        <div className="text-[13px] font-medium text-fg-muted">{t("还没有可对话的 CLI")}</div>
         <div className="max-w-[360px] text-[12px] leading-relaxed text-fg-faint">
-          当前配置里没有接入 ACP 的 CLI。opencode、CodeBuddy、Gemini CLI、GitHub Copilot、
-          Codex、Claude Code 可以在对话里用；其余 CLI 继续在终端里跑。
+          {t("当前配置里没有接入 ACP 的 CLI。opencode、CodeBuddy、Gemini CLI、GitHub Copilot、 Codex、Claude Code 可以在对话里用；其余 CLI 继续在终端里跑。")}
         </div>
       </div>
     );
@@ -781,12 +787,12 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
   /** 有旧记录但进程还没起：下一条消息会先恢复会话 */
   const restored = !started && !busy && blocks.length > 0;
   const placeholder = busy
-    ? "Agent 正在处理，可以点停止"
+    ? t("Agent 正在处理，可以点停止")
     : started
-      ? `继续和 ${cli.label} 对话，Enter 发送，Shift+Enter 换行`
+      ? t("继续和 {{name}} 对话，Enter 发送，Shift+Enter 换行", { name: cli.label })
       : restored
-        ? `继续和 ${cli.label} 对话（会恢复上次会话），Enter 发送`
-        : `用 ${cli.label} 开始，Enter 发送，Shift+Enter 换行`;
+        ? t("继续和 {{name}} 对话（会恢复上次会话），Enter 发送", { name: cli.label })
+        : t("用 {{name}} 开始，Enter 发送，Shift+Enter 换行", { name: cli.label });
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -800,7 +806,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
           </span>
         )}
         {chat?.info?.resumed && (
-          <span className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim">已恢复</span>
+          <span className="shrink-0 rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim">{t("已恢复")}</span>
         )}
         {chat?.info?.modes && chat.info.modes.length > 0 ? (
           /* 模式由 Agent 声明（Claude Code 有 default / acceptEdits / plan）。
@@ -810,7 +816,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
             onChange={(event) => void changeMode(event.target.value)}
             disabled={phase !== "ready"}
             title={
-              chat.info.modes.find((mode) => mode.id === chat.mode)?.description ?? "会话模式"
+              chat.info.modes.find((mode) => mode.id === chat.mode)?.description ?? t("会话模式")
             }
             className="shrink-0 cursor-pointer rounded bg-active px-1.5 py-0.5 text-[10px] text-fg-dim outline-none disabled:cursor-default disabled:opacity-50"
           >
@@ -831,7 +837,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
             {chat.usage.used ?? 0}/{chat.usage.size}
           </span>
         ) : null}
-        {busy && <span className="shrink-0 animate-pulse text-[10px] text-warn">进行中</span>}
+        {busy && <span className="shrink-0 animate-pulse text-[10px] text-warn">{t("进行中")}</span>}
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -845,10 +851,9 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
               <span className="flex h-10 w-10 items-center justify-center rounded-full bg-raised text-fg-dim">
                 <IconBot className="h-5 w-5" />
               </span>
-              <div className="text-[13px] font-medium text-fg-muted">和 {cli.label} 对话</div>
+              <div className="text-[13px] font-medium text-fg-muted">{t("和 {{name}} 对话", { name: cli.label })}</div>
               <div className="max-w-[320px] text-[12px] leading-relaxed text-fg-faint">
-                GUI 对话和终端里的 {cli.label} 是同一个 CLI，只是多一条界面通道。
-                工作区目录会作为会话根注入，工具操作仍由 CLI 自己执行。
+                {t("GUI 对话和终端里的 {{name}} 是同一个 CLI，只是多一条界面通道。工作区目录会作为会话根注入，工具操作仍由 CLI 自己执行。", { name: cli.label })}
               </div>
             </div>
           ) : (
@@ -857,7 +862,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
             </div>
           )}
           {phase === "starting" && (
-            <div className="mx-auto my-3 w-full max-w-[800px] animate-pulse text-[12px] text-fg-faint">正在启动 {cli.label}…</div>
+            <div className="mx-auto my-3 w-full max-w-[800px] animate-pulse text-[12px] text-fg-faint">{t("正在启动 {{name}}…", { name: cli.label })}</div>
           )}
         </div>
         {!atBottom && <ScrollToBottomButton onClick={jumpToBottom} />}
@@ -867,7 +872,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
         <div className="mx-auto w-full max-w-[800px]">
           {storageWarning && (
             <div role="status" className="mb-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[11px] leading-relaxed text-warn">
-              存储空间不足，当前对话无法跨重启恢复；对话仍可继续。
+              {t("存储空间不足，当前对话无法跨重启恢复；对话仍可继续。")}
             </div>
           )}
           {chat?.permission && <PermissionCard chat={chat} onDecide={(id) => void decide(id)} />}
@@ -898,7 +903,7 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
                   type="button"
                   onClick={() => void stop()}
                   disabled={phase === "starting"}
-                  title={phase === "starting" ? "正在启动，稍等一下" : "停止这一轮"}
+                  title={phase === "starting" ? i18n.t("正在启动，稍等一下") : i18n.t("停止这一轮")}
                   className={`${STOP_BUTTON} disabled:opacity-40`}
                 >
                   <IconStop className="h-3.5 w-3.5" />
@@ -908,14 +913,14 @@ export function AcpChatPane({ root, roots, cli, onChatsChange, selectedChat, age
                   type="button"
                   onClick={() => void send()}
                   disabled={!draft.trim() || phase === "starting"}
-                  title="发送"
+                  title={t("发送")}
                   className={SEND_BUTTON}
                 >
                   <IconSend className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
-            <div className="mt-1 px-1 text-[10px] text-fg-faint">Enter 发送 · Shift+Enter 换行</div>
+            <div className="mt-1 px-1 text-[10px] text-fg-faint">{t("Enter 发送 · Shift+Enter 换行")}</div>
           </div>
         </div>
       </div>
@@ -939,7 +944,7 @@ function chatTitle(chat: AcpChat): string {
   if (generatedTitle) return generatedTitle;
   const first = chat.blocks.find((block) => block.kind === "user" && block.text.trim() !== "");
   const text = first && first.kind === "user" ? first.text.trim().replace(/\s+/g, " ") : "";
-  if (!text) return "新对话";
+  if (!text) return i18n.t("新对话");
   return text.length > 18 ? `${text.slice(0, 18)}…` : text;
 }
 

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import i18n from "./i18n";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { DiffSource } from "./tabs";
@@ -68,7 +69,7 @@ export function pathsPresent(paths: string[]): Promise<boolean[]> {
 
 /** 弹目录选择框（可多选），返回选中的路径数组；用户取消时返回空数组 */
 export async function pickFolder(): Promise<string[]> {
-  const picked = await open({ directory: true, multiple: true, title: "选择工作目录" });
+  const picked = await open({ directory: true, multiple: true, title: i18n.t("选择工作目录") });
   // 多选返回数组、单选返回字符串，取消都是 null；统一收敛成数组给调用方
   if (Array.isArray(picked)) return picked;
   return typeof picked === "string" ? [picked] : [];
@@ -82,7 +83,7 @@ export const wslListDirectories = (distribution: string, path: string): Promise<
 
 /** 弹目录选择框（单选），返回选中的路径；用户取消时返回 null。克隆时用来选「克隆到哪个目录下」 */
 export async function pickCloneParent(): Promise<string | null> {
-  const picked = await open({ directory: true, multiple: false, title: "选择克隆到的位置" });
+  const picked = await open({ directory: true, multiple: false, title: i18n.t("选择克隆到的位置") });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -93,7 +94,7 @@ export async function pickCloneParent(): Promise<string | null> {
  * 目标是否落在当前工作区的某个 root 里，只有它知道。
  */
 export async function pickSavePath(defaultName: string): Promise<string | null> {
-  const picked = await save({ title: "另存为", defaultPath: defaultName });
+  const picked = await save({ title: i18n.t("另存为"), defaultPath: defaultName });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -104,7 +105,7 @@ export async function pickSavePath(defaultName: string): Promise<string | null> 
  * 以文件所在目录建 / 复用临时工作区（见 App 的 `openFileAnywhere`）。
  */
 export async function pickOpenPath(): Promise<string | null> {
-  const picked = await open({ directory: false, multiple: false, title: "打开文件" });
+  const picked = await open({ directory: false, multiple: false, title: i18n.t("打开文件") });
   return typeof picked === "string" ? picked : null;
 }
 

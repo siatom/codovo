@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useRef } from "react";
+import i18n from "../lib/i18n";
 import type { AgentMessage, AgentPart } from "../lib/types";
 import { useHighlightedMarkdown } from "../lib/highlight";
 import { useMermaidBlocks } from "../lib/mermaid";
@@ -30,7 +32,7 @@ function ReasoningPartView({ text, streaming }: { text: string; streaming: boole
   return (
     <div className="my-2 rounded-lg bg-raised px-2.5 py-1.5 text-[12px] leading-relaxed text-fg-faint">
       <span className="mr-1.5 text-[10px] font-medium text-fg-dim">
-        {streaming ? "思考中…" : "思考过程"}
+        {streaming ? i18n.t("思考中…") : i18n.t("思考过程")}
       </span>
       <span className="whitespace-pre-wrap">{text}</span>
     </div>
@@ -58,6 +60,7 @@ export function AgentMessageView({
   message: AgentMessage;
   streaming: boolean;
 }) {
+  const { t } = useTranslation();
   if (message.role === "user") {
     return (
       <div className="my-4 flex justify-end">
@@ -76,7 +79,7 @@ export function AgentMessageView({
         <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-raised text-fg-dim">
           <IconBot className="h-3.5 w-3.5" />
         </span>
-        <span className="text-[12px] font-semibold text-fg-muted">智能体</span>
+        <span className="text-[12px] font-semibold text-fg-muted">{t("智能体")}</span>
       </div>
       {message.parts.map((part) => (
         <PartView key={part.id} part={part} streaming={streaming} />

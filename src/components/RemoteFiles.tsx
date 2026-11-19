@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useState } from "react";
 import {
   joinRemote,
@@ -49,6 +50,7 @@ export function RemoteFiles({
   onDropEntry,
   onDismissTransferError,
 }: RemoteFilesProps) {
+  const { t } = useTranslation();
   const [entries, setEntries] = useState<PanelEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -110,7 +112,7 @@ export function RemoteFiles({
 
   return (
     <FilePanel
-      label="远程"
+      label={t("远程")}
       icon={<IconServer className="h-3.5 w-3.5" />}
       side={side}
       path={path}

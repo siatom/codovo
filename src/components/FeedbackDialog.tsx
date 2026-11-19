@@ -1,6 +1,8 @@
+import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useEffect, useState } from "react";
+import i18n from "../lib/i18n";
 import { generateFeedbackBody, useEffectiveAiConfig } from "../lib/ai";
 import { formatTime } from "../lib/agent";
 import {
@@ -100,6 +102,7 @@ function statusTextClass(kind: Status["kind"]): string {
  * 剪贴板是兜底；这条路产生不了可跟踪的记录，界面上如实说明。
  */
 export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState<TabId>("write");
   /** 本机 CLI 状态；null = 还在探测 */
   const [cli, setCli] = useState<CliStatus | null>(null);
@@ -246,7 +249,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       setContent("");
       setStatus({
         kind: "ok",
-        text: `已提交，编号 ${record.number}。切到「我的反馈」可以跟踪状态。`,
+        text: i18n.t("已提交，编号 {{number}}。切到「我的反馈」可以跟踪状态。", { number: record.number }),
       });
     } catch (reason) {
       setStatus({ kind: "error", text: String(reason) });
@@ -269,7 +272,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
     try {
       await openUrl(newIssueUrl(target.webNewIssue, title.trim(), body));
     } catch (reason) {
-      setStatus({ kind: "error", text: `打不开浏览器：${reason}` });
+      setStatus({ kind: "error", text: i18n.t("打不开浏览器：{{error}}", { error: reason }) });
       return;
     }
     setStatus({
@@ -308,7 +311,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
           onClick={(event) => event.stopPropagation()}
         >
           <header className="flex shrink-0 items-center gap-2 border-b border-line px-4 py-3">
-            <h2 className="text-[13px] font-medium text-fg">意见反馈</h2>
+            <h2 className="text-[13px] font-medium text-fg">{t("意见反馈")}</h2>
             {target && (
               <span className="min-w-0 truncate text-[11px] text-fg-faint">
                 {target.owner}/{target.repo}
@@ -317,8 +320,8 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
             <button
               type="button"
               onClick={onClose}
-              title="关闭"
-              aria-label="关闭意见反馈"
+              title={t("关闭")}
+              aria-label={t("关闭意见反馈")}
               className="codovo-mac-close-button ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
             >
               <IconClose className="h-3.5 w-3.5" />
@@ -353,8 +356,8 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
           把整个反馈弹窗一起关掉 */}
       {pendingGenerate && (
         <ConfirmDialog
-          message="「详细描述」里已经有内容，用 AI 生成的结果覆盖它？覆盖后原来写的内容找不回来。"
-          confirmLabel="覆盖"
+          message={t("「详细描述」里已经有内容，用 AI 生成的结果覆盖它？覆盖后原来写的内容找不回来。")}
+          confirmLabel={t("覆盖")}
           onConfirm={() => {
             setContent(pendingGenerate);
             setPendingGenerate(null);
@@ -364,8 +367,8 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       )}
       {pendingDelete && (
         <ConfirmDialog
-          message={`从本地历史里移除 #${pendingDelete.number}？只清 Codovo 这边的记录，GitHub 上的 issue 不受影响。`}
-          confirmLabel="移除"
+          message={i18n.t("从本地历史里移除 #{{number}}？只清 Codovo 这边的记录，GitHub 上的 issue 不受影响。", { number: pendingDelete.number })}
+          confirmLabel={t("移除")}
           onConfirm={() => void removeRecord(pendingDelete.number)}
           onCancel={() => setPendingDelete(null)}
         />
@@ -380,16 +383,16 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       <div className="mb-3 rounded-lg border border-line bg-surface p-2.5">
         <p className="text-[11px] leading-relaxed text-fg-muted">
           {cli.available
-            ? "本机 GitHub CLI 还没登录。"
-            : "本机没有找到 GitHub CLI，反馈功能需要它代发。"}
+            ? i18n.t("本机 GitHub CLI 还没登录。")
+            : i18n.t("本机没有找到 GitHub CLI，反馈功能需要它代发。")}
         </p>
         {cli.detail && (
           <p className="mt-1 text-[11px] leading-relaxed text-fg-faint">{cli.detail}</p>
         )}
         <p className="mt-1 text-[11px] leading-relaxed text-fg-faint">
           {cli.available
-            ? "在终端执行 gh auth login 后回来重新检测。"
-            : "安装：https://cli.github.com/，然后 gh auth login。"}
+            ? i18n.t("在终端执行 gh auth login 后回来重新检测。")
+            : i18n.t("安装：https://cli.github.com/，然后 gh auth login。")}
         </p>
         <div className="mt-2 flex items-center gap-2">
           <button
@@ -400,11 +403,9 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
             }}
             className={GHOST_BUTTON}
           >
-            重新检测
-          </button>
+            {t("重新检测")}</button>
           <span className="text-[11px] text-fg-faint">
-            不装也能反馈：下面的按钮会改为在浏览器里打开新建 issue 页面。
-          </span>
+            {t("不装也能反馈：下面的按钮会改为在浏览器里打开新建 issue 页面。")}</span>
         </div>
       </div>
     );
@@ -416,15 +417,14 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
         {ready ? (
           <div className="mb-3 flex items-center gap-2 text-[11px] text-fg-faint">
             <IconCheck className="h-3.5 w-3.5 text-ok" />
-            <span>将由本机 GitHub CLI 提交</span>
+            <span>{t("将由本机 GitHub CLI 提交")}</span>
           </div>
         ) : (
           renderCliHint()
         )}
 
         <label className={LABEL} htmlFor="feedback-category">
-          类型
-        </label>
+          {t("类型")}</label>
         <select
           id="feedback-category"
           value={category}
@@ -433,36 +433,34 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
         >
           {CATEGORIES.map((item) => (
             <option key={item.value} value={item.value}>
-              {item.label}
+              {t(item.label)}
             </option>
           ))}
         </select>
 
         <label className={LABEL} htmlFor="feedback-title">
-          标题
-        </label>
+          {t("标题")}</label>
         <input
           id="feedback-title"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          placeholder="一句话说明问题或建议"
+          placeholder={t("一句话说明问题或建议")}
           className={`${INPUT} mb-3`}
         />
 
         {/* 生成按钮和标题同一行、右对齐：单独占一行会把正文往下挤 */}
         <div className="mb-1 flex items-center gap-2">
           <label className="text-[11px] text-fg-faint" htmlFor="feedback-content">
-            详细描述
-          </label>
+            {t("详细描述")}</label>
           <button
             type="button"
             onClick={() => void generate()}
             disabled={generating}
-            title="用 AI 根据标题和当前工作区的代码生成"
+            title={t("用 AI 根据标题和当前工作区的代码生成")}
             className={`ml-auto ${GENERATE_BUTTON}`}
           >
             <IconSparkle className={`h-3.5 w-3.5 ${generating ? "animate-pulse" : ""}`} />
-            {generating ? "生成中…" : "生成"}
+            {generating ? i18n.t("生成中…") : i18n.t("生成")}
           </button>
         </div>
         <textarea
@@ -470,13 +468,12 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
           value={content}
           onChange={(event) => setContent(event.target.value)}
           rows={8}
-          placeholder="期望发生什么、实际发生了什么，能复现的话写一下步骤"
+          placeholder={t("期望发生什么、实际发生了什么，能复现的话写一下步骤")}
           className={`${INPUT} resize-y leading-relaxed`}
         />
 
         <p className="mt-2 text-[11px] text-fg-faint">
-          提交时会自动附上版本号和系统信息，方便定位问题。
-        </p>
+          {t("提交时会自动附上版本号和系统信息，方便定位问题。")}</p>
 
         <div className="mt-3 flex items-center gap-2">
           {ready ? (
@@ -487,8 +484,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
               className={PRIMARY_BUTTON}
             >
               <IconSend className="h-3.5 w-3.5" />
-              提交反馈
-            </button>
+              {t("提交反馈")}</button>
           ) : (
             <button
               type="button"
@@ -496,16 +492,15 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
               disabled={cli === null || !target}
               title={
                 cli === null
-                  ? "正在检测本机 GitHub CLI…"
+                  ? i18n.t("正在检测本机 GitHub CLI…")
                   : target
-                    ? "在浏览器里打开新建 issue 页面"
-                    : "拿不到仓库地址，稍后再试"
+                    ? i18n.t("在浏览器里打开新建 issue 页面")
+                    : i18n.t("拿不到仓库地址，稍后再试")
               }
               className={PRIMARY_BUTTON}
             >
               <IconExternalLink className="h-3.5 w-3.5" />
-              在浏览器中打开
-            </button>
+              {t("在浏览器中打开")}</button>
           )}
           <span className={statusTextClass(status.kind)}>{status.text}</span>
         </div>
@@ -518,19 +513,19 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
       <>
         <div className="mb-2 flex items-center gap-2">
           <span className="text-[11px] text-fg-faint">
-            {records.length > 0 ? `共 ${records.length} 条` : ""}
+            {records.length > 0 ? i18n.t("共 {{count}} 条", { count: records.length }) : ""}
           </span>
           <button
             type="button"
             onClick={() => void refreshHistory()}
             disabled={!ready || refreshing || records.length === 0}
             title={
-              ready ? "重新向 GitHub 查询状态" : "本机 GitHub CLI 不可用，刷新不了状态"
+              ready ? i18n.t("重新向 GitHub 查询状态") : i18n.t("本机 GitHub CLI 不可用，刷新不了状态")
             }
             className={`ml-auto flex items-center gap-1 ${GHOST_BUTTON}`}
           >
             <IconRefresh className="h-3.5 w-3.5" />
-            {refreshing ? "刷新中…" : "刷新状态"}
+            {refreshing ? i18n.t("刷新中…") : i18n.t("刷新状态")}
           </button>
         </div>
 
@@ -546,8 +541,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
 
         {records.length === 0 ? (
           <p className="py-6 text-center text-[12px] text-fg-faint">
-            还没提交过反馈
-          </p>
+            {t("还没提交过反馈")}</p>
         ) : (
           <ul className="flex flex-col gap-1">
             {records.map((record) => (
@@ -577,7 +571,7 @@ export function FeedbackDialog({ onClose, root }: FeedbackDialogProps) {
                 <button
                   type="button"
                   onClick={() => setPendingDelete(record)}
-                  title="从本地历史里移除"
+                  title={t("从本地历史里移除")}
                   className={`${ROW_ACTION} opacity-0 group-hover:opacity-100 focus-visible:opacity-100`}
                 >
                   <IconTrash className="h-3.5 w-3.5" />

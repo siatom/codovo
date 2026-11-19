@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
 import { readOfficeBytes, type OfficeKind } from "../lib/office";
 
@@ -68,6 +69,7 @@ function applyDocxScriptFonts(host: HTMLElement) {
  * 应用里也不提供编辑，所以切走再切回来重新解析一遍即可。
  */
 export function OfficePreview({ path, kind }: OfficePreviewProps) {
+  const { t } = useTranslation();
   const hostRef = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
 
@@ -203,9 +205,9 @@ export function OfficePreview({ path, kind }: OfficePreviewProps) {
       {phase.kind !== "ready" && (
         <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
           {phase.kind === "loading" ? (
-            <p className="text-[12px] text-fg-faint">加载中…</p>
+            <p className="text-[12px] text-fg-faint">{t("加载中…")}</p>
           ) : (
-            <p className="text-[12px] text-warn">无法预览该文档：{phase.message}</p>
+            <p className="text-[12px] text-warn">{t("无法预览该文档：")}{phase.message}</p>
           )}
         </div>
       )}

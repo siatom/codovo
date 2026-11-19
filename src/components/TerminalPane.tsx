@@ -7,6 +7,7 @@ import {
   useState,
   type Ref,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import {
   TerminalSession,
@@ -145,6 +146,7 @@ export function TerminalPane({
   onOpenFile,
   ref,
 }: TerminalPaneProps) {
+  const { t } = useTranslation();
   const [sessions, setSessions] = useState<number[]>([0]);
   const [titleRevision, setTitleRevision] = useState(0);
   const [activeId, setActiveId] = useState(0);
@@ -453,7 +455,7 @@ export function TerminalPane({
         const shell = shellForSession(id);
         const custom = customTitleByIdRef.current.get(id);
         const seq = shellSeqByIdRef.current.get(id) ?? 1;
-        const shellName = shell?.name ?? `终端 ${index + 1}`;
+        const shellName = shell?.name ?? t("终端 {{index}}", { index: index + 1 });
         return {
           id,
           label: custom ?? (seq > 1 ? `${shellName} ${seq}` : shellName),
@@ -558,18 +560,18 @@ export function TerminalPane({
     <section className="flex h-full min-h-0 flex-col">
       {toolbarTarget && createPortal(
         <div className="flex shrink-0 items-center gap-0.5">
-          <IconButton label="单终端" active={layout === "tabs"} onClick={() => setLayout("tabs")}>
+          <IconButton label={t("单终端")} active={layout === "tabs"} onClick={() => setLayout("tabs")}>
             <IconLayoutSingle className={ICON_SM} />
           </IconButton>
           <IconButton
-            label="左右并列"
+            label={t("左右并列")}
             active={layout === "horizontal"}
             onClick={() => setSplitLayout("horizontal")}
           >
             <IconLayoutColumns className={ICON_SM} />
           </IconButton>
           <IconButton
-            label="上下并列"
+            label={t("上下并列")}
             active={layout === "vertical"}
             onClick={() => setSplitLayout("vertical")}
           >
@@ -687,7 +689,7 @@ export function TerminalPane({
                 key={`sep-${id}`}
                 role="separator"
                 aria-orientation={layout === "horizontal" ? "vertical" : "horizontal"}
-                aria-label="拖动调整终端大小"
+                aria-label={t("拖动调整终端大小")}
                 onPointerDown={(event) => onHandleDown(index - 1, event)}
                 onPointerMove={onHandleMove}
                 onPointerUp={onHandleUp}
@@ -742,7 +744,7 @@ export function TerminalPane({
               top: createMenuPos.top,
             }}
           >
-            <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">终端</div>
+            <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">{t("终端")}</div>
             {shellOptions.map((item) => (
               <button
                 key={item.id}
@@ -760,7 +762,7 @@ export function TerminalPane({
               </button>
             ))}
             {aiCommands.length > 0 && <div className="mx-2 my-1 border-t border-line" />}
-            {aiCommands.length > 0 && <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">智能体</div>}
+            {aiCommands.length > 0 && <div className="px-3 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">{t("智能体")}</div>}
             {aiCommands.map((item, index) => {
               const chatOption = acpCommands.some((option) => option.command === item.command);
               return (
@@ -774,9 +776,9 @@ export function TerminalPane({
                       launchCli(item.command, item.name);
                       onSelectView("terminal");
                     }}
-                    title={`${item.name}（终端）`}
+                    title={t("{{name}}（终端）", { name: item.name })}
                     className="rounded px-2 py-1 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
-                  >终端</button>
+                  >{t("终端")}</button>
                   <button
                     type="button"
                     disabled={!chatOption}
@@ -789,7 +791,7 @@ export function TerminalPane({
                         onSelectAcpChat(item.command, chatId);
                       }
                     }}
-                    title={chatOption ? `${item.name}（ACP 对话）` : `${item.name} 尚未接入 ACP 对话`}
+                    title={chatOption ? t("{{name}}（ACP 对话）", { name: item.name }) : t("{{name}} 尚未接入 ACP 对话", { name: item.name })}
                     className={`rounded px-2 py-1 text-[11px] ${chatOption ? "text-fg-dim hover:bg-hover hover:text-fg" : "cursor-not-allowed text-fg-faint opacity-40"}`}
                   >ACP</button>
                 </div>

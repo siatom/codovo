@@ -16,6 +16,7 @@ import { samePath } from "./fs";
 import type { ToolId } from "../components/ToolPane";
 import type { Fullscreen } from "../components/WorkspacePane";
 import { RIGHT_TOOLS } from "../components/ToolRail";
+import i18n from "./i18n";
 
 /**
  * 界面操作智能体（应用助手）的桥。
@@ -105,7 +106,7 @@ async function execute(
     case "update_settings": {
       const patch = args.patch;
       if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-        throw new Error("update_settings 需要一个 patch 对象");
+        throw new Error(i18n.t("update_settings 需要一个 patch 对象"));
       }
       return applySettingsPatch(patch as Record<string, unknown>, ctx);
     }
@@ -115,33 +116,33 @@ async function execute(
       const workspace = findWorkspace(ctx, requireString(args.workspace, "workspace"));
       const name = requireString(args.name, "name");
       ctx.setWorkspaces(saveWorkspace({ ...workspace, name }));
-      return `已把工作区「${workspace.name}」改名为「${name}」`;
+      return i18n.t("已把工作区「{{oldName}}」改名为「{{name}}」", { oldName: workspace.name, name });
     }
     case "pin_workspace": {
       const workspace = findWorkspace(ctx, requireString(args.workspace, "workspace"));
-      if (typeof args.pinned !== "boolean") throw new Error("pin_workspace 需要 pinned 为 true/false");
+      if (typeof args.pinned !== "boolean") throw new Error(i18n.t("pin_workspace 需要 pinned 为 true/false"));
       ctx.setWorkspaces(saveWorkspace({ ...workspace, pinned: args.pinned }));
-      return `已${args.pinned ? "置顶" : "取消置顶"}工作区「${workspace.name}」`;
+      return i18n.t(args.pinned ? "已置顶工作区「{{name}}」" : "已取消置顶工作区「{{name}}」", { name: workspace.name });
     }
     case "remove_workspace": {
       const workspace = findWorkspace(ctx, requireString(args.workspace, "workspace"));
       const confirmed = await ctx.confirm(
-        `应用助手请求移除工作区「${workspace.name}」。只去掉 Codovo 里的记录，不会动磁盘上的文件夹。`,
-        "移除",
+        i18n.t("应用助手请求移除工作区「{{name}}」。只去掉 Codovo 里的记录，不会动磁盘上的文件夹。", { name: workspace.name }),
+        i18n.t("移除"),
       );
-      if (!confirmed) return `已取消移除工作区「${workspace.name}」`;
+      if (!confirmed) return i18n.t("已取消移除工作区「{{name}}」", { name: workspace.name });
       ctx.removeWorkspace(workspace);
-      return `已从列表移除工作区「${workspace.name}」（磁盘目录未动）`;
+      return i18n.t("已从列表移除工作区「{{name}}」（磁盘目录未动）", { name: workspace.name });
     }
     case "reset_settings": {
       const section = asSection(args.section);
       const confirmed = await ctx.confirm(
         section
-          ? `应用助手请求把「${SECTION_LABELS[section]}」这一类设置恢复默认。`
-          : "应用助手请求把全部设置恢复默认，当前的自定义设置都会丢失。",
-        "恢复默认",
+          ? i18n.t("应用助手请求把「{{section}}」这一类设置恢复默认。", { section: i18n.t(SECTION_LABELS[section]) })
+          : i18n.t("应用助手请求把全部设置恢复默认，当前的自定义设置都会丢失。"),
+        i18n.t("恢复默认"),
       );
-      if (!confirmed) return "已取消恢复默认";
+      if (!confirmed) return i18n.t("已取消恢复默认");
       if (section) {
         ctx.resetSection(section);
         // 主题不在 Settings 上（在 theme.tsx），外观页要单独带一下——和设置面板一致
@@ -150,7 +151,7 @@ async function execute(
         ctx.reset();
         ctx.setTheme(DEFAULT_THEME);
       }
-      return section ? `已把「${SECTION_LABELS[section]}」这一类设置恢复默认` : "已把全部设置恢复默认";
+      return section ? i18n.t("已把「{{section}}」这一类设置恢复默认", { section: i18n.t(SECTION_LABELS[section]) }) : i18n.t("已把全部设置恢复默认");
     }
     case "switch_panel": {
       const requested = requireString(args.panel, "panel");
@@ -158,30 +159,30 @@ async function execute(
       const panel = requested === "search" ? "files" : requested;
       const ids = RIGHT_TOOLS.map((item) => item.id);
       if (!ids.includes(panel as ToolId)) {
-        throw new Error(`panel 只能取 ${ids.join(" / ")}`);
+        throw new Error(i18n.t("panel 只能取 {{values}}", { values: ids.join(" / ") }));
       }
-      if (!ctx.layout) throw new Error("当前没有打开的工作区，右栏模块切不了");
+      if (!ctx.layout) throw new Error(i18n.t("当前没有打开的工作区，右栏模块切不了"));
       ctx.layout.openTool(panel as ToolId);
       const label = RIGHT_TOOLS.find((item) => item.id === panel)?.label ?? panel;
-      return `已切到右栏「${label}」模块`;
+      return i18n.t("已切到右栏「{{label}}」模块", { label: i18n.t(label) });
     }
     case "set_right_pane": {
-      if (typeof args.open !== "boolean") throw new Error("set_right_pane 需要 open 为 true/false");
-      if (!ctx.layout) throw new Error("当前没有打开的工作区，右边栏动不了");
+      if (typeof args.open !== "boolean") throw new Error(i18n.t("set_right_pane 需要 open 为 true/false"));
+      if (!ctx.layout) throw new Error(i18n.t("当前没有打开的工作区，右边栏动不了"));
       ctx.layout.setRightOpen(args.open);
-      return args.open ? "已展开右边栏" : "已收起右边栏";
+      return args.open ? i18n.t("已展开右边栏") : i18n.t("已收起右边栏");
     }
     case "set_fullscreen": {
       const area = requireString(args.area, "area");
       if (area !== "none" && area !== "left" && area !== "right") {
-        throw new Error("area 只能取 none / left / right");
+        throw new Error(i18n.t("area 只能取 none / left / right"));
       }
       ctx.setFullscreen(area);
-      if (area === "none") return "已退出全屏";
-      return `已切换到${area === "left" ? "左侧（终端）" : "右侧（右边栏）"}全屏`;
+      if (area === "none") return i18n.t("已退出全屏");
+      return i18n.t("已切换到{{area}}全屏", { area: i18n.t(area === "left" ? "左侧（终端）" : "右侧（右边栏）") });
     }
     default:
-      throw new Error(`不支持的界面操作：${tool}`);
+        throw new Error(i18n.t("不支持的界面操作：{{tool}}", { tool }));
   }
 }
 
@@ -299,7 +300,7 @@ function applySettingsPatch(patch: Record<string, unknown>, ctx: AppAgentContext
   for (const [key, value] of Object.entries(patch)) {
     if (key === "theme") {
       if (typeof value !== "string" || !THEME_NAMES.includes(value as Theme)) {
-        throw new Error(`theme 取值非法：${JSON.stringify(value)}`);
+        throw new Error(i18n.t("theme 取值非法：{{value}}", { value: JSON.stringify(value) }));
       }
       theme = value as Theme;
       applied.push(`theme=${value}`);
@@ -309,40 +310,40 @@ function applySettingsPatch(patch: Record<string, unknown>, ctx: AppAgentContext
     const limit = NUMERIC_LIMITS[key];
     if (limit) {
       const parsed = typeof value === "number" ? value : Number(value);
-      if (!Number.isFinite(parsed)) throw new Error(`${key} 需要一个数字`);
+      if (!Number.isFinite(parsed)) throw new Error(i18n.t("{{key}} 需要一个数字", { key }));
       const clamped = Math.min(limit[1], Math.max(limit[0], Math.round(parsed)));
       (next as Record<string, unknown>)[key] = clamped;
       applied.push(`${key}=${clamped}`);
       continue;
     }
     if (BOOLEAN_KEYS.has(key)) {
-      if (typeof value !== "boolean") throw new Error(`${key} 需要 true 或 false`);
+      if (typeof value !== "boolean") throw new Error(i18n.t("{{key}} 需要 true 或 false", { key }));
       (next as Record<string, unknown>)[key] = value;
       applied.push(`${key}=${value}`);
       continue;
     }
     if (STRING_KEYS.has(key)) {
-      if (typeof value !== "string") throw new Error(`${key} 需要一个字符串`);
+      if (typeof value !== "string") throw new Error(i18n.t("{{key}} 需要一个字符串", { key }));
       (next as Record<string, unknown>)[key] = value;
-      applied.push(`${key}=${value === "" ? "(留空)" : value}`);
+      applied.push(`${key}=${value === "" ? i18n.t("(留空)") : value}`);
       continue;
     }
     const allowed = ENUM_KEYS[key];
     if (allowed) {
       if (typeof value !== "string" || !allowed.includes(value)) {
-        throw new Error(`${key} 只能取 ${allowed.join(" / ")}`);
+        throw new Error(i18n.t("{{key}} 只能取 {{values}}", { key, values: allowed.join(" / ") }));
       }
       (next as Record<string, unknown>)[key] = value;
       applied.push(`${key}=${value}`);
       continue;
     }
-    throw new Error(`不认识的设置项：${key}（可改的字段见技能说明，或先调 get_state）`);
+    throw new Error(i18n.t("不认识的设置项：{{key}}（可改的字段见技能说明，或先调 get_state）", { key }));
   }
 
   if (Object.keys(next).length > 0) ctx.update(next);
   if (theme) ctx.setTheme(theme);
-  if (applied.length === 0) return "没有需要修改的设置项。";
-  return `已更新：${applied.join("、")}`;
+  if (applied.length === 0) return i18n.t("没有需要修改的设置项。");
+  return i18n.t("已更新：{{items}}", { items: applied.join(", ") });
 }
 
 async function addWorkspace(
@@ -362,15 +363,15 @@ async function addWorkspace(
   };
   const opened = await ctx.openWorkspace(workspace);
   if (!opened) {
-    throw new Error(`打不开目录 ${path}：它可能不存在、不是目录，或没有访问权限`);
+    throw new Error(i18n.t("打不开目录 {{path}}：它可能不存在、不是目录，或没有访问权限", { path }));
   }
-  return `已添加并打开工作区「${opened.name}」（${opened.activeRoot}）`;
+  return i18n.t("已添加并打开工作区「{{name}}」（{{path}}）", { name: opened.name, path: opened.activeRoot });
 }
 
 /** 按路径或名字找一个工作区；找不到时报错并把可选的名字列出来，方便模型改口。 */
 function findWorkspace(ctx: AppAgentContext, reference: string): Workspace {
   const needle = reference.trim();
-  if (!needle) throw new Error("要指定工作区名或路径");
+  if (!needle) throw new Error(i18n.t("要指定工作区名或路径"));
   const byPath = ctx.workspaces.find((item) =>
     item.roots.some((root) => samePath(root, needle)),
   );
@@ -381,7 +382,7 @@ function findWorkspace(ctx: AppAgentContext, reference: string): Workspace {
   if (!hit) {
     const names = ctx.workspaces.map((item) => item.name);
     throw new Error(
-      `找不到工作区「${needle}」。当前工作区：${names.length ? names.join("、") : "（一个都没有）"}`,
+      i18n.t("找不到工作区「{{name}}」。当前工作区：{{workspaces}}", { name: needle, workspaces: names.length ? names.join(", ") : i18n.t("（一个都没有）") }),
     );
   }
   return hit;
@@ -390,12 +391,12 @@ function findWorkspace(ctx: AppAgentContext, reference: string): Workspace {
 function asSection(value: unknown): SettingsSection | null {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string" || !SECTIONS.includes(value as SettingsSection)) {
-    throw new Error(`section 只能取 ${SECTIONS.join(" / ")}，或省略表示全部`);
+    throw new Error(i18n.t("section 只能取 {{sections}}，或省略表示全部", { sections: SECTIONS.map((section) => i18n.t(SECTION_LABELS[section])).join(" / ") }));
   }
   return value as SettingsSection;
 }
 
 function requireString(value: unknown, field: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`缺少参数 ${field}`);
+  if (typeof value !== "string" || !value.trim()) throw new Error(i18n.t("缺少参数 {{field}}", { field }));
   return value.trim();
 }

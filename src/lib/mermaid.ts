@@ -1,5 +1,6 @@
 import { useEffect, type RefObject } from "react";
 import { useTheme, type ResolvedTheme } from "./theme";
+import i18n from "./i18n";
 
 /**
  * Mermaid 流程图：按需加载 + 预览层水合。
@@ -122,9 +123,9 @@ export function useMermaidBlocks(
           if (cancelled || !block.isConnected) return;
           const note = document.createElement("div");
           note.className = "md-mermaid-error";
-          note.textContent = `流程图渲染失败：${
-            error instanceof Error ? error.message : String(error)
-          }`;
+          note.textContent = i18n.t("流程图渲染失败：{{error}}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
           block.prepend(note);
           block.dataset.state = "error";
         },

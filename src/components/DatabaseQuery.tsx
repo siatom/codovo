@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useRef, useState } from "react";
+import i18n from "../lib/i18n";
 import { save } from "@tauri-apps/plugin-dialog";
 import {
   dbExport,
@@ -22,6 +24,7 @@ const DEFAULT_EDITOR_PERCENT = 40;
 
 /** 查询页：Monaco SQL 编辑器 + 结果表格，中间一条可拖的横向分隔条。 */
 export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: DbKind }) {
+  const { t } = useTranslation();
   const { theme, palette } = useTheme();
   const { settings } = useSettings();
 
@@ -47,7 +50,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
     async (page: number) => {
       const sql = readSql();
       if (!sql) {
-        setError("请输入 SQL");
+        setError(i18n.t("请输入 SQL"));
         setResult(null);
         return;
       }
@@ -146,7 +149,10 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
       });
       setExportNotice({
         ok: true,
-        text: `已导出 ${out.rows} 行${out.truncated ? "（超过上限，已截断）" : ""}`,
+        text: i18n.t("已导出 {{rows}} 行{{truncated}}", {
+          rows: out.rows,
+          truncated: out.truncated ? i18n.t("（超过上限，已截断）") : "",
+        }),
       });
     } catch (reason) {
       setExportNotice({ ok: false, text: String(reason) });
@@ -240,24 +246,22 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
           onClick={() => void run(0)}
           className="rounded-md border border-accent px-2.5 py-0.5 text-[11px] text-accent hover:bg-selected disabled:opacity-60"
         >
-          运行
-        </button>
+          {t("运行")}</button>
         <span className="text-[11px] text-fg-faint">Ctrl / Cmd + Enter</span>
         <button
           type="button"
           onClick={beautify}
-          title="美化 SQL（Shift + Alt + F）"
+          title={t("美化 SQL（Shift + Alt + F）")}
           className="rounded-md border border-line-strong px-2.5 py-0.5 text-[11px] text-fg-muted hover:bg-hover hover:text-fg"
         >
-          美化
-        </button>
+          {t("美化")}</button>
         <span className="flex-1" />
         {formatError && (
           <span
             className="min-w-0 max-w-[45%] truncate text-[11px] text-danger"
             title={formatError}
           >
-            美化失败：{formatError}
+            {t("美化失败：")}{formatError}
           </span>
         )}
         {exportNotice && (
@@ -270,7 +274,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
             {exportNotice.text}
           </span>
         )}
-        {loading && <span className="text-[11px] text-fg-dim">执行中…</span>}
+        {loading && <span className="text-[11px] text-fg-dim">{t("执行中…")}</span>}
       </div>
 
       <div
@@ -299,7 +303,7 @@ export function DatabaseQuery({ sessionId, kind }: { sessionId: number; kind: Db
           loading={loading}
           error={error}
           onPage={(page) => void loadPage(page)}
-          hint="写一条 SQL，按「运行」或 Ctrl/Cmd + Enter 执行。"
+          hint={t("写一条 SQL，按「运行」或 Ctrl/Cmd + Enter 执行。")}
           onExport={result?.kind === "rows" ? handleExport : undefined}
           exportBusy={exporting}
         />

@@ -11,6 +11,7 @@ import type {
   AgentToolState,
 } from "./types";
 import type { AgentProfile, AgentSkill } from "./settings";
+import i18n from "./i18n";
 
 /** 后端推事件用的事件名，和 src-tauri/src/agent/mod.rs 的常量对齐 */
 const EVENT_NAME = "agent-event";
@@ -271,11 +272,11 @@ function fillToolResult(
 export function formatTime(ms: number): string {
   if (!ms) return "";
   const diff = (Date.now() - ms) / 1000;
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)} 天前`;
-  return new Date(ms).toLocaleDateString();
+  if (diff < 60) return i18n.t("刚刚");
+  if (diff < 3600) return i18n.t("{{count}} minutes ago", { count: Math.floor(diff / 60) });
+  if (diff < 86400) return i18n.t("{{count}} hours ago", { count: Math.floor(diff / 3600) });
+  if (diff < 86400 * 30) return i18n.t("{{count}} days ago", { count: Math.floor(diff / 86400) });
+  return new Date(ms).toLocaleDateString(i18n.language);
 }
 
 /**
@@ -346,7 +347,7 @@ export function parseSessions(raw: unknown): AgentSessionSummary[] {
     sessions.push({
       id: record.id,
       title:
-        typeof record.title === "string" && record.title.trim() ? record.title : "未命名会话",
+        typeof record.title === "string" && record.title.trim() ? record.title : i18n.t("未命名会话"),
       updated: typeof record.updated === "number" ? record.updated : 0,
     });
   }

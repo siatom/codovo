@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useRef, useState } from "react";
+import i18n from "../lib/i18n";
 import { formatTime } from "../lib/agent";
 import {
   listWorkspaceHistory,
@@ -42,6 +44,7 @@ const MENU_W = 144;
  * 工作区的状态，也不用为它单独管高度。
  */
 export function WorkspaceHistory({ roots, commands, active, onResume }: WorkspaceHistoryProps) {
+  const { t } = useTranslation();
   /** null = 还没读到第一份结果，显示加载态 */
   const [items, setItems] = useState<CliHistoryEntry[] | null>(null);
   const [limit, setLimit] = useState(HISTORY_PAGE);
@@ -131,11 +134,11 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
   };
 
   if (items === null) {
-    return <p className={HINT}>正在读取对话…</p>;
+    return <p className={HINT}>{t("正在读取对话…")}</p>;
   }
 
   if (items.length === 0) {
-    return <p className={HINT}>还没有对话记录</p>;
+    return <p className={HINT}>{t("还没有对话记录")}</p>;
   }
 
   return (
@@ -144,7 +147,7 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
         {items.slice(0, limit).map((item) => {
           const key = sessionTitleKey(item.provider, item.id);
           const title = titleOf(item);
-          const name = title || "未命名对话";
+          const name = title || i18n.t("未命名对话");
           // 时间抠不出来时（opencode 老版本没给 updated）只留 CLI 名，别挂个空的分隔符
           const meta = [item.label, formatTime(item.updated)].filter(Boolean).join(" · ");
 
@@ -181,7 +184,7 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
                       }
                       finishRename(item);
                     }}
-                    placeholder="对话名称，留空恢复原名"
+                    placeholder={t("对话名称，留空恢复原名")}
                     spellCheck={false}
                     className="min-w-0 flex-1 rounded border border-accent-strong bg-surface px-1.5 py-0.5 text-[12px] text-fg placeholder:text-fg-faint focus:outline-none"
                   />
@@ -214,7 +217,7 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
                 <button
                   type="button"
                   onClick={(event) => openMenu(item, event.currentTarget)}
-                  title="更多操作"
+                  title={t("更多操作")}
                   className={`${MENU_ACTION} ${
                     // 菜单开着的时候鼠标已经离开这一行了，按钮得自己亮着
                     menu && sessionTitleKey(menu.item.provider, menu.item.id) === key
@@ -235,8 +238,7 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
               onClick={() => setLimit((value) => value + HISTORY_PAGE)}
               className={`${HINT} w-full rounded text-left hover:bg-hover hover:text-fg`}
             >
-              加载更多（还有 {items.length - limit} 条）
-            </button>
+              {t("加载更多（还有")}{items.length - limit} {t("条）")}</button>
           </li>
         )}
       </ul>
@@ -259,13 +261,12 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
               onClick={() => {
                 const { item } = menu;
                 setMenu(null);
-                onResume(item.resume, titleOf(item) || "未命名对话");
+                onResume(item.resume, titleOf(item) || i18n.t("未命名对话"));
               }}
               className="flex items-center gap-2 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
             >
               <IconPlay className="h-3.5 w-3.5 shrink-0" />
-              恢复对话
-            </button>
+              {t("恢复对话")}</button>
             <button
               type="button"
               onClick={() => {
@@ -276,8 +277,7 @@ export function WorkspaceHistory({ roots, commands, active, onResume }: Workspac
               className="flex items-center gap-2 px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
             >
               <IconPencil className="h-3.5 w-3.5 shrink-0" />
-              重命名
-            </button>
+              {t("重命名")}</button>
           </div>
         </>
       )}

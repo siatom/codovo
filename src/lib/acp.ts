@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cliKey, cliProvider } from "./cli-sessions";
+import i18n from "./i18n";
 
 /** 后端推事件用的事件名，和 src-tauri/src/acp/event.rs 的常量对齐 */
 const EVENT_NAME = "acp-event";
@@ -292,15 +293,15 @@ function stopReasonText(stopReason: string): string | null {
     case "end_turn":
       return null;
     case "cancelled":
-      return "已取消这一轮";
+      return i18n.t("已取消这一轮");
     case "max_tokens":
-      return "达到模型长度上限，回答被截断";
+      return i18n.t("达到模型长度上限，回答被截断");
     case "max_turn_requests":
-      return "达到单轮工具调用上限";
+      return i18n.t("达到单轮工具调用上限");
     case "refusal":
-      return "Agent 拒绝继续这一轮";
+      return i18n.t("Agent 拒绝继续这一轮");
     default:
-      return `这一轮结束：${stopReason}`;
+      return i18n.t("这一轮结束：{{reason}}", { reason: stopReason });
   }
 }
 
@@ -420,7 +421,7 @@ export function reduceAcpEvent(chat: AcpChat, event: AcpEvent): AcpChat {
         permission: undefined,
         blocks: [
           ...chat.blocks,
-          { id: blockId("notice"), kind: "notice", text: `对话已结束：${event.reason}`, tone: "info" },
+          { id: blockId("notice"), kind: "notice", text: i18n.t("对话已结束：{{reason}}", { reason: event.reason }), tone: "info" },
         ],
       };
     }

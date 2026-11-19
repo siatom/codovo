@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useLayoutEffect, useRef, useState } from "react";
+import i18n from "../lib/i18n";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { CommitStat, GitCommit } from "../lib/types";
 import { IconCommit, IconCopy, IconPerson } from "./icons";
@@ -59,6 +61,7 @@ export function CommitTooltip({
   /** 提交行的视口坐标，浮框贴着它摆 */
   anchor: DOMRect;
 }) {
+  const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
 
@@ -121,10 +124,9 @@ export function CommitTooltip({
       {/* 合并提交按 git show 的口径是空 diff，这时不摆这一行，免得写成「0 个文件」 */}
       {stat && stat.files > 0 && (
         <p className="mt-2 text-fg-faint">
-          已更改 {stat.files} 个文件，
-          {/* +绿 / -红，和「变更」列表里的 diff 统计同一套色，一眼能看出是加还是删 */}
-          <span className="text-ok">{stat.insertions} 行插入(+)</span>，
-          <span className="text-danger">{stat.deletions} 行删除(-)</span>
+          {t("已更改")}{stat.files} {t("个文件，")}{/* +绿 / -红，和「变更」列表里的 diff 统计同一套色，一眼能看出是加还是删 */}
+          <span className="text-ok">{stat.insertions} {t("行插入(+)")}</span>，
+          <span className="text-danger">{stat.deletions} {t("行删除(-)")}</span>
         </p>
       )}
 
@@ -134,12 +136,12 @@ export function CommitTooltip({
         <button
           type="button"
           onClick={copy}
-          title={copied ? "已复制" : `复制完整提交号 ${commit.hash}`}
+          title={copied ? i18n.t("已复制") : i18n.t("复制完整提交号 {{hash}}", { hash: commit.hash })}
           className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-active"
         >
           <span className="font-mono text-accent">{commit.short}</span>
           {copied ? (
-            <span className="text-fg-faint">已复制</span>
+            <span className="text-fg-faint">{t("已复制")}</span>
           ) : (
             <IconCopy className="h-3 w-3 text-fg-faint" />
           )}

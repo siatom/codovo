@@ -1,5 +1,7 @@
+import i18n from "../lib/i18n";
 import appLogoRelease from "../../src-tauri/icons/128x128.png";
 import appLogoDev from "../../src-tauri/icons/dev/128x128.png";
+import { useTranslation } from "react-i18next";
 import { useActivityAll } from "../lib/activity";
 import { pathKey, toDisplayPath } from "../lib/fs";
 import { formatShortcut } from "../lib/shortcuts";
@@ -56,6 +58,7 @@ export function WorkspaceEmpty({
   onOpenFile,
   onOpenSettings,
 }: WorkspaceEmptyProps) {
+  const { t } = useTranslation();
   const activityByRoot = useActivityAll();
   const { settings } = useSettings();
   const { theme, toggle } = useTheme();
@@ -85,48 +88,48 @@ export function WorkspaceEmpty({
 
             <div className="mt-5 flex items-baseline justify-center gap-2.5">
               <h1 className="text-[26px] font-semibold tracking-tight text-fg">Codovo</h1>
-              <span className="text-[12px] font-medium tracking-[0.28em] text-fg-faint">码坞</span>
+              <span className="text-[12px] font-medium tracking-[0.28em] text-fg-faint">{t("码坞")}</span>
             </div>
 
-            <p className="mt-3 text-[14px] text-fg-muted">把散落一地的开发现场，收拢进一个窗口。</p>
+            <p className="mt-3 text-[14px] text-fg-muted">{t("把散落一地的开发现场，收拢进一个窗口。")}</p>
             <p className="mt-1.5 text-[12px] text-fg-faint">
-              终端、编辑器、Git、远程、数据库、预览与部署，在同一片甲板上各就各位。
+              {t("终端、编辑器、Git、远程、数据库、预览与部署，在同一片甲板上各就各位。")}
             </p>
 
             <div className="mt-8 flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
                 onClick={onOpenFolder}
-                title="选择一个本地文件夹，直接作为工作区打开"
+                title={t("选择一个本地文件夹，直接作为工作区打开")}
                 className="flex h-10 items-center gap-2 rounded-lg bg-accent px-4 text-[13px] font-medium text-app shadow-[0_10px_30px_-14px_var(--c-accent)] transition hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <IconFolderOpen className="h-4 w-4" />
-                打开文件夹
+                {t("打开文件夹")}
               </button>
               <button
                 type="button"
                 onClick={onCreate}
-                title="命名工作区、添加多个目录，或从 Git 仓库克隆"
+                title={t("命名工作区、添加多个目录，或从 Git 仓库克隆")}
                 className="flex h-10 items-center gap-2 rounded-lg border border-line-strong bg-raised px-4 text-[13px] text-fg-muted transition-colors hover:border-line-hover hover:bg-hover hover:text-fg"
               >
                 <IconFolderPlus className="h-4 w-4" />
-                新建工作区
+                {t("新建工作区")}
               </button>
               <button
                 type="button"
                 onClick={onOpenFile}
-                title="打开任意文件；不在工作区里时，按文件所在目录建一个"
+                title={t("打开任意文件；不在工作区里时，按文件所在目录建一个")}
                 className="flex h-10 items-center gap-2 rounded-lg px-3 text-[12px] text-fg-dim transition-colors hover:bg-hover hover:text-fg"
               >
                 <IconFile className="h-4 w-4" />
-                打开文件
+                {t("打开文件")}
                 <kbd className="rounded border border-line-strong bg-surface px-1 py-px font-mono text-[10px] text-fg-faint">
                   {formatShortcut(settings.shortcuts["editor.openFile"])}
                 </kbd>
               </button>
             </div>
 
-            <p className="mt-3 text-[11px] text-fg-faint">也可以把文件夹或文件直接拖进窗口</p>
+            <p className="mt-3 text-[11px] text-fg-faint">{t("也可以把文件夹或文件直接拖进窗口")}</p>
 
             {error && (
               <p className="mx-auto mt-4 max-w-md rounded-lg border border-danger-line bg-danger-bg px-3 py-1.5 text-[11px] text-danger">
@@ -138,7 +141,7 @@ export function WorkspaceEmpty({
               <div className="mt-10 text-left">
                 <div className="mb-2.5 flex items-center gap-3">
                   <span className="shrink-0 text-[11px] font-medium tracking-[0.12em] text-fg-faint">
-                    最近的工作区
+                    {t("最近的工作区")}
                   </span>
                   <span className="h-px flex-1 bg-line" />
                 </div>
@@ -166,7 +169,7 @@ export function WorkspaceEmpty({
                             )}
                             {broken && (
                               <span
-                                title="工作目录不存在，点开会失败；打开后可用侧栏的「⋯」菜单编辑或移除"
+                                title={t("工作目录不存在，点开会失败；打开后可用侧栏的「⋯」菜单编辑或移除")}
                                 className="shrink-0 text-warn"
                               >
                                 <IconAlert className="h-3.5 w-3.5" />
@@ -196,13 +199,12 @@ export function WorkspaceEmpty({
           className="flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-hover hover:text-fg"
         >
           <IconSettings className="h-3.5 w-3.5" />
-          设置
-        </button>
+          {t("设置")}</button>
         <span className="h-3 w-px bg-line" />
         <button
           type="button"
           onClick={toggle}
-          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+          title={theme === "dark" ? i18n.t("切换到浅色主题") : i18n.t("切换到深色主题")}
           className="flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-hover hover:text-fg"
         >
           {theme === "dark" ? (
@@ -210,7 +212,7 @@ export function WorkspaceEmpty({
           ) : (
             <IconMoon className="h-3.5 w-3.5" />
           )}
-          {theme === "dark" ? "浅色主题" : "深色主题"}
+          {theme === "dark" ? i18n.t("浅色主题") : i18n.t("深色主题")}
         </button>
       </div>
     </section>

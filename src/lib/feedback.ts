@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import i18n from "./i18n";
 
 /**
  * 一条提交过的反馈。正文和大段讨论都在 GitHub 那边，这里只有索引信息——
@@ -60,20 +61,21 @@ export const CATEGORIES = [
 
 /** 分类的中文名。认不出的值原样返回，免得界面出现空白 */
 export function categoryLabel(value: string): string {
-  return CATEGORIES.find((item) => item.value === value)?.label ?? value;
+  const label = CATEGORIES.find((item) => item.value === value)?.label;
+  return label ? i18n.t(label) : value;
 }
 
 /** issue 状态的中文名。认不出的原样返回 */
 export function stateLabel(state: string): string {
   switch (state) {
     case "open":
-      return "待处理";
+      return i18n.t("待处理");
     case "progressing":
-      return "处理中";
+      return i18n.t("处理中");
     case "closed":
-      return "已解决";
+      return i18n.t("已解决");
     case "rejected":
-      return "已关闭";
+      return i18n.t("已关闭");
     default:
       return state;
   }
@@ -120,7 +122,7 @@ export function deleteFeedback(number: string): Promise<FeedbackRecord[]> {
  * 迟早会有一处忘了改。
  */
 export function composeBody(category: string, content: string, env: string): string {
-  const head = `> 类型：${categoryLabel(category)}`;
+  const head = `> ${i18n.t("类型：{{category}}", { category: categoryLabel(category) })}`;
   const tail = env ? `\n\n---\n\n${env}` : "";
   return `${head}\n\n${content.trim()}${tail}`;
 }
@@ -131,9 +133,9 @@ export function composeBody(category: string, content: string, env: string): str
  */
 export function environmentInfo(): string {
   return [
-    "**环境信息**",
-    `- 版本：${__APP_VERSION__}`,
-    `- 系统：${navigator.platform} · ${navigator.userAgent}`,
+    `**${i18n.t("环境信息")}**`,
+    `- ${i18n.t("版本：{{version}}", { version: __APP_VERSION__ })}`,
+    `- ${i18n.t("系统：{{platform}} · {{userAgent}}", { platform: navigator.platform, userAgent: navigator.userAgent })}`,
   ].join("\n");
 }
 

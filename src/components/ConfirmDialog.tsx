@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import {
   useId,
   useLayoutEffect,
@@ -79,6 +80,7 @@ export function ConfirmDialog({
   onCancel,
   onDismiss,
 }: ConfirmDialogProps) {
+  const { t } = useTranslation();
   const [checked, setChecked] = useState(false);
 
   // 点遮罩 / 按 Esc 走这条；没单独给就回退到取消（大多数场景两者等价）
@@ -199,7 +201,7 @@ export function ConfirmDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <h2 id={titleId} className="sr-only">
-          确认操作：{confirmLabel}
+          {t("确认操作：")}{confirmLabel}
         </h2>
         <p id={messageId} className="text-[12px] leading-relaxed text-fg">
           {message}

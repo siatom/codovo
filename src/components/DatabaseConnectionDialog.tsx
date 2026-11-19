@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState, type ReactNode } from "react";
+import i18n from "../lib/i18n";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   dbSecretPresence,
@@ -43,6 +45,7 @@ export function DatabaseConnectionDialog({
   onSave,
   onClose,
 }: DatabaseConnectionDialogProps) {
+  const { t } = useTranslation();
   const [kind, setKind] = useState<DbKind>(connection?.kind ?? "mysql");
   const [name, setName] = useState(connection?.name ?? "");
   const [host, setHost] = useState(connection?.host ?? "127.0.0.1");
@@ -91,18 +94,18 @@ export function DatabaseConnectionDialog({
   const validate = (): number | null => {
     if (kind === "sqlite") {
       if (!file.trim()) {
-        setError("请选择 SQLite 数据库文件");
+        setError(i18n.t("请选择 SQLite 数据库文件"));
         return null;
       }
       return 0;
     }
     if (!host.trim()) {
-      setError("请填写主机地址");
+      setError(i18n.t("请填写主机地址"));
       return null;
     }
     const portNumber = Number(port);
     if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
-      setError("端口要在 1–65535 之间");
+      setError(i18n.t("端口要在 1–65535 之间"));
       return null;
     }
     return portNumber;
@@ -179,10 +182,10 @@ export function DatabaseConnectionDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <h2 className="text-[13px] font-medium text-fg">
-          {connection ? "编辑连接" : "新增连接"}
+          {connection ? i18n.t("编辑连接") : i18n.t("新增连接")}
         </h2>
 
-        <Row label="类型">
+        <Row label={t("类型")}>
           <div className="flex gap-1 rounded-md border border-line-strong p-0.5">
             {DB_KINDS.map((item) => (
               <button
@@ -197,31 +200,31 @@ export function DatabaseConnectionDialog({
           </div>
         </Row>
 
-        <Row label="名称">
+        <Row label={t("名称")}>
           <input
             autoFocus
             value={name}
             onChange={(event) => setName(event.target.value)}
-            placeholder="留空用地址或文件名"
+            placeholder={t("留空用地址或文件名")}
             spellCheck={false}
             className={INPUT}
           />
         </Row>
 
         {kind === "sqlite" ? (
-          <Row label="数据库文件">
+          <Row label={t("数据库文件")}>
             <div className="flex gap-2">
               <input
                 value={file}
                 onChange={(event) => setFile(event.target.value)}
-                placeholder="如 C:\\data\\app.db"
+                placeholder={t("如 C:\\\\data\\\\app.db")}
                 spellCheck={false}
                 className={INPUT}
               />
               <button
                 type="button"
                 onClick={() => void pickFile()}
-                title="选择数据库文件"
+                title={t("选择数据库文件")}
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-line-strong text-fg-dim hover:bg-hover hover:text-fg"
               >
                 <IconFolderOpen className="h-3.5 w-3.5" />
@@ -232,18 +235,18 @@ export function DatabaseConnectionDialog({
           <>
             <div className="flex gap-3">
               <div className="flex-[2]">
-                <Row label="主机地址">
+                <Row label={t("主机地址")}>
                   <input
                     value={host}
                     onChange={(event) => setHost(event.target.value)}
-                    placeholder="IP 或域名"
+                    placeholder={t("IP 或域名")}
                     spellCheck={false}
                     className={INPUT}
                   />
                 </Row>
               </div>
               <div className="flex-1">
-                <Row label="端口">
+                <Row label={t("端口")}>
                   <input
                     value={port}
                     onChange={(event) => setPort(event.target.value)}
@@ -256,23 +259,23 @@ export function DatabaseConnectionDialog({
 
             <div className="flex gap-3">
               <div className="flex-1">
-                <Row label="用户名">
+                <Row label={t("用户名")}>
                   <input
                     value={user}
                     onChange={(event) => setUser(event.target.value)}
-                    placeholder={kind === "mysql" ? "如 root" : "如 postgres"}
+                    placeholder={kind === "mysql" ? i18n.t("如 root") : i18n.t("如 postgres")}
                     spellCheck={false}
                     className={INPUT}
                   />
                 </Row>
               </div>
               <div className="flex-1">
-                <Row label="密码">
+                <Row label={t("密码")}>
                   <input
                     type="password"
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
-                    placeholder={connection?.hasPassword ? "已保存，留空则不改动" : "留空表示无密码"}
+                    placeholder={connection?.hasPassword ? i18n.t("已保存，留空则不改动") : i18n.t("留空表示无密码")}
                     spellCheck={false}
                     className={INPUT}
                   />
@@ -280,11 +283,11 @@ export function DatabaseConnectionDialog({
               </div>
             </div>
 
-            <Row label="数据库">
+            <Row label={t("数据库")}>
               <input
                 value={database}
                 onChange={(event) => setDatabase(event.target.value)}
-                placeholder="库名，留空用默认库"
+                placeholder={t("库名，留空用默认库")}
                 spellCheck={false}
                 className={INPUT}
               />
@@ -301,7 +304,7 @@ export function DatabaseConnectionDialog({
             onClick={() => void runTest()}
             className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-60"
           >
-            {testing ? "测试中…" : "测试连接"}
+            {testing ? i18n.t("测试中…") : i18n.t("测试连接")}
           </button>
           <span
             className={`min-w-0 flex-1 truncate text-[11px] ${
@@ -316,15 +319,14 @@ export function DatabaseConnectionDialog({
             onClick={onClose}
             className="shrink-0 rounded-md border border-line-strong px-3 py-1 text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
           >
-            取消
-          </button>
+            {t("取消")}</button>
           <button
             type="button"
             disabled={saving}
             onClick={() => void submit()}
             className="shrink-0 rounded-md border border-accent px-3 py-1 text-[12px] text-accent hover:bg-selected disabled:opacity-60"
           >
-            {saving ? "保存中…" : "保存"}
+            {saving ? i18n.t("保存中…") : i18n.t("保存")}
           </button>
         </div>
       </div>

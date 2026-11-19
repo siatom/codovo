@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
   closeWindow,
   isWindowMaximized,
@@ -52,6 +53,7 @@ interface TitleBarProps {
  * 中间内容区更深一档——沿用「不画竖线、靠深浅分区」那套。
  */
 export function TitleBar({ workspace }: TitleBarProps) {
+  const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
 
   /**
@@ -128,8 +130,8 @@ export function TitleBar({ workspace }: TitleBarProps) {
       {!isMacOS && <div className="ml-auto flex h-full shrink-0 items-stretch">
         <button
           type="button"
-          title="最小化"
-          aria-label="最小化"
+          title={t("最小化")}
+          aria-label={t("最小化")}
           onClick={() => void minimizeWindow().catch(() => {})}
           className={CONTROL}
         >
@@ -139,8 +141,8 @@ export function TitleBar({ workspace }: TitleBarProps) {
         </button>
         <button
           type="button"
-          title={maximized ? "还原" : "最大化"}
-          aria-label={maximized ? "还原" : "最大化"}
+          title={maximized ? t("还原") : t("最大化")}
+          aria-label={maximized ? t("还原") : t("最大化")}
           onClick={() => {
             void toggleMaximizeWindow()
               .then((value) => setMaximized(value))
@@ -161,8 +163,8 @@ export function TitleBar({ workspace }: TitleBarProps) {
         </button>
         <button
           type="button"
-          title="关闭"
-          aria-label="关闭"
+          title={t("关闭")}
+          aria-label={t("关闭")}
           onClick={() => void closeWindow().catch(() => {})}
           className={CONTROL_CLOSE}
         >

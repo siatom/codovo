@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import type { GitMark } from "../lib/git";
 import type { SearchOptions } from "../lib/types";
 import type { MovePair } from "../lib/fs";
@@ -117,6 +119,7 @@ export function FilesPane({
   onAfterReplace,
   reveal,
 }: FilesPaneProps) {
+  const { t } = useTranslation();
   const [mode, setMode] = useState<SearchMode>("name");
   const [query, setQuery] = useState("");
   /** 搜索栏默认收起，点标题栏右上角的放大镜才展开 */
@@ -197,21 +200,21 @@ export function FilesPane({
           className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim"
           title={roots.map((root) => toDisplayPath(root)).join("\n")}
         >
-          {roots.length > 1 ? `文件 · ${roots.length} 个工作目录` : "文件"}
+          {roots.length > 1 ? t("文件 · {{count}} 个工作目录", { count: roots.length }) : t("文件")}
         </span>
         {(!searchOpen || mode === "name") && (
           <>
             <IconButton
-              label="新建文件"
-              title={activeQuery ? "先清空搜索再新建" : "新建文件"}
+              label={t("新建文件")}
+              title={activeQuery ? t("先清空搜索再新建") : t("新建文件")}
               disabled={activeQuery.length > 0}
               onClick={() => explorerRef.current?.create("file")}
             >
               <IconPlus className={ICON_SM} />
             </IconButton>
             <IconButton
-              label="新建文件夹"
-              title={activeQuery ? "先清空搜索再新建" : "新建文件夹"}
+              label={t("新建文件夹")}
+              title={activeQuery ? t("先清空搜索再新建") : t("新建文件夹")}
               disabled={activeQuery.length > 0}
               onClick={() => explorerRef.current?.create("directory")}
             >
@@ -220,14 +223,14 @@ export function FilesPane({
           </>
         )}
         <IconButton
-          label={searchOpen && mode === "content" ? "重新搜索" : "刷新文件树"}
+          label={searchOpen && mode === "content" ? t("重新搜索") : t("刷新文件树")}
           disabled={searchOpen && mode === "content" && !activeQuery}
           onClick={refresh}
         >
           <IconRefresh className={ICON_SM} />
         </IconButton>
         <IconButton
-          label={searchOpen ? "收起搜索" : "搜索文件"}
+          label={searchOpen ? t("收起搜索") : t("搜索文件")}
           active={searchOpen}
           onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
         >
@@ -245,7 +248,7 @@ export function FilesPane({
               type="text"
               value={query}
               spellCheck={false}
-              placeholder={mode === "name" ? "搜索文件" : "搜索文件内容"}
+              placeholder={mode === "name" ? t("搜索文件") : t("搜索文件内容")}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
                 // 不 stopPropagation 的话，Esc 会继续往上冒，被别处的关闭逻辑接走
@@ -257,7 +260,7 @@ export function FilesPane({
               className={FIELD_INPUT}
             />
             {query && (
-              <button type="button" onClick={clearSearch} title="清空" className={FIELD_BUTTON}>
+              <button type="button" onClick={clearSearch} title={t("清空")} className={FIELD_BUTTON}>
                 <IconClose className="h-3 w-3" />
               </button>
             )}
@@ -265,20 +268,20 @@ export function FilesPane({
             <div className="flex shrink-0 items-center rounded bg-content p-0.5">
               {(
                 [
-                  ["name", "名称", "按文件名过滤文件树"],
-                  ["content", "内容", "在整个工作区里搜索文件内容"],
+                  ["name", i18n.t("名称"), i18n.t("按文件名过滤文件树")],
+                  ["content", i18n.t("内容"), i18n.t("在整个工作区里搜索文件内容")],
                 ] as const
               ).map(([value, label, hint]) => (
                 <button
                   key={value}
                   type="button"
                   onClick={() => setMode(value)}
-                  title={hint}
+                  title={t(hint)}
                   className={`h-5 rounded px-1.5 text-[11px] leading-none ${
                     mode === value ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
                   }`}
                 >
-                  {label}
+                  {t(label)}
                 </button>
               ))}
             </div>
@@ -294,7 +297,7 @@ export function FilesPane({
                     onClick={() =>
                       setOptions((current) => ({ ...current, [item.key]: !current[item.key] }))
                     }
-                    title={item.title}
+                    title={t(item.title)}
                     className={`flex h-5 shrink-0 items-center justify-center rounded px-1 text-[11px] leading-none ${
                       options[item.key] ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
                     }`}
@@ -305,7 +308,7 @@ export function FilesPane({
                 <button
                   type="button"
                   onClick={() => setShowFilters((open) => !open)}
-                  title="文件过滤（包含 / 排除）"
+                  title={t("文件过滤（包含 / 排除）")}
                   className={`flex h-5 w-5 shrink-0 items-center justify-center rounded ${
                     showFilters || options.include || options.exclude
                       ? SWITCH_ON
@@ -317,7 +320,7 @@ export function FilesPane({
                 <button
                   type="button"
                   onClick={() => setShowReplace((open) => !open)}
-                  title={showReplace ? "收起替换" : "展开替换"}
+                  title={showReplace ? t("收起替换") : t("展开替换")}
                   className={`flex h-5 shrink-0 items-center gap-0.5 rounded px-1 text-[11px] leading-none ${
                     showReplace ? SWITCH_ON : "text-fg-dim hover:bg-hover hover:text-fg"
                   }`}
@@ -328,13 +331,13 @@ export function FilesPane({
                     <IconChevronRight className="h-3 w-3" />
                   )}
                   <IconReplaceAll className="h-3.5 w-3.5" />
-                  替换
+                  {t("替换")}
                 </button>
                 <button
                   type="button"
                   onClick={clearSearch}
                   disabled={!query && !replacement}
-                  title="清空搜索"
+                  title={t("清空搜索")}
                   className={`${FIELD_BUTTON} ml-auto disabled:opacity-40`}
                 >
                   <IconClearResults className="h-3.5 w-3.5" />
@@ -347,7 +350,7 @@ export function FilesPane({
                     type="text"
                     value={replacement}
                     spellCheck={false}
-                    placeholder="替换为"
+                    placeholder={t("替换为")}
                     onChange={(event) => setReplacement(event.target.value)}
                     className={FIELD_INPUT}
                   />
@@ -358,19 +361,19 @@ export function FilesPane({
                 <div className="mt-1 flex flex-col gap-1">
                   {(
                     [
-                      ["include", "包含", "文件 glob，逗号分隔，例如 *.ts, src/**"],
-                      ["exclude", "排除", "文件 glob，逗号分隔，例如 *.min.js, dist/**"],
+                      ["include", i18n.t("包含"), i18n.t("文件 glob，逗号分隔，例如 *.ts, src/**")],
+                      ["exclude", i18n.t("排除"), i18n.t("文件 glob，逗号分隔，例如 *.min.js, dist/**")],
                     ] as const
                   ).map(([key, label, placeholder]) => (
                     <div key={key} className={FIELD}>
                       <span className="shrink-0 pl-0.5 pr-0.5 text-[11px] text-fg-faint">
-                        {label}
+                        {t(label)}
                       </span>
                       <input
                         type="text"
                         value={options[key]}
                         spellCheck={false}
-                        placeholder={placeholder}
+                        placeholder={t(placeholder)}
                         onChange={(event) =>
                           setOptions((current) => ({ ...current, [key]: event.target.value }))
                         }

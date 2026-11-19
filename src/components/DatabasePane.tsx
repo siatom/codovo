@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { save } from "@tauri-apps/plugin-dialog";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -155,6 +156,7 @@ export function DatabasePane({
   sidebarTarget?: HTMLElement | null;
   onOpenContent: () => void;
 }) {
+  const { t } = useTranslation();
   const { connections, addConnection, updateConnection, removeConnection } = useDbConnections();
   // 回调里要读最新的列表 / 会话（连接成功回报时），用 ref 免得闭包读到旧值
   const connectionsRef = useRef(connections);
@@ -397,15 +399,15 @@ export function DatabasePane({
       setExportNotice(null);
       try {
         const path = await save({
-          title: "导出数据",
+          title: t("导出数据"),
           defaultPath: defaultExportName(title, format),
-          filters: [{ name: format === "csv" ? "CSV 文件" : "Excel 工作簿", extensions: [format] }],
+          filters: [{ name: format === "csv" ? t("CSV 文件") : t("Excel 工作簿"), extensions: [format] }],
         });
         if (!path) return; // 用户取消
         const out = await dbExport({ id: sessionId, sql, format, path, scope, page, pageSize, title });
         setExportNotice({
           ok: true,
-          text: `已导出 ${out.rows} 行${out.truncated ? "（超过上限，已截断）" : ""}`,
+          text: t("已导出 {{rows}} 行{{truncated}}", { rows: out.rows, truncated: out.truncated ? t("（超过上限，已截断）") : "" }),
         });
       } catch (reason) {
         setExportNotice({ ok: false, text: String(reason) });
@@ -564,9 +566,8 @@ export function DatabasePane({
       <div className="flex h-full w-full min-w-0 flex-col">
         <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-2">
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium tracking-wide text-fg-dim">
-            数据库
-          </span>
-          <IconButton label="新增连接" onClick={() => {
+            {t("数据库")}</span>
+          <IconButton label={t("新增连接")} onClick={() => {
             onOpenContent();
             setDialog({ connection: null });
           }}>
@@ -576,8 +577,7 @@ export function DatabasePane({
         <div className="min-h-0 flex-1 overflow-auto py-1">
           {connections.length === 0 ? (
             <p className="px-3 py-2 text-[11px] leading-relaxed text-fg-faint">
-              还没有连接。点右上角 + 添加一个。
-            </p>
+              {t("还没有连接。点右上角 + 添加一个。")}</p>
           ) : (
             connections.map((connection) => {
               const ck = connNode(connection.id);
@@ -602,7 +602,7 @@ export function DatabasePane({
                     <button
                       type="button"
                       onClick={(event) => openMenu(event, connection)}
-                      title="更多"
+                      title={t("更多")}
                       className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint opacity-0 hover:bg-active hover:text-fg group-hover:opacity-100"
                     >
                       <IconMore className="h-3.5 w-3.5" />
@@ -611,7 +611,7 @@ export function DatabasePane({
 
                   {open && (
                     <>
-                      {busy[ck] && <NodeHint text="连接中…" />}
+                      {busy[ck] && <NodeHint text={t("连接中…")} />}
                       {nodeErrors[ck] && <NodeHint text={nodeErrors[ck]} danger />}
                       {list?.map((db) => {
                         const dk = dbNode(connection.id, db);
@@ -631,7 +631,7 @@ export function DatabasePane({
                             </div>
                             {dbOpen && (
                               <>
-                                {busy[dk] && <NodeHint text="加载中…" />}
+                                {busy[dk] && <NodeHint text={t("加载中…")} />}
                                 {nodeErrors[dk] && <NodeHint text={nodeErrors[dk]} danger />}
                                 {connection.kind === "postgres"
                                   ? schemas[dk]?.map((schema) => {
@@ -654,7 +654,7 @@ export function DatabasePane({
                                           </div>
                                           {schemaOpen && (
                                             <>
-                                              {busy[sk] && <NodeHint text="加载中…" />}
+                                              {busy[sk] && <NodeHint text={t("加载中…")} />}
                                               {nodeErrors[sk] && (
                                                 <NodeHint text={nodeErrors[sk]} danger />
                                               )}
@@ -714,17 +714,17 @@ export function DatabasePane({
               ? `${selected.table.schema}.${selected.table.name}`
               : activeConnection
                 ? activeConnection.name
-                : "未选择连接"}
+                : t("未选择连接")}
           </span>
           <Segmented
             value={subTab}
             onChange={pickTab}
-            label="数据库视图"
+            label={t("数据库视图")}
             options={[
-              { value: "tables", label: "表格" },
-              { value: "structure", label: "结构" },
-              { value: "query", label: "查询" },
-              { value: "agent", label: "对话" },
+              { value: "tables", label: t("表格") },
+              { value: "structure", label: t("结构") },
+              { value: "query", label: t("查询") },
+              { value: "agent", label: t("对话") },
             ]}
           />
         </header>
@@ -770,7 +770,7 @@ export function DatabasePane({
                     selected &&
                     void loadRows(selected.sessionKey, selected.connectionId, selected.table, page)
                   }
-                  hint="从左侧逐级展开：连接 → 数据库 → 表，点一张表看数据。"
+                  hint={t("从左侧逐级展开：连接 → 数据库 → 表，点一张表看数据。")}
                   onExport={
                     selected && result?.kind === "rows"
                       ? (format, scope) => {
@@ -813,8 +813,7 @@ export function DatabasePane({
           {subTab !== "tables" && !activeSessionId && (
             <div className="flex flex-1 items-center justify-center px-6">
               <p className="max-w-[340px] text-center text-[12px] leading-relaxed text-fg-faint">
-                从左侧展开一个连接后可用。
-              </p>
+                {t("从左侧展开一个连接后可用。")}</p>
             </div>
           )}
         </div>
@@ -830,8 +829,8 @@ export function DatabasePane({
 
       {pendingDelete && (
         <ConfirmDialog
-          message={`删除连接「${pendingDelete.name}」？已保存的密码也会一并清除。`}
-          confirmLabel="删除"
+          message={t("删除连接「{{name}}」？已保存的密码也会一并清除。", { name: pendingDelete.name })}
+          confirmLabel={t("删除")}
           onConfirm={() => {
             deleteConnection(pendingDelete);
             setPendingDelete(null);
@@ -856,8 +855,7 @@ export function DatabasePane({
                 setMenu(null);
               }}
             >
-              编辑
-            </button>
+              {t("编辑")}</button>
             {sessions[menu.connection.id] && (
               <button
                 type="button"
@@ -867,8 +865,7 @@ export function DatabasePane({
                   setMenu(null);
                 }}
               >
-                断开连接
-              </button>
+                {t("断开连接")}</button>
             )}
             <button
               type="button"
@@ -879,8 +876,7 @@ export function DatabasePane({
                 setMenu(null);
               }}
             >
-              删除
-            </button>
+              {t("删除")}</button>
           </div>
         </>
       )}
@@ -904,11 +900,9 @@ export function DatabasePane({
             }}
           >
             <button type="button" className={MENU_ITEM} onClick={() => exportTableNode("csv")}>
-              导出为 CSV
-            </button>
+              {t("导出为 CSV")}</button>
             <button type="button" className={MENU_ITEM} onClick={() => exportTableNode("xlsx")}>
-              导出为 Excel
-            </button>
+              {t("导出为 Excel")}</button>
           </div>
         </>
       )}

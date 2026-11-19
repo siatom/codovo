@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import i18n from "../lib/i18n";
+import { useTranslation } from "react-i18next";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   gitClone,
@@ -74,6 +76,7 @@ export function WorkspaceDialog({
   onSubmit,
   onRemove,
 }: WorkspaceDialogProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState(initialName ?? "");
   const [roots, setRoots] = useState<string[]>(initialRoots ?? []);
   const [group, setGroup] = useState(initialGroup ?? "");
@@ -178,11 +181,11 @@ export function WorkspaceDialog({
     if (cloning) return;
     setError(null);
     if (!url.trim()) {
-      setError("请填写仓库地址");
+      setError(i18n.t("请填写仓库地址"));
       return;
     }
     if (!parent) {
-      setError("请选择克隆到的位置");
+      setError(i18n.t("请选择克隆到的位置"));
       return;
     }
 
@@ -267,7 +270,7 @@ export function WorkspaceDialog({
       setWslDistro(distro);
       setWslPath(path);
     } catch (reason) {
-      setError(`无法读取 WSL 目录：${String(reason)}`);
+      setError(i18n.t("无法读取 WSL 目录：{{error}}", { error: String(reason) }));
     } finally {
       setPicking(false);
     }
@@ -292,7 +295,7 @@ export function WorkspaceDialog({
 
   const submit = () => {
     if (roots.length === 0) {
-      setError("至少要添加一个工作目录");
+      setError(i18n.t("至少要添加一个工作目录"));
       return;
     }
     onSubmit({ name: name.trim() || folderName(roots[0]), roots, group: group.trim() || undefined });
@@ -314,12 +317,12 @@ export function WorkspaceDialog({
       >
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-[15px] font-semibold text-fg">
-            {mode === "create" ? "新建工作区" : "编辑工作区"}
+            {mode === "create" ? i18n.t("新建工作区") : i18n.t("编辑工作区")}
           </h2>
           <button
             type="button"
             onClick={cancel}
-            title="关闭"
+            title={t("关闭")}
             className="flex h-6 w-6 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
           >
             <IconClose className="h-3.5 w-3.5" />
@@ -334,20 +337,18 @@ export function WorkspaceDialog({
               onClick={() => switchTab("local")}
               className={activeTab === "local" ? TAB_ACTIVE : TAB_IDLE}
             >
-              本地目录
-            </button>
+              {t("本地目录")}</button>
             <button
               type="button"
               onClick={() => switchTab("clone")}
               className={activeTab === "clone" ? TAB_ACTIVE : TAB_IDLE}
             >
-              克隆仓库
-            </button>
+              {t("克隆仓库")}</button>
           </div>
         )}
 
         <div className="relative mb-3">
-          <p className="mb-1.5 text-[12px] font-medium text-fg-muted">分区 <span className="font-normal text-fg-faint">· 可选</span></p>
+          <p className="mb-1.5 text-[12px] font-medium text-fg-muted">{t("分区")}<span className="font-normal text-fg-faint">{t("· 可选")}</span></p>
           <button
             type="button"
             aria-haspopup="listbox"
@@ -357,7 +358,7 @@ export function WorkspaceDialog({
           >
             <IconTree className="h-4 w-4 shrink-0 text-fg-dim" />
             <span className={`min-w-0 flex-1 truncate text-[13px] ${group ? "text-fg" : "text-fg-faint"}`}>
-              {group || "未分区"}
+              {group || i18n.t("未分区")}
             </span>
             <span className="text-[11px] text-fg-dim">{groupOpen ? "⌃" : "⌄"}</span>
           </button>
@@ -376,15 +377,15 @@ export function WorkspaceDialog({
                     }
                     if (event.key === "Escape") { event.stopPropagation(); setGroupOpen(false); }
                   }}
-                  placeholder="搜索或输入新分区名"
-                  aria-label="搜索或输入新分区名"
+                  placeholder={t("搜索或输入新分区名")}
+                  aria-label={t("搜索或输入新分区名")}
                   className="h-8 w-full rounded-md border border-line-strong bg-surface px-2 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent"
                 />
               </div>
               <div role="listbox" className="max-h-44 overflow-auto p-1">
                 <button type="button" role="option" aria-selected={!group} onClick={() => chooseGroup("")}
                   className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg">
-                  未分区 {group === "" && <span className="ml-auto text-accent">✓</span>}
+                  {t("未分区")}{group === "" && <span className="ml-auto text-accent">✓</span>}
                 </button>
                 {visibleGroups.map((item) => (
                   <button key={item} type="button" role="option" aria-selected={group === item} onClick={() => chooseGroup(item)}
@@ -396,10 +397,10 @@ export function WorkspaceDialog({
                 {canCreateGroup && (
                   <button type="button" onClick={() => chooseGroup(groupQuery.trim())}
                     className="flex w-full items-center rounded-md px-2.5 py-2 text-left text-[12px] text-accent hover:bg-hover">
-                    + 新建分区“{groupQuery.trim()}”
+                    {t("+ 新建分区“")}{groupQuery.trim()}”
                   </button>
                 )}
-                {visibleGroups.length === 0 && !canCreateGroup && <p className="px-2.5 py-2 text-[11px] text-fg-faint">没有匹配的分区</p>}
+                {visibleGroups.length === 0 && !canCreateGroup && <p className="px-2.5 py-2 text-[11px] text-fg-faint">{t("没有匹配的分区")}</p>}
               </div>
             </div>
           )}
@@ -417,24 +418,24 @@ export function WorkspaceDialog({
                 onKeyDown={(event) => {
                   if (event.key === "Enter") submit();
                 }}
-                placeholder="工作区名称"
+                placeholder={t("工作区名称")}
                 className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-fg-faint"
               />
             </div>
 
             <div className="mt-3 mb-1 flex items-baseline justify-between">
-              <p className="text-[12px] font-medium text-fg-muted">工作目录</p>
+              <p className="text-[12px] font-medium text-fg-muted">{t("工作目录")}</p>
               {/* 说清一个工作区能挂多个：空态只显示「添加」一个按钮，不点开看不出来 */}
-              <span className="text-[11px] text-fg-faint">可添加一个或多个</span>
+              <span className="text-[11px] text-fg-faint">{t("可添加一个或多个")}</span>
             </div>
 
             <div className="min-h-0 overflow-auto rounded-lg border border-line-strong">
               {roots.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 px-4 py-6">
-                  <p className="text-[12px] text-fg-dim">在此电脑上添加工作目录</p>
+                  <p className="text-[12px] text-fg-dim">{t("在此电脑上添加工作目录")}</p>
                   <div className="flex gap-2">
-                    <button type="button" onClick={() => void addFolder()} disabled={picking} className="flex items-center gap-1.5 rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40"><IconFolderPlus className="h-3.5 w-3.5" />添加 Windows 目录</button>
-                    {navigator.userAgent.toLowerCase().includes("windows") && <button type="button" onClick={() => void openWslPicker()} disabled={picking} className="rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40">添加 WSL 目录</button>}
+                    <button type="button" onClick={() => void addFolder()} disabled={picking} className="flex items-center gap-1.5 rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40"><IconFolderPlus className="h-3.5 w-3.5" />{t("添加 Windows 目录")}</button>
+                    {navigator.userAgent.toLowerCase().includes("windows") && <button type="button" onClick={() => void openWslPicker()} disabled={picking} className="rounded-md bg-hover px-3 py-1 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40">{t("添加 WSL 目录")}</button>}
                   </div>
                 </div>
               ) : (
@@ -453,23 +454,21 @@ export function WorkspaceDialog({
                       </span>
                       {index === 0 ? (
                         <span className="shrink-0 rounded border border-line-strong px-1.5 py-0.5 text-[11px] text-fg-muted">
-                          主要
-                        </span>
+                          {t("主要")}</span>
                       ) : (
                         /* 平时藏起来、悬停才出现：静态时只留一个「主要」徽标，不喧宾夺主 */
                         <button
                           type="button"
                           onClick={() => setPrimary(root)}
-                          title="设为主要工作目录"
+                          title={t("设为主要工作目录")}
                           className="shrink-0 rounded border border-line-strong px-1.5 py-0.5 text-[11px] text-fg-dim opacity-0 hover:text-fg group-hover:opacity-100"
                         >
-                          设为主要
-                        </button>
+                          {t("设为主要")}</button>
                       )}
                       <button
                         type="button"
                         onClick={() => removeFolder(root)}
-                        title="移除"
+                        title={t("移除")}
                         className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-fg"
                       >
                         <IconClose className="h-3 w-3" />
@@ -481,8 +480,8 @@ export function WorkspaceDialog({
 
               {roots.length > 0 && (
                 <div className="flex">
-                  <button type="button" onClick={() => void addFolder()} disabled={picking} className="flex flex-1 items-center gap-2 px-2.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40"><IconFolderPlus className="h-4 w-4 shrink-0" />添加 Windows 目录</button>
-                  {navigator.userAgent.toLowerCase().includes("windows") && <button type="button" onClick={() => void openWslPicker()} disabled={picking} className="px-2 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40">添加 WSL</button>}
+                  <button type="button" onClick={() => void addFolder()} disabled={picking} className="flex flex-1 items-center gap-2 px-2.5 py-2 text-[13px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40"><IconFolderPlus className="h-4 w-4 shrink-0" />{t("添加 Windows 目录")}</button>
+                  {navigator.userAgent.toLowerCase().includes("windows") && <button type="button" onClick={() => void openWslPicker()} disabled={picking} className="px-2 text-[12px] text-fg-muted hover:bg-hover hover:text-fg disabled:opacity-40">{t("添加 WSL")}</button>}
                 </div>
               )}
             </div>
@@ -492,7 +491,7 @@ export function WorkspaceDialog({
         {activeTab === "clone" && (
           <div className="flex flex-col gap-3">
             <div>
-              <label className="mb-1 block text-[12px] font-medium text-fg-muted">仓库地址</label>
+              <label className="mb-1 block text-[12px] font-medium text-fg-muted">{t("仓库地址")}</label>
               <div className="flex h-9 items-center gap-2 rounded-lg border border-line-strong bg-surface px-2.5 focus-within:border-accent">
                 <IconCloudDownload className="h-4 w-4 shrink-0 text-fg-dim" />
                 <input
@@ -509,14 +508,14 @@ export function WorkspaceDialog({
             </div>
 
             <div>
-              <label className="mb-1 block text-[12px] font-medium text-fg-muted">克隆到</label>
+              <label className="mb-1 block text-[12px] font-medium text-fg-muted">{t("克隆到")}</label>
               <div className="flex h-9 items-center gap-2 rounded-lg border border-line-strong bg-surface px-2.5">
                 <IconFolder className="h-4 w-4 shrink-0 text-fg-dim" />
                 <span
                   className="min-w-0 flex-1 truncate text-[13px] text-fg"
                   title={parent ? toDisplayPath(parent) : undefined}
                 >
-                  {parent ? toDisplayPath(parent) : <span className="text-fg-faint">未选择目录</span>}
+                  {parent ? toDisplayPath(parent) : <span className="text-fg-faint">{t("未选择目录")}</span>}
                 </span>
                 <button
                   type="button"
@@ -524,14 +523,13 @@ export function WorkspaceDialog({
                   disabled={picking}
                   className="shrink-0 rounded-md bg-hover px-2 py-0.5 text-[12px] text-fg-muted hover:bg-active hover:text-fg disabled:opacity-40"
                 >
-                  选择
-                </button>
+                  {t("选择")}</button>
               </div>
             </div>
 
             <div className="flex gap-3">
               <div className="min-w-0 flex-1">
-                <label className="mb-1 block text-[12px] font-medium text-fg-muted">目录名</label>
+                <label className="mb-1 block text-[12px] font-medium text-fg-muted">{t("目录名")}</label>
                 <input
                   value={dirName}
                   onChange={(event) => {
@@ -543,11 +541,11 @@ export function WorkspaceDialog({
                 />
               </div>
               <div className="min-w-0 flex-1">
-                <label className="mb-1 block text-[12px] font-medium text-fg-muted">分支</label>
+                <label className="mb-1 block text-[12px] font-medium text-fg-muted">{t("分支")}</label>
                 <input
                   value={branch}
                   onChange={(event) => setBranch(event.target.value)}
-                  placeholder="默认分支"
+                  placeholder={t("默认分支")}
                   className={CLONE_INPUT}
                 />
               </div>
@@ -560,13 +558,12 @@ export function WorkspaceDialog({
                 onChange={(event) => setShallow(event.target.checked)}
                 className="h-3.5 w-3.5 accent-accent"
               />
-              浅克隆（只取最新一次提交）
-            </label>
+              {t("浅克隆（只取最新一次提交）")}</label>
 
             {cloning && (
               <div>
                 <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-fg-muted">
-                  <span className="truncate">{progress?.phase || "准备中…"}</span>
+                  <span className="truncate">{progress?.phase || i18n.t("准备中…")}</span>
                   {progress?.percent != null && <span className="shrink-0">{progress.percent}%</span>}
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-hover">
@@ -585,13 +582,11 @@ export function WorkspaceDialog({
         <div className="mt-4 flex items-center gap-2">
           {mode === "edit" && onRemove && (
             <button type="button" onClick={onRemove} className={REMOVE_BUTTON}>
-              移除本地工作区
-            </button>
+              {t("移除本地工作区")}</button>
           )}
           <div className="ml-auto flex items-center gap-2">
             <button type="button" onClick={cancel} className={CANCEL_BUTTON}>
-              取消
-            </button>
+              {t("取消")}</button>
             {activeTab === "clone" ? (
               <button
                 type="button"
@@ -599,7 +594,7 @@ export function WorkspaceDialog({
                 disabled={cloning || !url.trim() || !parent}
                 className={PRIMARY_BUTTON}
               >
-                {cloning ? "克隆中…" : "克隆"}
+                {cloning ? i18n.t("克隆中…") : i18n.t("克隆")}
               </button>
             ) : (
               <button
@@ -608,7 +603,7 @@ export function WorkspaceDialog({
                 disabled={roots.length === 0}
                 className={PRIMARY_BUTTON}
               >
-                {mode === "create" ? "新建工作区" : "保存"}
+                {mode === "create" ? i18n.t("新建工作区") : i18n.t("保存")}
               </button>
             )}
           </div>
@@ -617,14 +612,14 @@ export function WorkspaceDialog({
       {wslOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-6">
           <div role="dialog" aria-modal="true" className="flex max-h-[min(560px,80vh)] w-[440px] max-w-full flex-col rounded-xl border border-line-strong bg-raised p-4 shadow-lg">
-            <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-fg">选择 WSL 工作目录</h3><button type="button" onClick={() => setWslOpen(false)} className="text-xs text-fg-muted">关闭</button></div>
+            <div className="mb-3 flex items-center justify-between"><h3 className="text-sm font-medium text-fg">{t("选择 WSL 工作目录")}</h3><button type="button" onClick={() => setWslOpen(false)} className="text-xs text-fg-muted">{t("关闭")}</button></div>
             {wslDistros.length > 0 && <select value={wslDistro} onChange={(event) => void navigateWsl(event.target.value, "/")} className="mb-2 rounded-md border border-line-strong bg-surface px-2 py-1.5 text-xs text-fg">{wslDistros.map((distro) => <option key={distro}>{distro}</option>)}</select>}
-            <div className="mb-2 flex gap-2"><button type="button" disabled={wslPath === "/" || picking} onClick={() => void navigateWsl(wslDistro, wslPath.slice(0, wslPath.lastIndexOf("/")) || "/")} className="rounded bg-hover px-2 py-1 text-xs text-fg-muted disabled:opacity-40">上级</button><span className="truncate self-center font-mono text-xs text-fg-dim">{wslPath}</span></div>
+            <div className="mb-2 flex gap-2"><button type="button" disabled={wslPath === "/" || picking} onClick={() => void navigateWsl(wslDistro, wslPath.slice(0, wslPath.lastIndexOf("/")) || "/")} className="rounded bg-hover px-2 py-1 text-xs text-fg-muted disabled:opacity-40">{t("上级")}</button><span className="truncate self-center font-mono text-xs text-fg-dim">{wslPath}</span></div>
             <div className="min-h-0 flex-1 overflow-auto rounded-md border border-line">
-              {wslDirs.length === 0 ? <p className="p-4 text-center text-xs text-fg-dim">此目录没有子目录</p> : wslDirs.map((dir) => <button key={dir.path} type="button" disabled={picking} onClick={() => void navigateWsl(wslDistro, dir.path)} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg hover:bg-hover"><IconFolder className="h-4 w-4 text-fg-dim" />{dir.name}</button>)}
+              {wslDirs.length === 0 ? <p className="p-4 text-center text-xs text-fg-dim">{t("此目录没有子目录")}</p> : wslDirs.map((dir) => <button key={dir.path} type="button" disabled={picking} onClick={() => void navigateWsl(wslDistro, dir.path)} className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg hover:bg-hover"><IconFolder className="h-4 w-4 text-fg-dim" />{dir.name}</button>)}
             </div>
             {error && <p className="mt-2 break-words text-[11px] text-danger">{error}</p>}
-            <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => setWslOpen(false)} className={CANCEL_BUTTON}>取消</button><button type="button" disabled={!wslDistro || picking} onClick={addWslRoot} className={PRIMARY_BUTTON}>选择此目录</button></div>
+            <div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => setWslOpen(false)} className={CANCEL_BUTTON}>{t("取消")}</button><button type="button" disabled={!wslDistro || picking} onClick={addWslRoot} className={PRIMARY_BUTTON}>{t("选择此目录")}</button></div>
           </div>
         </div>
       )}

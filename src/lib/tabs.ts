@@ -1,4 +1,5 @@
 import { pathKey } from "./fs";
+import i18n from "./i18n";
 
 /**
  * 差异视图跟谁比。
@@ -97,7 +98,7 @@ export function sameTab(a: Tab, b: Tab): boolean {
 /** 标签显示名。未命名缓冲区没有文件名，用「未命名-N」 */
 export function tabName(tab: Tab): string {
   if (tab.kind === "diff") return lastSegment(tab.path);
-  if (tab.path === null) return `未命名-${tab.untitledId ?? "缓冲区"}`;
+  if (tab.path === null) return i18n.t("未命名-{{id}}", { id: tab.untitledId ?? i18n.t("缓冲区") });
   return lastSegment(tab.path);
 }
 
@@ -140,7 +141,7 @@ export function tabSuffix(tab: Tab): string {
 
 /** 标签的悬停说明 */
 export function tabTitle(tab: Tab): string {
-  if (tab.path === null) return "未命名缓冲区（尚未保存到磁盘）";
+  if (tab.path === null) return i18n.t("未命名缓冲区（尚未保存到磁盘）");
   const path = tab.path.replace(/\\/g, "/");
   if (tab.kind === "file") return path;
   switch (tab.source.mode) {

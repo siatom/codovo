@@ -10,6 +10,8 @@ import {
   type MouseEvent as ReactMouseEvent,
   type Ref,
 } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../lib/i18n";
 import { createPortal } from "react-dom";
 import { monaco, monacoThemeFor, setMonacoTransparency } from "../lib/monaco-setup";
 import { languageOf } from "../lib/languages";
@@ -101,10 +103,10 @@ const TAB_MENU_W = 190;
 
 /** markdown 的四种查看方式，顺序也是标题栏按钮的顺序 */
 const MARKDOWN_MODES = [
-  { id: "preview", label: "预览", icon: IconEye, hint: "预览渲染后的效果" },
-  { id: "edit", label: "编辑", icon: IconCode, hint: "编辑 Markdown 源码" },
-  { id: "split", label: "对照", icon: IconLayoutColumns, hint: "左边源码，右边渲染" },
-  { id: "translate", label: "翻译", icon: IconTranslate, hint: "左原文、右译文的文档翻译" },
+  { id: "preview", label: i18n.t("预览"), icon: IconEye, hint: i18n.t("预览渲染后的效果") },
+  { id: "edit", label: i18n.t("编辑"), icon: IconCode, hint: i18n.t("编辑 Markdown 源码") },
+  { id: "split", label: i18n.t("对照"), icon: IconLayoutColumns, hint: i18n.t("左边源码，右边渲染") },
+  { id: "translate", label: i18n.t("翻译"), icon: IconTranslate, hint: i18n.t("左原文、右译文的文档翻译") },
 ] as const;
 type MarkdownMode = (typeof MARKDOWN_MODES)[number]["id"];
 
@@ -697,6 +699,7 @@ export function EditorPane({
   visible,
   ref,
 }: EditorPaneProps) {
+  const { t } = useTranslation();
   const containerRef = useRef<HTMLDivElement>(null);
   const previewToggleRef = useRef<() => void>(() => {});
   /** 整个编辑器区域（标题栏 + 编辑区 + 状态栏），用来判断焦点是不是还在这一块 */
@@ -1309,7 +1312,7 @@ export function EditorPane({
         }
       } catch (reason) {
         ok = false;
-        setStatus({ kind: "error", message: `保存失败：${reason}` });
+        setStatus({ kind: "error", message: i18n.t("保存失败：{{error}}", { error: reason }) });
       } finally {
         if (saved.size > 0) {
           setDirtyPaths((prev) => {
@@ -1334,13 +1337,13 @@ export function EditorPane({
         const cached = modelsRef.current.get(key);
         if (!cached) return false;
         if (cached.truncated) {
-          pushNotice("文件已截断，不能另存为", "error");
+          pushNotice(i18n.t("文件已截断，不能另存为"), "error");
           return false;
         }
         const current = tabsRef.current.find((item) => tabKey(item) === key);
         const defaultName =
           cached.path ??
-          (current ? `${tabName(current)}.txt` : "未命名.txt");
+          (current ? `${tabName(current)}.txt` : i18n.t("未命名.txt"));
         const target = await pickSavePath(defaultName);
         if (target === null) return false;
 
@@ -1352,7 +1355,7 @@ export function EditorPane({
 
         const targetRoot = ownerRoot(rootsRef.current, target);
         if (targetRoot === null) {
-          pushNotice("另存为的目标不在当前工作区内", "error");
+          pushNotice(i18n.t("另存为的目标不在当前工作区内"), "error");
           return false;
         }
         // 目标已经开在另一个标签里就不写：写进去会得到两个同 key 的标签，缓存也会打架
@@ -1364,7 +1367,7 @@ export function EditorPane({
             pathKey(item.path) === pathKey(target),
         );
         if (opened) {
-          pushNotice("目标文件已经在另一个标签中打开", "error");
+          pushNotice(i18n.t("目标文件已经在另一个标签中打开"), "error");
           return false;
         }
 
@@ -1380,16 +1383,16 @@ export function EditorPane({
           try {
             existing = await readFile(targetRoot, target);
           } catch (reason) {
-            pushNotice(`目标文件无法读取，已取消另存为：${reason}`, "error");
+            pushNotice(i18n.t("目标文件无法读取，已取消另存为：{{error}}", { error: reason }), "error");
             return false;
           }
           if (existing.isBinary) {
-            pushNotice("目标文件不是可覆盖的文本文件，已取消另存为", "error");
+            pushNotice(i18n.t("目标文件不是可覆盖的文本文件，已取消另存为"), "error");
             return false;
           }
           // 大文件 / 截断仍是文本，只是不能安全覆盖：如实说大小问题，别谎称不是文本
           if (existing.tooLarge || existing.truncated || existing.isLarge) {
-            pushNotice("目标文件过大，请换一个文件名", "error");
+            pushNotice(i18n.t("目标文件过大，请换一个文件名"), "error");
             return false;
           }
           encoding = existing.encoding;
@@ -1412,7 +1415,7 @@ export function EditorPane({
             hasBom,
           );
         } catch (reason) {
-          pushNotice(`保存失败：${reason}`, "error");
+          pushNotice(i18n.t("保存失败：{{error}}", { error: reason }), "error");
           return false;
         }
 
@@ -1475,7 +1478,7 @@ export function EditorPane({
         if (targetTab.kind === "file") {
           onPatchTab(targetTab, { path: target, externalState: "none" });
         }
-        pushNotice(`已保存 ${target.replace(/\\/g, "/").split("/").pop() ?? target}`);
+        pushNotice(i18n.t("已保存 {{filename}}", { filename: target.replace(/\\/g, "/").split("/").pop() ?? target }));
         return true;
       } finally {
         saveAsBusyRef.current.delete(key);
@@ -1491,11 +1494,11 @@ export function EditorPane({
       if (!cached) return false;
       if (cached.path === null) return saveAs(key);
       if (cached.truncated) {
-        pushNotice("文件已截断，不能保存", "error");
+        pushNotice(i18n.t("文件已截断，不能保存"), "error");
         return false;
       }
       if (cached.readOnly) {
-        pushNotice("文件是只读的，不能保存", "error");
+        pushNotice(i18n.t("文件是只读的，不能保存"), "error");
         return false;
       }
       return persist(key, options);
@@ -1524,7 +1527,7 @@ export function EditorPane({
   /** 标签右键「在文件管理器中显示」：交给系统文件管理器，并选中这个文件 */
   const revealInSystem = useCallback(
     (path: string) => {
-      void revealItemInDir(path).catch(() => pushNotice("无法在文件管理器中显示", "error"));
+      void revealItemInDir(path).catch(() => pushNotice(i18n.t("无法在文件管理器中显示"), "error"));
     },
     [pushNotice],
   );
@@ -1537,8 +1540,8 @@ export function EditorPane({
     const current = activeRef.current;
     if (!current || current.kind !== "file" || current.path === null) return;
     void writeText(current.path).then(
-      () => pushNotice(`已复制路径 ${current.path}`),
-      () => pushNotice("复制路径失败", "error"),
+      () => pushNotice(i18n.t("已复制路径 {{path}}", { path: current.path })),
+      () => pushNotice(i18n.t("复制路径失败"), "error"),
     );
   }, [pushNotice]);
 
@@ -1557,22 +1560,22 @@ export function EditorPane({
         cached.model.setValue(cached.savedText);
         cached.savedVersionId = cached.model.getAlternativeVersionId();
         cached.eol = cached.savedEol;
-        pushNotice("已放弃未保存的修改");
+        pushNotice(i18n.t("已放弃未保存的修改"));
       } else {
         try {
           const content = await readFile(rootFor(cached.path), cached.path, cached.encoding);
           // 读盘期间标签被关掉或缓存被替换：这份结果已经没有归属，静默丢弃
           if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
           if (content.isBinary || content.tooLarge) {
-            pushNotice("文件无法作为文本重新读取，未放弃改动", "error");
+            pushNotice(i18n.t("文件无法作为文本重新读取，未放弃改动"), "error");
             return;
           }
           applyLoadedContent(cached, content);
           applyCapabilities();
-          pushNotice("已放弃未保存的修改");
+          pushNotice(i18n.t("已放弃未保存的修改"));
         } catch (reason) {
           if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
-          pushNotice(`放弃改动失败：${reason}`, "error");
+          pushNotice(i18n.t("放弃改动失败：{{error}}", { error: reason }), "error");
           return;
         }
       }
@@ -1619,10 +1622,10 @@ export function EditorPane({
       if (!canFormatTab(cached)) {
         pushNotice(
           cached.truncated
-            ? "文件已截断，不能格式化"
+            ? i18n.t("文件已截断，不能格式化")
             : cached.isLarge
-              ? "大文件已跳过格式化"
-              : "只读文件不能格式化",
+              ? i18n.t("大文件已跳过格式化")
+              : i18n.t("只读文件不能格式化"),
           "error",
         );
         return;
@@ -1630,7 +1633,7 @@ export function EditorPane({
 
       // 只有正显示在编辑器里才谈得上「保持光标」与「退回缩进重排」
       const live = editor.getModel() === cached.model ? editor : null;
-      const name = cached.path !== null ? baseNameOf(cached.path) : "未命名缓冲区";
+      const name = cached.path !== null ? baseNameOf(cached.path) : i18n.t("未命名缓冲区");
 
       if (cached.path !== null && supportsFormatting(cached.path)) {
         const cursorOffset = live
@@ -1653,13 +1656,13 @@ export function EditorPane({
           ) {
             live.setPosition(cached.model.getPositionAt(outcome.cursorOffset));
           }
-          pushNotice(changed ? `已格式化 ${name}` : "内容已符合格式化规范");
+          pushNotice(changed ? i18n.t("已格式化 {{filename}}", { filename: name }) : i18n.t("内容已符合格式化规范"));
           syncDirty();
           refreshViewInfo();
           return;
         } catch (reason) {
           if (modelsRef.current.get(key) !== cached || cached.model.isDisposed()) return;
-          pushNotice(`格式化失败：${errorText(reason)}，已改用缩进重排`, "error");
+          pushNotice(i18n.t("格式化失败：{{error}}，已改用缩进重排", { error: errorText(reason) }), "error");
         }
       }
 
@@ -1669,7 +1672,7 @@ export function EditorPane({
         // 未命名缓冲区没有扩展名，判断不了语言；退回缩进重排对纯文本也没有意义，
         // 如实说明而不是假装做过了
         if (cached.path === null) {
-          pushNotice("未命名缓冲区还没有扩展名，暂不支持格式化", "info");
+          pushNotice(i18n.t("未命名缓冲区还没有扩展名，暂不支持格式化"), "info");
           return;
         }
         // 兜底：Monaco 的按语法重排缩进。至少把缩进对齐，不静默失败
@@ -1677,7 +1680,7 @@ export function EditorPane({
         syncDirty();
         return;
       }
-      pushNotice("当前文件类型暂不支持格式化", "info");
+      pushNotice(i18n.t("当前文件类型暂不支持格式化"), "info");
     },
     [pushNotice, refreshViewInfo, syncDirty],
   );
@@ -1686,7 +1689,7 @@ export function EditorPane({
   const formatActive = useCallback(() => {
     const current = activeRef.current;
     if (!current || current.kind !== "file") {
-      pushNotice("当前没有可格式化的文件", "error");
+      pushNotice(i18n.t("当前没有可格式化的文件"), "error");
       return;
     }
     void formatTab(tabKey(current));
@@ -2356,7 +2359,7 @@ export function EditorPane({
     const saveKey = toMonacoKeybinding(settings.shortcuts["editor.save"]);
     const saveAction = editor.addAction({
       id: "codovo.save",
-      label: "保存文件",
+      label: i18n.t("保存文件"),
       // 键位翻不出来就不注册键位，保存按钮和菜单里的该项仍可用
       keybindings: saveKey === null ? [] : [saveKey],
       run: () => {
@@ -2371,7 +2374,7 @@ export function EditorPane({
     const formatKey = toMonacoKeybinding(settings.shortcuts["editor.format"]);
     const formatAction = editor.addAction({
       id: "codovo.format",
-      label: "格式化文档",
+      label: i18n.t("格式化文档"),
       keybindings: formatKey === null ? [] : [formatKey],
       precondition: "!editorReadonly",
       run: () => formatActiveRef.current(),
@@ -2945,7 +2948,7 @@ export function EditorPane({
         if (!ok) {
           // 保存失败 / 另存为取消：中止整次关闭，标签原样留着
           setCloseRequest(null);
-          pushNotice("保存失败，已取消关闭", "error");
+          pushNotice(i18n.t("保存失败，已取消关闭"), "error");
           return;
         }
         const next = state.index + 1;
@@ -3408,7 +3411,7 @@ export function EditorPane({
     if (!cached) return;
     // 只读 / 截断文件写不回去，改 EOL 只会留下一个永远存不掉的脏标记
     if (cached.readOnly || cached.truncated) {
-      pushNotice("只读或已截断的文件不能修改换行符", "error");
+      pushNotice(i18n.t("只读或已截断的文件不能修改换行符"), "error");
       return;
     }
     cached.eol = eol;
@@ -3450,13 +3453,13 @@ export function EditorPane({
   const indentItems = (): StatusMenuItem[] => {
     const items: StatusMenuItem[] = [2, 4, 8].map((size) => ({
       key: `spaces-${size}`,
-      label: `空格: ${size}`,
+      label: i18n.t("空格: {{size}}", { size }),
       checked: viewInfo?.insertSpaces === true && viewInfo.tabSize === size,
       onPick: () => applyIndent(size, true),
     }));
     items.push({
       key: "tab",
-      label: "制表符（Tab）",
+      label: i18n.t("制表符（Tab）"),
       checked: viewInfo?.insertSpaces === false,
       onPick: () => applyIndent(viewInfo?.tabSize ?? 4, false),
     });
@@ -3474,7 +3477,7 @@ export function EditorPane({
     },
     {
       key: "cr",
-      label: "CR（老式 Mac）",
+      label: i18n.t("CR（老式 Mac）"),
       checked: viewInfo?.eol === "CR",
       onPick: () => applyEol("CR"),
     },
@@ -3487,8 +3490,8 @@ export function EditorPane({
     <div className="flex h-full shrink-0 items-center gap-0.5">
       {canShowCodeOutline && (
         <button type="button" onClick={() => setCodeOutline((value) => !value)}
-          aria-label="代码大纲" aria-pressed={codeOutline}
-          title={codeOutline ? "隐藏代码大纲" : "显示代码大纲"}
+          aria-label={t("代码大纲")} aria-pressed={codeOutline}
+          title={codeOutline ? i18n.t("隐藏代码大纲") : i18n.t("显示代码大纲")}
           className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${codeOutline ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"}`}>
           <IconList className="h-3.5 w-3.5" />
         </button>
@@ -3497,14 +3500,14 @@ export function EditorPane({
         <button
           type="button"
           onClick={togglePreview}
-          title={isPreview ? "回到编辑" : "预览"}
+          title={isPreview ? i18n.t("回到编辑") : i18n.t("预览")}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
         >
           {isPreview ? <IconCode className="h-3.5 w-3.5" /> : <IconEye className="h-3.5 w-3.5" />}
         </button>
       )}
       {isMarkdownFile && status.kind === "ready" && markdownMode !== null && (
-        <div role="group" aria-label="markdown 查看方式" className="flex shrink-0 items-center gap-0.5">
+        <div role="group" aria-label={t("markdown 查看方式")} className="flex shrink-0 items-center gap-0.5">
           {MARKDOWN_MODES.map(({ id, label, icon: Icon, hint }) => (
             <button
               key={id}
@@ -3524,13 +3527,13 @@ export function EditorPane({
         </div>
       )}
       {showDiffBar && (
-        <div role="group" aria-label="差异视图排布" className="flex shrink-0 items-center gap-0.5">
+        <div role="group" aria-label={t("差异视图排布")} className="flex shrink-0 items-center gap-0.5">
           <button
             type="button"
             onClick={() => setDiffLayout(false)}
-            aria-label="内联视图（上下对照）"
+            aria-label={t("内联视图（上下对照）")}
             aria-pressed={!diffSideBySide}
-            title="内联视图（上下对照）"
+            title={t("内联视图（上下对照）")}
             className={`flex h-6 w-6 items-center justify-center rounded ${
               !diffSideBySide ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
             }`}
@@ -3540,9 +3543,9 @@ export function EditorPane({
           <button
             type="button"
             onClick={() => setDiffLayout(true)}
-            aria-label="并排视图（左右对比）"
+            aria-label={t("并排视图（左右对比）")}
             aria-pressed={diffSideBySide}
-            title="并排视图（左右对比）"
+            title={t("并排视图（左右对比）")}
             className={`flex h-6 w-6 items-center justify-center rounded ${
               diffSideBySide ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
             }`}
@@ -3556,9 +3559,9 @@ export function EditorPane({
           <button
             type="button"
             onClick={toggleMarkdownOutline}
-            aria-label="文档大纲"
+            aria-label={t("文档大纲")}
             aria-pressed={markdownOutline}
-            title={markdownOutline ? "隐藏文档大纲" : "显示文档大纲"}
+            title={markdownOutline ? i18n.t("隐藏文档大纲") : i18n.t("显示文档大纲")}
             className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
               markdownOutline ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
             }`}
@@ -3570,9 +3573,9 @@ export function EditorPane({
         <button
           type="button"
           onClick={toggleTranslation}
-          aria-label="文档翻译"
+          aria-label={t("文档翻译")}
           aria-pressed={isTranslate}
-          title={isTranslate ? "回到编辑" : "文档翻译（左原文、右译文）"}
+          title={isTranslate ? i18n.t("回到编辑") : i18n.t("文档翻译（左原文、右译文）")}
           className={`flex h-6 w-6 shrink-0 items-center justify-center rounded ${
             isTranslate ? "bg-selected text-fg" : "text-fg-dim hover:bg-hover hover:text-fg"
           }`}
@@ -3585,7 +3588,7 @@ export function EditorPane({
           type="button"
           onClick={formatActive}
           disabled={!canFormatTab(activeCached)}
-          title={`格式化文档（${formatShortcut(settings.shortcuts["editor.format"])}）`}
+          title={i18n.t("格式化文档（{{shortcut}}）", { shortcut: formatShortcut(settings.shortcuts["editor.format"]) })}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-dim"
         >
           <IconWand className="h-3.5 w-3.5" />
@@ -3610,7 +3613,7 @@ export function EditorPane({
           className={`no-scrollbar flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto ${hideTabStrip ? "hidden" : ""}`}
         >
           {tabs.length === 0 && (
-            <span className="px-1 text-[11px] text-fg-faint">未打开文件</span>
+            <span className="px-1 text-[11px] text-fg-faint">{t("未打开文件")}</span>
           )}
           {tabs.map((tab, index) => {
             const key = tabKey(tab);
@@ -3666,10 +3669,10 @@ export function EditorPane({
                     <span
                       title={
                         external === "conflict"
-                          ? "磁盘上的文件已被外部修改，你的未保存修改没有被覆盖"
+                          ? i18n.t("磁盘上的文件已被外部修改，你的未保存修改没有被覆盖")
                           : external === "deleted"
-                            ? "磁盘上的文件已被删除"
-                            : "磁盘上的文件已在外部更新"
+                            ? i18n.t("磁盘上的文件已被删除")
+                            : i18n.t("磁盘上的文件已在外部更新")
                       }
                       className={`ml-1 shrink-0 text-[10px] font-medium ${
                         external === "conflict"
@@ -3693,7 +3696,7 @@ export function EditorPane({
                     type="button"
                     data-tab-save
                     onClick={() => void saveTab(key)}
-                    title={`保存（${formatShortcut(settings.shortcuts["editor.save"])}）`}
+                    title={i18n.t("保存（{{shortcut}}）", { shortcut: formatShortcut(settings.shortcuts["editor.save"]) })}
                     className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-warn hover:bg-hover"
                   >
                     <span className="h-2 w-2 rounded-full bg-current" />
@@ -3703,7 +3706,7 @@ export function EditorPane({
                   type="button"
                   data-tab-close
                   onClick={() => closeTab(tab)}
-                  title="关闭这个标签"
+                  title={t("关闭这个标签")}
                   className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-fg-faint hover:text-danger"
                 >
                   <IconClose className="h-3 w-3" />
@@ -3720,7 +3723,7 @@ export function EditorPane({
               const rect = event.currentTarget.getBoundingClientRect();
               setTabsMenu({ x: rect.right, y: rect.bottom });
             }}
-            title="标签操作"
+            title={t("标签操作")}
             className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-dim hover:bg-hover hover:text-fg"
           >
             <IconMore className="h-3.5 w-3.5" />
@@ -3754,8 +3757,7 @@ export function EditorPane({
               disabled={tabs.length <= 1}
               className={TABS_MENU_ITEM}
             >
-              关闭其他
-            </button>
+              {t("关闭其他")}</button>
             <button
               type="button"
               onClick={() => {
@@ -3764,8 +3766,7 @@ export function EditorPane({
               }}
               className={TABS_MENU_ITEM}
             >
-              关闭全部
-            </button>
+              {t("关闭全部")}</button>
           </div>
         </>
       )}
@@ -3796,8 +3797,7 @@ export function EditorPane({
                   }}
                   className={TABS_MENU_ITEM}
                 >
-                  另存为…
-                </button>
+                  {t("另存为…")}</button>
                 <button
                   type="button"
                   disabled={!tabMenuDirty || tabMenuCached === null}
@@ -3808,8 +3808,7 @@ export function EditorPane({
                   }}
                   className={TABS_MENU_ITEM}
                 >
-                  放弃变更
-                </button>
+                  {t("放弃变更")}</button>
                 {tabMenuExternal === "conflict" && (
                   <button
                     type="button"
@@ -3820,8 +3819,7 @@ export function EditorPane({
                     }}
                     className={TABS_MENU_ITEM}
                   >
-                    重新加载（放弃我的修改）
-                  </button>
+                    {t("重新加载（放弃我的修改）")}</button>
                 )}
                 {(tabMenuExternal === "conflict" || tabMenuExternal === "deleted") && (
                   <button
@@ -3833,8 +3831,7 @@ export function EditorPane({
                     }}
                     className={TABS_MENU_ITEM}
                   >
-                    保留我的修改
-                  </button>
+                    {t("保留我的修改")}</button>
                 )}
               </>
             )}
@@ -3851,8 +3848,7 @@ export function EditorPane({
               }}
               className={TABS_MENU_ITEM}
             >
-              打开所在目录
-            </button>
+              {t("打开所在目录")}</button>
             <button
               type="button"
               disabled={tabMenu.tab.path === null}
@@ -3863,8 +3859,7 @@ export function EditorPane({
               }}
               className={TABS_MENU_ITEM}
             >
-              在文件管理器中显示
-            </button>
+              {t("在文件管理器中显示")}</button>
             <button
               type="button"
               onClick={() => {
@@ -3874,8 +3869,7 @@ export function EditorPane({
               }}
               className={TABS_MENU_ITEM}
             >
-              关闭
-            </button>
+              {t("关闭")}</button>
           </div>
         </>
       )}
@@ -3897,7 +3891,7 @@ export function EditorPane({
                 key={item.label}
                 type="button"
                 onClick={() => requestEncodingSwitch(item.label)}
-                title={`按 ${item.name} 重新读取这个文件`}
+                title={i18n.t("按 {{encoding}} 重新读取这个文件", { encoding: item.name })}
                 className={TABS_MENU_ITEM}
               >
                 <span className="flex items-center gap-1.5">
@@ -4055,36 +4049,34 @@ export function EditorPane({
           <div className="absolute inset-0 flex items-center justify-center bg-surface px-6 text-center">
             {overlay.kind === "idle" && (
               <p className="text-[12px] text-fg-faint">
-                {isDiffTab ? "加载差异中…" : "从左侧文件树选一个文件"}
+                {isDiffTab ? i18n.t("加载差异中…") : i18n.t("从左侧文件树选一个文件")}
               </p>
             )}
             {overlay.kind === "loading" && (
               <p className="text-[12px] text-fg-faint">
-                {isDiffTab ? "加载差异中…" : "加载中…"}
+                {isDiffTab ? i18n.t("加载差异中…") : i18n.t("加载中…")}
               </p>
             )}
             {overlay.kind === "binary" && (
               <p className="text-[12px] text-warn">
-                {isDiffTab ? "二进制文件，无法显示差异" : "二进制文件，无法以文本方式编辑"}
+                {isDiffTab ? i18n.t("二进制文件，无法显示差异") : i18n.t("二进制文件，无法以文本方式编辑")}
               </p>
             )}
             {overlay.kind === "tooLarge" && (
               <p className="text-[12px] text-warn">
                 {isDiffTab
-                  ? "文件超过 2MB，已跳过差异加载"
+                  ? i18n.t("文件超过 2MB，已跳过差异加载")
                   : isImageTab
-                    ? "图片超过 10MB，已跳过预览"
-                    : "文件超过 2MB，已跳过加载"}
+                    ? i18n.t("图片超过 10MB，已跳过预览")
+                    : i18n.t("文件超过 2MB，已跳过加载")}
               </p>
             )}
             {overlay.kind === "officeLegacy" && (
               <p className="text-[12px] text-warn">
-                .{overlay.format} 是旧版 Office 格式，暂不支持预览，请另存为 .
-                {overlay.format}x 后再打开
-              </p>
+                .{overlay.format} {t("是旧版 Office 格式，暂不支持预览，请另存为 .")}{overlay.format}{t("x 后再打开")}</p>
             )}
             {overlay.kind === "emptyDiff" && (
-              <p className="text-[12px] text-fg-faint">没有可显示的差异</p>
+              <p className="text-[12px] text-fg-faint">{t("没有可显示的差异")}</p>
             )}
             {overlay.kind === "error" && (
               <p className="text-[12px] text-danger">{overlay.message}</p>
@@ -4105,7 +4097,7 @@ export function EditorPane({
                   type="button"
                   onClick={() => gotoDiff(diffChangeIndex - 1)}
                   disabled={diffChangeCount <= 1}
-                  title="上一处改动（Shift+F7）"
+                  title={t("上一处改动（Shift+F7）")}
                   className={STATUS_ICON_BUTTON}
                 >
                   <IconArrowUp className="h-3.5 w-3.5" />
@@ -4114,16 +4106,18 @@ export function EditorPane({
                   type="button"
                   onClick={() => gotoDiff(diffChangeIndex + 1)}
                   disabled={diffChangeCount <= 1}
-                  title="下一处改动（F7）"
+                  title={t("下一处改动（F7）")}
                   className={STATUS_ICON_BUTTON}
                 >
                   <IconArrowDown className="h-3.5 w-3.5" />
                 </button>
                 <span
-                  title="当前位置"
+                  title={t("当前位置")}
                   className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
                 >
-                  {diffChangeCount === 0 ? "无改动" : `第 ${diffChangeIndex + 1} / ${diffChangeCount} 处`}
+                  {diffChangeCount === 0
+                    ? i18n.t("无改动")
+                    : i18n.t("第 {{current}} / {{total}} 处", { current: diffChangeIndex + 1, total: diffChangeCount })}
                 </span>
               </>
             )}
@@ -4142,16 +4136,16 @@ export function EditorPane({
                   </button>
                 )}
                 <span
-                  title="光标位置"
+                  title={t("光标位置")}
                   className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
                 >
-                  行 {viewInfo.line}，列 {viewInfo.column}
-                  {viewInfo.selectionLength > 0 && `（已选 ${viewInfo.selectionLength}）`}
+                  {t("行")}{viewInfo.line}{t("，列")}{viewInfo.column}
+                  {viewInfo.selectionLength > 0 && i18n.t("（已选 {{count}} 字）", { count: viewInfo.selectionLength })}
                 </span>
                 <button
                   type="button"
                   onClick={(event) => openStatusMenu(event, languageItems())}
-                  title="语言模式（点击切换）"
+                  title={t("语言模式（点击切换）")}
                   className={STATUS_BUTTON}
                 >
                   {languageLabel(viewInfo.language)}
@@ -4159,15 +4153,15 @@ export function EditorPane({
                 <button
                   type="button"
                   onClick={(event) => openStatusMenu(event, indentItems())}
-                  title="缩进（点击切换）"
+                  title={t("缩进（点击切换）")}
                   className={STATUS_BUTTON}
                 >
-                  {viewInfo.insertSpaces ? `空格: ${viewInfo.tabSize}` : "制表符"}
+                  {viewInfo.insertSpaces ? i18n.t("空格: {{count}}", { count: viewInfo.tabSize }) : i18n.t("制表符")}
                 </button>
                 <button
                   type="button"
                   onClick={(event) => openStatusMenu(event, eolItems())}
-                  title="换行符（点击切换，保存时按它回写）"
+                  title={t("换行符（点击切换，保存时按它回写）")}
                   className={STATUS_BUTTON}
                 >
                   {viewInfo.eol}
@@ -4175,32 +4169,29 @@ export function EditorPane({
                 {/* 文件属性标记：截断最要紧（不能保存），其次是只读，再是大文件降级 */}
                 {activeCached?.truncated && (
                   <span
-                    title={`文件 ${formatSize(activeCached.size)}，只加载了前 8MB，保存已禁用`}
+                    title={i18n.t("文件 {{size}}，只加载了前 8MB，保存已禁用", { size: formatSize(activeCached.size) })}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-danger"
                   >
-                    已截断，只读
-                  </span>
+                    {t("已截断，只读")}</span>
                 )}
                 {!activeCached?.truncated && activeCached?.readOnly && (
                   <span
-                    title="磁盘上的文件是只读的，保存已禁用"
+                    title={t("磁盘上的文件是只读的，保存已禁用")}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-warn"
                   >
-                    只读
-                  </span>
+                    {t("只读")}</span>
                 )}
                 {activeCached?.isLarge && !activeCached.truncated && (
                   <span
-                    title={`文件 ${formatSize(activeCached.size)}，已关闭缩略图 / 折叠 / 高亮等高成本能力`}
+                    title={i18n.t("文件 {{size}}，已关闭缩略图 / 折叠 / 高亮等高成本能力", { size: formatSize(activeCached.size) })}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-warn"
                   >
-                    大文件
-                  </span>
+                    {t("大文件")}</span>
                 )}
                 {/* 文件大小：只在已落盘的文件上有意义（未命名缓冲区是 0） */}
                 {activeFile && activeFile.path !== null && activeCached && (
                   <span
-                    title="文件大小（磁盘上的字节数）"
+                    title={t("文件大小（磁盘上的字节数）")}
                     className="shrink-0 px-1.5 text-[11px] tabular-nums text-fg-dim"
                   >
                     {formatSize(activeCached.size)}
@@ -4216,10 +4207,10 @@ export function EditorPane({
                 const rect = event.currentTarget.getBoundingClientRect();
                 setEncodingMenu({ x: rect.right, y: rect.top });
               }}
-              title="文件编码（点击切换，切换后按新编码重新读取）"
+              title={t("文件编码（点击切换，切换后按新编码重新读取）")}
               className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-fg-dim hover:bg-hover hover:text-fg"
             >
-              <span>{activeEncoding ? encodingName(activeEncoding) : "编码"}</span>
+              <span>{activeEncoding ? encodingName(activeEncoding) : i18n.t("编码")}</span>
               <IconChevronDown className="h-3 w-3 shrink-0 text-fg-faint" />
             </button>
           )}
@@ -4241,7 +4232,7 @@ export function EditorPane({
         >
           <button
             type="button"
-            title="复制到终端"
+            title={t("复制到终端")}
             onClick={() => sendSelection("terminal")}
             className={FLOAT_BAR_BUTTON}
           >
@@ -4249,7 +4240,7 @@ export function EditorPane({
           </button>
           <button
             type="button"
-            title="送给应用助手"
+            title={t("送给应用助手")}
             onClick={() => sendSelection("assistant")}
             className={FLOAT_BAR_BUTTON}
           >
@@ -4261,10 +4252,11 @@ export function EditorPane({
       {/* 切编码会从磁盘重读，等于丢掉未保存的改动，脏标签先确认 */}
       {encodingSwitch && (
         <ConfirmDialog
-          message={`按 ${encodingName(encodingSwitch.label)} 重新读取 ${tabName(
-            encodingSwitch.tab,
-          )}，未保存的改动会丢失，确定吗？`}
-          confirmLabel="丢弃改动"
+          message={i18n.t("按 {{encoding}} 重新读取 {{filename}}，未保存的改动会丢失，确定吗？", {
+            encoding: encodingName(encodingSwitch.label),
+            filename: tabName(encodingSwitch.tab),
+          })}
+          confirmLabel={t("丢弃改动")}
           onConfirm={() => {
             const { tab, label } = encodingSwitch;
             setEncodingSwitch(null);
@@ -4280,11 +4272,11 @@ export function EditorPane({
         <ConfirmDialog
           message={`${tabName(closeTabNow)} 有未保存的改动。${
             closeTabNow.kind === "file" && closeTabNow.path === null
-              ? "这个缓冲区还没保存到磁盘。"
+              ? i18n.t("这个缓冲区还没保存到磁盘。")
               : ""
           }`}
-          confirmLabel="保存"
-          secondaryLabel="不保存"
+          confirmLabel={t("保存")}
+          secondaryLabel={t("不保存")}
           danger={false}
           onConfirm={() => answerClose("save")}
           onSecondary={() => answerClose("discard")}
@@ -4297,7 +4289,7 @@ export function EditorPane({
       {syntaxPrompt && (
         <ConfirmDialog
           message={`「${syntaxPrompt.name}」可能存在语法错误：${syntaxPrompt.detail}。仍要保存吗？`}
-          confirmLabel="仍然保存"
+          confirmLabel={t("仍然保存")}
           danger={false}
           onConfirm={() => answerSyntax(true)}
           onCancel={() => answerSyntax(false)}

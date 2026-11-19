@@ -1,4 +1,5 @@
 import { languageOf } from "./languages";
+import i18n from "./i18n";
 import type { TranslateTarget } from "./types";
 
 export type { TranslateTarget };
@@ -86,7 +87,7 @@ export function isMarkdownDocument(path: string | null): boolean {
 
 /** 目标语言的可读名称，界面按钮与状态文案共用 */
 export function translateTargetLabel(target: TranslateTarget): string {
-  return target === "zh" ? "简体中文" : "English";
+  return target === "zh" ? i18n.t("简体中文") : "English";
 }
 
 interface ShieldedSource {
@@ -386,7 +387,7 @@ export function prepareDocument(source: string, limit = TRANSLATE_CHUNK_CHARS): 
     // 表格保持完整：表头、对齐行与数据行必须在同一次请求里
     if (isTableBlock(block) && block.length > limit) {
       if (block.length > MAX_TABLE_CHUNK_CHARS) {
-        throw new Error("表格内容超过 38k 字符，请拆分表格后再翻译");
+        throw new Error(i18n.t("表格内容超过 38k 字符，请拆分表格后再翻译"));
       }
       if (current) {
         chunks.push(current);
@@ -463,12 +464,12 @@ export function assembleTranslation(parts: string[], blocks: string[]): string {
     return blocks[index];
   });
 
-  if (invalid) throw new Error("翻译结果里出现了无法识别的占位符，请重试");
-  if (duplicated) throw new Error("翻译结果重复了代码块占位符，请重试");
+  if (invalid) throw new Error(i18n.t("翻译结果里出现了无法识别的占位符，请重试"));
+  if (duplicated) throw new Error(i18n.t("翻译结果重复了代码块占位符，请重试"));
   if (seen.size !== blocks.length) {
-    throw new Error("翻译结果未能完整保留文档中的代码块，请重试");
+    throw new Error(i18n.t("翻译结果未能完整保留文档中的代码块，请重试"));
   }
-  if (misplaced) throw new Error("翻译结果打乱了代码块占位符的顺序，请重试");
+  if (misplaced) throw new Error(i18n.t("翻译结果打乱了代码块占位符的顺序，请重试"));
 
   return restored.trim();
 }

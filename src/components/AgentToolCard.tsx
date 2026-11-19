@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useState } from "react";
 import { resolveLanguage, useHighlightedCode } from "../lib/highlight";
 import { languageOf } from "../lib/languages";
@@ -125,6 +126,7 @@ function parseGrid(output: string | undefined): GridData | null {
 
 /** 结果表：列头固定、单元格截断，最多这一块自己滚，不把整条对话撑长 */
 function ResultGrid({ data }: { data: GridData }) {
+  const { t } = useTranslation();
   return (
     <div className="max-h-72 overflow-auto border-t border-line bg-app">
       <table className="min-w-full border-collapse font-mono text-[11px]">
@@ -157,10 +159,10 @@ function ResultGrid({ data }: { data: GridData }) {
         </tbody>
       </table>
       {data.rows.length === 0 && (
-        <div className="px-2 py-1 text-[11px] text-fg-faint">没有返回任何行</div>
+        <div className="px-2 py-1 text-[11px] text-fg-faint">{t("没有返回任何行")}</div>
       )}
       {data.hasMore && (
-        <div className="px-2 py-1 text-[11px] text-fg-faint">结果已截断，只显示前若干行</div>
+        <div className="px-2 py-1 text-[11px] text-fg-faint">{t("结果已截断，只显示前若干行")}</div>
       )}
     </div>
   );
@@ -182,6 +184,7 @@ function ToolOutput({ text, language }: { text: string; language: string | null 
  * 不需要再点开；其余工具仍按一行摘要 + 展开文本渲染。
  */
 export function AgentToolCard({ part }: { part: ToolPart }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const { state, tool } = part;
   const Icon = iconFor(tool);
@@ -228,7 +231,7 @@ export function AgentToolCard({ part }: { part: ToolPart }) {
                 : "text-accent-soft"
           }`}
         >
-          {STATUS_TEXT[state.status]}
+          {t(STATUS_TEXT[state.status])}
         </span>
       </button>
 

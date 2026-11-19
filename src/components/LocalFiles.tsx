@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
@@ -51,6 +52,7 @@ export function LocalFiles({
   onDropEntry,
   onDismissTransferError,
 }: LocalFilesProps) {
+  const { t } = useTranslation();
   const [entries, setEntries] = useState<PanelEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -137,7 +139,7 @@ export function LocalFiles({
 
   return (
     <FilePanel
-      label="本地"
+      label={t("本地")}
       icon={<IconDeviceDesktop className="h-3.5 w-3.5" />}
       side={side}
       path={path}

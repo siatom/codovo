@@ -1,4 +1,5 @@
 import type { WorkstreamInfo } from "./types";
+import i18n from "./i18n";
 
 /**
  * 一条工作线（工作树 / 本地分支）此刻的状态。
@@ -40,22 +41,22 @@ export function workstreamState(
 ): WorkstreamState {
   // Git 的 prunable 标记可能滞后于目录实际状态；目录存在时仍可进入，不能报失联。
   if (!item.exists) {
-    return { label: "目录失联", tone: "danger", weight: 100, needsYou: true };
+    return { label: i18n.t("目录失联"), tone: "danger", weight: 100, needsYou: true };
   }
   // 冲突 / 合并中：下一步只能人来做，排在「在等你」前面
   if (item.conflicts > 0) {
-    return { label: `冲突 ${item.conflicts}`, tone: "danger", weight: 98, needsYou: true };
+    return { label: i18n.t("冲突 {{count}}", { count: item.conflicts }), tone: "danger", weight: 98, needsYou: true };
   }
   if (item.merging) {
-    return { label: "合并中", tone: "danger", weight: 95, needsYou: true };
+    return { label: i18n.t("合并中"), tone: "danger", weight: 95, needsYou: true };
   }
   // 智能体/终端停在交互提示上，这是 Agent 编程里最该被看见的一条
   if (signals.waiting) {
-    return { label: "在等你", tone: "warn", weight: 90, needsYou: true };
+    return { label: i18n.t("在等你"), tone: "warn", weight: 90, needsYou: true };
   }
   // 游离 HEAD 不是错误，但提交容易丢，值得提醒一句
   if (item.detached) {
-    return { label: "游离 HEAD", tone: "warn", weight: 80, needsYou: true };
+    return { label: i18n.t("游离 HEAD"), tone: "warn", weight: 80, needsYou: true };
   }
   // 有终端在跑、工作区又脏：说明智能体正在这棵树上干活
   if (signals.terminals > 0 && item.changed > 0) {

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useState } from "react";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { assetUrl } from "../lib/asset-url";
@@ -66,6 +67,7 @@ export function BrowserPane({
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
+  const { t } = useTranslation();
   const [url, setUrl] = useState(() => readSavedUrl(root));
   const [draft, setDraft] = useState(url);
   /** 变一次就重挂 iframe，等于刷新 */
@@ -124,18 +126,18 @@ export function BrowserPane({
           onKeyDown={(event) => {
             if (event.key === "Enter") commit(draft);
           }}
-          placeholder="输入本地服务地址，如 5173 或 localhost:3000"
+          placeholder={t("输入本地服务地址，如 5173 或 localhost:3000")}
           spellCheck={false}
           className="h-6 min-w-0 flex-1 rounded border border-line-strong bg-surface px-2 text-[12px] text-fg outline-none placeholder:text-fg-faint focus:border-accent"
         />
         <IconButton
-          label="重新加载"
+          label={t("重新加载")}
           onClick={() => setNonce((count) => count + 1)}
           disabled={!url}
         >
           <IconRefresh className={ICON_SM} />
         </IconButton>
-        <IconButton label="用系统浏览器打开" onClick={openExternal} disabled={!url}>
+        <IconButton label={t("用系统浏览器打开")} onClick={openExternal} disabled={!url}>
           <IconExternalLink className={ICON_SM} />
         </IconButton>
         <FullscreenButton fullscreen={fullscreen} onToggle={onToggleFullscreen} />
@@ -147,15 +149,13 @@ export function BrowserPane({
           <iframe
             key={nonce}
             src={src}
-            title="浏览器"
+            title={t("浏览器")}
             className="absolute inset-0 h-full w-full border-0 bg-white"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center px-6">
             <p className="max-w-[280px] text-center text-[12px] leading-relaxed text-fg-faint">
-              在上面填地址回车即可预览本地服务，也可以从文件树右键网页文件在这里打开。
-              拒绝被嵌入的站点（X-Frame-Options）会显示空白。
-            </p>
+              {t("在上面填地址回车即可预览本地服务，也可以从文件树右键网页文件在这里打开。 拒绝被嵌入的站点（X-Frame-Options）会显示空白。")}</p>
           </div>
         )}
       </div>

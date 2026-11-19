@@ -1,3 +1,4 @@
+import i18n from "../lib/i18n";
 import {
   useCallback,
   useEffect,
@@ -6,6 +7,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { useTranslation } from "react-i18next";
 import { SplitPane } from "./SplitPane";
 import { TerminalPane, type TerminalPaneHandle, type TerminalTaskTab } from "./TerminalPane";
 import { ToolPane, readTool, saveTool, type ToolId } from "./ToolPane";
@@ -158,6 +160,7 @@ export function WorkspacePane({
   openRequests,
   onOpenRequestHandled,
 }: WorkspacePaneProps) {
+  const { t } = useTranslation();
   /** 工作区内当前活动根：终端 / 变更 / 搜索 / 浏览器都开在它上面 */
   const root = workspace.activeRoot;
 
@@ -925,7 +928,7 @@ export function WorkspacePane({
     <div className={visible ? "relative flex min-h-0 min-w-0 flex-1 flex-col" : "hidden"}>
       <div className={showToolRail ? "flex min-h-0 min-w-0 flex-1 pr-11" : "flex min-h-0 min-w-0 flex-1"}>
       <SplitPane
-        separatorLabel="主工作区"
+        separatorLabel={t("主工作区")}
         initial={76}
         min={48}
         max={90}
@@ -942,9 +945,9 @@ export function WorkspacePane({
               return terminalTaskTabs.map((terminalTab) => {
                 const attentionTitle =
                   terminalTab.attention === "done"
-                    ? "任务完成，等待你的下一步指令"
+                    ? i18n.t("任务完成，等待你的下一步指令")
                     : terminalTab.attention
-                      ? "正在等待你的输入"
+                      ? i18n.t("正在等待你的输入")
                       : null;
                 return (
                   <div
@@ -975,7 +978,7 @@ export function WorkspacePane({
                       {attentionTitle && <StatusDot tone="busy" />}
                     </button>
                     <IconButton
-                      label="关闭这个终端"
+                      label={t("关闭这个终端")}
                       size="xs"
                       tone="danger"
                       onClick={() => terminalRef.current?.closeSession(terminalTab.id)}
@@ -1005,7 +1008,7 @@ export function WorkspacePane({
                 <IconServer className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">{label}</span>
               </button>
-              <IconButton label={`关闭${label}`} size="xs" tone="danger" onClick={() => closeTask(task)} className="mr-1">
+              <IconButton label={t("关闭{{label}}", { label })} size="xs" tone="danger" onClick={() => closeTask(task)} className="mr-1">
                 <IconClose className={ICON_XS} />
               </IconButton>
             </div>,
@@ -1023,8 +1026,8 @@ export function WorkspacePane({
                 ? `${agentName} · ${chatTab.title}`
                 : task === "files"
                   ? activeTab
-                    ? `${tabName(activeTab)}${activeTab.kind === "diff" ? " · 差异" : ""}`
-                    : "文件"
+                    ? `${tabName(activeTab)}${activeTab.kind === "diff" ? t(" · 差异") : ""}`
+                    : i18n.t("文件")
                   : toolInfo?.label ?? task;
             return (
               <div
@@ -1058,7 +1061,7 @@ export function WorkspacePane({
                   {chatTab?.needsPermission && <StatusDot tone="busy" />}
                 </button>
                 <IconButton
-                  label={task === "files" ? "关闭文件视图" : `关闭${label}`}
+                  label={task === "files" ? t("关闭文件视图") : t("关闭{{label}}", { label })}
                   size="xs"
                   tone="danger"
                   onClick={() => closeTask(task)}
@@ -1077,8 +1080,8 @@ export function WorkspacePane({
                   setActiveTask("terminal");
                   terminalRef.current?.newSession();
                 }}
-                title="新建终端"
-                aria-label="新建终端"
+                title={t("新建终端")}
+                aria-label={t("新建终端")}
                 className="flex h-6 w-6 items-center justify-center rounded-l text-fg-dim hover:bg-active hover:text-fg"
               >
                 <IconPlus className="h-3.5 w-3.5" />
@@ -1086,8 +1089,8 @@ export function WorkspacePane({
               <button
                 type="button"
                 onClick={(event) => terminalRef.current?.openCreateMenu(event.currentTarget)}
-                title="选择要新建的终端或 Agent"
-                aria-label="选择要新建的终端或 Agent"
+                title={t("选择要新建的终端或 Agent")}
+                aria-label={t("选择要新建的终端或 Agent")}
                 className="flex h-6 w-5 items-center justify-center rounded-r text-fg-dim hover:bg-active hover:text-fg"
               >
                 <IconChevronDown className="h-3 w-3" />
@@ -1193,7 +1196,7 @@ export function WorkspacePane({
                     <IconBot className="h-4 w-4 text-fg-dim" />
                     <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-fg">Agent</span>
                     {/* 快捷入口：直接落到设置的「智能体」页，省得再从外观页翻过去 */}
-                    <IconButton label="设置 · 智能体" onClick={() => onOpenSettings("agents")}>
+                    <IconButton label={t("设置 · 智能体")} onClick={() => onOpenSettings("agents")}>
                       <IconSettings className={ICON_SM} />
                     </IconButton>
                   </header>
@@ -1202,7 +1205,7 @@ export function WorkspacePane({
                   <div className="shrink-0 px-2 py-1.5">
                     <Segmented
                       value={agentMode}
-                      label="Agent 视图"
+                      label={t("Agent 视图")}
                       onChange={(mode) => {
                         if (mode === "terminal") {
                           setAgentMode("terminal");
@@ -1222,12 +1225,12 @@ export function WorkspacePane({
                       options={[
                         {
                           value: "terminal",
-                          label: "终端",
+                          label: i18n.t("终端"),
                           icon: <IconTerminal className={`${ICON_SM} shrink-0`} />,
                         },
                         {
                           value: "chat",
-                          label: "ACP 对话",
+                          label: i18n.t("ACP 对话"),
                           icon: <IconBot className={`${ICON_SM} shrink-0`} />,
                         },
                       ]}
@@ -1236,13 +1239,12 @@ export function WorkspacePane({
                   <div className="mx-2 border-t border-line" />
                   <div className="min-h-0 flex-1 overflow-y-auto p-2">
                     <div className="px-2 pb-1.5 text-[10px] font-medium uppercase tracking-wide text-fg-faint">
-                      智能体
-                    </div>
+                      {t("智能体")}</div>
                     <div className="flex flex-col gap-1">
                       {settings.aiCommands
                         .map((item) => ({
                           ...item,
-                          name: item.name.trim() || "未命名 AI CLI",
+                          name: item.name.trim() || i18n.t("未命名 AI CLI"),
                           command: item.command.trim(),
                         }))
                         .filter((item) => item.command)
@@ -1261,7 +1263,7 @@ export function WorkspacePane({
                                   terminalRef.current?.selectAgent(item.command, item.name, "terminal");
                                 }
                               }}
-                              title={chatUnsupported ? `${item.name} 还没有接入 ACP 对话` : item.name}
+                              title={chatUnsupported ? t("{{name}} 还没有接入 ACP 对话", { name: item.name }) : item.name}
                               className={`flex items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] ${
                                 chatUnsupported
                                   ? "cursor-not-allowed text-fg-faint opacity-40"
@@ -1321,8 +1323,7 @@ export function WorkspacePane({
               }}
               className="w-full truncate px-3 py-1 text-left text-[12px] text-fg-muted hover:bg-hover hover:text-fg"
             >
-              重启会话
-            </button>
+              {t("重启会话")}</button>
           </div>
         </>
       )}

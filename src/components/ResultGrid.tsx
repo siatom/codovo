@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
+import i18n from "../lib/i18n";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { DbExportFormat, DbExportScope, QueryResult } from "../lib/database";
 import { DbExportMenu } from "./DbExportMenu";
@@ -55,6 +57,7 @@ export function ResultGrid({
   onExport,
   exportBusy,
 }: ResultGridProps) {
+  const { t } = useTranslation();
   /** 右键菜单：位置 + 被点单元格的值与整行文本（NULL 统一按空串处理） */
   const [menu, setMenu] = useState<{
     x: number;
@@ -88,13 +91,13 @@ export function ResultGrid({
     );
   }
   if (!result) {
-    return <Centered>{loading ? "查询中…" : hint}</Centered>;
+    return <Centered>{loading ? i18n.t("查询中…") : hint}</Centered>;
   }
   if (result.kind === "affected") {
     return (
       <div className="min-h-0 flex-1 overflow-auto p-3">
         <p className="text-[12px] text-fg-muted">
-          影响 {result.affected} 行 · {result.elapsedMs} ms
+          {t("影响")}{result.affected} {t("行 ·")}{result.elapsedMs} ms
         </p>
       </div>
     );
@@ -108,7 +111,7 @@ export function ResultGrid({
       <div className="min-h-0 flex-1 overflow-auto">
         {!showTable ? (
           <p className="px-3 py-3 text-[12px] text-fg-faint">
-            {loading ? "查询中…" : "0 行"}
+            {loading ? i18n.t("查询中…") : i18n.t("0 行")}
           </p>
         ) : (
           <table className="w-max min-w-full border-collapse text-[12px]">
@@ -164,7 +167,7 @@ export function ResultGrid({
                     colSpan={result.columns.length + 1}
                     className="px-3 py-3 text-[12px] text-fg-faint"
                   >
-                    {loading ? "查询中…" : "0 行"}
+                    {loading ? i18n.t("查询中…") : i18n.t("0 行")}
                   </td>
                 </tr>
               )}
@@ -175,8 +178,8 @@ export function ResultGrid({
       <footer className="flex h-8 shrink-0 items-center gap-2 border-t border-line px-2 text-[11px] text-fg-dim">
         {onExport && <DbExportMenu onExport={onExport} busy={exportBusy} />}
         <span className="tabular-nums">
-          第 {result.page + 1} 页 · {result.rows.length} 行 · {result.elapsedMs} ms
-          {result.hasMore ? "" : " · 已到末页"}
+          {t("第")}{result.page + 1} {t("页 ·")}{result.rows.length} {t("行 ·")}{result.elapsedMs} ms
+          {result.hasMore ? "" : i18n.t(" · 已到末页")}
         </span>
         <span className="flex-1" />
         <button
@@ -185,16 +188,14 @@ export function ResultGrid({
           onClick={() => onPage(result.page - 1)}
           className={PAGE_BUTTON}
         >
-          上一页
-        </button>
+          {t("上一页")}</button>
         <button
           type="button"
           disabled={!result.hasMore || loading}
           onClick={() => onPage(result.page + 1)}
           className={PAGE_BUTTON}
         >
-          下一页
-        </button>
+          {t("下一页")}</button>
       </footer>
 
       {/* 单元格右键菜单。fixed 定位：表格在 overflow-auto 里，绝对定位会被裁掉 */}
@@ -217,11 +218,9 @@ export function ResultGrid({
             }}
           >
             <button type="button" onClick={() => void copy(menu.cell)} className={MENU_ITEM}>
-              复制单元格
-            </button>
+              {t("复制单元格")}</button>
             <button type="button" onClick={() => void copy(menu.row)} className={MENU_ITEM}>
-              复制整行
-            </button>
+              {t("复制整行")}</button>
           </div>
         </>
       )}

@@ -1,4 +1,6 @@
+import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
+import i18n from "../lib/i18n";
 import { monaco } from "../lib/monaco-setup";
 import { createCodeOutlineReader, OUTLINE_LANGUAGES } from "../lib/code-outline";
 // Monaco 0.56.0 未公开符号查询 API；复用其内置命令，避免另写一套语言解析器。
@@ -28,7 +30,7 @@ function SymbolItem({ symbol, depth, onNavigate }: {
     <li>
       <div className="flex min-w-0 items-center rounded hover:bg-hover" style={{ paddingLeft: Math.min(depth, 12) * 12 }}>
         {children.length > 0 ? (
-          <button type="button" aria-label={`${expanded ? "收起" : "展开"} ${symbol.name}`} aria-expanded={expanded}
+          <button type="button" aria-label={`${expanded ? i18n.t("收起") : i18n.t("展开")} ${symbol.name}`} aria-expanded={expanded}
             onClick={() => setExpanded(!expanded)} className="flex h-6 w-5 shrink-0 items-center justify-center text-fg-faint">
             <IconChevronDown className={`h-3 w-3 ${expanded ? "" : "-rotate-90"}`} />
           </button>
@@ -49,6 +51,7 @@ function SymbolItem({ symbol, depth, onNavigate }: {
 }
 
 export function CodeOutline({ model, onNavigate, onClose }: Props) {
+  const { t } = useTranslation();
   const [symbols, setSymbols] = useState<monaco.languages.DocumentSymbol[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [errorMessage, setErrorMessage] = useState("");
@@ -101,23 +104,23 @@ export function CodeOutline({ model, onNavigate, onClose }: Props) {
   }, [model, attempt]);
 
   return (
-    <aside aria-label="代码大纲" className="flex h-full w-52 max-w-[40%] shrink-0 flex-col border-l border-line bg-surface">
+    <aside aria-label={t("代码大纲")} className="flex h-full w-52 max-w-[40%] shrink-0 flex-col border-l border-line bg-surface">
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-line px-2 text-[11px] text-fg-dim">
-        <span>代码大纲</span>
-        <button type="button" onClick={onClose} aria-label="关闭代码大纲" title="关闭代码大纲"
+        <span>{t("代码大纲")}</span>
+        <button type="button" onClick={onClose} aria-label={t("关闭代码大纲")} title={t("关闭代码大纲")}
           className="flex h-5 w-5 items-center justify-center rounded hover:bg-hover hover:text-fg">
           <IconClose className="h-3 w-3" />
         </button>
       </div>
-      <nav aria-label="代码符号" className="min-h-0 flex-1 overflow-auto p-1">
+      <nav aria-label={t("代码符号")} className="min-h-0 flex-1 overflow-auto p-1">
         {symbols.length > 0 && state !== "error" ? <ul>{symbols.map((symbol, index) => (
           <SymbolItem key={`${model.uri}:${symbol.name}:${index}`} symbol={symbol} depth={0} onNavigate={onNavigate} />
         ))}</ul> : <div role="status" className="px-2 py-4 text-[11px] leading-relaxed text-fg-faint">
-          <p>{state === "loading" ? "正在加载大纲…" : state === "error" ? "大纲加载失败" : "当前文件没有可用符号，或该语言暂不支持大纲"}</p>
+          <p>{state === "loading" ? i18n.t("正在加载大纲…") : state === "error" ? i18n.t("大纲加载失败") : i18n.t("当前文件没有可用符号，或该语言暂不支持大纲")}</p>
           {state === "error" && <>
             <p className="mt-1 break-words">{errorMessage}</p>
             <button type="button" onClick={() => setAttempt((value) => value + 1)}
-              className="mt-2 rounded border border-line px-2 py-0.5 text-fg-dim hover:bg-hover hover:text-fg">重试加载</button>
+              className="mt-2 rounded border border-line px-2 py-0.5 text-fg-dim hover:bg-hover hover:text-fg">{t("重试加载")}</button>
           </>}
         </div>}
       </nav>

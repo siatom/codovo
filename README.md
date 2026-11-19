@@ -2,11 +2,13 @@
   <img src="src-tauri/icons/icon.svg" width="96" height="96" alt="Codovo" />
 </p>
 
-<h1 align="center">Codovo · 码坞</h1>
+<h1 align="center">Codovo</h1>
 
-<p align="center"><b>把散落一地的开发现场，收拢进一个窗口。</b></p>
+<p align="center"><b>Bring your scattered development work into one window.</b></p>
 
-<p align="center">一个开发者的 AI 编程驾驶舱 —— 终端、编辑器、Git、远程、数据库、预览、部署，同在一片甲板上各就各位。</p>
+<p align="center"><a href="README.zh-CN.md">简体中文</a></p>
+
+<p align="center">An AI coding cockpit for developers — terminal, editor, Git, remote hosts, databases, previews, and deployment, all on the same deck.</p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-4f8bff.svg" /></a>
@@ -16,296 +18,280 @@
 
 ---
 
-## 一个不大的执念
+## One small obsession
 
-写代码本该是件专注的事。可现实里，它更像在七八个窗口之间反复横跳：
+Writing code should be focused work. In practice, it often means jumping between a terminal, editor, file manager, Git client, database tool, SSH client, and browser preview. They each keep their own context, and too much time goes into finding windows and getting back up to speed.
 
-一个终端跑着命令，一个编辑器改着文件，文件管理器找着路径，Git 客户端看着 diff，数据库工具连着库，SSH 客户端开着服务器，浏览器预览着页面……它们各自为政，彼此不通气。真正写代码的时间，被「找窗口」和「切上下文」吃掉了大半。
+Codovo brings these tools back onto one deck. Its Chinese name, **码坞 (Mǎwù)**, combines “code” with “dock”: each project can pull in, stay ready, and switch without restarting the world. It is also a cockpit: keep the whole scene in view and the tools within reach.
 
-Codovo 想做的，是让这些各据一方的工具，重新回到同一片甲板上。
-
-中文名**码坞**：**码**是代码，**坞**是船坞——每个项目都能安稳靠岸，来回切换不必重启世界；它同时也是**驾驶舱**——你坐在正中，一屏之内看清全局，伸手就是你要的一切。
-
-它不要求你登录，不替你把代码送上云，也不打算变成又一个需要你伺候的庞然大物。它只把该在一起的放在一起，然后把注意力还给你。
+Codovo does not require an account, send your code to the cloud, or ask you to maintain another heavyweight tool. It puts the pieces together and gives your attention back to the work.
 
 ---
 
-## 几条不肯让步的取舍
+## A few non-negotiable choices
 
-一份产品介绍，说到底是在交代它的取舍。以下是 Codovo 的取舍。
+**The terminal is a first-class citizen.** This is a real PTY (ConPTY on Windows), not a small command window tucked into an IDE. Tabs have independent sessions, can be split side by side or top and bottom, and keep running in the background.
 
-**终端是一等公民。**
-不是 IDE 角落里那个「能跑命令的小窗」，而是真正的 PTY（Windows 上走 ConPTY）：多标签各自独立，可左右或上下并列，切走照跑。因为你真正的工作，多半就发生在命令行里。
+**Attention is too valuable to waste.** When an AI CLI pauses for approval or input, or finishes a task, Codovo marks it where you are likely to see it.
 
-**注意力，是最不该被浪费的资源。**
-多工作区并行时，最容易出事的就是「后台的某个 AI CLI 停下了，而你没看见」。谁在跑、谁在等、谁已经跑完，Codovo 都把标记亮在你眼睛会经过的地方。
+**AI is a copilot; you keep the wheel.** Terminal AI CLIs and the app assistant share the same workspace. Changes go directly to disk, and you can inspect or take over at any point.
 
-**AI 是副驾驶，方向盘始终在你手里。**
-同一个工作区，终端里的 AI CLI 与右栏的应用助手共用一套现场，各司其职，改动都直接落盘。它替你打字，但你看得见每一步，也随时能接管。
+**Local first. Your code and credentials stay on this machine.** The editor and terminal run locally. AI credentials go into the operating system credential store. You can keep coding offline.
 
-**本地优先，你的代码与密钥不出这台机器。**
-编辑器内核与终端全在本地；AI 密钥进操作系统凭据库，前端拿不到明文。断网也能写代码，不必等一朵云。
-
-**克制，是高级感的来源。**
-不加没有实际功能的元素。宁留空，也不放装饰性提示、假快捷键、占位状态。
+**Restraint is part of the design.** Codovo avoids decorative controls, fake shortcuts, and placeholder states. Empty space is better than UI without a purpose.
 
 ---
 
-## 一屏之内
+## One screen
 
 <p align="center">
-  <img src="docs/screenshot-overview.png" alt="Codovo 主界面：终端、文件树、编辑器与 Git 同屏" width="1200" />
+  <img src="docs/screenshot-overview.png" alt="Codovo main window showing the terminal, file tree, editor, and Git" width="1200" />
 </p>
 
-<p align="center"><sub>终端、文件树、编辑器与 Git 同屏；分栏皆可拖动</sub></p>
+<p align="center"><sub>Terminal, file tree, editor, and Git in one view; split panes are resizable.</sub></p>
 
-左侧是工作区与会话，中间是统一工作区，终端会话、ACP 对话、文件查看和浏览器等内容都在同一排**超级 Tab**中切换。右侧图标栏固定在窗口边缘；Agent 入口位于顶部，文件、变更、远程连接和数据库等上下文面板在中间工作区右侧展开，预览与部署也使用这里的面板。选中文件或连接等实际内容后，才会创建对应的超级 Tab。分栏都能拖动，重要的时候可以整块全屏，按 `Esc` 退回。
-
----
-
-## 它能做什么
-
-### 一个窗口，多条战线
-
-一个工作区可以包含多个工作目录，文件树并列展示，文件名搜索、内容搜索与 Git 变更按目录分组；终端与助手使用工作区的活动根目录。从右侧 Agent 面板、超级 Tab 的添加菜单或工作区会话历史启动 AI CLI 时，其余工作目录会按各家支持的参数（如 `--add-dir`、`--include-directories`）或配置（opencode 的 `external_directory`）注入，CLI 的权限范围与工作区保持一致。
-
-侧栏负责创建、编辑、切换、关闭和移除工作区，可置顶，也可以分入「分区」——分区名会作为列表里的一级标题，点分区名即可收起 / 展开该段，拖动分区名可以调整上下顺序；悬停分区名右侧的「⋯」可以重命名或删除分区，删除只把工作区移回「未分区」，不会删掉工作区。列表按「最近活动」自动排序——终端与助手用得最多的排在最前，置顶的固定在最上。新建时可以直接打开本地目录，也可以从 Git 仓库克隆（可选分支、浅克隆，进度实时显示）。启动时回到上次的工作区；移除只删除 Codovo 里的记录，不动磁盘文件。
-
-拖动工作区名称到分区标题或列表即可更换分区，拖到「未分区」则移出分区；拖动时目标会高亮，按 `Esc` 取消。置顶项更换分区后仍留在置顶区，排序仍按最近活动；也可以通过行尾「⋯」菜单调整分区。
-
-**切换工作区不重启世界。** 终端不杀、助手不停，编辑器标签、撤销历史与文件树展开态原样保留；只有关闭工作区，才会真正结束它的终端与助手服务。
-
-### 谁在等你
-
-要你批准权限、要你回答问题、终端 CLI 停在交互提示上，或是一轮任务已经跑完在等你下一步——侧栏工作区行和对应的终端 / ACP 超级 Tab 会亮起标记。点一下，直接回到那个工作区和会话。
-
-多工作区并行的意义，不是「同时开很多」，而是「不必盯着每一个」。
-
-### 终端，一等公民
-
-真实 shell，真实 PTY，xterm.js 渲染并启用 WebGL 加速。多标签、每个标签一个独立会话，也支持左右并列与上下并列；切走的会话仍在后台跑。终端程序按平台探测：Windows 上的 pwsh / cmd / WSL / Git Bash，macOS / Linux 上的 zsh / bash / fish / nushell……标签上带各自的品牌图标。
-
-终端里的操作按你肌肉记忆来：`Ctrl+C` 有选区时复制、无选区时仍是中断；`Ctrl+V` 或右键粘贴，多行内容按 bracketed paste 送进 shell——粘一段代码，不会一行行自己跑掉。
-
-每个终端会话都是独立的超级 Tab：普通终端显示终端图标，通过 Agent 启动的会话显示对应 CLI 的品牌图标。右侧 Agent 面板用于选择终端或 ACP 对话，并切换 CodeBuddy / Claude Code / Codex / opencode 等 Agent。超级 Tab 右侧的 `+` 默认新建终端；下拉菜单还可选择具体终端程序，或新建 Agent 终端 / ACP 对话。真正的 CLI 原样运行，交互、快捷键、输出都属于它自己；每条 ACP 对话也有独立超级 Tab，不再嵌套一层会话标签。
-
-展开工作区列表中的会话历史，可以翻看 CodeBuddy / Claude Code / Codex / opencode 的历史会话；点开就在新的终端超级 Tab 里接着聊。
-
-编辑器里选中的文本，能带着 `路径:行号` 直接送进终端或应用助手的输入框；改完哪里、从哪看起，一句话都不用解释。
-
-### 编辑器 · VS Code 的内核，离线的心
-
-Monaco（VS Code 的内核），完全离线。文件查看复用一个活动超级 Tab，打开另一个文件时切换该 Tab 的内容，不会为每个文件各占一个 Tab；`Ctrl+N` 可新建未命名缓冲区（保存时自动走另存为）。状态栏报行列，旁边还有文件大小、选区长度与路径（点一下复制绝对路径），只读 / 大文件 / 截断也各自带标记。关闭脏文件会问「保存 / 不保存 / 取消」。
-
-打开的文件被外部改动时：文件干净就自动同步，有未保存修改只打冲突标记、绝不覆盖你的输入；文件被删除同样会标记。标签右键可以「重新加载（放弃我的修改）」或「保留我的修改」，「放弃变更」则把内容退回磁盘版本或最近一次保存快照。
-
-打开文件时自动识别编码（UTF-8 / UTF-8 BOM / UTF-16LE / UTF-16BE / GBK / GB18030 / Big5 / Shift_JIS / EUC-KR / windows-1252 / ISO-8859-1），保存按同一编码写回——GBK 老工程里的中文不会被写成乱码。换行也原样保留：LF / CRLF / CR 读进来统一、写回去还原。识别有误时，状态栏随时可以手动切换，并从磁盘重读。
-
-文件大了就降级：超过 8MB 关掉缩略图、折叠、高亮等吃力不讨好的能力；超过 64MB 只读前 8MB 并强制只读，状态栏标「已截断，只读」，保存与另存为都禁用。磁盘上的只读文件同样标记。
-
-格式化用社区事实标准 **Prettier**（浏览器版，按语言动态加载插件），覆盖 JS / TS / JSON / CSS / HTML / Vue / Markdown / YAML / GraphQL 等：工具栏、`Shift+Alt+F` 或文件树右键一键格式化，光标位置跟着走、可撤销，其余语言退回按语法重排缩进；设置里可以打开「保存时格式化」，落盘前先过一遍 Prettier。保存前还能用同一套解析器做语法校验——手动保存会校验，有问题会问「仍然保存 / 取消」；自动保存跳过校验，避免每秒全量解析拖慢输入。
-
-**markdown 右上角四档切换：预览 / 编辑 / 对照 / 翻译**，默认预览。预览是成稿的样子，对照是左边源码、右边渲染，边改边看，两侧还会按内容块位置同步滚动；标题生成稳定锚点，`#...` 页内跳转，外部链接交给系统浏览器，文档里的相对 / 绝对文件链接直接在编辑器里打开（目录链接交给系统文件管理器）；围栏代码块有语法高亮，并随手上的深浅色主题重新着色。支持 HTML 标签、相对路径图片、Mermaid 流程图与 KaTeX 数学公式（`$...$` 行内、`$$...$$` 块级）。svg、html / htm、图片、PDF 打开即渲染，想改再切回编辑。
-
-**文档翻译**左原文、右译文：Markdown、纯文本等文档（源码、脚本、配置不给入口）可翻成简体中文或 English，进入即按段请求并显示进度，随时能停止、重试、复制译文。代码块、目录树、链接引用与徽章不交给模型，表格正文照译；译文按「路径 + 内容签名 + 目标语言 + 模型」缓存，重新打开不必重算，模型与密钥直接复用设置里的默认模型和系统钥匙串。翻译只读原文，不写回文件。
-
-自动保存支持延迟（默认停手 1 秒）、失焦、切窗口或关闭时保存，随你习惯；自动换行默认开启，可在设置里关掉。重启后回到上次工作区的标签与激活项，无标签时欢迎页列出最近打开的文件，点一下接着改。
-
-### 文件与搜索 · 一个模块，两种找法
-
-搜索栏默认收起，点标题栏的放大镜才展开；展开后，一个关键词，右侧切换「名称 / 内容」：
-
-- **名称**：按文件名过滤文件树，命中的目录自动展开；清空即回到完整目录树。
-- **内容**：在整个工作区里搜，支持区分大小写、全字匹配、正则、包含 / 排除 glob，可单处或全部替换。
-
-文件树里能新建、重命名、删除，复制 / 剪切 / 粘贴跨目录移动，多选批量操作，拖拽移动，复制路径，加入 `.gitignore`；右键网页文件可以丢进内置浏览器预览。工作区被外部改动时自动刷新。
-
-### 变更 · 看得见每一步 Git
-
-状态标记（改动 / 新增 / 删除 / 冲突），暂存、取消暂存、放弃修改，都能细到**逐块甚至逐行**；改动列表支持列表与树形两种视图，点开是只读的内联差异。暂存差异比较 HEAD 与暂存区，未暂存差异比较暂存区与工作区。
-
-提交历史是一条图形化泳道图：悬停看单次改动规模，按主题 / 作者 / 路径过滤，一键回到 HEAD。标题栏有获取 / 拉取 / 推送，也会顺手处理分支切换与新建、worktree 切换、修正或撤销上一次提交、stash 储藏。
-
-本地与远程分叉时可以合并；发生冲突后，手动编辑文件并暂存，再「完成合并」，也可以「中止合并」。工作目录还不是 git 仓库时，面板里点一下就能初始化（默认分支 `main`）。
-
-AI 能解释一段改动改了什么，也能替你起草提交信息——最后按不按下去，仍然是你的事。
-
-### 右侧图标栏与工具面板
-
-右侧图标栏始终固定，点击图标可展开对应面板，再点当前图标可收起面板。Agent 图标位于最上方；文件、变更、远程连接和数据库会在右侧面板展示树或连接列表，点击具体内容后在中间超级 Tab 中查看。预览与部署的内容也在右侧面板中显示；浏览器作为中间工作区任务打开，不额外占用右侧面板。所有内容都跟随当前工作区，切换工作区时现场保留。
-
-**浏览器**
-iframe 内嵌本地服务，改完文件点「重新加载」就能看到新效果。文件树里右键网页文件也能丢进来，相对路径引用的 css / js / 图片一并加载。加载走 Tauri 的 asset 协议，只放行打开过的工作目录。
-
-**远程连接**
-SSH 与 SFTP 同屏。多台主机、每台可开多个交互式终端；也可以切到左右双文件面板，左边本地、右边远程，选中即传，文件或整个目录都能直接拖到对侧，目录递归复制，本地窗格跟随外部改动刷新。凭据存系统钥匙串。
-
-**数据库**
-MySQL / PostgreSQL / SQLite，密码进系统钥匙串。浏览表与视图、点开看数据、切到「结构」看列 / 索引 / 外键 / 建表 DDL；也能写 SQL —— Monaco 语法高亮、按方言一键美化、服务端翻页，结果可导出 CSV 或 Excel。
-
-「Agent」子页把查询交给对话：一句话说清想查什么，它自己看表与字段、写 SQL、执行，结果就地铺成表格。**只读**——写数据或改结构的语句一律拒绝。
-
-**预览**
-面板里只有一个「启动」按钮。内置的预览助手先探测项目类型，再决定怎么起：Web 项目起 dev server、就绪后内嵌预览；Tauri 项目起带 CDP 调试端口的实例，端口直接报给你。起不来时它读日志、看脚本，能靠改命令或端口解决的就重试一次，其余给出诊断与改动建议。
-
-进程由后端托管：切走工作区、收起面板都不影响它；点「停止」或退出应用时统一清理。
-
-**部署**
-读项目根的 `.local-cicd.yaml`，一键在本机跑 **Preflight → Build → Deploy → Verify**（失败时追加 Rollback），逐阶段显示进度、耗时与实时日志，失败即停。配置可以直接编辑 YAML，也可以「按项目探测」生成建议，或让 AI 依项目标记起草一份草稿；跑挂了点「AI 诊断」，把阶段、命令和日志交给模型分析。
-
-部署不必先上一整套 CI 基建——配置驱动、单机单环境、失败即停，就是它的全部野心。
-
-### 应用助手 · 改 Codovo 自己
-
-终端里的 AI CLI 负责读代码、改文件、跑命令；要改 Codovo 自己的设置、工作区与界面布局时，用侧栏底部的**应用助手**。点开是右栏的一个抽屉，可以和终端、编辑器同屏——它改了什么，你当场看得见。
-
-抽屉里的对话由 Rust 侧的 **Rig** 运行时驱动（进程内，不依赖外部 CLI），内置工具执行改设置、加 / 删工作区、切右栏模块、切全屏等操作；不可逆操作会先弹确认。
-
-项目级的规则、记忆、技能与自定义 agent 仍以仓库根的 `.codovo/` 为准（`rules.md` / `memory.md` / `skills.json` / `agents.json`），随仓库走、能进 git，直接用编辑器改。
-
-另外一位内置**预览助手**（点「启动」时在背后忙的那位）负责探测、启停、读日志、诊断纠错。它能看代码，但不改代码——要改，得你来。
-
-要用应用助手、预览助手与各项 AI 生成能力，只需在「设置 → AI」里配置兼容 OpenAI 协议的提供商、接口地址、密钥与模型；运行时由应用自己带，不用额外装 CLI。
-
-### 主题、设置与托盘
-
-深色 / 浅色 / 跟随系统，外加十余套配色（VS Code、One Dark、Dracula、Nord、Tokyo Night…）。设置分为**外观 / 终端 / 编辑器 / 快捷键 / AI / 依赖**六页，字体、字号、自动换行、自动保存、右栏模块显隐都可调，快捷键也能自己录。
-
-有工作区打开时，关闭窗口可以选择退出或最小化到托盘；驻留期间会话继续运行，再次启动会唤回已有窗口。开发版与安装版可以并存，开发版带 `dev` 徽章。
+The left sidebar holds workspaces and session history. The center is a shared work area with terminal sessions, ACP chats, files, browser pages, and other content in super tabs. The right icon rail opens contextual panels for files, changes, remote connections, databases, preview, and deployment. Select actual content to open it in a center tab. Panes can be resized or taken fullscreen; press `Esc` to return.
 
 ---
 
-## 写在最后
+## What it can do
 
-工具越做越多，窗口越开越乱。Codovo 不打算再添一个需要你伺候的窗口——它只是把已有的那些，摆回该在的位置。
+### One window, several workstreams
 
-如果它能让你少找一次窗口、少丢一次上下文，那它就没有白做。
+A workspace can include multiple working directories. File trees appear side by side, and search and Git changes are grouped by directory. Terminals and assistants use the active root. When an AI CLI starts from the Agent panel, a super-tab menu, or workspace history, the other directories are passed using the CLI's supported options (such as `--add-dir` or `--include-directories`) or configuration (such as opencode's `external_directory`), keeping its access scope aligned with the workspace.
+
+The sidebar creates, edits, switches, closes, and removes workspaces. Pin them or put them into groups. Groups become section headings that can be collapsed, reordered, renamed, or deleted; deleting a group moves its workspaces to the ungrouped section. Workspaces are sorted by recent activity, with pinned workspaces first. Create a workspace from a local directory or clone a Git repository with optional branch selection and shallow cloning. Startup can restore the last workspace. Removing a workspace only removes its Codovo entry; files on disk are untouched.
+
+Drag a workspace onto a group to move it, or onto the ungrouped section to remove it from a group. Press `Esc` to cancel a drag. Pinned workspaces stay in the pinned section after regrouping.
+
+**Switching workspaces does not restart the world.** Terminals and assistants keep running; editor tabs, undo history, and expanded file-tree state stay in place. Closing a workspace ends its terminal and assistant services.
+
+### See who needs you
+
+Codovo marks a workspace and its terminal or ACP tab when an agent needs approval or input, a CLI is waiting at an interactive prompt, or a task has finished. Click the marker to return to that workspace and session.
+
+The point of multiple workspaces is not to watch more things at once. It is to stop having to watch each one.
+
+### Terminal first
+
+Use a real shell and PTY, rendered with xterm.js. Sessions have independent tabs and can be split horizontally or vertically. Supported shells are detected by platform: pwsh, cmd, WSL, and Git Bash on Windows; zsh, bash, fish, and nushell on macOS and Linux. Tabs show each CLI's brand icon.
+
+Terminal shortcuts follow familiar conventions: `Ctrl+C` copies when text is selected and interrupts otherwise. `Ctrl+V` or right-click pastes. Multiline text uses bracketed paste so a pasted code block does not execute line by line.
+
+Every terminal is a super tab. Agent-launched sessions show the CLI's brand icon. The right Agent panel selects a terminal or ACP chat and can switch between CodeBuddy, Claude Code, Codex, opencode, and other agents. The `+` menu creates a terminal, an Agent terminal, or an ACP chat. Each ACP chat has its own super tab.
+
+Expand a workspace's session history to browse CodeBuddy, Claude Code, Codex, and opencode conversations. Selecting one resumes it in a new terminal tab.
+
+Selected editor text can be sent to a terminal or the app assistant along with its `path:line` location.
+
+### Editor — VS Code's core, offline
+
+Monaco (the VS Code editor core) runs fully offline. File viewing reuses one active super tab: opening another file switches its content instead of consuming another tab. `Ctrl+N` creates an untitled buffer. The status bar shows line and column, file size, selection length, and path (click to copy the absolute path), as well as read-only, large-file, and truncation markers. Closing a dirty file asks whether to save, discard, or cancel.
+
+When an open file changes outside Codovo, clean content syncs automatically. Unsaved edits are never overwritten; the tab gets a conflict marker. Deleted files are marked too. Tab context actions can reload from disk or keep local edits. Discarding changes returns to the disk version or latest save snapshot.
+
+Files are detected and saved with their original encoding (UTF-8, UTF-8 BOM, UTF-16, GBK, GB18030, Big5, Shift_JIS, EUC-KR, Windows-1252, and ISO-8859-1). Line endings are also restored as read: LF, CRLF, or CR. If detection is wrong, choose an encoding from the status bar and reload from disk.
+
+Large files progressively disable expensive features. Above 8 MB, minimap, folding, and highlighting are disabled. Above 64 MB, only the first 8 MB is loaded and the buffer is read-only; saving is disabled. Read-only files are marked as well.
+
+Formatting uses the community standard **Prettier** in the browser, loading language plugins on demand. It covers JS, TS, JSON, CSS, HTML, Vue, Markdown, YAML, GraphQL, and more. Use the toolbar, `Shift+Alt+F`, or the file-tree context menu. Other languages use syntax-aware indentation. Settings can format on save and check syntax before manual saves; automatic saves skip validation to avoid slowing down typing.
+
+Markdown has four modes: **Preview / Edit / Split / Translate**. Preview renders the document; Split shows source and rendered output with synchronized scrolling. Headings get stable anchors, `#...` links work, external links open in the system browser, and local file links open in the editor. Code fences have syntax highlighting. HTML tags, relative images, Mermaid diagrams, and KaTeX math are supported. SVG, HTML, images, and PDF files open as previews.
+
+**Document translation** shows the original and translated text side by side. Markdown and plain text can be translated into Simplified Chinese or English; source code and scripts do not offer translation. Progress is shown per segment, and you can stop, retry, or copy the result. Code blocks, directory trees, link references, and badges are preserved; table content is translated. Results are cached by path, content signature, target language, and model. Translation is read-only and reuses the default model and system credential store.
+
+Auto-save supports a delay (one second by default), editor focus change, window focus change, or close. Word wrap is on by default. On restart, Codovo restores the last workspace's tabs and active item. If there are no tabs, the welcome page lists recently opened files.
+
+### Files and search
+
+The search bar is collapsed by default. Open it with the magnifier in the title bar, then choose **Name** or **Content**:
+
+- **Name** filters the file tree and expands matching directories. Clear the query to restore the full tree.
+- **Content** searches the workspace and supports case sensitivity, whole-word matching, regular expressions, include/exclude globs, and single or bulk replacement.
+
+Create, rename, and delete files and folders. Copy, cut, paste, drag, or batch-move selections across directories; copy paths or add entries to `.gitignore`. Open a web file in the built-in browser from its context menu. The tree refreshes when the workspace changes externally.
+
+### Changes — every Git step in view
+
+Git status marks changed, added, deleted, and conflicted files. Stage, unstage, or discard changes down to individual hunks and lines. View changes as a list or tree, with read-only inline diffs. Staged diffs compare `HEAD` with the index; unstaged diffs compare the index with the working tree.
+
+Commit history is shown as a graphical lane view. Hover to see change size, filter by subject, author, or path, and return to `HEAD`. The title bar provides fetch, pull, and push, along with branch creation and switching, worktree switching, amend, revert, and stash operations.
+
+Merge divergent local and remote branches. Resolve conflicts by editing and staging files, then complete or abort the merge. Initialize a directory as a Git repository from the panel; the default branch is `main`.
+
+AI can explain a change or draft a commit message. You decide whether to use it.
+
+### Right rail and tool panels
+
+The right icon rail stays in place. Click an icon to open its panel; click it again to close the panel. Agent is at the top. Files, changes, remote connections, and databases show trees or connection lists. Selecting an item opens it in a center super tab. Preview and deployment use right-side panels; the browser opens as a center task. Content follows the active workspace, and switching workspaces preserves its state.
+
+**Browser** embeds a local service in an iframe. Reload after editing to see the changes. Open a web file from the file-tree context menu; relative CSS, JavaScript, and image references load with it. Content is served through Tauri's asset protocol, restricted to opened workspace directories.
+
+**Remote connections** put SSH and SFTP side by side. Open multiple interactive terminals per host or switch to dual file panes: local on the left, remote on the right. Select to transfer, or drag files and directories across; directory copies are recursive. The local pane refreshes when files change externally. Credentials are stored in the system credential store.
+
+**Database** supports MySQL, PostgreSQL, and SQLite. Browse tables and views, inspect data, and view columns, indexes, foreign keys, and DDL. Write SQL with Monaco highlighting, dialect-aware formatting, and server-side pagination. Export results to CSV or Excel. Passwords are stored in the system credential store.
+
+The database **Agent** accepts a natural-language request, inspects tables and columns, writes and runs SQL, and displays results as a table. It is read-only: statements that write data or change schema are rejected.
+
+**Preview** starts with one button. The built-in preview assistant detects the project type and starts the appropriate process: a dev server for web projects or a Tauri instance with a CDP debugging port. If startup fails, it reads logs and scripts and retries once when a command or port change may help; otherwise it gives diagnostic findings and suggestions.
+
+The backend owns preview processes. Switching workspaces or closing the panel does not stop them. Stop a preview or quit the app to clean them up.
+
+**Deployment** reads `.local-cicd.yaml` from the project root and runs **Preflight → Build → Deploy → Verify**, adding Rollback after a failure. Each stage shows progress, elapsed time, and live logs; execution stops on failure. Edit the YAML directly, generate a suggested configuration from project markers, or ask AI to draft one. AI diagnosis can inspect the failed stage, command, and logs.
+
+Deployment aims to be local and simple: configuration-driven, one machine and one environment, stop on failure.
+
+### App assistant — change Codovo itself
+
+Terminal AI CLIs read and change project code. To change Codovo settings, workspaces, or layout, use the **App Assistant** at the bottom of the sidebar. It opens in a right-side drawer alongside the terminal or editor, so you can see the result.
+
+The assistant runs in Rust through **Rig**, in process and without an external CLI. Built-in tools can change settings, add or remove workspaces, switch right-side panels, and toggle fullscreen. Actions that cannot be undone ask for confirmation first.
+
+Project rules, memory, skills, and custom agents live in `.codovo/` at the repository root (`rules.md`, `memory.md`, `skills.json`, and `agents.json`). They travel with the repository, can be committed to Git, and can be edited in the editor.
+
+The **Preview Assistant** handles project detection, process startup and shutdown, log reading, and diagnostics. It can inspect code but does not edit it.
+
+Configure an OpenAI-compatible provider, endpoint, key, and model under **Settings → Models** to use the app assistant, preview assistant, and AI generation features. The runtime is bundled with Codovo; no extra CLI is required.
+
+### Theme, settings, language, and tray
+
+Choose dark, light, or system theme, plus more than ten palettes such as VS Code, One Dark, Dracula, Nord, and Tokyo Night. Settings cover appearance, terminal, editor, shortcuts, agents, models, and dependencies. Configure fonts, font sizes, word wrap, auto-save, visible right-side modules, and custom shortcuts.
+
+The interface supports **Simplified Chinese and English**. By default, it follows the system language; choose **Settings → Appearance → Interface language** to override it. The preference is stored locally.
+
+When a workspace is open, closing the window can quit the app or minimize it to the tray. Sessions keep running in the tray, and launching Codovo again restores the existing window. Development and installed builds can run side by side; the development build has a `dev` badge.
 
 ---
 
-## 安装与运行
+## In closing
 
-已打包的版本在 [GitHub Releases](https://github.com/siatom/codovo/releases) 下载，使用它不需要 Rust 或 pnpm。安装版会在后台检查更新，也可从「设置 → 关于」查看当前版本、手动检查，调整自动检查间隔或跳过某个版本。可用更新会显示版本、说明与大小；确认下载后先校验签名，再安装并重启。开发版、Windows MSI 或缺少更新产物的版本通过发布页升级。
+As tools multiply, windows multiply with them. Codovo does not aim to become another window you have to manage. It puts the tools you already use back where they belong.
 
-| 方式                                             | 适合谁                   |
-| ------------------------------------------------ | ------------------------ |
-| **Windows 安装包** `Codovo_<版本>_x64-setup.exe` | 常规安装，开始菜单与托盘 |
-| **macOS 安装包** `Codovo_<版本>_aarch64.dmg`     | Apple Silicon            |
-| **源码构建**                                     | 想改它、或想自己打包的人 |
+If it helps you find one fewer window and lose one less piece of context, it has done its job.
 
-> Linux 暂不提供预编译安装包，可参考下方源码构建。
+---
+
+## Install and run
+
+Download a packaged build from [GitHub Releases](https://github.com/siatom/codovo/releases). Rust and pnpm are not needed to use it. Installed builds check for updates in the background. Under **Settings → About**, view the current version, check manually, change the automatic check interval, or skip a version. Available updates show the version, notes, and size. After you confirm, the download is signature-verified before installation and restart. Development builds, Windows MSI builds, and versions without update artifacts can be upgraded from the releases page.
+
+| Package | For |
+| --- | --- |
+| **Windows installer** `Codovo_<version>_x64-setup.exe` | Standard install with Start menu and tray integration |
+| **macOS disk image** `Codovo_<version>_aarch64.dmg` | Apple Silicon |
+| **Build from source** | Development or custom packaging |
+
+> Linux does not currently have prebuilt installers; use the source build below.
 
 ```bash
 pnpm install
-pnpm tauri dev                       # 开发
-pnpm tauri build                     # 打包安装包
-pnpm package:install                 # 打包并安装到本机（Windows / macOS）
+pnpm tauri dev                       # Development
+pnpm tauri build                     # Build an installer
+pnpm package:install                 # Build and install locally (Windows / macOS)
 ```
 
-从源码构建需要 Rust、Node.js、pnpm，以及对应平台的 Tauri 2 原生构建依赖（Windows 的 C++ 构建工具与 WebView2、macOS 的 Xcode Command Line Tools、Linux 的 WebKitGTK 等）。
+Building from source requires Rust, Node.js, pnpm, and the native Tauri build dependencies for your platform (C++ build tools and WebView2 on Windows, Xcode Command Line Tools on macOS, WebKitGTK on Linux).
 
-Windows 需要 WebView2 Runtime（Windows 11 自带）；Git 功能需要安装 Git；AI CLI 需要各自安装。**「设置 → 依赖」**可以检测 Git、Node.js、opencode、Codex、CodeBuddy、Claude Code 与 GitHub CLI（`gh`）的安装状态。反馈功能需要 GitHub CLI 并完成 `gh auth login`。
-
----
-
-## 快捷键
-
-| 快捷键                         | 作用                                                        |
-| ------------------------------ | ----------------------------------------------------------- |
-| `Ctrl+S`                       | 编辑器：保存当前文件                                        |
-| `Ctrl+Shift+S`                 | 编辑器：另存为                                              |
-| `Ctrl+N`                       | 编辑器：新建未命名缓冲区                                    |
-| `Ctrl+O`                       | 打开文件（工作区外的文件以所在目录建临时工作区）            |
-| `Ctrl+F`                       | 编辑器：查找（`Ctrl+H` 替换仍是 Monaco 内置）               |
-| `Shift+Alt+F`                  | 编辑器：格式化当前文件                                      |
-| `Ctrl+Shift+V`                 | 编辑器：切换 Markdown / 网页预览                            |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab`  | 编辑器：下一个 / 上一个标签页                               |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 编辑器：放大 / 缩小 / 重置字号                              |
-| `Ctrl+,`                       | 打开设置                                                    |
-| `Ctrl+B`                       | 切换侧边栏                                                  |
-| 标签中键 / 标签栏空白双击      | 编辑器：关闭该标签 / 新建未命名缓冲区                       |
-| `Ctrl+Enter`                   | 在提交信息框里提交                                          |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | 文件树：复制 / 剪切 / 粘贴（焦点在树内某一行时）            |
-| `Ctrl+C` / `Ctrl+V`            | 终端：有选区复制，无选区 `Ctrl+C` 仍是中断；粘贴走 `Ctrl+V` |
-| `Ctrl+W`                       | 终端 / 编辑器：关闭当前标签页                               |
-| `Ctrl+Shift+T`                 | 终端（本地 / 远程）：新建一个终端标签页                     |
-| 鼠标右键                       | 终端：有选区复制，无选区粘贴                                |
-| `Esc`                          | 退出全屏 / 关闭弹窗                                         |
-
-编辑器自己的命令只在焦点落在编辑器区时生效；`Ctrl+,`、`Ctrl+B` 与字号这类窗口级命令也只在终端和输入框之外响应，终端里的 `Ctrl+C` / `Ctrl+V` / `Ctrl+W` 不会被抢。终端里正在跑**全屏程序**（CodeBuddy CLI、Claude Code、vim、less…）时，`Ctrl+W` / `Ctrl+Shift+T` 会原样让给它们——这些程序自己要用。回到 shell 提示符后又恢复成上面的行为。键位都能在设置里改。
+Windows requires the WebView2 Runtime (included with Windows 11). Git features require Git, and AI CLIs must be installed separately. **Settings → Dependencies** can check Git, Node.js, opencode, Codex, CodeBuddy, Claude Code, and GitHub CLI (`gh`). Feedback requires GitHub CLI and `gh auth login`.
 
 ---
 
-## 已知边界
+## Keyboard shortcuts
 
-我们把边界写在这里，而不是藏起来：
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+S` | Save the current editor file |
+| `Ctrl+Shift+S` | Save as |
+| `Ctrl+N` | Create an untitled editor buffer |
+| `Ctrl+O` | Open a file (files outside a workspace get a temporary workspace) |
+| `Ctrl+F` | Find in the editor (`Ctrl+H` for Monaco's built-in replace) |
+| `Shift+Alt+F` | Format the current file |
+| `Ctrl+Shift+V` | Toggle Markdown / web preview |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous editor tab |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom in / out / reset editor font size |
+| `Ctrl+,` | Open settings |
+| `Ctrl+B` | Toggle the sidebar |
+| Middle-click tab / double-click empty tab bar | Close tab / create an untitled buffer |
+| `Ctrl+Enter` | Submit in the commit message field |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste in the file tree (when a row is focused) |
+| `Ctrl+C` / `Ctrl+V` | In the terminal, copy a selection; otherwise interrupt; paste with `Ctrl+V` |
+| `Ctrl+W` | Close the current terminal or editor tab |
+| `Ctrl+Shift+T` | Create a local or remote terminal tab |
+| Right-click | In the terminal, copy a selection or paste when nothing is selected |
+| `Esc` | Exit fullscreen / close a dialog |
 
-- **Git 不做的事**：`reset --hard`、force push、自动解决合并冲突、任意两个提交间对比（只能看「提交 vs 父提交」）、自动识别嵌套子仓库。
-- **数据库 Agent 只读**：写数据、改结构的语句一律拒绝。它负责把「查什么」变简单，不负责替你动数据。
-- **预览助手不改代码**：它能把项目跑起来、能诊断原因，但改动建议只停在建议。
-- **部署是单机的**：配置驱动、单机单环境、失败即停，不是通用 CI 的替代品。
-- **编码识别可能猜错**：状态栏可以手动切换并从磁盘重读；外部重读不会覆盖未保存内容。
-- **翻译的停止不等于中断**：点「停止」只是不再发送后续分段，已经发出的请求无法撤回；未命名缓冲区没有路径，不提供翻译；超过 8MB 或 20 万字符的文档整篇不翻。
-- **会话恢复只恢复标签与激活项**：Monaco 的滚动位置与选区不跨重启，未命名缓冲区也不跨重启保留。
-- **单文件打开仍受沙箱约束**：工作区外的文件通过它所在目录的临时工作区打开，文件访问照样要过工作区边界。
-- **切换保留现场，关闭才会收摊**：切走的工作区在后台照跑，关闭工作区才会结束它的终端与助手。
-- **工作区不提供手动排序**：列表按最近活动自动排列，置顶固定在最上——排序交给使用习惯，不交给维护成本。
+Editor commands apply only when the editor has focus. Window-level shortcuts such as `Ctrl+,`, `Ctrl+B`, and font-size controls are ignored in terminals and input fields. Terminal `Ctrl+C`, `Ctrl+V`, and `Ctrl+W` are not intercepted. While a full-screen terminal program (CodeBuddy CLI, Claude Code, vim, less, etc.) is running, `Ctrl+W` and `Ctrl+Shift+T` are passed through to it. Shortcuts can be changed in settings.
 
 ---
 
-## 关于 Codovo 本身
+## Known limitations
 
-Codovo 用 Rust + Tauri 2 构建，前端是 React + TypeScript + Tailwind，编辑器用 Monaco，终端用 xterm.js。没有账号，没有云同步，能离线就离线。
+- **Git:** No `reset --hard`, force push, automatic merge-conflict resolution, arbitrary commit-to-commit comparison (only commit vs. parent), or automatic nested-repository detection.
+- **Database Agent:** Read-only. It rejects data writes and schema changes.
+- **Preview Assistant:** It can start projects and diagnose problems but does not edit code.
+- **Deployment:** Local, single-machine, single-environment, and stops on failure; it is not a general CI replacement.
+- **Encoding detection:** It can guess incorrectly. Choose an encoding in the status bar and reload from disk; external reload does not overwrite unsaved content.
+- **Stopping translation:** Stops sending later segments but cannot cancel requests already sent. Untitled buffers have no path and cannot be translated. Documents over 8 MB or 200,000 characters are not translated.
+- **Session restore:** Restores tabs and the active item, but not Monaco scroll position or selection. Untitled buffers do not survive restart.
+- **Opening a single file:** Files outside a workspace use a temporary workspace rooted at their parent directory and remain subject to workspace boundary checks.
+- **Workspace switching:** Background work continues. Closing a workspace ends its terminal and assistant services.
+- **Workspace ordering:** Workspaces are sorted by recent activity, with pinned items first; manual ordering is not available.
+
+---
+
+## About Codovo
+
+Codovo is built with Rust and Tauri 2. The frontend uses React, TypeScript, and Tailwind; the editor is Monaco and the terminal is xterm.js. No account, no cloud sync, and offline wherever possible.
 
 <details>
-<summary>开发与验证</summary>
+<summary>Development and verification</summary>
 
 ```bash
-pnpm build                          # 前端类型检查与构建
+pnpm build                          # Frontend type check and production build
 cd src-tauri
-cargo test --lib                    # 后端单测
-cargo clippy                        # Rust 静态检查
+cargo test --lib                    # Backend unit tests
+cargo clippy                        # Rust linting
 ```
 
-界面验证可使用 `scripts/cdp-check.cjs` 连接 WebView2 的 CDP 端口；指定窗口时用 `target` 标题片段。用 Codovo 开发自身时，开发服务器的 HMR 会重载界面并重置终端与编辑器，建议在另一个工作区里运行开发命令。
+For UI checks, `scripts/cdp-check.cjs` can connect to the WebView2 CDP port; use a title fragment in `target` to select a window. When developing Codovo with Codovo, HMR reloads the UI and resets terminal and editor state. Run development commands from a different workspace.
 
-版本号以 `package.json` 为来源，通过 `pnpm version patch|minor|major` 更新。界面显示 `<版本号>+<Git 短 hash>[.dirty]`，`.dirty` 表示构建包含未提交改动，安装包版本仍为纯数字。
+`package.json` is the source of truth for the version. Update it with `pnpm version patch|minor|major`. The UI displays `<version>+<short Git hash>[.dirty]`; `.dirty` means the build includes uncommitted changes. Installer versions use only the numeric version.
 
-推送 `v<版本号>` tag 会触发 GitHub Actions，为 Windows 与 Apple Silicon macOS 构建安装包并发布到 GitHub Releases。tag 必须与 `package.json` 版本一致；PR 和 `main` 更新会运行前端构建、Rust 单测与 Clippy。更新产物使用 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 仓库 secrets 签名，公钥固定在 `tauri.conf.json`；私钥不可进入仓库，必须安全备份且不要随意更换。发布先保留为草稿，两平台构建和 `latest.json` 校验全部通过才公开，避免客户端看到未完成的更新。首次包含更新能力的版本仍需手动安装；后续正式版本才能验证端到端更新。
+Pushing a `v<version>` tag triggers GitHub Actions to build Windows and Apple Silicon macOS installers and publish them to GitHub Releases. The tag must match the `package.json` version. Pull requests and updates to `main` run the frontend build, Rust unit tests, and Clippy. Update artifacts are signed with the repository secrets `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; the public key is pinned in `tauri.conf.json`. Never commit the private key; back it up securely and do not rotate it casually. Releases remain drafts until both platform builds and `latest.json` validation pass. The first version with updater support must still be installed manually; later releases can verify the full update flow.
 
 </details>
 
 <details>
-<summary>项目结构</summary>
+<summary>Project structure</summary>
 
 ```
-src/                  React 前端
-  App.tsx             三段式布局装配
-  components/         工作区 / 终端 / 文件树与搜索 / 编辑器 / 变更 / 浏览器 /
-                      远程连接 / 数据库 / 预览 / 部署 / 应用助手 / 设置
-  lib/                Context 与薄封装：主题、设置、pty / fs / git / ai /
-                      agent / preview / remote / database / cicd /
-                      格式化（formatter）、文档翻译（translate）、编辑会话与最近文件
-src-tauri/src/        Rust 后端
-  lib.rs              命令注册与 state
-  pty.rs, shells.rs   终端会话与 shell 候选探测
-  fs_api.rs           文件读写 + 路径沙箱 + 搜索
-  git.rs              git 状态 / 暂存 / 时间线 / 差异 / 远程操作
-  llm.rs              模型构造与一次性生成（Rig）
-  agent/              对话式助手：Rig 运行时、会话存储、提示词与内置工具
-  preview.rs          预览：项目探测与预览进程池
-  remote.rs           SSH 终端 + SFTP 传输
-  database.rs         数据库连接池与查询
-  launch.rs           外部命令解析与子进程日志（CLI / 预览 / CICD 共用）
-  secrets.rs          操作系统凭据库中的 API 密钥
+src/                  React frontend
+  App.tsx             Three-pane application layout
+  components/         Workspace, terminal, file tree and search, editor, Git,
+                      browser, remote, database, preview, deployment, assistant, settings
+  lib/                Contexts and wrappers for theme, settings, PTY, filesystem, Git, AI,
+                      agents, preview, remote, database, CICD, formatting, translation,
+                      editor sessions, and recent files
+src-tauri/src/        Rust backend
+  lib.rs              Command registration and state
+  pty.rs, shells.rs   Terminal sessions and shell detection
+  fs_api.rs           File access, path sandbox, and search
+  git.rs              Git status, staging, history, diffs, and remote operations
+  llm.rs              Model construction and one-shot generation (Rig)
+  agent/              Assistant runtime, session storage, prompts, and built-in tools
+  preview.rs          Project detection and preview process pool
+  remote.rs           SSH terminal and SFTP transfers
+  database.rs         Database connection pool and queries
+  launch.rs           External command parsing and subprocess logs
+  secrets.rs          API keys in the operating system credential store
 ```
 
-关键的几条实现取舍：工作区内的文件访问全部校验边界；凭据只进系统凭据库，前端拿不到明文；预览进程池与助手槽位都按工作区 root 分片，切走工作区不杀、退出应用统一清理；操作对象在前端的助手工具走 Tauri 事件，后端投递请求、前端执行后回填结果。
+Workspace file access is boundary-checked. Credentials stay in the system credential store and are not exposed to the frontend. Preview processes and assistant slots are partitioned by workspace root; switching workspaces does not stop them, while quitting the app cleans them up. Assistant tools that operate on frontend state use a Tauri event bridge: the backend sends a request and the frontend executes it and returns the result.
 
 </details>
 
 ---
 
-## 许可
+## License
 
 [Apache License 2.0](LICENSE)
