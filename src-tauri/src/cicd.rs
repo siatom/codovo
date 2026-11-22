@@ -12,11 +12,12 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use process_wrap::std::{ChildWrapper, CommandWrap};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
@@ -151,7 +152,7 @@ pub struct CicdStatus {
 
 /// 一次运行的控制块：`cancelled` 让停止命令打断轮询，`child` 让停止命令能 kill 当前进程。
 struct RunHandle {
-    child: Arc<Mutex<Option<Child>>>,
+    child: Arc<Mutex<Option<Box<dyn ChildWrapper>>>>,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -166,7 +167,8 @@ impl RunHandle {
     fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
         if let Ok(mut slot) = self.child.lock() {
-            if let Some(child) = slot.as_mut() {
+            if let Some(mut child) = slot.take() {
+                // 包装器终止整个进程组 / Job Object，并回收直接子进程。
                 let _ = child.kill();
             }
         }
@@ -394,6 +396,21 @@ fn build_command(command: &str) -> Command {
     }
 }
 
+/// 复用已有 process-wrap：Unix 用 SIGKILL 清理进程组，Windows 用 Job Object
+/// 在恢复 shell 前关联整棵树，避免快速派生的子进程逃过取消。
+fn spawn_stage_command(cmd: Command) -> std::io::Result<Box<dyn ChildWrapper>> {
+    let mut cmd = CommandWrap::from(cmd);
+    #[cfg(unix)]
+    cmd.wrap(process_wrap::std::ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        use process_wrap::std::{CreationFlags, JobObject};
+        use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+        cmd.wrap(CreationFlags(CREATE_NO_WINDOW)).wrap(JobObject);
+    }
+    cmd.spawn()
+}
+
 /// 流水线执行器：持有日志缓冲、channel、取消句柄，串行跑各阶段命令。
 struct Runner<'a> {
     root: &'a Path,
@@ -453,16 +470,9 @@ impl<'a> Runner<'a> {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        crate::launch::hide_console(&mut cmd);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-
-        let mut child = cmd.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let mut child = spawn_stage_command(cmd).map_err(|e| format!("启动命令失败: {e}"))?;
+        let stdout = child.stdout().take();
+        let stderr = child.stderr().take();
 
         let mut readers = Vec::new();
         if let Some(out) = stdout {
@@ -491,11 +501,7 @@ impl<'a> Runner<'a> {
 
         let code = loop {
             if self.cancelled() {
-                if let Ok(mut slot) = self.handle.child.lock() {
-                    if let Some(proc) = slot.as_mut() {
-                        let _ = proc.kill();
-                    }
-                }
+                self.handle.cancel();
                 break -1;
             }
             let mut slot = self.handle.child.lock().map_err(|e| e.to_string())?;
@@ -503,7 +509,11 @@ impl<'a> Runner<'a> {
                 Some(proc) => match proc.try_wait() {
                     Ok(Some(status)) => break status.code().unwrap_or(-1),
                     Ok(None) => {}
-                    Err(_) => break -1,
+                    Err(_) => {
+                        // 等待失败时也要清理整棵树，否则日志线程可能永远等不到 EOF。
+                        let _ = proc.kill();
+                        break -1;
+                    }
                 },
                 None => break -1,
             }
@@ -511,13 +521,20 @@ impl<'a> Runner<'a> {
             std::thread::sleep(Duration::from_millis(50));
         };
 
-        // 清掉句柄，并等读取线程把剩余输出吐完
-        if let Ok(mut slot) = self.handle.child.lock() {
-            *slot = None;
+        // shell 退出后，后代仍可能持有管道；读取结束前保留取消句柄。
+        while readers.iter().any(|reader| !reader.is_finished()) {
+            if self.cancelled() {
+                self.handle.cancel();
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
         for reader in readers {
             let _ = reader.join();
         }
+        if let Ok(mut slot) = self.handle.child.lock() {
+            *slot = None;
+        }
+        let code = if self.cancelled() { -1 } else { code };
 
         let duration_ms = started.elapsed().as_millis() as u64;
         self.stage_end(stage, code == 0, code, duration_ms);
@@ -1014,6 +1031,84 @@ pub fn cicd_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_closes_descendant_pipes_and_allows_another_stage() {
+        let handle = Arc::new(RunHandle::new());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let channel = Channel::new(|_| Ok(()));
+        let runner = Runner {
+            root: Path::new("."),
+            workdir: PathBuf::from("."),
+            env: HashMap::new(),
+            handle: &handle,
+            channel: &channel,
+            log: Arc::clone(&log),
+        };
+        #[cfg(windows)]
+        let command = "powershell -NoProfile -Command Write-Output ready; [Console]::Error.WriteLine('ready'); Start-Sleep -Seconds 15";
+        #[cfg(unix)]
+        let command = "sh -c 'trap \"\" TERM; echo ready; echo ready >&2; sleep 15' & wait";
+
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| runner.run_command(STAGE_BUILD, command));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let ready = loop {
+                if log.lock().unwrap().iter().any(|line| line == "ready") {
+                    break true;
+                }
+                if Instant::now() >= deadline || worker.is_finished() {
+                    break false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let started = Instant::now();
+            handle.cancel();
+            handle.cancel();
+            assert_eq!(worker.join().unwrap().unwrap(), -1);
+            assert!(ready, "派生进程应先写出日志");
+            assert!(started.elapsed() < Duration::from_secs(5));
+        });
+        assert!(handle.child.lock().unwrap().is_none());
+
+        // 下一次运行使用全新控制块，并保留普通命令的末尾输出。
+        let next = Arc::new(RunHandle::new());
+        let runner = Runner {
+            handle: &next,
+            ..runner
+        };
+        assert_eq!(
+            runner
+                .run_command(STAGE_BUILD, "echo final-output")
+                .unwrap(),
+            0
+        );
+        assert!(log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line == "final-output"));
+    }
+
+    #[test]
+    fn cancellation_before_child_registration_is_not_lost() {
+        let handle = Arc::new(RunHandle::new());
+        handle.cancel();
+        let channel = Channel::new(|_| Ok(()));
+        let runner = Runner {
+            root: Path::new("."),
+            workdir: PathBuf::from("."),
+            env: HashMap::new(),
+            handle: &handle,
+            channel: &channel,
+            log: Arc::new(Mutex::new(Vec::new())),
+        };
+        assert_eq!(
+            runner.run_command(STAGE_BUILD, "echo cancelled").unwrap(),
+            -1
+        );
+        assert!(handle.child.lock().unwrap().is_none());
+    }
 
     #[test]
     fn parses_minimal_config() {
