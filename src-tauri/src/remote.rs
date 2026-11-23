@@ -13,6 +13,8 @@
 //!   由用户确认后再更新。不做完整 known_hosts。
 
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -27,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use uuid::Uuid;
 
 /// 建连 / 认证超时。交互式会话本身不设闲置超时（`Config::inactivity_timeout = None`），
 /// 但建连这一步不能无限等——网络不通时得尽快报错。
@@ -34,6 +37,48 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// 传输分块大小。分块而不是整文件 read/write：大文件不会一次性进内存，也才有进度可报。
 const CHUNK: usize = 64 * 1024;
+
+fn transfer_temp_path(path: &str) -> String {
+    format!("{path}.codovo-{}.tmp", Uuid::new_v4().simple())
+}
+
+#[cfg(windows)]
+const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+#[cfg(windows)]
+const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+
+/// 在同一文件系统内发布下载结果，并在 Windows 上原子替换已有目标。
+fn replace_local_file(from: &str, to: &str) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32;
+        }
+
+        let from: Vec<u16> = OsStr::new(from).encode_wide().chain(Some(0)).collect();
+        let to: Vec<u16> = OsStr::new(to).encode_wide().chain(Some(0)).collect();
+        let ok = unsafe {
+            MoveFileExW(
+                from.as_ptr(),
+                to.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+}
 
 /// 远端 shell 的输出事件。输出走 base64 而非字符串：多字节 UTF-8 会被 read 从中间截断，
 /// 后端一旦 decode 就产生乱码（和 pty.rs 一个道理）。
@@ -729,10 +774,11 @@ pub async fn sftp_upload(
     let mut local = tokio::fs::File::open(&local_path)
         .await
         .map_err(|e| format!("打开本地文件失败：{e}"))?;
+    let temp_path = transfer_temp_path(&remote_path);
     let mut remote = sftp
         .open_with_flags(
-            &remote_path,
-            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+            &temp_path,
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
         )
         .await
         .map_err(|e| format!("打开远程文件失败：{e}"))?;
@@ -742,32 +788,50 @@ pub async fn sftp_upload(
         total,
         done: false,
     });
-    let mut buf = vec![0u8; CHUNK];
-    let mut transferred = 0u64;
-    loop {
-        let n = local
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("读取本地文件失败：{e}"))?;
-        if n == 0 {
-            break;
+    let result = async {
+        let mut buf = vec![0u8; CHUNK];
+        let mut transferred = 0u64;
+        loop {
+            let n = local
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("读取本地文件失败：{e}"))?;
+            if n == 0 {
+                break;
+            }
+            remote
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| format!("写入远程文件失败：{e}"))?;
+            transferred += n as u64;
+            let _ = on_progress.send(TransferEvent {
+                transferred,
+                total,
+                done: false,
+            });
         }
         remote
-            .write_all(&buf[..n])
+            .flush()
             .await
             .map_err(|e| format!("写入远程文件失败：{e}"))?;
-        transferred += n as u64;
-        let _ = on_progress.send(TransferEvent {
-            transferred,
-            total,
-            done: false,
-        });
+        remote
+            .shutdown()
+            .await
+            .map_err(|e| format!("关闭远程文件失败：{e}"))?;
+        sftp.rename(&temp_path, &remote_path)
+            .await
+            .map_err(|e| format!("发布远程文件失败：{e}"))?;
+        Ok::<u64, String>(transferred)
     }
-    remote
-        .flush()
-        .await
-        .map_err(|e| format!("写入远程文件失败：{e}"))?;
-    let _ = remote.shutdown().await;
+    .await;
+    let transferred = match result {
+        Ok(transferred) => transferred,
+        Err(reason) => {
+            drop(remote);
+            let _ = sftp.remove_file(&temp_path).await;
+            return Err(reason);
+        }
+    };
     let _ = on_progress.send(TransferEvent {
         transferred,
         total,
@@ -796,40 +860,62 @@ pub async fn sftp_download(
         .open(&remote_path)
         .await
         .map_err(|e| format!("打开远程文件失败：{e}"))?;
-    let mut local = tokio::fs::File::create(&local_path)
-        .await
-        .map_err(|e| format!("创建本地文件失败：{e}"))?;
-
     let _ = on_progress.send(TransferEvent {
         transferred: 0,
         total,
         done: false,
     });
-    let mut buf = vec![0u8; CHUNK];
-    let mut transferred = 0u64;
-    loop {
-        let n = remote
-            .read(&mut buf)
-            .await
-            .map_err(|e| format!("读取远程文件失败：{e}"))?;
-        if n == 0 {
-            break;
+    let temp_path = transfer_temp_path(&local_path);
+    let mut local = tokio::fs::File::from_std(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| format!("创建本地临时文件失败：{e}"))?,
+    );
+    let result = async {
+        let mut buf = vec![0u8; CHUNK];
+        let mut transferred = 0u64;
+        loop {
+            let n = remote
+                .read(&mut buf)
+                .await
+                .map_err(|e| format!("读取远程文件失败：{e}"))?;
+            if n == 0 {
+                break;
+            }
+            local
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| format!("写入本地文件失败：{e}"))?;
+            transferred += n as u64;
+            let _ = on_progress.send(TransferEvent {
+                transferred,
+                total,
+                done: false,
+            });
         }
         local
-            .write_all(&buf[..n])
+            .flush()
             .await
             .map_err(|e| format!("写入本地文件失败：{e}"))?;
-        transferred += n as u64;
-        let _ = on_progress.send(TransferEvent {
-            transferred,
-            total,
-            done: false,
-        });
+        local
+            .shutdown()
+            .await
+            .map_err(|e| format!("关闭本地文件失败：{e}"))?;
+        drop(local);
+        replace_local_file(&temp_path, &local_path)
+            .map_err(|e| format!("发布本地文件失败：{e}"))?;
+        Ok::<u64, String>(transferred)
     }
-    local
-        .flush()
-        .await
-        .map_err(|e| format!("写入本地文件失败：{e}"))?;
+    .await;
+    let transferred = match result {
+        Ok(transferred) => transferred,
+        Err(reason) => {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(reason);
+        }
+    };
     let _ = on_progress.send(TransferEvent {
         transferred,
         total,

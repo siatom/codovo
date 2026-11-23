@@ -163,9 +163,9 @@ pub fn local_rename(path: String, new_name: String) -> Result<String, String> {
     if target == source {
         return Ok(display(&target));
     }
-    // Windows 大小写不敏感：只改大小写时 exists() 会说"已存在"，但那是它自己
-    let occupied = target.exists()
-        && target.to_string_lossy().to_lowercase() != source.to_string_lossy().to_lowercase();
+    // 大小写不敏感的文件系统会把只改大小写的目标解析成源目录项本身；其它已存在
+    // 目标一律视为冲突，避免在区分大小写的卷上静默覆盖另一份文件。
+    let occupied = target.exists() && !crate::fs_api::is_case_only_alias(&source, &target);
     if occupied {
         return Err(format!("目标已存在: {}", display(&target)));
     }
