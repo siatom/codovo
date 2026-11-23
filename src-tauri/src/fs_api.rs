@@ -936,6 +936,21 @@ pub fn fs_create_directory(
 
 // ==================== 重命名与删除 ====================
 
+/// 目标存在时，只有在当前文件系统把它解析成源目录项的大小写别名时才算“自己”。
+///
+/// 不能只比较路径的小写形式：区分大小写的文件系统允许两个不同目录项使用同一组
+/// 忽略大小写的字符，而硬链接也可能让两个不同路径指向同一个 inode。
+pub(crate) fn is_case_only_alias(source: &Path, target: &Path) -> bool {
+    if !target.exists() {
+        return false;
+    }
+
+    match (fs::canonicalize(source), fs::canonicalize(target)) {
+        (Ok(source), Ok(target)) => source == target,
+        (Err(_), _) | (_, Err(_)) => false,
+    }
+}
+
 /// 就地改名。`new_name` 只是一段名字（`validate_name` 挡掉分隔符），所以文件
 /// 不会跑到别的目录去，也不用再校验一次是否越界。
 fn rename_at(source: &Path, new_name: &str) -> Result<String, String> {
@@ -952,10 +967,9 @@ fn rename_at(source: &Path, new_name: &str) -> Result<String, String> {
         return Ok(display(&target));
     }
 
-    // Windows 上大小写不敏感，`a.txt` -> `A.txt` 时 exists() 会说"目标已存在"，
-    // 但它其实就是自己。统一小写比一遍，把这种只改大小写的情况放行给 fs::rename
-    let occupied = target.exists()
-        && target.to_string_lossy().to_lowercase() != source.to_string_lossy().to_lowercase();
+    // 大小写不敏感的文件系统会把只改大小写的目标解析成源目录项本身；其它已存在
+    // 目标一律视为冲突，避免在区分大小写的卷上静默覆盖另一份文件。
+    let occupied = target.exists() && !is_case_only_alias(source, &target);
     if occupied {
         return Err(format!("目标已存在: {}", display(&target)));
     }
@@ -2074,11 +2088,32 @@ mod tests {
         let file = workspace.join("readme.md");
         fs::write(&file, "hi").unwrap();
 
-        // Windows 上 exists() 会说"目标已存在"，但它就是自己，不该被拦下
+        // 大小写不敏感的文件系统上，目标路径会解析回同一个目录项，不该被拦下
         let renamed =
             rename_entry(&workspace_root(&state), file.to_str().unwrap(), "README.md").unwrap();
         assert_eq!(renamed.to_lowercase(), display(&file).to_lowercase());
         assert!(workspace.join("README.md").exists() || workspace.join("readme.md").exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_refuses_a_case_variant_that_is_a_different_entry() {
+        let (state, root) = temp_state();
+        let workspace = workspace_root(&state);
+        let source = workspace.join("draft.txt");
+        let target = workspace.join("Draft.txt");
+        fs::write(&source, "source").unwrap();
+        fs::write(&target, "target").unwrap();
+
+        assert!(rename_entry(
+            &workspace_root(&state),
+            source.to_str().unwrap(),
+            "Draft.txt"
+        )
+        .is_err());
+        assert_eq!(fs::read_to_string(&source).unwrap(), "source");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "target");
         fs::remove_dir_all(&root).ok();
     }
 
