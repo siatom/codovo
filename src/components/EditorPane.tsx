@@ -4096,7 +4096,8 @@ export function EditorPane({
                 <button
                   type="button"
                   onClick={() => gotoDiff(diffChangeIndex - 1)}
-                  disabled={diffChangeCount <= 1}
+                  disabled={diffChangeCount === 0 || diffChangeIndex === 0}
+                  aria-label={t("上一处改动")}
                   title={t("上一处改动（Shift+F7）")}
                   className={STATUS_ICON_BUTTON}
                 >
@@ -4105,7 +4106,8 @@ export function EditorPane({
                 <button
                   type="button"
                   onClick={() => gotoDiff(diffChangeIndex + 1)}
-                  disabled={diffChangeCount <= 1}
+                  disabled={diffChangeCount === 0 || diffChangeIndex >= diffChangeCount - 1}
+                  aria-label={t("下一处改动")}
                   title={t("下一处改动（F7）")}
                   className={STATUS_ICON_BUTTON}
                 >
